@@ -1,6 +1,5 @@
 import { Router } from 'express';
-import { db } from '../db/init.js';
-import '../db/ticktick.js';
+import { q } from '../db/init.js';
 import { requireAuth } from '../middleware/auth.js';
 
 const router = Router();
@@ -9,10 +8,10 @@ router.use(requireAuth);
 const parseTask = t => ({ ...t, tags: JSON.parse(t.tags), subtasks: JSON.parse(t.subtasks) });
 
 // 每個 (kind, ref) 只發一次金幣，避免反覆勾選刷幣
-function award(userId, kind, refId, coins, refKey = '') {
-  const r = db.prepare('INSERT OR IGNORE INTO coin_awards (user_id,kind,ref_id,ref_key,coins) VALUES (?,?,?,?,?)')
-    .run(userId, kind, refId, refKey, coins);
-  if (r.changes) db.prepare('UPDATE users SET coins=coins+?, coins_total=coins_total+? WHERE id=?').run(coins, coins, userId);
+async function award(userId, kind, refId, coins, refKey = '') {
+  const r = await q.run('INSERT OR IGNORE INTO coin_awards (user_id,kind,ref_id,ref_key,coins) VALUES (?,?,?,?,?)',
+    [userId, kind, refId, refKey, coins]);
+  if (r.changes) await q.run('UPDATE users SET coins=coins+?, coins_total=coins_total+? WHERE id=?', [coins, coins, userId]);
   return r.changes ? coins : 0;
 }
 
@@ -28,37 +27,37 @@ export const SHOP = [
 ];
 
 // ---- lists ----
-router.get('/lists', (req, res) =>
-  res.json(db.prepare('SELECT * FROM lists WHERE user_id=? ORDER BY order_index, id').all(req.userId)));
-router.post('/lists', (req, res) => {
+router.get('/lists', async (req, res) =>
+  res.json(await q.all('SELECT * FROM lists WHERE user_id=? ORDER BY order_index, id', [req.userId])));
+router.post('/lists', async (req, res) => {
   const { name, color } = req.body;
   if (!name) return res.status(400).json({ error: '請輸入名稱' });
-  const r = db.prepare('INSERT INTO lists (user_id,name,color) VALUES (?,?,?)').run(req.userId, name, color || '#4f46e5');
+  const r = await q.run('INSERT INTO lists (user_id,name,color) VALUES (?,?,?)', [req.userId, name, color || '#4772fa']);
   res.json({ id: r.lastInsertRowid });
 });
-router.patch('/lists/:id', (req, res) => {
+router.patch('/lists/:id', async (req, res) => {
   const { name, color } = req.body;
-  db.prepare('UPDATE lists SET name=COALESCE(?,name), color=COALESCE(?,color) WHERE id=? AND user_id=?')
-    .run(name, color, req.params.id, req.userId);
+  await q.run('UPDATE lists SET name=COALESCE(?,name), color=COALESCE(?,color) WHERE id=? AND user_id=?',
+    [name ?? null, color ?? null, req.params.id, req.userId]);
   res.json({ ok: true });
 });
-router.delete('/lists/:id', (req, res) => {
-  db.prepare('DELETE FROM lists WHERE id=? AND user_id=?').run(req.params.id, req.userId);
+router.delete('/lists/:id', async (req, res) => {
+  await q.run('DELETE FROM lists WHERE id=? AND user_id=?', [req.params.id, req.userId]);
   res.json({ ok: true });
 });
 
 // ---- tasks ----
-router.get('/tasks', (req, res) =>
-  res.json(db.prepare('SELECT * FROM tasks WHERE user_id=? ORDER BY order_index, id DESC').all(req.userId).map(parseTask)));
+router.get('/tasks', async (req, res) =>
+  res.json((await q.all('SELECT * FROM tasks WHERE user_id=? ORDER BY order_index, id DESC', [req.userId])).map(parseTask)));
 
-router.post('/tasks', (req, res) => {
+router.post('/tasks', async (req, res) => {
   const { title, list_id, notes, due_date, due_time, priority, tags, subtasks, recurring } = req.body;
   if (!title) return res.status(400).json({ error: '請輸入標題' });
-  const r = db.prepare(`INSERT INTO tasks (user_id,list_id,title,notes,due_date,due_time,priority,tags,subtasks,recurring)
-    VALUES (?,?,?,?,?,?,?,?,?,?)`)
-    .run(req.userId, list_id || null, title, notes || '', due_date || null, due_time || null,
-      priority || 0, JSON.stringify(tags || []), JSON.stringify(subtasks || []), recurring || null);
-  res.json(parseTask(db.prepare('SELECT * FROM tasks WHERE id=?').get(r.lastInsertRowid)));
+  const r = await q.run(`INSERT INTO tasks (user_id,list_id,title,notes,due_date,due_time,priority,tags,subtasks,recurring)
+    VALUES (?,?,?,?,?,?,?,?,?,?)`,
+    [req.userId, list_id || null, title, notes || '', due_date || null, due_time || null,
+      priority || 0, JSON.stringify(tags || []), JSON.stringify(subtasks || []), recurring || null]);
+  res.json(parseTask(await q.get('SELECT * FROM tasks WHERE id=?', [r.lastInsertRowid])));
 });
 
 function nextDate(dateStr, rule) {
@@ -71,11 +70,11 @@ function nextDate(dateStr, rule) {
   return d.toISOString().slice(0, 10);
 }
 
-router.patch('/tasks/:id', (req, res) => {
-  const t = db.prepare('SELECT * FROM tasks WHERE id=? AND user_id=?').get(req.params.id, req.userId);
+router.patch('/tasks/:id', async (req, res) => {
+  const t = await q.get('SELECT * FROM tasks WHERE id=? AND user_id=?', [req.params.id, req.userId]);
   if (!t) return res.status(404).json({ error: 'not found' });
   const b = req.body;
-  const fields = {
+  const f = {
     list_id: b.list_id !== undefined ? b.list_id : t.list_id,
     title: b.title ?? t.title,
     notes: b.notes ?? t.notes,
@@ -89,111 +88,111 @@ router.patch('/tasks/:id', (req, res) => {
     completed_at: b.completed !== undefined ? (b.completed ? new Date().toISOString() : null) : t.completed_at,
     order_index: b.order_index ?? t.order_index,
   };
-  db.prepare(`UPDATE tasks SET list_id=@list_id,title=@title,notes=@notes,due_date=@due_date,due_time=@due_time,
-    priority=@priority,tags=@tags,subtasks=@subtasks,recurring=@recurring,completed=@completed,
-    completed_at=@completed_at,order_index=@order_index WHERE id=${t.id}`).run(fields);
+  await q.run(`UPDATE tasks SET list_id=?,title=?,notes=?,due_date=?,due_time=?,priority=?,tags=?,subtasks=?,
+    recurring=?,completed=?,completed_at=?,order_index=? WHERE id=?`,
+    [f.list_id, f.title, f.notes, f.due_date, f.due_time, f.priority, f.tags, f.subtasks,
+      f.recurring, f.completed, f.completed_at, f.order_index, t.id]);
 
-  // recurring: on complete, spawn next occurrence
   if (b.completed && !t.completed && t.recurring && t.due_date) {
     const nd = nextDate(t.due_date, t.recurring);
-    if (nd) db.prepare(`INSERT INTO tasks (user_id,list_id,title,notes,due_date,due_time,priority,tags,subtasks,recurring)
-      VALUES (?,?,?,?,?,?,?,?,?,?)`)
-      .run(req.userId, t.list_id, t.title, t.notes, nd, t.due_time, t.priority, t.tags,
-        JSON.stringify(JSON.parse(t.subtasks).map(s => ({ ...s, done: false }))), t.recurring);
+    if (nd) await q.run(`INSERT INTO tasks (user_id,list_id,title,notes,due_date,due_time,priority,tags,subtasks,recurring)
+      VALUES (?,?,?,?,?,?,?,?,?,?)`,
+      [req.userId, t.list_id, t.title, t.notes, nd, t.due_time, t.priority, t.tags,
+        JSON.stringify(JSON.parse(t.subtasks).map(s => ({ ...s, done: false }))), t.recurring]);
   }
   let earned = 0;
-  if (b.completed && !t.completed) earned = award(req.userId, 'task', t.id, 10);
+  if (b.completed && !t.completed) earned = await award(req.userId, 'task', t.id, 10);
   res.json({ ok: true, earned });
 });
-router.delete('/tasks/:id', (req, res) => {
-  db.prepare('DELETE FROM tasks WHERE id=? AND user_id=?').run(req.params.id, req.userId);
+router.delete('/tasks/:id', async (req, res) => {
+  await q.run('DELETE FROM tasks WHERE id=? AND user_id=?', [req.params.id, req.userId]);
   res.json({ ok: true });
 });
 
 // ---- habits ----
-router.get('/habits', (req, res) => {
-  const habits = db.prepare('SELECT * FROM habits WHERE user_id=?').all(req.userId);
-  const checkins = db.prepare(`SELECT c.* FROM habit_checkins c JOIN habits h ON h.id=c.habit_id WHERE h.user_id=?`).all(req.userId);
+router.get('/habits', async (req, res) => {
+  const habits = await q.all('SELECT * FROM habits WHERE user_id=?', [req.userId]);
+  const checkins = await q.all('SELECT c.* FROM habit_checkins c JOIN habits h ON h.id=c.habit_id WHERE h.user_id=?', [req.userId]);
   res.json(habits.map(h => ({ ...h, days: JSON.parse(h.days), checkins: checkins.filter(c => c.habit_id === h.id).map(c => c.date) })));
 });
-router.post('/habits', (req, res) => {
+router.post('/habits', async (req, res) => {
   const { name, icon, color, days } = req.body;
   if (!name) return res.status(400).json({ error: '請輸入名稱' });
-  const r = db.prepare('INSERT INTO habits (user_id,name,icon,color,days) VALUES (?,?,?,?,?)')
-    .run(req.userId, name, icon || '⭐', color || '#16a34a', JSON.stringify(days || [0, 1, 2, 3, 4, 5, 6]));
+  const r = await q.run('INSERT INTO habits (user_id,name,icon,color,days) VALUES (?,?,?,?,?)',
+    [req.userId, name, icon || '⭐', color || '#16a34a', JSON.stringify(days || [0, 1, 2, 3, 4, 5, 6])]);
   res.json({ id: r.lastInsertRowid });
 });
-router.delete('/habits/:id', (req, res) => {
-  db.prepare('DELETE FROM habits WHERE id=? AND user_id=?').run(req.params.id, req.userId);
+router.delete('/habits/:id', async (req, res) => {
+  await q.run('DELETE FROM habits WHERE id=? AND user_id=?', [req.params.id, req.userId]);
   res.json({ ok: true });
 });
-router.post('/habits/:id/checkin', (req, res) => {
-  const h = db.prepare('SELECT id FROM habits WHERE id=? AND user_id=?').get(req.params.id, req.userId);
+router.post('/habits/:id/checkin', async (req, res) => {
+  const h = await q.get('SELECT id FROM habits WHERE id=? AND user_id=?', [req.params.id, req.userId]);
   if (!h) return res.status(404).json({ error: 'not found' });
   const { date, undo } = req.body;
   let earned = 0;
-  if (undo) db.prepare('DELETE FROM habit_checkins WHERE habit_id=? AND date=?').run(h.id, date);
+  if (undo) await q.run('DELETE FROM habit_checkins WHERE habit_id=? AND date=?', [h.id, date]);
   else {
-    db.prepare('INSERT OR IGNORE INTO habit_checkins (habit_id,date) VALUES (?,?)').run(h.id, date);
-    earned = award(req.userId, 'habit', h.id, 5, date);
+    await q.run('INSERT OR IGNORE INTO habit_checkins (habit_id,date) VALUES (?,?)', [h.id, date]);
+    earned = await award(req.userId, 'habit', h.id, 5, date);
   }
   res.json({ ok: true, earned });
 });
 
 // ---- pomodoro ----
-router.get('/pomo', (req, res) =>
-  res.json(db.prepare(`SELECT p.*, t.title AS task_title FROM pomo_sessions p
-    LEFT JOIN tasks t ON t.id=p.task_id WHERE p.user_id=? ORDER BY p.id DESC LIMIT 50`).all(req.userId)));
-router.post('/pomo', (req, res) => {
+router.get('/pomo', async (req, res) =>
+  res.json(await q.all(`SELECT p.*, t.title AS task_title FROM pomo_sessions p
+    LEFT JOIN tasks t ON t.id=p.task_id WHERE p.user_id=? ORDER BY p.id DESC LIMIT 50`, [req.userId])));
+router.post('/pomo', async (req, res) => {
   const { task_id, minutes, date } = req.body;
-  const r = db.prepare('INSERT INTO pomo_sessions (user_id,task_id,date,minutes) VALUES (?,?,?,?)')
-    .run(req.userId, task_id || null, date || new Date().toISOString().slice(0, 10), minutes || 25);
-  const earned = award(req.userId, 'pomo', r.lastInsertRowid, Math.max(2, Math.round((minutes || 25) / 5)));
+  const r = await q.run('INSERT INTO pomo_sessions (user_id,task_id,date,minutes) VALUES (?,?,?,?)',
+    [req.userId, task_id || null, date || new Date().toISOString().slice(0, 10), minutes || 25]);
+  const earned = await award(req.userId, 'pomo', r.lastInsertRowid, Math.max(2, Math.round((minutes || 25) / 5)));
   res.json({ ok: true, earned });
 });
 
 // ---- pet & shop ----
-router.get('/pet', (req, res) => {
-  const u = db.prepare('SELECT coins, coins_total, pet FROM users WHERE id=?').get(req.userId);
+router.get('/pet', async (req, res) => {
+  const u = await q.get('SELECT coins, coins_total, pet FROM users WHERE id=?', [req.userId]);
   res.json({ coins: u.coins, coins_total: u.coins_total, pet: JSON.parse(u.pet || '{}'), shop: SHOP });
 });
-router.patch('/pet', (req, res) => {
-  const u = db.prepare('SELECT pet FROM users WHERE id=?').get(req.userId);
+router.patch('/pet', async (req, res) => {
+  const u = await q.get('SELECT pet FROM users WHERE id=?', [req.userId]);
   const pet = { ...JSON.parse(u.pet || '{}'), ...req.body };
-  db.prepare('UPDATE users SET pet=? WHERE id=?').run(JSON.stringify(pet), req.userId);
+  await q.run('UPDATE users SET pet=? WHERE id=?', [JSON.stringify(pet), req.userId]);
   res.json({ ok: true });
 });
-router.post('/shop/buy', (req, res) => {
+router.post('/shop/buy', async (req, res) => {
   const item = SHOP.find(i => i.id === req.body.id);
   if (!item) return res.status(400).json({ error: '沒有這個商品' });
-  const u = db.prepare('SELECT coins, pet FROM users WHERE id=?').get(req.userId);
+  const u = await q.get('SELECT coins, pet FROM users WHERE id=?', [req.userId]);
   const pet = JSON.parse(u.pet || '{}');
   pet.owned = pet.owned || [];
   if (pet.owned.includes(item.id)) return res.status(400).json({ error: '已經擁有了' });
   if (u.coins < item.price) return res.status(400).json({ error: '金幣不足' });
   pet.owned.push(item.id);
-  db.prepare('UPDATE users SET coins=coins-?, pet=? WHERE id=?').run(item.price, JSON.stringify(pet), req.userId);
+  await q.run('UPDATE users SET coins=coins-?, pet=? WHERE id=?', [item.price, JSON.stringify(pet), req.userId]);
   res.json({ ok: true });
 });
 
 // ---- filters ----
-router.get('/filters', (req, res) =>
-  res.json(db.prepare('SELECT * FROM filters WHERE user_id=?').all(req.userId).map(f => ({ ...f, rule: JSON.parse(f.rule) }))));
-router.post('/filters', (req, res) => {
+router.get('/filters', async (req, res) =>
+  res.json((await q.all('SELECT * FROM filters WHERE user_id=?', [req.userId])).map(f => ({ ...f, rule: JSON.parse(f.rule) }))));
+router.post('/filters', async (req, res) => {
   const { name, rule } = req.body;
   if (!name) return res.status(400).json({ error: '請輸入名稱' });
-  const r = db.prepare('INSERT INTO filters (user_id,name,rule) VALUES (?,?,?)').run(req.userId, name, JSON.stringify(rule || {}));
+  const r = await q.run('INSERT INTO filters (user_id,name,rule) VALUES (?,?,?)', [req.userId, name, JSON.stringify(rule || {})]);
   res.json({ id: r.lastInsertRowid });
 });
-router.delete('/filters/:id', (req, res) => {
-  db.prepare('DELETE FROM filters WHERE id=? AND user_id=?').run(req.params.id, req.userId);
+router.delete('/filters/:id', async (req, res) => {
+  await q.run('DELETE FROM filters WHERE id=? AND user_id=?', [req.params.id, req.userId]);
   res.json({ ok: true });
 });
 
 // ---- stats ----
-router.get('/tstats', (req, res) => {
-  const tasks = db.prepare('SELECT completed, completed_at, due_date FROM tasks WHERE user_id=?').all(req.userId);
-  const pomo = db.prepare('SELECT date, SUM(minutes) m FROM pomo_sessions WHERE user_id=? GROUP BY date').all(req.userId);
+router.get('/tstats', async (req, res) => {
+  const tasks = await q.all('SELECT completed, completed_at FROM tasks WHERE user_id=?', [req.userId]);
+  const pomo = await q.all('SELECT date, SUM(minutes) m FROM pomo_sessions WHERE user_id=? GROUP BY date', [req.userId]);
   const days = {};
   for (const t of tasks) {
     if (t.completed && t.completed_at) {

@@ -1,5 +1,5 @@
 import { Router } from 'express';
-import { db } from '../db/init.js';
+import { q } from '../db/init.js';
 import { requireAuth } from '../middleware/auth.js';
 
 const router = Router();
@@ -9,15 +9,11 @@ const toMin = t => { const [h, m] = t.split(':').map(Number); return h * 60 + m;
 const toHM = m => `${String(Math.floor(m / 60)).padStart(2, '0')}:${String(m % 60).padStart(2, '0')}`;
 
 function freeSlotsForDay(dateStr, events, settings) {
-  // busy intervals in minutes
   const busy = [];
-  const sleepStart = toMin(settings.sleep_start); // e.g. 23:00
-  const sleepEnd = toMin(settings.sleep_end);     // e.g. 07:00
-  if (sleepStart > sleepEnd) { // crosses midnight
-    busy.push([0, sleepEnd], [sleepStart, 1440]);
-  } else {
-    busy.push([sleepStart, sleepEnd]);
-  }
+  const sleepStart = toMin(settings.sleep_start);
+  const sleepEnd = toMin(settings.sleep_end);
+  if (sleepStart > sleepEnd) busy.push([0, sleepEnd], [sleepStart, 1440]);
+  else busy.push([sleepStart, sleepEnd]);
   for (const [a, b] of settings.meal_windows) busy.push([toMin(a), toMin(b)]);
 
   const dow = new Date(dateStr + 'T00:00:00').getDay();
@@ -38,25 +34,24 @@ function freeSlotsForDay(dateStr, events, settings) {
   const free = [];
   let cur = 0;
   for (const [a, b] of merged) {
-    if (a - cur >= 30) free.push([cur, a]); // ignore gaps < 30min
+    if (a - cur >= 30) free.push([cur, a]);
     cur = Math.max(cur, b);
   }
   if (1440 - cur >= 30) free.push([cur, 1440]);
   return free;
 }
 
-// POST /api/schedule/preview  { startDate, endDate, items:[{subject_id, title, minutes}], mode:'order'|'spread', dailyMax? }
-router.post('/preview', (req, res) => {
+// POST /api/schedule/preview  { startDate, endDate, items:[{subject_id, title, minutes}], mode:'order'|'spread' }
+router.post('/preview', async (req, res) => {
   const { startDate, endDate, items, mode } = req.body;
   if (!startDate || !endDate || !items?.length) return res.status(400).json({ error: '參數不完整' });
 
-  const u = db.prepare('SELECT sleep_start, sleep_end, meal_windows FROM users WHERE id=?').get(req.userId);
+  const u = await q.get('SELECT sleep_start, sleep_end, meal_windows FROM users WHERE id=?', [req.userId]);
   const settings = { ...u, meal_windows: JSON.parse(u.meal_windows) };
   if (req.body.sleep_start) settings.sleep_start = req.body.sleep_start;
   if (req.body.sleep_end) settings.sleep_end = req.body.sleep_end;
-  const events = db.prepare('SELECT * FROM fixed_events WHERE user_id=?').all(req.userId);
+  const events = await q.all('SELECT * FROM fixed_events WHERE user_id=?', [req.userId]);
 
-  // build day list with free slots
   const days = [];
   const today = new Date().toISOString().slice(0, 10);
   for (let d = new Date(startDate + 'T00:00:00'); ; d.setDate(d.getDate() + 1)) {
@@ -67,23 +62,21 @@ router.post('/preview', (req, res) => {
   }
   if (!days.length) return res.status(400).json({ error: '沒有可排的日期' });
 
-  // work queue: chunks of study, each item split into <=90min chunks (with 10min break implied by gap)
   const CHUNK = 90;
   const queue = [];
   for (const it of items) {
     let rem = it.minutes || 120;
     while (rem > 0) {
       const c = Math.min(CHUNK, rem);
-      queue.push({ ...it, chunk: rem - c > 0 && rem - c < 30 ? rem : c }); // avoid tiny leftovers
+      queue.push({ ...it, chunk: rem - c > 0 && rem - c < 30 ? rem : c });
       rem -= queue[queue.length - 1].chunk;
     }
   }
 
-  // 'spread' mode: interleave subjects; 'order': keep as-is
   let work = queue;
   if (mode === 'spread') {
     const groups = {};
-    for (const q of queue) (groups[q.subject_id] = groups[q.subject_id] || []).push(q);
+    for (const w of queue) (groups[w.subject_id] = groups[w.subject_id] || []).push(w);
     work = [];
     const lists = Object.values(groups);
     let added = true;
@@ -93,7 +86,6 @@ router.post('/preview', (req, res) => {
     }
   }
 
-  // place chunks into free slots, round-robin across days for spread, sequential for order
   const blocks = [];
   const dayCursors = days.map(d => ({ ...d, slotIdx: 0, pos: d.slots[0]?.[0] ?? null }));
   let di = 0;
@@ -107,8 +99,7 @@ router.post('/preview', (req, res) => {
         const [, end] = day.slots[day.slotIdx];
         if (day.pos + w.chunk <= end) {
           blocks.push({
-            subject_id: w.subject_id, study_range_id: w.study_range_id || null,
-            title: w.title, date: day.date,
+            subject_id: w.subject_id, title: w.title, date: day.date,
             start_time: toHM(day.pos), end_time: toHM(day.pos + w.chunk),
           });
           day.pos += w.chunk + BREAK;
@@ -126,33 +117,6 @@ router.post('/preview', (req, res) => {
     }
   }
   res.json({ blocks, unplaced: false });
-});
-
-// POST /api/schedule/confirm  { blocks:[...], clearRange:{from,to} }
-router.post('/confirm', (req, res) => {
-  const { blocks, clearRange } = req.body;
-  if (!blocks?.length) return res.status(400).json({ error: '沒有排程內容' });
-  const tx = db.transaction(() => {
-    if (clearRange) {
-      db.prepare('DELETE FROM schedule_blocks WHERE user_id=? AND date>=? AND date<=? AND completed=0')
-        .run(req.userId, clearRange.from, clearRange.to);
-    }
-    const ins = db.prepare(`INSERT INTO schedule_blocks
-      (user_id, subject_id, study_range_id, date, start_time, end_time) VALUES (?,?,?,?,?,?)`);
-    const insRange = db.prepare('INSERT INTO study_ranges (user_id, subject_id, title) VALUES (?,?,?)');
-    const rangeIds = {};
-    for (const b of blocks) {
-      let rid = b.study_range_id;
-      if (!rid && b.title) {
-        const key = b.subject_id + '|' + b.title;
-        if (!rangeIds[key]) rangeIds[key] = insRange.run(req.userId, b.subject_id, b.title).lastInsertRowid;
-        rid = rangeIds[key];
-      }
-      ins.run(req.userId, b.subject_id, rid, b.date, b.start_time, b.end_time);
-    }
-  });
-  tx();
-  res.json({ ok: true, count: blocks.length });
 });
 
 export default router;

@@ -3,6 +3,7 @@ import cors from 'cors';
 import path from 'path';
 import fs from 'fs';
 import { fileURLToPath } from 'url';
+import { initSchema } from './db/init.js';
 import authRouter from './routes/auth.js';
 import dataRouter from './routes/data.js';
 import scheduleRouter from './routes/schedule.js';
@@ -25,4 +26,5 @@ if (fs.existsSync(dist)) {
 }
 
 const PORT = process.env.PORT || 3001;
+await initSchema();
 app.listen(PORT, () => console.log(`API on :${PORT}`));
