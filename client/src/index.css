@@ -104,28 +104,32 @@ input:focus, textarea:focus { border-color: var(--primary); }
 /* mobile */
 .menu-btn, .bottom-nav, .fab { display: none; }
 @media (max-width: 768px) {
+  body { font-size: 15px; }
+  input, select, textarea { font-size: 16px; } /* 避免 iOS 聚焦時自動放大 */
   .menu-btn { display: block; font-size: 22px; padding: 8px 12px; }
   .sidebar { position: fixed; left: 0; top: 0; bottom: 0; z-index: 20; transform: translateX(-100%); transition: transform .2s; }
   .sidebar.open { transform: none; box-shadow: 0 0 30px rgba(0,0,0,.25); }
   .backdrop { position: fixed; inset: 0; background: rgba(0,0,0,.3); z-index: 15; }
-  .detail { position: fixed; inset: 0; width: auto; z-index: 30; padding-top: max(16px, env(safe-area-inset-top)); }
+  .detail { position: fixed; inset: 0; width: auto; z-index: 30; padding-top: calc(16px + env(safe-area-inset-top)); }
   .cal-cell { min-height: 60px; }
   .matrix { grid-template-columns: 1fr; grid-template-rows: none; height: auto; }
   .quick-add { display: none; }
-  .main { padding-bottom: 56px; }
-  .main-head { padding-top: max(14px, env(safe-area-inset-top)); padding-left: 48px; }
-  .main-body { padding-bottom: 90px; }
+  .main-head { padding-top: calc(12px + env(safe-area-inset-top)); padding-left: 52px; }
+  .main-head h2 { font-size: 19px; }
+  .main-body { padding-bottom: calc(80px + env(safe-area-inset-bottom)); }
   .trow { padding: 13px 6px; }
+  .side-item { padding: 11px 12px; font-size: 15px; }
+  .sidebar { padding-top: calc(12px + env(safe-area-inset-top)); width: 260px; }
 
   .bottom-nav { display: flex; position: fixed; left: 0; right: 0; bottom: 0; z-index: 18;
     background: var(--card); border-top: 1px solid var(--border);
     padding-bottom: env(safe-area-inset-bottom); }
-  .bottom-nav button { flex: 1; display: flex; flex-direction: column; align-items: center; gap: 1px;
-    padding: 7px 0 6px; font-size: 10px; color: var(--muted); }
-  .bottom-nav button .bi { font-size: 21px; }
+  .bottom-nav button { flex: 1; display: flex; flex-direction: column; align-items: center; gap: 2px;
+    padding: 8px 0 7px; font-size: 11px; color: var(--muted); }
+  .bottom-nav button .bi { font-size: 22px; }
   .bottom-nav button.on { color: var(--primary); }
 
-  .fab { display: grid; place-items: center; position: fixed; right: 18px; bottom: 76px; z-index: 18;
+  .fab { display: grid; place-items: center; position: fixed; right: 18px; bottom: calc(72px + env(safe-area-inset-bottom)); z-index: 18;
     width: 54px; height: 54px; border-radius: 50%; background: var(--primary); color: #fff;
     font-size: 28px; box-shadow: 0 4px 14px rgba(71,114,250,.45); }
 
