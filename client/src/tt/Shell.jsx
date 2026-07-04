@@ -87,7 +87,7 @@ export default function Shell({ onLogout }) {
 
   return (
     <div className="app">
-      <button className="menu-btn" style={{ position: 'fixed', top: 10, right: 10, zIndex: 10 }} onClick={() => setSide(true)}>☰</button>
+      <button className="menu-btn" style={{ position: 'fixed', top: 'env(safe-area-inset-top)', left: 0, zIndex: 10 }} onClick={() => setSide(true)}>☰</button>
       {side && <div className="backdrop" onClick={() => setSide(false)} />}
       <div className={'sidebar' + (side ? ' open' : '')}>
         {smart.map(([type, label]) => (
@@ -130,6 +130,20 @@ export default function Shell({ onLogout }) {
         : view.type === 'pomo' ? <PomoView tasks={tasks} />
         : view.type === 'stats' ? <StatsView />
         : <Tasks view={view} tasks={tasks} lists={lists} filters={filters} reload={reload} title={titleOf()} />}
+
+      <div className="bottom-nav">
+        {[
+          [{ type: 'today' }, '☑️', '任務', v => !['calendar', 'matrix', 'habits', 'pomo', 'stats'].includes(v.type)],
+          [{ type: 'calendar' }, '🗓️', '日曆'],
+          [{ type: 'habits' }, '🌱', '習慣'],
+          [{ type: 'pomo' }, '🍅', '專注'],
+          [{ type: 'stats' }, '📊', '統計'],
+        ].map(([v, icon, label, test]) => (
+          <button key={label} className={(test ? test(view) : view.type === v.type) ? 'on' : ''} onClick={() => setView(v)}>
+            <span className="bi">{icon}</span>{label}
+          </button>
+        ))}
+      </div>
     </div>
   );
 }
