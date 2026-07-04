@@ -7,6 +7,8 @@ import MatrixView from './MatrixView';
 import HabitsView from './HabitsView';
 import PomoView from './PomoView';
 import StatsView from './StatsView';
+import PetView from './PetView';
+import WizardView from './WizardView';
 
 const LIST_COLORS = ['#4772fa', '#e03131', '#16a34a', '#f59f00', '#9333ea', '#0891b2'];
 
@@ -75,7 +77,7 @@ export default function Shell({ onLogout }) {
     ['today', '📅 今天'], ['week', '🗓️ 未來 7 天'], ['inbox', '📥 收集箱'],
     ['all', '📋 所有任務'], ['completed', '✅ 已完成'],
   ];
-  const pages = [['calendar', '🗓 日曆'], ['matrix', '🔲 矩陣'], ['habits', '🌱 習慣'], ['pomo', '🍅 番茄鐘'], ['stats', '📊 統計']];
+  const pages = [['wizard', '🪄 排程精靈'], ['calendar', '🗓 日曆'], ['matrix', '🔲 矩陣'], ['habits', '🌱 習慣'], ['pomo', '🍅 番茄鐘'], ['pet', '🐾 寵物'], ['stats', '📊 統計']];
 
   const is = v => JSON.stringify(view) === JSON.stringify(v);
   const titleOf = () => {
@@ -129,15 +131,17 @@ export default function Shell({ onLogout }) {
         : view.type === 'habits' ? <HabitsView habits={habits} reload={reload} />
         : view.type === 'pomo' ? <PomoView tasks={tasks} />
         : view.type === 'stats' ? <StatsView />
+        : view.type === 'pet' ? <PetView />
+        : view.type === 'wizard' ? <WizardView lists={lists} reload={reload} goTasks={() => setView({ type: 'today' })} />
         : <Tasks view={view} tasks={tasks} lists={lists} filters={filters} reload={reload} title={titleOf()} />}
 
       <div className="bottom-nav">
         {[
-          [{ type: 'today' }, '☑️', '任務', v => !['calendar', 'matrix', 'habits', 'pomo', 'stats'].includes(v.type)],
+          [{ type: 'today' }, '☑️', '任務', v => !['calendar', 'matrix', 'habits', 'pomo', 'stats', 'pet', 'wizard'].includes(v.type)],
+          [{ type: 'wizard' }, '🪄', '排程'],
           [{ type: 'calendar' }, '🗓️', '日曆'],
           [{ type: 'habits' }, '🌱', '習慣'],
-          [{ type: 'pomo' }, '🍅', '專注'],
-          [{ type: 'stats' }, '📊', '統計'],
+          [{ type: 'pet' }, '🐾', '寵物'],
         ].map(([v, icon, label, test]) => (
           <button key={label} className={(test ? test(view) : view.type === v.type) ? 'on' : ''} onClick={() => setView(v)}>
             <span className="bi">{icon}</span>{label}

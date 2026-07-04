@@ -8,6 +8,25 @@ router.use(requireAuth);
 
 const parseTask = t => ({ ...t, tags: JSON.parse(t.tags), subtasks: JSON.parse(t.subtasks) });
 
+// 每個 (kind, ref) 只發一次金幣，避免反覆勾選刷幣
+function award(userId, kind, refId, coins, refKey = '') {
+  const r = db.prepare('INSERT OR IGNORE INTO coin_awards (user_id,kind,ref_id,ref_key,coins) VALUES (?,?,?,?,?)')
+    .run(userId, kind, refId, refKey, coins);
+  if (r.changes) db.prepare('UPDATE users SET coins=coins+?, coins_total=coins_total+? WHERE id=?').run(coins, coins, userId);
+  return r.changes ? coins : 0;
+}
+
+export const SHOP = [
+  { id: 'hat', emoji: '🎩', name: '紳士帽', price: 50 },
+  { id: 'bow', emoji: '🎀', name: '蝴蝶結', price: 30 },
+  { id: 'glasses', emoji: '🕶️', name: '墨鏡', price: 40 },
+  { id: 'ball', emoji: '⚽', name: '玩具球', price: 40 },
+  { id: 'flower', emoji: '🌻', name: '向日葵', price: 60 },
+  { id: 'house', emoji: '🏠', name: '小屋', price: 200 },
+  { id: 'garden', emoji: '🌳', name: '花園', price: 150 },
+  { id: 'castle', emoji: '🏰', name: '城堡', price: 500 },
+];
+
 // ---- lists ----
 router.get('/lists', (req, res) =>
   res.json(db.prepare('SELECT * FROM lists WHERE user_id=? ORDER BY order_index, id').all(req.userId)));
@@ -82,7 +101,9 @@ router.patch('/tasks/:id', (req, res) => {
       .run(req.userId, t.list_id, t.title, t.notes, nd, t.due_time, t.priority, t.tags,
         JSON.stringify(JSON.parse(t.subtasks).map(s => ({ ...s, done: false }))), t.recurring);
   }
-  res.json({ ok: true });
+  let earned = 0;
+  if (b.completed && !t.completed) earned = award(req.userId, 'task', t.id, 10);
+  res.json({ ok: true, earned });
 });
 router.delete('/tasks/:id', (req, res) => {
   db.prepare('DELETE FROM tasks WHERE id=? AND user_id=?').run(req.params.id, req.userId);
@@ -110,9 +131,13 @@ router.post('/habits/:id/checkin', (req, res) => {
   const h = db.prepare('SELECT id FROM habits WHERE id=? AND user_id=?').get(req.params.id, req.userId);
   if (!h) return res.status(404).json({ error: 'not found' });
   const { date, undo } = req.body;
+  let earned = 0;
   if (undo) db.prepare('DELETE FROM habit_checkins WHERE habit_id=? AND date=?').run(h.id, date);
-  else db.prepare('INSERT OR IGNORE INTO habit_checkins (habit_id,date) VALUES (?,?)').run(h.id, date);
-  res.json({ ok: true });
+  else {
+    db.prepare('INSERT OR IGNORE INTO habit_checkins (habit_id,date) VALUES (?,?)').run(h.id, date);
+    earned = award(req.userId, 'habit', h.id, 5, date);
+  }
+  res.json({ ok: true, earned });
 });
 
 // ---- pomodoro ----
@@ -121,8 +146,33 @@ router.get('/pomo', (req, res) =>
     LEFT JOIN tasks t ON t.id=p.task_id WHERE p.user_id=? ORDER BY p.id DESC LIMIT 50`).all(req.userId)));
 router.post('/pomo', (req, res) => {
   const { task_id, minutes, date } = req.body;
-  db.prepare('INSERT INTO pomo_sessions (user_id,task_id,date,minutes) VALUES (?,?,?,?)')
+  const r = db.prepare('INSERT INTO pomo_sessions (user_id,task_id,date,minutes) VALUES (?,?,?,?)')
     .run(req.userId, task_id || null, date || new Date().toISOString().slice(0, 10), minutes || 25);
+  const earned = award(req.userId, 'pomo', r.lastInsertRowid, Math.max(2, Math.round((minutes || 25) / 5)));
+  res.json({ ok: true, earned });
+});
+
+// ---- pet & shop ----
+router.get('/pet', (req, res) => {
+  const u = db.prepare('SELECT coins, coins_total, pet FROM users WHERE id=?').get(req.userId);
+  res.json({ coins: u.coins, coins_total: u.coins_total, pet: JSON.parse(u.pet || '{}'), shop: SHOP });
+});
+router.patch('/pet', (req, res) => {
+  const u = db.prepare('SELECT pet FROM users WHERE id=?').get(req.userId);
+  const pet = { ...JSON.parse(u.pet || '{}'), ...req.body };
+  db.prepare('UPDATE users SET pet=? WHERE id=?').run(JSON.stringify(pet), req.userId);
+  res.json({ ok: true });
+});
+router.post('/shop/buy', (req, res) => {
+  const item = SHOP.find(i => i.id === req.body.id);
+  if (!item) return res.status(400).json({ error: '沒有這個商品' });
+  const u = db.prepare('SELECT coins, pet FROM users WHERE id=?').get(req.userId);
+  const pet = JSON.parse(u.pet || '{}');
+  pet.owned = pet.owned || [];
+  if (pet.owned.includes(item.id)) return res.status(400).json({ error: '已經擁有了' });
+  if (u.coins < item.price) return res.status(400).json({ error: '金幣不足' });
+  pet.owned.push(item.id);
+  db.prepare('UPDATE users SET coins=coins-?, pet=? WHERE id=?').run(item.price, JSON.stringify(pet), req.userId);
   res.json({ ok: true });
 });
 

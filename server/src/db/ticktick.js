@@ -50,6 +50,15 @@ CREATE TABLE IF NOT EXISTS pomo_sessions (
   minutes INTEGER NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS coin_awards (
+  user_id INTEGER NOT NULL,
+  kind TEXT NOT NULL,
+  ref_id INTEGER NOT NULL,
+  ref_key TEXT NOT NULL DEFAULT '',
+  coins INTEGER NOT NULL,
+  PRIMARY KEY (user_id, kind, ref_id, ref_key)
+);
+
 CREATE TABLE IF NOT EXISTS filters (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
@@ -57,3 +66,7 @@ CREATE TABLE IF NOT EXISTS filters (
   rule TEXT NOT NULL
 );
 `);
+
+for (const col of ["coins INTEGER DEFAULT 0", "coins_total INTEGER DEFAULT 0", "pet TEXT DEFAULT '{}'"]) {
+  try { db.exec(`ALTER TABLE users ADD COLUMN ${col}`); } catch {}
+}
