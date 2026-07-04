@@ -101,6 +101,18 @@ input:focus, textarea:focus { border-color: var(--primary); }
 .heat { display: flex; gap: 3px; flex-wrap: wrap; margin-top: 10px; }
 .hcell { width: 14px; height: 14px; border-radius: 3px; background: #eef1f4; }
 
+/* mobile */
+.menu-btn { display: none; }
+@media (max-width: 768px) {
+  .menu-btn { display: block; font-size: 20px; padding: 2px 8px; }
+  .sidebar { position: fixed; left: 0; top: 0; bottom: 0; z-index: 20; transform: translateX(-100%); transition: transform .2s; }
+  .sidebar.open { transform: none; box-shadow: 0 0 30px rgba(0,0,0,.25); }
+  .backdrop { position: fixed; inset: 0; background: rgba(0,0,0,.3); z-index: 15; }
+  .detail { position: fixed; inset: 0; width: auto; z-index: 30; }
+  .cal-cell { min-height: 60px; }
+  .matrix { grid-template-columns: 1fr; grid-template-rows: none; height: auto; }
+}
+
 .tag-pill { font-size: 12px; background: #eef1f4; padding: 2px 8px; border-radius: 999px; cursor: pointer; }
 .tag-pill.on { background: var(--primary); color: #fff; }
 .icon-btn { color: var(--muted); padding: 4px; border-radius: 4px; }

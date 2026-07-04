@@ -11,7 +11,9 @@ import StatsView from './StatsView';
 const LIST_COLORS = ['#4772fa', '#e03131', '#16a34a', '#f59f00', '#9333ea', '#0891b2'];
 
 export default function Shell({ onLogout }) {
-  const [view, setView] = useState({ type: 'today' });
+  const [view, setViewRaw] = useState({ type: 'today' });
+  const [side, setSide] = useState(false);
+  const setView = v => { setViewRaw(v); setSide(false); };
   const [tasks, setTasks] = useState([]);
   const [lists, setLists] = useState([]);
   const [filters, setFilters] = useState([]);
@@ -85,7 +87,9 @@ export default function Shell({ onLogout }) {
 
   return (
     <div className="app">
-      <div className="sidebar">
+      <button className="menu-btn" style={{ position: 'fixed', top: 10, right: 10, zIndex: 10 }} onClick={() => setSide(true)}>☰</button>
+      {side && <div className="backdrop" onClick={() => setSide(false)} />}
+      <div className={'sidebar' + (side ? ' open' : '')}>
         {smart.map(([type, label]) => (
           <div key={type} className={'side-item' + (is({ type }) ? ' active' : '')} onClick={() => setView({ type })}>
             {label}<span className="count">{type !== 'completed' ? count({ type }) : ''}</span>
