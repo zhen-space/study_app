@@ -1,11 +1,55 @@
 import { useState } from 'react';
 
-// 原創小怪獸圖鑑 v2 —— 卡通粗描邊＋長短毛髮，每隻體型五官皆不同
+// 原創小怪獸圖鑑 —— 每隻有自己的體型比例、動作節奏與說話個性
 export const MONSTERS = {
-  mon1: { body: ['#b8e26b', '#7cb342'], name: '毛吉', desc: '獨眼長毛怪，永遠睜大眼睛' },
-  mon2: { body: ['#d29bff', '#9c4dcc'], name: '嘟波', desc: '三眼圓怪，天線會亂晃' },
-  mon3: { body: ['#6ecbff', '#1e88e5'], name: '藍牙', desc: '方方的大嘴怪，眼睛長在角上' },
-  mon4: { body: ['#ffb27a', '#f4511e'], name: '皮皮', desc: '捲角小惡魔，賊笑中' },
+  mon1: {
+    body: ['#b8e26b', '#7cb342'], name: '毛吉', desc: '瘦高獨眼怪，熱血隊長型',
+    scale: 1.06, // 最高
+    walk: { size: 80, moveDur: 2.8, gap: [3500, 6000], anim: 'pet-waddle .5s ease-in-out infinite' }, // 大步彈跳
+    voice: {
+      remain: n => `還有 ${n} 項任務！衝衝衝，我陪你！🔥`,
+      overdue: n => `有 ${n} 項逾期了！沒關係，現在開始追還來得及！`,
+      next: t => `下一關：「${t}」！上吧！`,
+      done: '任務全清！你就是傳說！🏆',
+      quotes: ['先衝 5 分鐘，氣勢就出來了！', '每天贏過昨天的自己一點點！', '錯的題目都是經驗值，撿起來！', '累了就深呼吸，然後再上！'],
+    },
+  },
+  mon2: {
+    body: ['#d29bff', '#9c4dcc'], name: '嘟波', desc: '矮胖三眼怪，冷靜軍師型',
+    scale: 0.88, // 矮胖
+    walk: { size: 58, moveDur: 4.5, gap: [5000, 9000], anim: 'pet-waddle .8s ease-in-out infinite' }, // 慢慢晃
+    voice: {
+      remain: n => `我三隻眼睛都看到了：今天還剩 ${n} 項。`,
+      overdue: n => `觀察報告：${n} 項逾期。建議先解決最小的那個。`,
+      next: t => `依我分析，先做「${t}」效率最高。`,
+      done: '今日進度 100%。數據很漂亮。📊',
+      quotes: ['專注 25 分鐘 > 分心 2 小時，這是數學。', '慢慢來，比較快。', '複習的最佳時機是睡前一小時。', '把大目標切小，就不可怕了。'],
+    },
+  },
+  mon3: {
+    body: ['#6ecbff', '#1e88e5'], name: '藍牙', desc: '寬扁大嘴怪，開心果型',
+    scale: 1.0, // 寬
+    walk: { size: 86, moveDur: 5.5, gap: [6000, 10000], anim: 'pet-waddle 1s ease-in-out infinite' }, // 沉重慢步
+    voice: {
+      remain: n => `嘿嘿，還有 ${n} 項～做完我們就去玩！😁`,
+      overdue: n => `哎呀 ${n} 項過期啦～沒事沒事，現在補最帥！`,
+      next: t => `來嘛來嘛，「${t}」很快就寫完了啦～`,
+      done: '全部做完！笑一個嘛～😆',
+      quotes: ['笑著讀書記得比較牢，真的！', '寫完這頁，獎勵自己一首歌～', '讀書就像吃飯，一口一口來。', '今天也要開開心心地變聰明！'],
+    },
+  },
+  mon4: {
+    body: ['#ffb27a', '#f4511e'], name: '皮皮', desc: '迷你捲角小惡魔，嘴賤激將型',
+    scale: 0.78, // 最小隻
+    walk: { size: 48, moveDur: 1.4, gap: [2000, 4000], anim: 'pet-waddle .35s ease-in-out infinite' }, // 竄來竄去
+    voice: {
+      remain: n => `${n} 項還沒做？嘖嘖，我看你是不敢吧～😏`,
+      overdue: n => `逾期 ${n} 項欸，被我抓到了吼！`,
+      next: t => `「${t}」而已欸，該不會不敢寫吧？`,
+      done: '哇喔，全做完了？算你厲害啦～🤟',
+      quotes: ['怕就輸一輩子囉～', '你的對手正在寫第三題。', '躺著滑手機不會變聰明，可惜～', '證明給我看啊！'],
+    },
+  },
 };
 
 const INK = '#3a3644'; // 卡通描邊色
@@ -246,7 +290,7 @@ export default function PetSprite({ type, equipped = [], size = 220, walking = f
         <ellipse cx="100" cy="190" rx="52" ry="8" fill="#000"
           style={{ animation: 'pet-shadow 2.8s ease-in-out infinite', transformOrigin: '100px 190px' }} />
         <g className={jump ? 'pet-jumping' : ''} style={{ transformOrigin: '100px 190px' }}>
-          <g style={{ animation: walking ? 'pet-waddle .55s ease-in-out infinite' : 'pet-squash 2.8s ease-in-out infinite', transformOrigin: '100px 190px' }}>
+          <g style={{ animation: walking ? m.walk.anim : 'pet-squash 2.8s ease-in-out infinite', transformOrigin: '100px 190px', transform: `scale(${m.scale})`, transformBox: 'fill-box' }}>
             <Body g={g} equipped={equipped} />
           </g>
         </g>
