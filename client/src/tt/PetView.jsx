@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import { api } from '../api';
+import PetSprite from './PetSprite';
 
 const PETS = ['🐱', '🐶', '🐰', '🐹', '🐧', '🦊'];
 
@@ -54,10 +55,11 @@ export default function PetView() {
         <span style={{ marginLeft: 'auto', fontWeight: 700 }}>🪙 {d.coins}</span>
       </div>
       <div className="main-body">
-        <div className="tile" style={{ textAlign: 'center', padding: 24, marginTop: 8 }}>
-          <div style={{ fontSize: 26 }}>{scene.map(emo).join(' ')}</div>
-          <div style={{ fontSize: 80, lineHeight: 1.2 }}>{pet.type}</div>
-          <div style={{ fontSize: 26 }}>{wear.map(emo).join(' ')}</div>
+        <div className="tile" style={{ textAlign: 'center', padding: 24, marginTop: 8,
+          background: scene.includes('castle') ? 'linear-gradient(#e3f2fd,#fff)' : scene.includes('garden') ? 'linear-gradient(#e8f5e9,#fff)' : scene.includes('house') ? 'linear-gradient(#fff3e0,#fff)' : undefined }}>
+          {scene.length > 0 && <div style={{ fontSize: 34, marginBottom: -14 }}>{scene.map(emo).join(' ')}</div>}
+          <PetSprite type={pet.type} equipped={equipped} />
+          <div className="muted" style={{ fontSize: 12 }}>點一下寵物跟牠玩</div>
           <div style={{ marginTop: 10 }}>Lv.{level}</div>
           <div style={{ background: '#eef1f4', borderRadius: 6, height: 10, marginTop: 6 }}>
             <div style={{ background: 'var(--primary)', width: `${xp}%`, height: '100%', borderRadius: 6 }} />
