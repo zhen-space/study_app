@@ -1,21 +1,40 @@
 import { useState } from 'react';
 
-// 依寵物種類的配色與特徵
-const VARIANTS = {
-  '🐱': { body: ['#ffb74d', '#f57c00'], belly: '#ffe0b2', ears: 'point', tail: 'curl', whiskers: true },
-  '🐶': { body: ['#bcaaa4', '#795548'], belly: '#efebe9', ears: 'flop', tail: 'wag', whiskers: false },
-  '🐰': { body: ['#f8bbd0', '#f48fb1'], belly: '#fff', ears: 'long', tail: 'puff', whiskers: true },
-  '🐹': { body: ['#ffe082', '#ffb300'], belly: '#fff8e1', ears: 'round', tail: 'none', whiskers: true },
-  '🐧': { body: ['#546e7a', '#263238'], belly: '#eceff1', ears: 'none', tail: 'none', whiskers: false },
-  '🦊': { body: ['#ff8a65', '#e64a19'], belly: '#ffccbc', ears: 'point', tail: 'fox', whiskers: true },
+// 原創小怪獸圖鑑（毛茸茸剪影用鋸齒路徑產生，造型皆為原創）
+export const MONSTERS = {
+  mon1: { body: ['#c5e1a5', '#558b2f'], name: '毛吉', desc: '獨眼綠毛怪，樂觀派' },
+  mon2: { body: ['#ce93d8', '#7b1fa2'], name: '嘟波', desc: '三眼紫怪，觀察力滿分' },
+  mon3: { body: ['#81d4fa', '#0277bd'], name: '藍牙', desc: '大嘴藍怪，愛笑' },
+  mon4: { body: ['#ffab91', '#d84315'], name: '皮皮', desc: '捲角小惡魔，古靈精怪' },
 };
 
-export default function PetSprite({ type, equipped = [], size = 220 }) {
-  const v = VARIANTS[type] || VARIANTS['🐱'];
+const fuzz = (cx, cy, rx, ry, n = 60, d = 5) => {
+  const pts = [];
+  for (let i = 0; i < n; i++) {
+    const a = (i / n) * Math.PI * 2;
+    const rr = i % 2 ? d : -1;
+    pts.push(`${(cx + Math.cos(a) * (rx + rr)).toFixed(1)},${(cy + Math.sin(a) * (ry + rr)).toFixed(1)}`);
+  }
+  return 'M' + pts.join(' L') + ' Z';
+};
+
+const Eye = ({ x, y, r = 12 }) => (
+  <g>
+    <circle cx={x} cy={y} r={r} fill="#fff" stroke="#37474f" strokeWidth="2" />
+    <circle cx={x} cy={y + r * .15} r={r * .45} fill="#37474f" />
+    <circle cx={x + r * .2} cy={y - r * .15} r={r * .18} fill="#fff" />
+  </g>
+);
+
+export default function PetSprite({ type, equipped = [], size = 220, walking = false }) {
+  const m = MONSTERS[type] || MONSTERS.mon1;
+  const key = MONSTERS[type] ? type : 'mon1';
   const [jump, setJump] = useState(false);
   const [hearts, setHearts] = useState([]);
+  const gid = `g-${key}-${walking ? 'w' : 's'}`;
 
   function poke() {
+    if (walking) return; // 陪伴模式的點擊由外層處理
     setJump(true);
     setTimeout(() => setJump(false), 600);
     const id = Date.now();
@@ -26,132 +45,121 @@ export default function PetSprite({ type, equipped = [], size = 220 }) {
   const has = id => equipped.includes(id);
 
   return (
-    <div style={{ position: 'relative', width: size, height: size, margin: '0 auto', cursor: 'pointer' }} onClick={poke}>
+    <div style={{ position: 'relative', width: size, height: size, margin: walking ? 0 : '0 auto', cursor: 'pointer' }} onClick={poke}>
       <style>{`
-        @keyframes pet-bob { 0%,100% { transform: scaleY(1) } 50% { transform: scaleY(.96) translateY(2px) } }
-        @keyframes pet-blink { 0%,92%,100% { transform: scaleY(1) } 95% { transform: scaleY(.08) } }
-        @keyframes pet-tail { 0%,100% { transform: rotate(-8deg) } 50% { transform: rotate(14deg) } }
-        @keyframes pet-ear { 0%,90%,100% { transform: rotate(0) } 94% { transform: rotate(-8deg) } }
+        @keyframes pet-bob { 0%,100% { transform: scaleY(1) } 50% { transform: scaleY(.955) translateY(3px) } }
+        @keyframes pet-blink { 0%,92%,100% { transform: scaleY(1) } 95% { transform: scaleY(.1) } }
+        @keyframes pet-arm { 0%,100% { transform: rotate(-6deg) } 50% { transform: rotate(10deg) } }
         @keyframes pet-jump { 0%,100% { transform: translateY(0) } 40% { transform: translateY(-26px) } 70% { transform: translateY(0) } 85% { transform: translateY(-8px) } }
-        @keyframes pet-shadow { 0%,100% { transform: scaleX(1); opacity:.25 } 50% { transform: scaleX(.92); opacity:.2 } }
+        @keyframes pet-shadow { 0%,100% { transform: scaleX(1); opacity:.22 } 50% { transform: scaleX(.9); opacity:.17 } }
         @keyframes pet-heart { 0% { transform: translateY(0) scale(.6); opacity: 1 } 100% { transform: translateY(-70px) scale(1.3); opacity: 0 } }
+        @keyframes pet-waddle { 0%,100% { transform: rotate(-3deg) } 50% { transform: rotate(3deg) } }
         .pet-jumping { animation: pet-jump .6s ease-out !important; }
       `}</style>
 
       {hearts.map(id => (
-        <div key={id} style={{ position: 'absolute', left: '50%', top: '18%', fontSize: 26, animation: 'pet-heart 1.2s ease-out forwards', pointerEvents: 'none', zIndex: 3 }}>💗</div>
+        <div key={id} style={{ position: 'absolute', left: '46%', top: '14%', fontSize: 26, animation: 'pet-heart 1.2s ease-out forwards', pointerEvents: 'none', zIndex: 3 }}>💗</div>
       ))}
 
       <svg viewBox="0 0 200 200" width={size} height={size} style={{ overflow: 'visible' }}>
         <defs>
-          <radialGradient id="pg-body" cx="38%" cy="30%" r="75%">
-            <stop offset="0%" stopColor={v.body[0]} />
-            <stop offset="100%" stopColor={v.body[1]} />
-          </radialGradient>
-          <radialGradient id="pg-belly" cx="50%" cy="40%" r="60%">
-            <stop offset="0%" stopColor={v.belly} />
-            <stop offset="100%" stopColor={v.belly} stopOpacity=".7" />
+          <radialGradient id={gid} cx="38%" cy="28%" r="80%">
+            <stop offset="0%" stopColor={m.body[0]} />
+            <stop offset="100%" stopColor={m.body[1]} />
           </radialGradient>
         </defs>
 
-        {/* 地面陰影 */}
-        <ellipse cx="100" cy="186" rx="52" ry="9" fill="#000"
-          style={{ animation: 'pet-shadow 3s ease-in-out infinite', transformOrigin: '100px 186px' }} />
+        <ellipse cx="100" cy="188" rx="50" ry="8" fill="#000"
+          style={{ animation: 'pet-shadow 3s ease-in-out infinite', transformOrigin: '100px 188px' }} />
 
-        <g className={jump ? 'pet-jumping' : ''} style={{ transformOrigin: '100px 186px' }}>
-          <g style={{ animation: 'pet-bob 3s ease-in-out infinite', transformOrigin: '100px 186px' }}>
+        <g className={jump ? 'pet-jumping' : ''} style={{ transformOrigin: '100px 188px' }}>
+          <g style={{ animation: walking ? 'pet-waddle .5s ease-in-out infinite' : 'pet-bob 3s ease-in-out infinite', transformOrigin: '100px 188px' }}>
 
-            {/* 尾巴 */}
-            {v.tail === 'curl' && <path d="M150 150 q28 -6 24 -34 q-2 -14 -14 -16" fill="none" stroke={v.body[1]} strokeWidth="13" strokeLinecap="round"
-              style={{ animation: 'pet-tail 2.2s ease-in-out infinite', transformOrigin: '150px 150px' }} />}
-            {v.tail === 'wag' && <path d="M152 152 q26 -10 30 -30" fill="none" stroke={v.body[1]} strokeWidth="14" strokeLinecap="round"
-              style={{ animation: 'pet-tail 1s ease-in-out infinite', transformOrigin: '152px 152px' }} />}
-            {v.tail === 'fox' && <g style={{ animation: 'pet-tail 2.4s ease-in-out infinite', transformOrigin: '150px 152px' }}>
-              <path d="M150 152 q36 -4 34 -38 q-16 2 -22 14 q-8 10 -12 24" fill={v.body[1]} />
-              <circle cx="182" cy="116" r="9" fill="#fff" /></g>}
-            {v.tail === 'puff' && <circle cx="156" cy="158" r="12" fill="#fff"
-              style={{ animation: 'pet-tail 2.6s ease-in-out infinite', transformOrigin: '156px 158px' }} />}
+            {/* ===== 角 / 頭飾 ===== */}
+            {key === 'mon1' && <>
+              <path d="M74 42 L68 18 L88 34 Z" fill={m.body[1]} />
+              <path d="M126 42 L132 18 L112 34 Z" fill={m.body[1]} />
+            </>}
+            {key === 'mon2' && <g>
+              <line x1="100" y1="40" x2="100" y2="14" stroke={m.body[1]} strokeWidth="5" strokeLinecap="round" />
+              <circle cx="100" cy="11" r="8" fill={m.body[0]} stroke={m.body[1]} strokeWidth="3" />
+            </g>}
+            {key === 'mon3' && <>
+              <path d="M60 52 Q44 40 46 24 Q60 32 66 46 Z" fill={m.body[1]} />
+              <path d="M140 52 Q156 40 154 24 Q140 32 134 46 Z" fill={m.body[1]} />
+            </>}
+            {key === 'mon4' && <>
+              <path d="M70 40 q-22 -4 -20 -24 q16 2 22 16 q2 5 -2 8" fill={m.body[1]} />
+              <path d="M130 40 q22 -4 20 -24 q-16 2 -22 16 q-2 5 2 8" fill={m.body[1]} />
+            </>}
 
-            {/* 耳朵 */}
-            <g style={{ animation: 'pet-ear 5s ease-in-out infinite', transformOrigin: '100px 70px' }}>
-              {v.ears === 'point' && <>
-                <path d="M58 62 L50 24 L86 44 Z" fill={v.body[1]} /><path d="M60 56 L56 34 L78 46 Z" fill="#ffab91" opacity=".8" />
-                <path d="M142 62 L150 24 L114 44 Z" fill={v.body[1]} /><path d="M140 56 L144 34 L122 46 Z" fill="#ffab91" opacity=".8" />
-              </>}
-              {v.ears === 'long' && <>
-                <ellipse cx="70" cy="26" rx="13" ry="34" fill={v.body[1]} transform="rotate(-10 70 26)" />
-                <ellipse cx="70" cy="28" rx="7" ry="24" fill="#fff" opacity=".7" transform="rotate(-10 70 28)" />
-                <ellipse cx="130" cy="26" rx="13" ry="34" fill={v.body[1]} transform="rotate(10 130 26)" />
-                <ellipse cx="130" cy="28" rx="7" ry="24" fill="#fff" opacity=".7" transform="rotate(10 130 28)" />
-              </>}
-              {v.ears === 'flop' && <>
-                <ellipse cx="56" cy="66" rx="15" ry="26" fill={v.body[1]} transform="rotate(18 56 66)" />
-                <ellipse cx="144" cy="66" rx="15" ry="26" fill={v.body[1]} transform="rotate(-18 144 66)" />
-              </>}
-              {v.ears === 'round' && <>
-                <circle cx="62" cy="44" r="16" fill={v.body[1]} /><circle cx="62" cy="46" r="9" fill="#ffab91" opacity=".7" />
-                <circle cx="138" cy="44" r="16" fill={v.body[1]} /><circle cx="138" cy="46" r="9" fill="#ffab91" opacity=".7" />
-              </>}
-            </g>
+            {/* ===== 身體（毛茸茸鋸齒剪影；藍牙是光滑的） ===== */}
+            <path d={key === 'mon3'
+              ? 'M100 38 C142 38 162 70 162 108 C162 150 138 176 100 176 C62 176 38 150 38 108 C38 70 58 38 100 38 Z'
+              : fuzz(100, 108, 61, 69)} fill={`url(#${gid})`} />
 
-            {/* 身體（頭身一體的圓潤造型） */}
-            <path d="M100 36 C140 36 158 66 160 104 C162 146 138 174 100 174 C62 174 38 146 40 104 C42 66 60 36 100 36 Z" fill="url(#pg-body)" />
-            {/* 肚子 */}
-            <ellipse cx="100" cy="132" rx="34" ry="34" fill="url(#pg-belly)" />
+            {/* 手（會小幅擺動） */}
+            <ellipse cx="36" cy="118" rx="9" ry="17" fill={m.body[1]}
+              style={{ animation: 'pet-arm 2.4s ease-in-out infinite', transformOrigin: '40px 104px' }} />
+            <ellipse cx="164" cy="118" rx="9" ry="17" fill={m.body[1]}
+              style={{ animation: 'pet-arm 2.4s ease-in-out infinite reverse', transformOrigin: '160px 104px' }} />
             {/* 腳 */}
-            <ellipse cx="72" cy="172" rx="14" ry="8" fill={v.body[1]} />
-            <ellipse cx="128" cy="172" rx="14" ry="8" fill={v.body[1]} />
+            <ellipse cx="74" cy="176" rx="15" ry="8" fill={m.body[1]} />
+            <ellipse cx="126" cy="176" rx="15" ry="8" fill={m.body[1]} />
 
-            {/* 臉 */}
-            <g>
-              {/* 眼睛（眨眼） */}
-              <g style={{ animation: 'pet-blink 3.4s infinite', transformOrigin: '100px 88px' }}>
-                <circle cx="76" cy="88" r="7.5" fill="#263238" />
-                <circle cx="124" cy="88" r="7.5" fill="#263238" />
-                <circle cx="78.5" cy="85.5" r="2.6" fill="#fff" />
-                <circle cx="126.5" cy="85.5" r="2.6" fill="#fff" />
-              </g>
-              {/* 腮紅 */}
-              <ellipse cx="64" cy="102" rx="9" ry="5.5" fill="#ff8a80" opacity=".55" />
-              <ellipse cx="136" cy="102" rx="9" ry="5.5" fill="#ff8a80" opacity=".55" />
-              {/* 鼻子與嘴 */}
-              <ellipse cx="100" cy="99" rx="5" ry="3.6" fill="#5d4037" />
-              <path d="M100 102 q0 6 -7 7 M100 102 q0 6 7 7" fill="none" stroke="#5d4037" strokeWidth="2.2" strokeLinecap="round" />
-              {v.whiskers && <>
-                <path d="M52 96 h-16 M53 104 h-15" stroke={v.body[1]} strokeWidth="1.8" strokeLinecap="round" opacity=".8" />
-                <path d="M148 96 h16 M147 104 h15" stroke={v.body[1]} strokeWidth="1.8" strokeLinecap="round" opacity=".8" />
-              </>}
-              {/* 企鵝嘴 */}
-              {type === '🐧' && <path d="M92 96 L108 96 L100 106 Z" fill="#ff9800" />}
+            {/* ===== 臉（依怪獸種類） ===== */}
+            <g style={{ animation: 'pet-blink 3.6s infinite', transformOrigin: '100px 92px' }}>
+              {key === 'mon1' && <Eye x={100} y={86} r={20} />}
+              {key === 'mon2' && <><Eye x={72} y={88} r={10} /><Eye x={100} y={82} r={14} /><Eye x={128} y={88} r={10} /></>}
+              {key === 'mon3' && <><Eye x={78} y={80} r={11} /><Eye x={122} y={80} r={11} /></>}
+              {key === 'mon4' && <><Eye x={76} y={86} r={13} /><Eye x={124} y={86} r={13} /></>}
             </g>
 
-            {/* 裝備 */}
+            {key === 'mon1' && <path d="M76 122 Q100 140 124 122 L118 124 L110 131 L100 126 L90 131 L82 124 Z" fill="#37474f" />}
+            {key === 'mon1' && <><rect x="88" y="122" width="9" height="9" rx="2" fill="#fff" /><rect x="104" y="122" width="9" height="9" rx="2" fill="#fff" /></>}
+            {key === 'mon2' && <path d="M82 118 q6 8 12 0 q6 8 12 0 q6 8 12 0" fill="none" stroke="#37474f" strokeWidth="3.5" strokeLinecap="round" />}
+            {key === 'mon3' && <g>
+              <path d="M64 108 Q100 148 136 108 Q100 128 64 108 Z" fill="#263238" />
+              {[72, 88, 104, 120].map(x => <rect key={x} x={x} y="110" width="11" height="10" rx="2" fill="#fff" />)}
+            </g>}
+            {key === 'mon4' && <>
+              <path d="M84 118 Q100 132 116 118" fill="none" stroke="#37474f" strokeWidth="3.5" strokeLinecap="round" />
+              <rect x="104" y="118" width="9" height="10" rx="2" fill="#fff" transform="rotate(4 108 122)" />
+              <circle cx="66" cy="106" r="2.4" fill={m.body[1]} /><circle cx="58" cy="98" r="2.4" fill={m.body[1]} /><circle cx="134" cy="106" r="2.4" fill={m.body[1]} /><circle cx="142" cy="98" r="2.4" fill={m.body[1]} />
+            </>}
+
+            {/* 腮紅 */}
+            <ellipse cx="60" cy="112" rx="8" ry="5" fill="#ff8a80" opacity=".5" />
+            <ellipse cx="140" cy="112" rx="8" ry="5" fill="#ff8a80" opacity=".5" />
+
+            {/* ===== 裝備 ===== */}
             {has('hat') && <g>
-              <ellipse cx="100" cy="42" rx="34" ry="7" fill="#212121" />
-              <rect x="80" y="10" width="40" height="34" rx="5" fill="#212121" />
-              <rect x="80" y="34" width="40" height="7" fill="#b71c1c" />
+              <ellipse cx="100" cy="42" rx="32" ry="7" fill="#212121" />
+              <rect x="82" y="12" width="36" height="32" rx="5" fill="#212121" />
+              <rect x="82" y="34" width="36" height="7" fill="#b71c1c" />
             </g>}
-            {has('bow') && <g transform="translate(100 44)">
-              <path d="M0 0 L-16 -9 L-16 9 Z" fill="#ec407a" /><path d="M0 0 L16 -9 L16 9 Z" fill="#ec407a" />
-              <circle r="5" fill="#ad1457" />
+            {has('bow') && <g transform="translate(100 52)">
+              <path d="M0 0 L-15 -8 L-15 8 Z" fill="#ec407a" /><path d="M0 0 L15 -8 L15 8 Z" fill="#ec407a" />
+              <circle r="4.5" fill="#ad1457" />
             </g>}
-            {has('glasses') && <g>
-              <circle cx="76" cy="88" r="13" fill="#212121" opacity=".9" />
-              <circle cx="124" cy="88" r="13" fill="#212121" opacity=".9" />
-              <path d="M89 88 h22 M63 84 l-12 -5 M137 84 l12 -5" stroke="#212121" strokeWidth="3.5" />
-            </g>}
-            {has('flower') && <g transform="translate(148 62) scale(.9)">
+            {has('glasses') && (key === 'mon1'
+              ? <g><circle cx="100" cy="86" r="22" fill="#212121" opacity=".88" /><path d="M78 80 l-14 -6 M122 80 l14 -6" stroke="#212121" strokeWidth="3.5" /></g>
+              : <g>
+                <circle cx={key === 'mon3' ? 78 : 76} cy={key === 'mon3' ? 80 : 86} r="14" fill="#212121" opacity=".88" />
+                <circle cx={key === 'mon3' ? 122 : 124} cy={key === 'mon3' ? 80 : 86} r="14" fill="#212121" opacity=".88" />
+                <path d={`M${key === 'mon3' ? 90 : 88} ${key === 'mon3' ? 80 : 86} h${key === 'mon3' ? 20 : 24}`} stroke="#212121" strokeWidth="3.5" />
+              </g>)}
+            {has('flower') && <g transform="translate(146 56) scale(.85)">
               {[0, 60, 120, 180, 240, 300].map(a => <ellipse key={a} cx="0" cy="-10" rx="5.5" ry="9" fill="#ffca28" transform={`rotate(${a})`} />)}
               <circle r="6" fill="#795548" />
             </g>}
           </g>
         </g>
 
-        {/* 玩具球（在腳邊，不隨身體動） */}
-        {has('ball') && <g transform="translate(38 168)">
-          <circle r="14" fill="#fff" stroke="#333" strokeWidth="1.5" />
-          <path d="M-14 0 a14 14 0 0 1 28 0" fill="#e53935" />
-          <path d="M-14 0 h28" stroke="#333" strokeWidth="1.5" />
+        {has('ball') && !walking && <g transform="translate(36 170)">
+          <circle r="13" fill="#fff" stroke="#333" strokeWidth="1.5" />
+          <path d="M-13 0 a13 13 0 0 1 26 0" fill="#e53935" />
+          <path d="M-13 0 h26" stroke="#333" strokeWidth="1.5" />
         </g>}
       </svg>
     </div>

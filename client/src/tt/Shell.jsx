@@ -9,6 +9,7 @@ import PomoView from './PomoView';
 import StatsView from './StatsView';
 import PetView from './PetView';
 import WizardView from './WizardView';
+import Companion from './Companion';
 
 const LIST_COLORS = ['#4772fa', '#e03131', '#16a34a', '#f59f00', '#9333ea', '#0891b2'];
 
@@ -20,14 +21,17 @@ export default function Shell({ onLogout }) {
   const [lists, setLists] = useState([]);
   const [filters, setFilters] = useState([]);
   const [habits, setHabits] = useState([]);
+  const [petData, setPetData] = useState(null);
 
   const reload = () => {
     api('/tasks').then(setTasks);
     api('/lists').then(setLists);
     api('/filters').then(setFilters);
     api('/habits').then(setHabits);
+    api('/pet').then(setPetData);
   };
   useEffect(reload, []);
+  useEffect(() => { api('/pet').then(setPetData).catch(() => {}); }, [view.type]);
 
   // due-time reminders (while app open)
   useEffect(() => {
@@ -134,6 +138,8 @@ export default function Shell({ onLogout }) {
         : view.type === 'pet' ? <PetView />
         : view.type === 'wizard' ? <WizardView lists={lists} reload={reload} goTasks={() => setView({ type: 'today' })} />
         : <Tasks view={view} tasks={tasks} lists={lists} filters={filters} reload={reload} title={titleOf()} />}
+
+      {view.type !== 'pet' && petData && <Companion pet={petData.pet} tasks={tasks} />}
 
       <div className="bottom-nav">
         {[

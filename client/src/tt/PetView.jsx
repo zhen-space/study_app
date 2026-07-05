@@ -1,8 +1,6 @@
 import { useEffect, useState } from 'react';
 import { api } from '../api';
-import PetSprite from './PetSprite';
-
-const PETS = ['🐱', '🐶', '🐰', '🐹', '🐧', '🦊'];
+import PetSprite, { MONSTERS } from './PetSprite';
 
 export default function PetView() {
   const [d, setD] = useState(null);
@@ -26,17 +24,21 @@ export default function PetView() {
   const toggleEquip = id =>
     save({ equipped: equipped.includes(id) ? equipped.filter(x => x !== id) : [...equipped, id] });
 
-  if (!pet.type) return (
+  if (!MONSTERS[pet.type]) return (
     <div className="main">
-      <div className="main-head"><h2>領養寵物</h2></div>
-      <div className="main-body" style={{ textAlign: 'center', paddingTop: 30 }}>
-        <p>完成任務賺金幣，養一隻陪你讀書的寵物吧！</p>
-        <div style={{ display: 'flex', gap: 14, justifyContent: 'center', flexWrap: 'wrap', marginTop: 20 }}>
-          {PETS.map(p => (
-            <button key={p} style={{ fontSize: 52 }} onClick={() => {
-              const name = prompt('幫牠取個名字：') || '小夥伴';
-              save({ type: p, name });
-            }}>{p}</button>
+      <div className="main-head"><h2>領養小怪獸</h2></div>
+      <div className="main-body" style={{ textAlign: 'center', paddingTop: 10 }}>
+        <p>選一隻小怪獸陪你讀書——牠會在各頁面走來走去、提醒你任務、幫你加油！<br /><b>只能養一隻</b>，選好囉。</p>
+        <div className="stat-tiles" style={{ marginTop: 16 }}>
+          {Object.entries(MONSTERS).map(([k, mo]) => (
+            <button key={k} className="tile" style={{ cursor: 'pointer' }} onClick={() => {
+              const name = prompt(`幫${mo.name}取個名字（直接確定就叫${mo.name}）：`) || mo.name;
+              save({ type: k, name, equipped: [] });
+            }}>
+              <PetSprite type={k} size={110} />
+              <div style={{ fontWeight: 700 }}>{mo.name}</div>
+              <div className="muted">{mo.desc}</div>
+            </button>
           ))}
         </div>
       </div>
