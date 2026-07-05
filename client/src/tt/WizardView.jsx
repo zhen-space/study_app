@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import { api } from '../api';
 import { today, addDays } from './helpers';
+import { parseICS } from './ics';
 
 const LIST_COLORS = ['#4772fa', '#e03131', '#16a34a', '#f59f00', '#9333ea', '#0891b2'];
 
@@ -24,6 +25,31 @@ export default function WizardView({ lists, reload, goTasks }) {
     loadEv();
     api('/settings').then(s => { setSettings(s); setShift({ sleep_start: s.sleep_start, sleep_end: s.sleep_end }); });
   }, []);
+
+  const [importMsg, setImportMsg] = useState('');
+  async function importICS(e) {
+    const file = e.target.files[0];
+    if (!file) return;
+    setImportMsg('讀取中…');
+    try {
+      const parsed = parseICS(await file.text());
+      const horizon = addDays(today(), 60);
+      const wanted = parsed.filter(ev => ev.recurring || (ev.date >= today() && ev.date <= horizon));
+      const existing = await api('/events');
+      const dup = ev => existing.some(x => x.title === ev.title && x.date === ev.date && x.start_time === ev.start_time);
+      let n = 0;
+      for (const ev of wanted.slice(0, 200)) {
+        if (dup(ev)) continue;
+        await api('/events', { method: 'POST', body: ev });
+        n++;
+      }
+      setImportMsg(`匯入完成：新增 ${n} 筆行程${wanted.length > 200 ? '（超過 200 筆已截斷）' : ''}`);
+      loadEv();
+    } catch {
+      setImportMsg('讀取失敗，請確認是 .ics 行事曆檔');
+    }
+    e.target.value = '';
+  }
 
   async function addEvent(e) {
     e.preventDefault();
@@ -85,6 +111,11 @@ export default function WizardView({ lists, reload, goTasks }) {
         {step === 0 && settings && (
           <div className="tile">
             <p>排程會自動避開<b>既定行程</b>與睡覺、吃飯時間。先把上課、補習等行程放進來：</p>
+            <label className="btn sm ghost" style={{ display: 'inline-block', marginTop: 10 }}>
+              📅 匯入行事曆檔（.ics）
+              <input type="file" accept=".ics,text/calendar" style={{ display: 'none' }} onChange={importICS} />
+            </label>
+            {importMsg && <div className="muted" style={{ marginTop: 4 }}>{importMsg}</div>}
             <form className="row" style={{ marginTop: 10 }} onSubmit={addEvent}>
               <input placeholder="行程名稱" value={evForm.title} onChange={e => setEvForm(f => ({ ...f, title: e.target.value }))} style={{ flex: 1, minWidth: 130 }} />
               <input type="date" value={evForm.date} onChange={e => setEvForm(f => ({ ...f, date: e.target.value }))} />
