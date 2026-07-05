@@ -71,14 +71,14 @@ export default function Shell({ onLogout }) {
     reload();
   }
   async function delList(l) {
-    if (!confirm(`刪除清單「${l.name}」？（任務會移到收集箱）`)) return;
+    if (!confirm(`刪除清單「${l.name}」？（任務會移到願望清單）`)) return;
     await api(`/lists/${l.id}`, { method: 'DELETE' });
     if (view.type === 'list' && view.id === l.id) setView({ type: 'today' });
     reload();
   }
 
   const smart = [
-    ['today', '📅 今天'], ['week', '🗓️ 未來 7 天'], ['inbox', '📥 收集箱'],
+    ['today', '📅 今天'], ['week', '🗓️ 未來 7 天'], ['inbox', '💭 願望清單'],
     ['all', '📋 所有任務'], ['completed', '✅ 已完成'],
   ];
   const pages = [['wizard', '🪄 排程精靈'], ['calendar', '🗓 日曆'], ['matrix', '🔲 矩陣'], ['habits', '🌱 習慣'], ['pomo', '🍅 番茄鐘'], ['pet', '🐾 寵物'], ['stats', '📊 統計']];

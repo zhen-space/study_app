@@ -27,7 +27,7 @@ export function Detail({ task, lists, onSave, onDelete, onClose }) {
     <div className="detail">
       <div className="drow" style={{ justifyContent: 'space-between' }}>
         <select value={t.list_id || ''} onChange={e => up({ list_id: e.target.value ? +e.target.value : null })}>
-          <option value="">收集箱</option>
+          <option value="">願望清單</option>
           {lists.map(l => <option key={l.id} value={l.id}>{l.name}</option>)}
         </select>
         <button className="icon-btn" onClick={onClose}>✕</button>
@@ -104,7 +104,7 @@ function AddSheet({ view, lists, onDone, onClose }) {
             {[0, 1, 2, 3].map(p => <option key={p} value={p}>⚑ {PRI[p][0]}</option>)}
           </select>
           <select value={f.list_id} onChange={e => setF({ ...f, list_id: e.target.value })}>
-            <option value="">收集箱</option>
+            <option value="">願望清單</option>
             {lists.map(l => <option key={l.id} value={l.id}>{l.name}</option>)}
           </select>
         </div>
@@ -148,6 +148,17 @@ export default function Tasks({ view, tasks, lists, filters, reload, title }) {
     reload();
   }
 
+  // 願望清單：想做/要記得的事（無日期、無清單）
+  const [wish, setWish] = useState('');
+  const wishes = tasks.filter(t => !t.list_id && !t.completed && !t.due_date);
+  async function addWish(e) {
+    e.preventDefault();
+    if (!wish.trim()) return;
+    await api('/tasks', { method: 'POST', body: { title: wish.trim() } });
+    setWish('');
+    reload();
+  }
+
   return (
     <>
       <div className="main">
@@ -165,6 +176,17 @@ export default function Tasks({ view, tasks, lists, filters, reload, title }) {
             </div>
           ))}
           {shown.length === 0 && <div className="muted" style={{ marginTop: 30, textAlign: 'center' }}>沒有任務</div>}
+
+          {view.type === 'today' && (
+            <div className="tgroup" style={{ marginTop: 24, borderTop: '2px dashed var(--border)', paddingTop: 12 }}>
+              <div className="glabel">💭 願望清單（想做、要記得的事）</div>
+              {wishes.map(t => <TaskRow key={t.id} t={t} lists={lists} sel={t.id === selId} onSel={x => setSelId(x.id)} onToggle={toggle} />)}
+              <form onSubmit={addWish} style={{ marginTop: 6 }}>
+                <input placeholder="＋ 記一件想做的事…" value={wish} onChange={e => setWish(e.target.value)}
+                  style={{ width: '100%', background: 'var(--bg)', border: '1px dashed var(--border)' }} />
+              </form>
+            </div>
+          )}
         </div>
         {view.type !== 'completed' && <button className="fab" onClick={() => setShowAdd(true)}>＋</button>}
       </div>

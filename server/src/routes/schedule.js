@@ -41,10 +41,18 @@ function freeSlotsForDay(dateStr, events, settings) {
   return free;
 }
 
-// POST /api/schedule/preview  { startDate, endDate, items:[{subject_id, title, minutes}], mode:'order'|'spread' }
+// POST /api/schedule/preview
+// { items:[{subject_id, title, minutes, start, end, final}], mode:'order'|'spread', startDate?, endDate? }
+// 每個項目可有自己的日期範圍；final=true 的項目（壓軸）會排在其他項目全部結束之後
 router.post('/preview', async (req, res) => {
-  const { startDate, endDate, items, mode } = req.body;
-  if (!startDate || !endDate || !items?.length) return res.status(400).json({ error: '參數不完整' });
+  const { items, mode } = req.body;
+  if (!items?.length) return res.status(400).json({ error: '參數不完整' });
+  const today = new Date().toISOString().slice(0, 10);
+  const gStart = req.body.startDate || today, gEnd = req.body.endDate || today;
+  for (const it of items) { it.start = it.start || gStart; it.end = it.end || gEnd; }
+
+  const minD = items.reduce((a, i) => i.start < a ? i.start : a, items[0].start);
+  const maxD = items.reduce((a, i) => i.end > a ? i.end : a, items[0].end);
 
   const u = await q.get('SELECT sleep_start, sleep_end, meal_windows FROM users WHERE id=?', [req.userId]);
   const settings = { ...u, meal_windows: JSON.parse(u.meal_windows) };
@@ -53,30 +61,36 @@ router.post('/preview', async (req, res) => {
   const events = await q.all('SELECT * FROM fixed_events WHERE user_id=?', [req.userId]);
 
   const days = [];
-  const today = new Date().toISOString().slice(0, 10);
-  for (let d = new Date(startDate + 'T00:00:00'); ; d.setDate(d.getDate() + 1)) {
+  for (let d = new Date(minD + 'T00:00:00'); ; d.setDate(d.getDate() + 1)) {
     const ds = d.toISOString().slice(0, 10);
-    if (ds > endDate) break;
+    if (ds > maxD) break;
     if (ds < today) continue;
-    days.push({ date: ds, slots: freeSlotsForDay(ds, events, settings) });
+    days.push({ date: ds, slots: freeSlotsForDay(ds, events, settings), slotIdx: 0 });
   }
   if (!days.length) return res.status(400).json({ error: '沒有可排的日期' });
+  days.forEach(d => { d.pos = d.slots[0]?.[0] ?? null; });
 
-  const CHUNK = 90;
-  const queue = [];
-  for (const it of items) {
-    let rem = it.minutes || 120;
-    while (rem > 0) {
-      const c = Math.min(CHUNK, rem);
-      queue.push({ ...it, chunk: rem - c > 0 && rem - c < 30 ? rem : c });
-      rem -= queue[queue.length - 1].chunk;
+  const CHUNK = 90, BREAK = 10;
+  const mkChunks = list => {
+    const out = [];
+    for (const it of list) {
+      let rem = it.minutes || 120;
+      while (rem > 0) {
+        const c = Math.min(CHUNK, rem);
+        out.push({ ...it, chunk: rem - c > 0 && rem - c < 30 ? rem : c });
+        rem -= out[out.length - 1].chunk;
+      }
     }
-  }
+    return out;
+  };
 
-  let work = queue;
+  const normals = mkChunks(items.filter(i => !i.final));
+  const finals = mkChunks(items.filter(i => i.final));
+
+  let work = normals;
   if (mode === 'spread') {
     const groups = {};
-    for (const w of queue) (groups[w.subject_id] = groups[w.subject_id] || []).push(w);
+    for (const w of normals) (groups[w.subject_id] = groups[w.subject_id] || []).push(w);
     work = [];
     const lists = Object.values(groups);
     let added = true;
@@ -87,36 +101,40 @@ router.post('/preview', async (req, res) => {
   }
 
   const blocks = [];
-  const dayCursors = days.map(d => ({ ...d, slotIdx: 0, pos: d.slots[0]?.[0] ?? null }));
+  const failed = [];
   let di = 0;
-  const BREAK = 10;
 
-  for (const w of work) {
-    let placed = false;
-    for (let tries = 0; tries < dayCursors.length && !placed; tries++) {
-      const day = dayCursors[(di + tries) % dayCursors.length];
+  function place(w, minDate) {
+    const ok = days.filter(d => d.date >= w.start && d.date <= w.end && (!minDate || d.date >= minDate));
+    const pool = ok.length ? ok : days.filter(d => d.date >= w.start && d.date <= w.end);
+    for (let t = 0; t < pool.length; t++) {
+      const day = pool[(di + t) % pool.length];
       while (day.slotIdx < day.slots.length) {
         const [, end] = day.slots[day.slotIdx];
         if (day.pos + w.chunk <= end) {
-          blocks.push({
-            subject_id: w.subject_id, title: w.title, date: day.date,
-            start_time: toHM(day.pos), end_time: toHM(day.pos + w.chunk),
-          });
+          blocks.push({ subject_id: w.subject_id, title: w.title, date: day.date, start_time: toHM(day.pos), end_time: toHM(day.pos + w.chunk) });
           day.pos += w.chunk + BREAK;
           if (day.pos >= end) { day.slotIdx++; day.pos = day.slots[day.slotIdx]?.[0] ?? null; }
-          placed = true;
-          if (mode === 'spread') di = (di + tries + 1) % dayCursors.length;
-          break;
+          if (mode === 'spread') di = (di + t + 1) % Math.max(pool.length, 1);
+          return true;
         }
         day.slotIdx++;
         day.pos = day.slots[day.slotIdx]?.[0] ?? null;
       }
     }
-    if (!placed) {
-      return res.json({ blocks, unplaced: true, message: '空檔不足，部分內容排不進去，請延長日期範圍或減少內容' });
-    }
+    return false;
   }
-  res.json({ blocks, unplaced: false });
+
+  for (const w of work) if (!place(w)) failed.push(w.title);
+  // 壓軸：排在所有一般項目最後一天之後（若其範圍允許）
+  const lastNormal = blocks.reduce((a, b) => b.date > a ? b.date : a, '0000');
+  for (const w of finals) if (!place(w, lastNormal)) failed.push(w.title);
+
+  blocks.sort((a, b) => a.date === b.date ? a.start_time.localeCompare(b.start_time) : a.date.localeCompare(b.date));
+  res.json({
+    blocks, unplaced: failed.length > 0,
+    message: failed.length ? `空檔不足，排不進去：${[...new Set(failed)].slice(0, 5).join('、')}${failed.length > 5 ? '…' : ''}（請延長日期或減少內容）` : undefined,
+  });
 });
 
 export default router;
