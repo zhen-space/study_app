@@ -8,15 +8,17 @@ import authRouter from './routes/auth.js';
 import dataRouter from './routes/data.js';
 import scheduleRouter from './routes/schedule.js';
 import ticktickRouter from './routes/ticktick.js';
+import importRouter from './routes/import.js';
 
 const app = express();
 app.use(cors());
-app.use(express.json());
+app.use(express.json({ limit: '25mb' }));
 
 app.use('/api/auth', authRouter);
 app.use('/api', dataRouter);
 app.use('/api/schedule', scheduleRouter);
 app.use('/api', ticktickRouter);
+app.use('/api/import', importRouter);
 
 // serve built frontend (single-service deploy)
 const dist = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', '..', 'client', 'dist');

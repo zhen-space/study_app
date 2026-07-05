@@ -27,6 +27,40 @@ export default function WizardView({ lists, reload, goTasks }) {
   }, []);
 
   const [importMsg, setImportMsg] = useState('');
+  const [aiPreview, setAiPreview] = useState(null);
+  const [aiBusy, setAiBusy] = useState(false);
+
+  async function importAI(e) {
+    const file = e.target.files[0];
+    if (!file) return;
+    if (file.size > 15 * 1024 * 1024) { setImportMsg('檔案太大（上限 15MB）'); return; }
+    setAiBusy(true);
+    setImportMsg('🤖 AI 解讀中，約需 30 秒～1 分鐘…');
+    try {
+      const buf = await file.arrayBuffer();
+      let bin = '';
+      const bytes = new Uint8Array(buf);
+      for (let i = 0; i < bytes.length; i += 8192) bin += String.fromCharCode(...bytes.subarray(i, i + 8192));
+      const { events: parsed } = await api('/import/parse', {
+        method: 'POST',
+        body: { filename: file.name, mime: file.type, data: btoa(bin) },
+      });
+      if (!parsed.length) setImportMsg('AI 沒有在檔案中找到行程');
+      else { setAiPreview(parsed.map(ev => ({ ...ev, checked: true }))); setImportMsg(''); }
+    } catch (err) { setImportMsg(err.message); }
+    setAiBusy(false);
+    e.target.value = '';
+  }
+  async function confirmAI() {
+    const chosen = aiPreview.filter(ev => ev.checked);
+    for (const ev of chosen) {
+      const { checked, ...body } = ev;
+      await api('/events', { method: 'POST', body });
+    }
+    setAiPreview(null);
+    setImportMsg(`已加入 ${chosen.length} 筆行程`);
+    loadEv();
+  }
   async function importICS(e) {
     const file = e.target.files[0];
     if (!file) return;
@@ -111,11 +145,34 @@ export default function WizardView({ lists, reload, goTasks }) {
         {step === 0 && settings && (
           <div className="tile">
             <p>排程會自動避開<b>既定行程</b>與睡覺、吃飯時間。先把上課、補習等行程放進來：</p>
-            <label className="btn sm ghost" style={{ display: 'inline-block', marginTop: 10 }}>
-              📅 匯入行事曆檔（.ics）
-              <input type="file" accept=".ics,text/calendar" style={{ display: 'none' }} onChange={importICS} />
-            </label>
-            {importMsg && <div className="muted" style={{ marginTop: 4 }}>{importMsg}</div>}
+            <div className="row" style={{ marginTop: 10 }}>
+              <label className="btn sm ghost" style={{ display: 'inline-block' }}>
+                📅 匯入行事曆檔（.ics）
+                <input type="file" accept=".ics,text/calendar" style={{ display: 'none' }} onChange={importICS} />
+              </label>
+              <label className="btn sm" style={{ display: 'inline-block', opacity: aiBusy ? .6 : 1 }}>
+                🤖 AI 匯入課表（PDF/Word/Excel/照片）
+                <input type="file" disabled={aiBusy} accept=".pdf,.docx,.xlsx,.xls,.csv,.txt,image/*" style={{ display: 'none' }} onChange={importAI} />
+              </label>
+            </div>
+            {importMsg && <div className="muted" style={{ marginTop: 6 }}>{importMsg}</div>}
+            {aiPreview && (
+              <div style={{ marginTop: 10, border: '1px solid var(--border)', borderRadius: 10, padding: 10 }}>
+                <b>AI 解讀結果（勾選要加入的）：</b>
+                {aiPreview.map((ev, i) => (
+                  <div className="row" key={i} style={{ marginTop: 6 }}>
+                    <input type="checkbox" checked={ev.checked}
+                      onChange={() => setAiPreview(p => p.map((x, j) => j === i ? { ...x, checked: !x.checked } : x))} />
+                    <span>{ev.title}</span>
+                    <span className="muted">{ev.recurring ? `每週${'日一二三四五六'[new Date(ev.date + 'T00:00:00').getDay()]}` : ev.date} {ev.start_time}–{ev.end_time}</span>
+                  </div>
+                ))}
+                <div className="row" style={{ marginTop: 10 }}>
+                  <button className="btn sm" onClick={confirmAI}>加入勾選的行程</button>
+                  <button className="btn sm ghost" onClick={() => setAiPreview(null)}>取消</button>
+                </div>
+              </div>
+            )}
             <form className="row" style={{ marginTop: 10 }} onSubmit={addEvent}>
               <input placeholder="行程名稱" value={evForm.title} onChange={e => setEvForm(f => ({ ...f, title: e.target.value }))} style={{ flex: 1, minWidth: 130 }} />
               <input type="date" value={evForm.date} onChange={e => setEvForm(f => ({ ...f, date: e.target.value }))} />
