@@ -14,6 +14,10 @@ export default function WizardView({ lists, reload, goTasks }) {
   const [evForm, setEvForm] = useState({ title: '', date: today(), start_time: '08:00', end_time: '09:00', recurring: '' });
   const [items, setItems] = useState([]);
   const [rangeInput, setRangeInput] = useState({});
+  const [tocs, setTocs] = useState([]); // 章節庫
+  const [tocBusy, setTocBusy] = useState(null); // 正在解讀目錄的科目 id
+  const [tocMsg, setTocMsg] = useState({});
+  const [expanded, setExpanded] = useState({}); // 展開節選擇的章 id
   const [mode, setMode] = useState('spread');
   const [dates, setDates] = useState({ start: today(), end: addDays(today(), 6) });
   const [preview, setPreview] = useState(null);
@@ -24,7 +28,47 @@ export default function WizardView({ lists, reload, goTasks }) {
   useEffect(() => {
     loadEv();
     api('/settings').then(s => { setSettings(s); setShift({ sleep_start: s.sleep_start, sleep_end: s.sleep_end }); });
+    api('/import/toc').then(setTocs);
   }, []);
+
+  const fileToB64 = async file => {
+    const bytes = new Uint8Array(await file.arrayBuffer());
+    let bin = '';
+    for (let i = 0; i < bytes.length; i += 8192) bin += String.fromCharCode(...bytes.subarray(i, i + 8192));
+    return btoa(bin);
+  };
+
+  async function uploadTOC(l, e) {
+    const file = e.target.files[0];
+    if (!file) return;
+    setTocBusy(l.id);
+    setTocMsg(m => ({ ...m, [l.id]: '🤖 AI 解讀目錄中，約 30 秒～1 分鐘…' }));
+    try {
+      await api('/import/toc', { method: 'POST', body: { list_id: l.id, filename: file.name, mime: file.type, data: await fileToB64(file) } });
+      setTocs(await api('/import/toc'));
+      setItems(a => a.filter(x => x.subject_id !== l.id || !String(x.key).startsWith('toc-'))); // 舊勾選作廢
+      setTocMsg(m => ({ ...m, [l.id]: '' }));
+    } catch (err) { setTocMsg(m => ({ ...m, [l.id]: err.message })); }
+    setTocBusy(null);
+    e.target.value = '';
+  }
+
+  const tocTitle = (c, secs) => c.title + (secs.length ? `（${secs.join('、')}）` : '');
+  const findItem = c => items.find(x => x.key === `toc-${c.id}`);
+
+  function toggleChapter(l, c) {
+    setItems(a => findItem(c)
+      ? a.filter(x => x.key !== `toc-${c.id}`)
+      : [...a, { key: `toc-${c.id}`, subject_id: l.id, name: l.name, color: l.color, title: c.title, minutes: 120, secs: [] }]);
+  }
+  function toggleSection(l, c, s) {
+    setItems(a => {
+      const it = a.find(x => x.key === `toc-${c.id}`);
+      if (!it) return [...a, { key: `toc-${c.id}`, subject_id: l.id, name: l.name, color: l.color, title: tocTitle(c, [s]), minutes: 120, secs: [s] }];
+      const secs = it.secs.includes(s) ? it.secs.filter(x => x !== s) : [...it.secs, s];
+      return a.map(x => x.key === it.key ? { ...x, secs, title: tocTitle(c, secs) } : x);
+    });
+  }
 
   const [importMsg, setImportMsg] = useState('');
   const [aiPreview, setAiPreview] = useState(null);
@@ -206,26 +250,62 @@ export default function WizardView({ lists, reload, goTasks }) {
 
         {step === 1 && (
           <div className="tile">
-            <p className="muted">科目＝你的清單。每個範圍預設 120 分鐘，可修改。</p>
+            <p className="muted">每科先「拍課本目錄」建立章節，之後直接勾選要讀的章/課（節可勾可不勾）。每項預設 120 分鐘，可修改。</p>
             <button className="btn sm ghost" style={{ marginTop: 8 }} onClick={addSubject}>＋新增科目</button>
-            {lists.map(l => (
-              <div key={l.id} style={{ marginTop: 12 }}>
-                <span className="tag" style={{ background: l.color, color: '#fff', padding: '2px 8px', borderRadius: 999, fontSize: 12 }}>{l.name}</span>
-                <div className="row" style={{ marginTop: 6 }}>
-                  <input placeholder="讀書範圍（如：第三章）" value={rangeInput[l.id] || ''} onChange={e => setRangeInput(r => ({ ...r, [l.id]: e.target.value }))} style={{ flex: 1 }} />
-                  <button className="btn sm ghost" onClick={() => addRange(l)}>＋</button>
-                </div>
-                {items.filter(it => it.subject_id === l.id).map(it => (
-                  <div key={it.key} className="row" style={{ marginTop: 6, marginLeft: 10 }}>
-                    <span>• {it.title}</span>
-                    <input type="number" min="30" step="30" value={it.minutes} style={{ width: 76 }}
-                      onChange={e => setItems(a => a.map(x => x.key === it.key ? { ...x, minutes: +e.target.value } : x))} />
-                    <span className="muted">分</span>
-                    <button className="icon-btn" onClick={() => setItems(a => a.filter(x => x.key !== it.key))}>✕</button>
+            {lists.map(l => {
+              const toc = tocs.filter(t => t.list_id === l.id);
+              return (
+                <div key={l.id} style={{ marginTop: 14, borderTop: '1px solid var(--border)', paddingTop: 10 }}>
+                  <div className="row">
+                    <span className="tag" style={{ background: l.color, color: '#fff', padding: '2px 8px', borderRadius: 999, fontSize: 12 }}>{l.name}</span>
+                    <label className="btn sm ghost" style={{ opacity: tocBusy === l.id ? .5 : 1 }}>
+                      📷 {toc.length ? '重拍目錄' : '拍課本目錄建立章節'}
+                      <input type="file" disabled={tocBusy !== null} accept="image/*,.pdf" style={{ display: 'none' }} onChange={e => uploadTOC(l, e)} />
+                    </label>
                   </div>
-                ))}
-              </div>
-            ))}
+                  {tocMsg[l.id] && <div className="muted" style={{ marginTop: 4 }}>{tocMsg[l.id]}</div>}
+
+                  {toc.map(c => {
+                    const it = findItem(c);
+                    return (
+                      <div key={c.id} style={{ marginTop: 6, marginLeft: 4 }}>
+                        <div className="row">
+                          <input type="checkbox" checked={!!it} onChange={() => toggleChapter(l, c)} />
+                          <span style={{ flex: 1 }} onClick={() => c.sections.length && setExpanded(x => ({ ...x, [c.id]: !x[c.id] }))}>
+                            {c.title}{c.sections.length > 0 && <span className="muted"> {expanded[c.id] ? '▾' : '▸'}</span>}
+                          </span>
+                          {it && <>
+                            <input type="number" min="30" step="30" value={it.minutes} style={{ width: 70 }}
+                              onChange={e => setItems(a => a.map(x => x.key === it.key ? { ...x, minutes: +e.target.value } : x))} />
+                            <span className="muted">分</span>
+                          </>}
+                        </div>
+                        {expanded[c.id] && c.sections.map(s => (
+                          <label key={s} className="row" style={{ marginLeft: 26, marginTop: 3, fontSize: 14 }}>
+                            <input type="checkbox" checked={!!it?.secs?.includes(s)} onChange={() => toggleSection(l, c, s)} />
+                            <span className="muted">{s}</span>
+                          </label>
+                        ))}
+                      </div>
+                    );
+                  })}
+
+                  <div className="row" style={{ marginTop: 8 }}>
+                    <input placeholder="或手動輸入範圍（如：講義 p.20-35）" value={rangeInput[l.id] || ''} onChange={e => setRangeInput(r => ({ ...r, [l.id]: e.target.value }))} style={{ flex: 1, fontSize: 14 }} />
+                    <button className="btn sm ghost" onClick={() => addRange(l)}>＋</button>
+                  </div>
+                  {items.filter(it => it.subject_id === l.id && !String(it.key).startsWith('toc-')).map(it => (
+                    <div key={it.key} className="row" style={{ marginTop: 6, marginLeft: 10 }}>
+                      <span>• {it.title}</span>
+                      <input type="number" min="30" step="30" value={it.minutes} style={{ width: 70 }}
+                        onChange={e => setItems(a => a.map(x => x.key === it.key ? { ...x, minutes: +e.target.value } : x))} />
+                      <span className="muted">分</span>
+                      <button className="icon-btn" onClick={() => setItems(a => a.filter(x => x.key !== it.key))}>✕</button>
+                    </div>
+                  ))}
+                </div>
+              );
+            })}
             <div className="row" style={{ marginTop: 14 }}>
               <button className="btn ghost" onClick={() => setStep(0)}>上一步</button>
               <button className="btn" disabled={!items.length} onClick={() => setStep(2)}>下一步</button>

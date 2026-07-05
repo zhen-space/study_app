@@ -3,9 +3,42 @@ import Anthropic from '@anthropic-ai/sdk';
 import * as XLSX from 'xlsx';
 import mammoth from 'mammoth';
 import { requireAuth } from '../middleware/auth.js';
+import { q } from '../db/init.js';
 
 const router = Router();
 router.use(requireAuth);
+
+// 把上傳檔案轉成 Claude 內容區塊（PDF/圖片/Excel/Word/文字）
+async function toContentBlock(filename, mime, data) {
+  const ext = filename.toLowerCase().split('.').pop();
+  if (['pages', 'numbers', 'key'].includes(ext)) {
+    throw new Error('Pages/Numbers 是 Apple 專用格式，請先在檔案 App 中「輸出成 PDF」再上傳');
+  }
+  if (ext === 'pdf' || mime === 'application/pdf') {
+    return { type: 'document', source: { type: 'base64', media_type: 'application/pdf', data } };
+  }
+  if (mime.startsWith('image/') || ['png', 'jpg', 'jpeg', 'gif', 'webp'].includes(ext)) {
+    const mediaType = mime.startsWith('image/') ? mime : `image/${ext === 'jpg' ? 'jpeg' : ext}`;
+    return { type: 'image', source: { type: 'base64', media_type: mediaType, data } };
+  }
+  if (['xlsx', 'xls', 'csv'].includes(ext)) {
+    const wb = XLSX.read(Buffer.from(data, 'base64'));
+    const text = wb.SheetNames.map(n => `[工作表 ${n}]\n` + XLSX.utils.sheet_to_csv(wb.Sheets[n])).join('\n\n');
+    return { type: 'text', text: `檔案內容（CSV 格式）：\n${text.slice(0, 50000)}` };
+  }
+  if (ext === 'docx') {
+    const { value } = await mammoth.extractRawText({ buffer: Buffer.from(data, 'base64') });
+    return { type: 'text', text: `檔案內容：\n${value.slice(0, 50000)}` };
+  }
+  if (['txt', 'md'].includes(ext)) {
+    return { type: 'text', text: `檔案內容：\n${Buffer.from(data, 'base64').toString('utf8').slice(0, 50000)}` };
+  }
+  throw new Error(`不支援的檔案格式 .${ext}，支援：PDF、圖片、Excel、Word(docx)、CSV、TXT`);
+}
+
+function aiError(err) {
+  return 'AI 解讀失敗：' + (err.status === 401 ? '金鑰無效' : err.status === 429 ? '額度不足或太頻繁，稍後再試' : '請稍後再試');
+}
 
 const SCHEMA = {
   type: 'object',
@@ -38,34 +71,12 @@ router.post('/parse', async (req, res) => {
   }
   const { filename = '', mime = '', data } = req.body;
   if (!data) return res.status(400).json({ error: '沒有收到檔案' });
-  const ext = filename.toLowerCase().split('.').pop();
 
-  if (['pages', 'numbers', 'key'].includes(ext)) {
-    return res.status(400).json({ error: 'Pages/Numbers 是 Apple 專用格式，請先在檔案 App 中「輸出成 PDF」再上傳' });
-  }
-
-  // 組出給模型的內容區塊
   let contentBlock;
   try {
-    if (ext === 'pdf' || mime === 'application/pdf') {
-      contentBlock = { type: 'document', source: { type: 'base64', media_type: 'application/pdf', data } };
-    } else if (mime.startsWith('image/') || ['png', 'jpg', 'jpeg', 'gif', 'webp'].includes(ext)) {
-      const mediaType = mime.startsWith('image/') ? mime : `image/${ext === 'jpg' ? 'jpeg' : ext}`;
-      contentBlock = { type: 'image', source: { type: 'base64', media_type: mediaType, data } };
-    } else if (['xlsx', 'xls', 'csv'].includes(ext)) {
-      const wb = XLSX.read(Buffer.from(data, 'base64'));
-      const text = wb.SheetNames.map(n => `[工作表 ${n}]\n` + XLSX.utils.sheet_to_csv(wb.Sheets[n])).join('\n\n');
-      contentBlock = { type: 'text', text: `課表檔案內容（CSV 格式）：\n${text.slice(0, 50000)}` };
-    } else if (ext === 'docx') {
-      const { value } = await mammoth.extractRawText({ buffer: Buffer.from(data, 'base64') });
-      contentBlock = { type: 'text', text: `課表檔案內容：\n${value.slice(0, 50000)}` };
-    } else if (['txt', 'md'].includes(ext)) {
-      contentBlock = { type: 'text', text: `課表檔案內容：\n${Buffer.from(data, 'base64').toString('utf8').slice(0, 50000)}` };
-    } else {
-      return res.status(400).json({ error: `不支援的檔案格式 .${ext}，支援：PDF、圖片、Excel、Word(docx)、CSV、TXT` });
-    }
-  } catch {
-    return res.status(400).json({ error: '檔案讀取失敗，請確認檔案沒有損壞' });
+    contentBlock = await toContentBlock(filename, mime, data);
+  } catch (e) {
+    return res.status(400).json({ error: e.message });
   }
 
   try {
@@ -111,7 +122,88 @@ router.post('/parse', async (req, res) => {
     res.json({ events: out });
   } catch (err) {
     console.error('import parse error:', err.message);
-    res.status(500).json({ error: 'AI 解讀失敗：' + (err.status === 401 ? '金鑰無效' : err.status === 429 ? '額度不足或太頻繁，稍後再試' : '請稍後再試') });
+    res.status(500).json({ error: aiError(err) });
+  }
+});
+
+const TOC_SCHEMA = {
+  type: 'object',
+  properties: {
+    chapters: {
+      type: 'array',
+      items: {
+        type: 'object',
+        properties: {
+          title: { type: 'string', description: '章或課的完整名稱，含編號，如「第2章 三角函數」「第3課 背影」' },
+          sections: { type: 'array', items: { type: 'string' }, description: '該章底下的節名稱，如「2-1 銳角三角函數」；課文類（國文英文）通常沒有節，給空陣列' },
+        },
+        required: ['title', 'sections'],
+        additionalProperties: false,
+      },
+    },
+  },
+  required: ['chapters'],
+  additionalProperties: false,
+};
+
+// GET /api/import/toc → 全部章節庫（依科目分組用 list_id）
+router.get('/toc', async (req, res) => {
+  const rows = await q.all('SELECT * FROM toc_items WHERE user_id=? ORDER BY list_id, order_index, id', [req.userId]);
+  res.json(rows.map(r => ({ ...r, sections: JSON.parse(r.sections) })));
+});
+router.delete('/toc/:id', async (req, res) => {
+  await q.run('DELETE FROM toc_items WHERE id=? AND user_id=?', [req.params.id, req.userId]);
+  res.json({ ok: true });
+});
+
+// POST /api/import/toc  { list_id, filename, mime, data } → AI 解讀目錄，存成該科章節庫
+router.post('/toc', async (req, res) => {
+  if (!process.env.ANTHROPIC_API_KEY) {
+    return res.status(500).json({ error: '伺服器尚未設定 AI 金鑰（ANTHROPIC_API_KEY）' });
+  }
+  const { list_id, filename = '', mime = '', data, replace } = req.body;
+  if (!data || !list_id) return res.status(400).json({ error: '沒有收到檔案或科目' });
+
+  let contentBlock;
+  try {
+    contentBlock = await toContentBlock(filename, mime, data);
+  } catch (e) {
+    return res.status(400).json({ error: e.message });
+  }
+
+  try {
+    const client = new Anthropic();
+    const response = await client.messages.create({
+      model: 'claude-opus-4-8',
+      max_tokens: 8000,
+      system: '你是課本目錄解讀助手。從使用者拍攝或上傳的課本目錄中，完整擷取所有章/課與其底下的節。保留原始編號與名稱（如「第2章 三角函數」、節「2-1 銳角三角函數」）。國文、英文等以「課」為單位的科目，每課是一個 chapter、sections 給空陣列。忽略附錄、索引、頁碼。',
+      output_config: { format: { type: 'json_schema', schema: TOC_SCHEMA } },
+      messages: [{
+        role: 'user',
+        content: [contentBlock, { type: 'text', text: '請完整擷取這份課本目錄的章節結構。' }],
+      }],
+    });
+    if (response.stop_reason === 'refusal') {
+      return res.status(400).json({ error: 'AI 無法處理這份檔案，請換一張更清楚的照片' });
+    }
+    const text = response.content.find(b => b.type === 'text')?.text || '{"chapters":[]}';
+    const { chapters } = JSON.parse(text);
+    if (!chapters.length) return res.status(400).json({ error: 'AI 沒有讀到章節，請拍更清楚的目錄照片' });
+
+    if (replace !== false) {
+      await q.run('DELETE FROM toc_items WHERE user_id=? AND list_id=?', [req.userId, list_id]);
+    }
+    const items = [];
+    for (let i = 0; i < chapters.length; i++) {
+      const c = chapters[i];
+      const r = await q.run('INSERT INTO toc_items (user_id, list_id, title, sections, order_index) VALUES (?,?,?,?,?)',
+        [req.userId, list_id, c.title, JSON.stringify(c.sections || []), i]);
+      items.push({ id: r.lastInsertRowid, list_id, title: c.title, sections: c.sections || [], order_index: i });
+    }
+    res.json({ items });
+  } catch (err) {
+    console.error('toc parse error:', err.message);
+    res.status(500).json({ error: aiError(err) });
   }
 });
 

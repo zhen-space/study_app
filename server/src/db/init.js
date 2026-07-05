@@ -98,6 +98,14 @@ CREATE TABLE IF NOT EXISTS filters (
   name TEXT NOT NULL,
   rule TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS toc_items (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  user_id INTEGER NOT NULL,
+  list_id INTEGER NOT NULL,
+  title TEXT NOT NULL,
+  sections TEXT DEFAULT '[]',
+  order_index INTEGER DEFAULT 0
+);
 CREATE TABLE IF NOT EXISTS coin_awards (
   user_id INTEGER NOT NULL,
   kind TEXT NOT NULL,
