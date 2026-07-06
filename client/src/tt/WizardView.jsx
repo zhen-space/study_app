@@ -110,8 +110,11 @@ export default function WizardView({ lists, reload, goTasks }) {
         });
         setAiPreview(Object.values(map).map(g => {
           const ds = g.all.map(x => x.date).sort();
+          g.dates = ds;
+          g.past = !g.recurring && ds[ds.length - 1] < today();
           g.when = g.recurring ? `每週${WD[new Date(ds[0] + 'T00:00:00').getDay()]}` :
             ds.length === 1 ? ds[0] : ds.length <= 3 ? ds.map(d => d.slice(5)).join('、') : `${ds[0]}～${ds[ds.length - 1]}（${ds.length} 天）`;
+          if (g.past) g.checked = false;
           return g;
         }));
         setImportMsg('');
@@ -286,12 +289,19 @@ export default function WizardView({ lists, reload, goTasks }) {
               <div style={{ marginTop: 10, border: '1px solid var(--border)', borderRadius: 10, padding: 10 }}>
                 <b>AI 解讀結果（已統整，勾選要加入的）：</b>
                 {aiPreview.map((g, i) => (
-                  <div className="row" key={i} style={{ marginTop: 6 }}>
-                    <input type="checkbox" checked={g.checked} onChange={() => setAiPreview(p => p.map((x, j) => j === i ? { ...x, checked: !x.checked } : x))} />
-                    <span><b>{g.title}</b></span>
-                    <span className="muted">{g.when} {g.start_time}–{g.end_time}</span>
+                  <div key={i} style={{ marginTop: 6 }}>
+                    <div className="row">
+                      <input type="checkbox" checked={g.checked} onChange={() => setAiPreview(p => p.map((x, j) => j === i ? { ...x, checked: !x.checked } : x))} />
+                      <span><b>{g.title}</b></span>
+                      <span className="muted" style={{ cursor: 'pointer' }} onClick={() => setAiPreview(p => p.map((x, j) => j === i ? { ...x, open: !x.open } : x))}>
+                        {g.when} {g.start_time}–{g.end_time}{g.dates.length > 1 && !g.recurring ? (g.open ? ' ▾' : ' ▸') : ''}
+                      </span>
+                      {g.past && <span className="error" style={{ fontSize: 12 }}>⚠️ 過去日期</span>}
+                    </div>
+                    {g.open && <div className="muted" style={{ marginLeft: 28, fontSize: 12 }}>{g.dates.join('、')}</div>}
                   </div>
                 ))}
+                <div className="muted" style={{ marginTop: 6 }}>點日期文字可展開核對每一天；有誤就取消勾選、加入後也可回來多選刪除</div>
                 <div className="row" style={{ marginTop: 10 }}>
                   <button className="btn sm" onClick={confirmAI}>加入勾選的行程</button>
                   <button className="btn sm ghost" onClick={() => setAiPreview(null)}>取消</button>

@@ -80,11 +80,16 @@ router.post('/parse', async (req, res) => {
   }
 
   try {
+    const todayStr = new Date().toISOString().slice(0, 10);
     const client = new Anthropic();
     const response = await client.messages.create({
       model: 'claude-opus-4-8',
-      max_tokens: 8000,
-      system: '你是課表解讀助手。從使用者提供的檔案中擷取所有固定行程（課程、社團、補習等），轉成結構化資料。學校課表上的課通常每週重複（recurring=true、填 day_of_week、date=null）。若檔案標明具體日期的單次活動則 recurring=false、填 date。時間一律用 24 小時制 HH:MM。若課表只寫節次沒寫時間，依台灣中學常見作息推估（第1節08:10-09:00，之後每節50分鐘、間隔10分鐘，午休12:00-13:10）。看不出任何行程就回傳空陣列。',
+      max_tokens: 16000,
+      system: `你是課表解讀助手。從使用者提供的檔案中擷取所有固定行程（課程、社團、補習等），轉成結構化資料。
+今天是 ${todayStr}。重要：若課表日期沒寫年份，一律推定為「今天或未來最近」的那個年份，絕不要輸出過去的日期。
+若課表是「欄＝日期、列＝時間」的格狀行事曆，請逐欄（逐日）仔細讀取每一格，同一天同名課程相鄰時段要合併成一段（如 9:00-10:00 與 10:00-11:00 的數學合併為 9:00-11:00）。
+學校週課表上的課每週重複（recurring=true、填 day_of_week、date=null）；標明具體日期的則 recurring=false、填 date。
+時間一律 24 小時制 HH:MM。只寫節次沒寫時間時，依台灣中學作息推估（第1節08:10-09:00，每節50分、間隔10分，午休12:00-13:10）。看不出任何行程就回傳空陣列。`,
       output_config: { format: { type: 'json_schema', schema: SCHEMA } },
       messages: [{
         role: 'user',
