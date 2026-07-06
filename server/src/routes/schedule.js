@@ -102,26 +102,30 @@ router.post('/preview', async (req, res) => {
 
   const blocks = [];
   const failed = [];
-  let di = 0;
+  days.forEach(d => { d.load = 0; }); // 每日已排讀書分鐘數 → 用來平均分配
+
+  function tryDay(day, w) {
+    while (day.slotIdx < day.slots.length) {
+      const [, end] = day.slots[day.slotIdx];
+      if (day.pos + w.chunk <= end) {
+        blocks.push({ subject_id: w.subject_id, title: w.title, date: day.date, start_time: toHM(day.pos), end_time: toHM(day.pos + w.chunk) });
+        day.pos += w.chunk + BREAK;
+        day.load += w.chunk;
+        if (day.pos >= end) { day.slotIdx++; day.pos = day.slots[day.slotIdx]?.[0] ?? null; }
+        return true;
+      }
+      day.slotIdx++;
+      day.pos = day.slots[day.slotIdx]?.[0] ?? null;
+    }
+    return false;
+  }
 
   function place(w, minDate) {
-    const ok = days.filter(d => d.date >= w.start && d.date <= w.end && (!minDate || d.date >= minDate));
-    const pool = ok.length ? ok : days.filter(d => d.date >= w.start && d.date <= w.end);
-    for (let t = 0; t < pool.length; t++) {
-      const day = pool[(di + t) % pool.length];
-      while (day.slotIdx < day.slots.length) {
-        const [, end] = day.slots[day.slotIdx];
-        if (day.pos + w.chunk <= end) {
-          blocks.push({ subject_id: w.subject_id, title: w.title, date: day.date, start_time: toHM(day.pos), end_time: toHM(day.pos + w.chunk) });
-          day.pos += w.chunk + BREAK;
-          if (day.pos >= end) { day.slotIdx++; day.pos = day.slots[day.slotIdx]?.[0] ?? null; }
-          if (mode === 'spread') di = (di + t + 1) % Math.max(pool.length, 1);
-          return true;
-        }
-        day.slotIdx++;
-        day.pos = day.slots[day.slotIdx]?.[0] ?? null;
-      }
-    }
+    let pool = days.filter(d => d.date >= w.start && d.date <= w.end && (!minDate || d.date >= minDate));
+    if (!pool.length) pool = days.filter(d => d.date >= w.start && d.date <= w.end);
+    // 負載平衡：優先放到目前讀書量最少的那天（同量取較早的日期）
+    pool = [...pool].sort((a, b) => a.load - b.load || a.date.localeCompare(b.date));
+    for (const day of pool) if (tryDay(day, w)) return true;
     return false;
   }
 

@@ -18,10 +18,9 @@ function groupEvents(list) {
   }
   return Object.values(map).map(g => {
     g.dates.sort();
+    // 日期一律逐一列出，不用區間縮寫
     if (g.recurring) g.when = `每週${WD[new Date(g.dates[0] + 'T00:00:00').getDay()]}（${g.dates[0]} 起）`;
-    else if (g.dates.length === 1) g.when = g.dates[0];
-    else if (g.dates.length <= 3) g.when = g.dates.map(d => d.slice(5)).join('、');
-    else g.when = `${g.dates[0]}～${g.dates[g.dates.length - 1]}（${g.dates.length} 天）`;
+    else g.when = g.dates.map(d => `${+d.slice(5, 7)}/${+d.slice(8)}`).join('、');
     return g;
   });
 }
@@ -113,7 +112,7 @@ export default function WizardView({ lists, reload, goTasks }) {
           g.dates = ds;
           g.past = !g.recurring && ds[ds.length - 1] < today();
           g.when = g.recurring ? `每週${WD[new Date(ds[0] + 'T00:00:00').getDay()]}` :
-            ds.length === 1 ? ds[0] : ds.length <= 3 ? ds.map(d => d.slice(5)).join('、') : `${ds[0]}～${ds[ds.length - 1]}（${ds.length} 天）`;
+            ds.map(d => `${+d.slice(5, 7)}/${+d.slice(8)}`).join('、');
           if (g.past) g.checked = false;
           return g;
         }));
@@ -125,8 +124,15 @@ export default function WizardView({ lists, reload, goTasks }) {
   }
   async function confirmAI() {
     const chosen = aiPreview.filter(g => g.checked);
+    // 匯入前檢查：既有行程中與匯入日期相同的，詢問是否保留
+    const importDates = new Set(chosen.flatMap(g => g.recurring ? [] : g.all.map(x => x.date)));
+    const dup = events.filter(e => importDates.has(e.date));
+    if (dup.length && !window.confirm(
+      `已有 ${dup.length} 筆既有行程與這次匯入的日期相同。\n\n按「確定」＝保留舊行程一起顯示\n按「取消」＝刪除舊的、只留這次匯入的`)) {
+      for (const e of dup) await api(`/events/${e.id}`, { method: 'DELETE' });
+    }
     for (const g of chosen) for (const ev of g.all) {
-      const { checked, all, when, ...body } = ev;
+      const { checked, all, when, dates, past, open, ...body } = ev;
       await api('/events', { method: 'POST', body });
     }
     setAiPreview(null);
@@ -335,7 +341,12 @@ export default function WizardView({ lists, reload, goTasks }) {
                   <div key={g.ids[0]} className="row" style={{ marginTop: 6 }}>
                     <input type="checkbox" checked={!!selEv[g.ids[0]]} onChange={() => setSelEv(s => ({ ...s, [g.ids[0]]: !s[g.ids[0]] }))} />
                     <span><b>{g.title}</b></span>
-                    <span className="muted">{g.when} {g.start_time}–{g.end_time}</span>
+                    <span className="muted" style={{ flex: 1 }}>{g.when} {g.start_time}–{g.end_time}</span>
+                    <button className="icon-btn" onClick={async () => {
+                      if (!window.confirm(`刪除「${g.title}」的 ${g.ids.length} 筆行程？`)) return;
+                      for (const id of g.ids) await api(`/events/${id}`, { method: 'DELETE' });
+                      loadEv();
+                    }}>✕</button>
                   </div>
                 ))}
               </div>
