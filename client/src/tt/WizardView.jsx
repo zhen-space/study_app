@@ -181,12 +181,15 @@ export default function WizardView({ lists, reload, goTasks }) {
     reload();
   }
   async function uploadTOC(l, e) {
-    const file = e.target.files[0];
-    if (!file) return;
+    const fileList = [...e.target.files];
+    if (!fileList.length) return;
+    if (fileList.length > 12) { setTocMsg(m => ({ ...m, [l.id]: '一次最多 12 張照片' })); e.target.value = ''; return; }
     setTocBusy(l.id);
-    setTocMsg(m => ({ ...m, [l.id]: '🤖 AI 解讀目錄中，約 30 秒～1 分鐘…' }));
+    setTocMsg(m => ({ ...m, [l.id]: `🤖 AI 解讀 ${fileList.length} 張目錄中，約 30 秒～1 分鐘…` }));
     try {
-      await api('/import/toc', { method: 'POST', body: { list_id: l.id, filename: file.name, mime: file.type, data: await fileToB64(file) } });
+      const files = [];
+      for (const f of fileList) files.push({ filename: f.name, mime: f.type, data: await fileToB64(f) });
+      await api('/import/toc', { method: 'POST', body: { list_id: l.id, files } });
       setTocs(await api('/import/toc'));
       setItems(a => a.filter(x => x.subject_id !== l.id || !String(x.key).startsWith('toc-')));
       setTocMsg(m => ({ ...m, [l.id]: '' }));
@@ -380,8 +383,8 @@ export default function WizardView({ lists, reload, goTasks }) {
                   <div className="row">
                     <span className="tag" style={{ background: l.color, color: '#fff', padding: '2px 8px', borderRadius: 999, fontSize: 12 }}>{l.name}</span>
                     <label className="btn sm ghost" style={{ opacity: tocBusy === l.id ? .5 : 1 }}>
-                      📷 {toc.length ? '重拍目錄' : '拍課本目錄'}
-                      <input type="file" disabled={tocBusy !== null} accept="image/*,.pdf" style={{ display: 'none' }} onChange={e => uploadTOC(l, e)} />
+                      📷 {toc.length ? '重拍目錄' : '拍課本目錄（可多張）'}
+                      <input type="file" multiple disabled={tocBusy !== null} accept="image/*,.pdf" style={{ display: 'none' }} onChange={e => uploadTOC(l, e)} />
                     </label>
                     {toc.length > 0 && <button className="btn sm ghost" onClick={() => selectAll(l, toc)}>{allSel ? '全不選' : '全選'}</button>}
                   </div>

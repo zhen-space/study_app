@@ -170,17 +170,27 @@ router.delete('/toc/:id', async (req, res) => {
   res.json({ ok: true });
 });
 
-// POST /api/import/toc  { list_id, filename, mime, data } → AI 解讀目錄，存成該科章節庫
+// POST /api/import/toc  { list_id, files:[{filename,mime,data}] | filename,mime,data, replace }
+// → AI 解讀目錄（可多張照片一起讀），存成該科章節庫
 router.post('/toc', async (req, res) => {
   if (!process.env.ANTHROPIC_API_KEY) {
     return res.status(500).json({ error: '伺服器尚未設定 AI 金鑰（ANTHROPIC_API_KEY）' });
   }
-  const { list_id, filename = '', mime = '', data, replace } = req.body;
-  if (!data || !list_id) return res.status(400).json({ error: '沒有收到檔案或科目' });
+  const { list_id, replace } = req.body;
+  // 相容單檔與多檔
+  const files = req.body.files?.length
+    ? req.body.files
+    : (req.body.data ? [{ filename: req.body.filename || '', mime: req.body.mime || '', data: req.body.data }] : []);
+  if (!files.length || !list_id) return res.status(400).json({ error: '沒有收到檔案或科目' });
+  if (files.length > 12) return res.status(400).json({ error: '一次最多 12 張照片' });
 
-  let contentBlock;
+  let blocks;
   try {
-    contentBlock = await toContentBlock(filename, mime, data);
+    blocks = [];
+    for (let i = 0; i < files.length; i++) {
+      if (files.length > 1) blocks.push({ type: 'text', text: `【第 ${i + 1} 張／共 ${files.length} 張】` });
+      blocks.push(await toContentBlock(files[i].filename, files[i].mime, files[i].data));
+    }
   } catch (e) {
     return res.status(400).json({ error: e.message });
   }
@@ -189,12 +199,12 @@ router.post('/toc', async (req, res) => {
     const client = new Anthropic();
     const response = await client.messages.create({
       model: 'claude-opus-4-8',
-      max_tokens: 8000,
-      system: '你是課本目錄解讀助手。從使用者拍攝或上傳的課本目錄中，完整擷取所有章/課與其底下的節。保留原始編號與名稱（如「第2章 三角函數」、節「2-1 銳角三角函數」）。國文、英文等以「課」為單位的科目，每課是一個 chapter、sections 給空陣列。忽略附錄、索引、頁碼。',
+      max_tokens: 12000,
+      system: '你是課本目錄解讀助手。使用者可能上傳多張目錄照片（同一本課本的連續頁面），請把所有照片視為同一份目錄，依頁面順序合併，完整擷取所有章/課與其底下的節，不要遺漏跨頁的章節，也不要重複計算兩張照片重疊處的同一章。保留原始編號與名稱（如「第2章 三角函數」、節「2-1 銳角三角函數」）。國文、英文等以「課」為單位的科目，每課是一個 chapter、sections 給空陣列。忽略附錄、索引、頁碼。',
       output_config: { format: { type: 'json_schema', schema: TOC_SCHEMA } },
       messages: [{
         role: 'user',
-        content: [contentBlock, { type: 'text', text: '請完整擷取這份課本目錄的章節結構。' }],
+        content: [...blocks, { type: 'text', text: '請把以上所有照片合併，完整擷取這本課本目錄的章節結構。' }],
       }],
     });
     if (response.stop_reason === 'refusal') {
