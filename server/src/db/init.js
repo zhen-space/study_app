@@ -103,6 +103,7 @@ CREATE TABLE IF NOT EXISTS toc_items (
   user_id INTEGER NOT NULL,
   list_id INTEGER NOT NULL,
   title TEXT NOT NULL,
+  level TEXT DEFAULT '章',
   sections TEXT DEFAULT '[]',
   order_index INTEGER DEFAULT 0
 );
@@ -124,4 +125,5 @@ export async function initSchema() {
   for (const col of ["coins INTEGER DEFAULT 0", "coins_total INTEGER DEFAULT 0", "pet TEXT DEFAULT '{}'"]) {
     try { await client.execute(`ALTER TABLE users ADD COLUMN ${col}`); } catch {}
   }
+  try { await client.execute("ALTER TABLE toc_items ADD COLUMN level TEXT DEFAULT '章'"); } catch {}
 }

@@ -140,6 +140,24 @@ router.post('/parse', async (req, res) => {
   }
 });
 
+// 三層固定結構（structured outputs 不支援遞迴）：章 → 節 → 小節/主題
+const leaf = {
+  type: 'object',
+  properties: {
+    title: { type: 'string' },
+    level: { type: 'string', description: '這一層的單位名稱，如 小節 / 主題 / 節次' },
+  },
+  required: ['title', 'level'], additionalProperties: false,
+};
+const mid = {
+  type: 'object',
+  properties: {
+    title: { type: 'string' },
+    level: { type: 'string', description: '這一層的單位名稱，如 節 / 單元' },
+    children: { type: 'array', items: leaf, description: '底下的小節或主題；沒有就給空陣列' },
+  },
+  required: ['title', 'level', 'children'], additionalProperties: false,
+};
 const TOC_SCHEMA = {
   type: 'object',
   properties: {
@@ -148,16 +166,15 @@ const TOC_SCHEMA = {
       items: {
         type: 'object',
         properties: {
-          title: { type: 'string', description: '章或課的完整名稱，含編號，如「第2章 三角函數」「第3課 背影」' },
-          sections: { type: 'array', items: { type: 'string' }, description: '該章底下的節名稱，如「2-1 銳角三角函數」；課文類（國文英文）通常沒有節，給空陣列' },
+          title: { type: 'string', description: '章或課的完整名稱，含編號' },
+          level: { type: 'string', description: '這一層的單位名稱，通常是 章 或 課 或 單元' },
+          children: { type: 'array', items: mid, description: '底下的節；沒有分節就給空陣列' },
         },
-        required: ['title', 'sections'],
-        additionalProperties: false,
+        required: ['title', 'level', 'children'], additionalProperties: false,
       },
     },
   },
-  required: ['chapters'],
-  additionalProperties: false,
+  required: ['chapters'], additionalProperties: false,
 };
 
 // GET /api/import/toc → 全部章節庫（依科目分組用 list_id）
@@ -200,7 +217,9 @@ router.post('/toc', async (req, res) => {
     const response = await client.messages.create({
       model: 'claude-opus-4-8',
       max_tokens: 12000,
-      system: '你是課本目錄解讀助手。使用者可能上傳多張目錄照片（同一本課本的連續頁面），請把所有照片視為同一份目錄，依頁面順序合併，完整擷取所有章/課與其底下的節，不要遺漏跨頁的章節，也不要重複計算兩張照片重疊處的同一章。保留原始編號與名稱（如「第2章 三角函數」、節「2-1 銳角三角函數」）。國文、英文等以「課」為單位的科目，每課是一個 chapter、sections 給空陣列。忽略附錄、索引、頁碼。',
+      system: `你是課本目錄解讀助手。使用者可能上傳多張目錄照片（同一本課本的連續頁面），請把所有照片視為同一份目錄，依頁面順序合併，不要遺漏跨頁內容，也不要重複計算兩張照片重疊處的同一項。
+請盡量擷取目錄的完整階層：章(或課/單元) → 節 → 小節(或主題)。保留每一項的原始編號與名稱，並在 level 欄位標出這一項在課本中的單位名稱（例如「章」「節」「小節」「主題」「課」「單元」）。
+沒有下一層就給空的 children 陣列。像地球科學這種有「主題→章→節」多層的，就完整填三層；國文英文以「課」為單位、通常沒有子項，children 給空陣列。忽略附錄、索引、頁碼。`,
       output_config: { format: { type: 'json_schema', schema: TOC_SCHEMA } },
       messages: [{
         role: 'user',
@@ -220,9 +239,10 @@ router.post('/toc', async (req, res) => {
     const items = [];
     for (let i = 0; i < chapters.length; i++) {
       const c = chapters[i];
-      const r = await q.run('INSERT INTO toc_items (user_id, list_id, title, sections, order_index) VALUES (?,?,?,?,?)',
-        [req.userId, list_id, c.title, JSON.stringify(c.sections || []), i]);
-      items.push({ id: r.lastInsertRowid, list_id, title: c.title, sections: c.sections || [], order_index: i });
+      const kids = c.children || [];
+      const r = await q.run('INSERT INTO toc_items (user_id, list_id, title, level, sections, order_index) VALUES (?,?,?,?,?,?)',
+        [req.userId, list_id, c.title, c.level || '章', JSON.stringify(kids), i]);
+      items.push({ id: r.lastInsertRowid, list_id, title: c.title, level: c.level || '章', sections: kids, order_index: i });
     }
     res.json({ items });
   } catch (err) {
