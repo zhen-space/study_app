@@ -45,7 +45,7 @@ function freeSlotsForDay(dateStr, events, settings) {
 // { items:[{subject_id, title, minutes, start, end, final}], mode:'order'|'spread', startDate?, endDate? }
 // 每個項目可有自己的日期範圍；final=true 的項目（壓軸）會排在其他項目全部結束之後
 router.post('/preview', async (req, res) => {
-  const { items, mode } = req.body;
+  const { items, excludeWeekdays = [], excludeDates = [] } = req.body;
   if (!items?.length) return res.status(400).json({ error: '參數不完整' });
   const today = new Date().toISOString().slice(0, 10);
   const gStart = req.body.startDate || today, gEnd = req.body.endDate || today;
@@ -65,6 +65,8 @@ router.post('/preview', async (req, res) => {
     const ds = d.toISOString().slice(0, 10);
     if (ds > maxD) break;
     if (ds < today) continue;
+    if (excludeDates.includes(ds)) continue;                      // 指定不排的日期
+    if (excludeWeekdays.includes(d.getDay())) continue;           // 不排的星期
     days.push({ date: ds, slots: freeSlotsForDay(ds, events, settings), slotIdx: 0 });
   }
   if (!days.length) return res.status(400).json({ error: '沒有可排的日期' });
@@ -84,21 +86,25 @@ router.post('/preview', async (req, res) => {
     return out;
   };
 
-  const normals = mkChunks(items.filter(i => !i.final));
-  const finals = mkChunks(items.filter(i => i.final));
-
-  let work = normals;
-  if (mode === 'spread') {
-    const groups = {};
-    for (const w of normals) (groups[w.subject_id] = groups[w.subject_id] || []).push(w);
-    work = [];
-    const lists = Object.values(groups);
-    let added = true;
-    while (added) {
-      added = false;
-      for (const l of lists) if (l.length) { work.push(l.shift()); added = true; }
-    }
+  // 佇列：同科目內依「打散/照順序」排列（item.spread，預設打散），跨科目一律輪流（每天各科都碰到）
+  function buildQueue(list) {
+    const bySub = {};
+    list.forEach(it => { (bySub[it.subject_id] = bySub[it.subject_id] || []).push(it); });
+    const subjQueues = Object.values(bySub).map(subjItems => {
+      const chunkLists = subjItems.map(it => mkChunks([it]));
+      if (subjItems[0].spread === false) return chunkLists.flat(); // 照章節順序
+      const out = []; let added = true;                            // 章節打散：輪流
+      while (added) { added = false; for (const cl of chunkLists) if (cl.length) { out.push(cl.shift()); added = true; } }
+      return out;
+    });
+    const out = []; let added = true;
+    while (added) { added = false; for (const q2 of subjQueues) if (q2.length) { out.push(q2.shift()); added = true; } }
+    return out;
   }
+
+  const firstsQ = buildQueue(items.filter(i => i.first && !i.final));  // 要先完成的
+  const work = buildQueue(items.filter(i => !i.first && !i.final));
+  const finals = mkChunks(items.filter(i => i.final));
 
   const blocks = [];
   const failed = [];
@@ -129,6 +135,7 @@ router.post('/preview', async (req, res) => {
     return false;
   }
 
+  for (const w of firstsQ) if (!place(w)) failed.push(w.title); // 先完成的最先排（自然落在最早的日期）
   for (const w of work) if (!place(w)) failed.push(w.title);
   // 壓軸：排在所有一般項目最後一天之後（若其範圍允許）
   const lastNormal = blocks.reduce((a, b) => b.date > a ? b.date : a, '0000');

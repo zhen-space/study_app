@@ -39,11 +39,19 @@ export default function WizardView({ lists, reload, goTasks }) {
   const [tocBusy, setTocBusy] = useState(null);
   const [tocMsg, setTocMsg] = useState({});
   const [expanded, setExpanded] = useState({});
-  const [mode, setMode] = useState('spread');
-  const [types, setTypes] = useState([]);            // 勾選的題型
-  const [combine, setCombine] = useState('together'); // together | separate | custom
-  const [typeGroup, setTypeGroup] = useState({});     // 自訂：題型→組別編號
-  const [finals, setFinals] = useState({});           // 壓軸項目 key set
+  const [subjSpread, setSubjSpread] = useState({});   // 每科：章節打散(spread)或照順序(order)
+  const [typeScope, setTypeScope] = useState('all');  // 題型設定：all=所有科目相同 / per=分科
+  const [types, setTypes] = useState([]);             // 全域題型
+  const [combine, setCombine] = useState('together');
+  const [typeGroup, setTypeGroup] = useState({});
+  const [typesBy, setTypesBy] = useState({});         // 分科題型 sid→types[]
+  const [combineBy, setCombineBy] = useState({});
+  const [typeGroupBy, setTypeGroupBy] = useState({});
+  const [finals, setFinals] = useState({});           // 壓軸項目
+  const [firstsSel, setFirstsSel] = useState({});     // 要先完成的項目
+  const [exWd, setExWd] = useState([]);               // 不排的星期 0-6
+  const [exDates, setExDates] = useState([]);         // 不排的日期
+  const [exDateInput, setExDateInput] = useState(today());
   const [bySubject, setBySubject] = useState(false);
   const [byGroup, setByGroup] = useState(false);
   const [dGlobal, setDGlobal] = useState({ start: today(), end: addDays(today(), 6) });
@@ -60,19 +68,31 @@ export default function WizardView({ lists, reload, goTasks }) {
     loadEv();
     api('/settings').then(s => { setSettings(s); setShift({ sleep_start: s.sleep_start, sleep_end: s.sleep_end }); });
     api('/import/toc').then(setTocs);
+    // AI 解讀結果自動保存：離開頁面回來還在
+    try { const saved = localStorage.getItem('wizardAiPreview'); if (saved) setAiPreview(JSON.parse(saved)); } catch {}
   }, []);
+  useEffect(() => {
+    try {
+      if (aiPreview) localStorage.setItem('wizardAiPreview', JSON.stringify(aiPreview));
+      else localStorage.removeItem('wizardAiPreview');
+    } catch {}
+  }, [aiPreview]);
 
   const evGroups = useMemo(() => groupEvents(events), [events]);
 
-  /* ---------- 題型組別 ---------- */
-  const groups = useMemo(() => {
-    if (!types.length) return [null]; // 不分題型
-    if (combine === 'together') return [types];
-    if (combine === 'separate') return types.map(t => [t]);
+  /* ---------- 題型組別（可全域或分科） ---------- */
+  const calcGroups = (ts, cb, tg) => {
+    if (!ts.length) return [null];
+    if (cb === 'together') return [ts];
+    if (cb === 'separate') return ts.map(t => [t]);
     const m = {};
-    types.forEach(t => { const g = typeGroup[t] ?? 0; (m[g] = m[g] || []).push(t); });
+    ts.forEach(t => { const g = tg[t] ?? 0; (m[g] = m[g] || []).push(t); });
     return Object.values(m);
-  }, [types, combine, typeGroup]);
+  };
+  const groupsFor = sid => typeScope === 'all'
+    ? calcGroups(types, combine, typeGroup)
+    : calcGroups(typesBy[sid] || [], combineBy[sid] || 'together', typeGroupBy[sid] || {});
+  const groups = useMemo(() => calcGroups(types, combine, typeGroup), [types, combine, typeGroup]);
   const gLabel = g => g ? g.join('+') : '';
 
   const winOf = (sid, gi) => {
@@ -198,8 +218,8 @@ export default function WizardView({ lists, reload, goTasks }) {
     e.target.value = '';
   }
   // 依單位大小的預設時數（大單位＝多時間）
-  const LEVEL_MIN = { 章: 240, 課: 150, 單元: 180, 節: 120, 小節: 120, 主題: 30, 重點: 30, 節次: 120 };
-  const minutesFor = (level, depth) => LEVEL_MIN[level] ?? ([240, 120, 30][depth] ?? 60);
+  const LEVEL_MIN = { 章: 120, 課: 120, 單元: 120, 節: 60, 小節: 60, 主題: 30, 重點: 30, 節次: 60 };
+  const minutesFor = (level, depth) => LEVEL_MIN[level] ?? ([120, 60, 30][depth] ?? 60);
 
   // 把一列 toc（章）正規化成樹：舊資料的 sections 是字串陣列，新資料是物件樹
   const normKids = kids => (kids || []).map(k =>
@@ -239,7 +259,7 @@ export default function WizardView({ lists, reload, goTasks }) {
     setErr('');
     const expanded2 = [];
     for (const it of items) {
-      groups.forEach((g, gi) => {
+      groupsFor(it.subject_id).forEach((g, gi) => {
         const w = winOf(it.subject_id, gi);
         expanded2.push({
           subject_id: it.subject_id,
@@ -247,11 +267,16 @@ export default function WizardView({ lists, reload, goTasks }) {
           minutes: it.minutes,
           start: w.start, end: w.end,
           final: !!finals[it.key],
+          first: !!firstsSel[it.key],
+          spread: (subjSpread[it.subject_id] ?? 'spread') === 'spread',
         });
       });
     }
     try {
-      const body = { items: expanded2, mode, startDate: dGlobal.start, endDate: dGlobal.end };
+      const body = {
+        items: expanded2, startDate: dGlobal.start, endDate: dGlobal.end,
+        excludeWeekdays: exWd, excludeDates: exDates,
+      };
       if (!follow) { body.sleep_start = shift.sleep_start; body.sleep_end = shift.sleep_end; }
       setPreview(await api('/schedule/preview', { method: 'POST', body }));
       setStep(4);
@@ -305,20 +330,38 @@ export default function WizardView({ lists, reload, goTasks }) {
             {aiPreview && (
               <div style={{ marginTop: 10, border: '1px solid var(--border)', borderRadius: 10, padding: 10 }}>
                 <b>AI 解讀結果（已統整，勾選要加入的）：</b>
-                {aiPreview.map((g, i) => (
-                  <div key={i} style={{ marginTop: 6 }}>
-                    <div className="row">
-                      <input type="checkbox" checked={g.checked} onChange={() => setAiPreview(p => p.map((x, j) => j === i ? { ...x, checked: !x.checked } : x))} />
-                      <span><b>{g.title}</b></span>
-                      <span className="muted" style={{ cursor: 'pointer' }} onClick={() => setAiPreview(p => p.map((x, j) => j === i ? { ...x, open: !x.open } : x))}>
-                        {g.when} {g.start_time}–{g.end_time}{g.dates.length > 1 && !g.recurring ? (g.open ? ' ▾' : ' ▸') : ''}
-                      </span>
-                      {g.past && <span className="error" style={{ fontSize: 12 }}>⚠️ 過去日期</span>}
+                {aiPreview.map((g, i) => {
+                  const upd = fn => setAiPreview(p => p.map((x, j) => j === i ? fn({ ...x }) : x));
+                  return (
+                    <div key={i} style={{ marginTop: 8, borderBottom: '1px dashed var(--border)', paddingBottom: 6 }}>
+                      <div className="row">
+                        <input type="checkbox" checked={g.checked} onChange={() => upd(x => ({ ...x, checked: !x.checked }))} />
+                        <input value={g.title} style={{ fontWeight: 700, width: 110, padding: '4px 6px' }}
+                          onChange={e => upd(x => ({ ...x, title: e.target.value, all: x.all.map(ev => ({ ...ev, title: e.target.value })) }))} />
+                        <input type="time" value={g.start_time} style={{ padding: '4px 4px' }}
+                          onChange={e => upd(x => ({ ...x, start_time: e.target.value, all: x.all.map(ev => ({ ...ev, start_time: e.target.value })) }))} />
+                        <span>–</span>
+                        <input type="time" value={g.end_time} style={{ padding: '4px 4px' }}
+                          onChange={e => upd(x => ({ ...x, end_time: e.target.value, all: x.all.map(ev => ({ ...ev, end_time: e.target.value })) }))} />
+                        {g.past && <span className="error" style={{ fontSize: 12 }}>⚠️ 過去</span>}
+                      </div>
+                      <div className="row" style={{ marginTop: 4, marginLeft: 24, flexWrap: 'wrap' }}>
+                        {g.recurring
+                          ? <span className="muted">{g.when}</span>
+                          : g.dates.map(d => (
+                            <span key={d} className="tag-pill" style={{ cursor: 'pointer' }} title="點一下移除這天"
+                              onClick={() => upd(x => {
+                                const dates = x.dates.filter(y => y !== d);
+                                return { ...x, dates, all: x.all.filter(ev => ev.date !== d), checked: dates.length ? x.checked : false };
+                              })}>
+                              {`${+d.slice(5, 7)}/${+d.slice(8)}`} ✕
+                            </span>
+                          ))}
+                      </div>
                     </div>
-                    {g.open && <div className="muted" style={{ marginLeft: 28, fontSize: 12 }}>{g.dates.join('、')}</div>}
-                  </div>
-                ))}
-                <div className="muted" style={{ marginTop: 6 }}>點日期文字可展開核對每一天；有誤就取消勾選、加入後也可回來多選刪除</div>
+                  );
+                })}
+                <div className="muted" style={{ marginTop: 6 }}>名稱和時間可直接改；點日期籤可移除那一天。結果會自動保存，離開再回來還在</div>
                 <div className="row" style={{ marginTop: 10 }}>
                   <button className="btn sm" onClick={confirmAI}>加入勾選的行程</button>
                   <button className="btn sm ghost" onClick={() => setAiPreview(null)}>取消</button>
@@ -451,54 +494,83 @@ export default function WizardView({ lists, reload, goTasks }) {
         )}
 
         {/* ============ 2 題型與偏好 ============ */}
-        {step === 2 && (
-          <div className="tile">
-            <b>分配方式</b>
-            <div className="row" style={{ marginTop: 6 }}>
-              <label><input type="radio" checked={mode === 'order'} onChange={() => setMode('order')} /> 按科目順序讀</label>
-              <label><input type="radio" checked={mode === 'spread'} onChange={() => setMode('spread')} /> 打散平均分配</label>
+        {step === 2 && (() => {
+          const sids = [...new Set(items.map(i => i.subject_id))];
+          const sname = sid => lists.find(l => l.id === sid)?.name || '';
+          const TypePanel = ({ ts, cb, tg, onTs, onCb, onTg }) => (
+            <div>
+              <div className="row" style={{ marginTop: 6 }}>
+                {TYPE_OPTIONS.map(t => (
+                  <label key={t} className={'tag-pill' + (ts.includes(t) ? ' on' : '')} style={{ cursor: 'pointer' }}
+                    onClick={() => onTs(ts.includes(t) ? ts.filter(x => x !== t) : [...ts, t])}>{t}</label>
+                ))}
+              </div>
+              {ts.length > 1 && (
+                <div style={{ marginTop: 8 }}>
+                  <label style={{ display: 'block' }}><input type="radio" checked={cb === 'together'} onChange={() => onCb('together')} /> 一起寫（每章一個時段做完所有題型）</label>
+                  <label style={{ display: 'block' }}><input type="radio" checked={cb === 'separate'} onChange={() => onCb('separate')} /> 全部分開（每種題型自己一段）</label>
+                  <label style={{ display: 'block' }}><input type="radio" checked={cb === 'custom'} onChange={() => onCb('custom')} /> 自訂組合（如：範例+例題一組）</label>
+                  {cb === 'custom' && ts.map(t => (
+                    <div className="row" key={t} style={{ marginTop: 4, marginLeft: 10 }}>
+                      <span style={{ minWidth: 70 }}>{t}</span>
+                      <select value={tg[t] ?? 0} onChange={e => onTg({ ...tg, [t]: +e.target.value })}>
+                        {[0, 1, 2, 3].map(n => <option key={n} value={n}>第 {n + 1} 組</option>)}
+                      </select>
+                    </div>
+                  ))}
+                  <div className="muted" style={{ marginTop: 4 }}>→ 拆成 {calcGroups(ts, cb, tg).length} 段：{calcGroups(ts, cb, tg).map(gLabel).join('｜')}</div>
+                </div>
+              )}
             </div>
-
-            <b style={{ display: 'block', marginTop: 16 }}>你的教材有哪些題型？（沒有就不勾）</b>
-            <div className="row" style={{ marginTop: 6 }}>
-              {TYPE_OPTIONS.map(t => (
-                <label key={t} className={'tag-pill' + (types.includes(t) ? ' on' : '')} style={{ cursor: 'pointer' }}
-                  onClick={() => setTypes(ts => ts.includes(t) ? ts.filter(x => x !== t) : [...ts, t])}>{t}</label>
+          );
+          return (
+            <div className="tile">
+              <b>各科的章節要打散還是照順序？</b>
+              {sids.map(sid => (
+                <div className="row" key={sid} style={{ marginTop: 6 }}>
+                  <span className="tag" style={{ background: lists.find(l => l.id === sid)?.color, color: '#fff', padding: '2px 8px', borderRadius: 999, fontSize: 12 }}>{sname(sid)}</span>
+                  <label><input type="radio" checked={(subjSpread[sid] ?? 'spread') === 'spread'} onChange={() => setSubjSpread(s => ({ ...s, [sid]: 'spread' }))} /> 打散平均</label>
+                  <label><input type="radio" checked={subjSpread[sid] === 'order'} onChange={() => setSubjSpread(s => ({ ...s, [sid]: 'order' }))} /> 照章節順序</label>
+                </div>
               ))}
-            </div>
 
-            {types.length > 1 && (
-              <div style={{ marginTop: 12 }}>
-                <b>這些題型要怎麼寫？</b>
-                <label style={{ display: 'block', marginTop: 4 }}><input type="radio" checked={combine === 'together'} onChange={() => setCombine('together')} /> 一起寫（每章一個時段做完所有題型）</label>
-                <label style={{ display: 'block' }}><input type="radio" checked={combine === 'separate'} onChange={() => setCombine('separate')} /> 全部打散（每種題型分開時段）</label>
-                <label style={{ display: 'block' }}><input type="radio" checked={combine === 'custom'} onChange={() => setCombine('custom')} /> 自訂組合（例如：範例+例題一組、單元練習+歷屆一組）</label>
-                {combine === 'custom' && types.map(t => (
-                  <div className="row" key={t} style={{ marginTop: 4, marginLeft: 10 }}>
-                    <span style={{ minWidth: 70 }}>{t}</span>
-                    <select value={typeGroup[t] ?? 0} onChange={e => setTypeGroup(g => ({ ...g, [t]: +e.target.value }))}>
-                      {[0, 1, 2, 3].map(n => <option key={n} value={n}>第 {n + 1} 組</option>)}
-                    </select>
+              <b style={{ display: 'block', marginTop: 16 }}>教材題型（範例/例題/單元練習/歷屆試題）</b>
+              <div className="row" style={{ marginTop: 6 }}>
+                <label><input type="radio" checked={typeScope === 'all'} onChange={() => setTypeScope('all')} /> 所有科目都一樣</label>
+                <label><input type="radio" checked={typeScope === 'per'} onChange={() => setTypeScope('per')} /> 各科分別設定</label>
+              </div>
+              {typeScope === 'all'
+                ? <TypePanel ts={types} cb={combine} tg={typeGroup} onTs={setTypes} onCb={setCombine} onTg={setTypeGroup} />
+                : sids.map(sid => (
+                  <div key={sid} style={{ marginTop: 10, borderLeft: `3px solid ${lists.find(l => l.id === sid)?.color}`, paddingLeft: 8 }}>
+                    <b>{sname(sid)}</b>
+                    <TypePanel ts={typesBy[sid] || []} cb={combineBy[sid] || 'together'} tg={typeGroupBy[sid] || {}}
+                      onTs={v => setTypesBy(s => ({ ...s, [sid]: v }))}
+                      onCb={v => setCombineBy(s => ({ ...s, [sid]: v }))}
+                      onTg={v => setTypeGroupBy(s => ({ ...s, [sid]: v }))} />
                   </div>
                 ))}
-                {groups[0] && <div className="muted" style={{ marginTop: 6 }}>→ 每個章節會拆成 {groups.length} 段：{groups.map(gLabel).join('｜')}（每段套用該章的分鐘數）</div>}
+
+              <b style={{ display: 'block', marginTop: 16 }}>有沒有章節需要「先完成」或「壓軸」？</b>
+              <div className="muted">先完成＝最先排；壓軸＝其他全部讀完才排（如：學測模擬試題、115 學測試題）</div>
+              {items.map(it => (
+                <div key={it.key} className="row" style={{ marginTop: 4 }}>
+                  <span style={{ color: it.color }}>■</span>
+                  <span style={{ flex: 1 }}>{it.name}｜{it.title}</span>
+                  <label className={'tag-pill' + (firstsSel[it.key] ? ' on' : '')} style={{ cursor: 'pointer' }}
+                    onClick={() => { setFirstsSel(f => ({ ...f, [it.key]: !f[it.key] })); setFinals(f => ({ ...f, [it.key]: false })); }}>先完成</label>
+                  <label className={'tag-pill' + (finals[it.key] ? ' on' : '')} style={{ cursor: 'pointer' }}
+                    onClick={() => { setFinals(f => ({ ...f, [it.key]: !f[it.key] })); setFirstsSel(f => ({ ...f, [it.key]: false })); }}>壓軸</label>
+                </div>
+              ))}
+
+              <div className="row" style={{ marginTop: 16 }}>
+                <button className="btn ghost" onClick={() => setStep(1)}>上一步</button>
+                <button className="btn" onClick={() => setStep(3)}>下一步</button>
               </div>
-            )}
-
-            <b style={{ display: 'block', marginTop: 16 }}>有沒有要「壓軸」的範圍？（例如：學測模擬試題、115 學測試題——會排在其他全部讀完之後）</b>
-            {items.map(it => (
-              <label key={it.key} className="row" style={{ marginTop: 4 }}>
-                <input type="checkbox" checked={!!finals[it.key]} onChange={() => setFinals(f => ({ ...f, [it.key]: !f[it.key] }))} />
-                <span style={{ color: it.color }}>■</span><span>{it.name}｜{it.title}</span>
-              </label>
-            ))}
-
-            <div className="row" style={{ marginTop: 16 }}>
-              <button className="btn ghost" onClick={() => setStep(1)}>上一步</button>
-              <button className="btn" onClick={() => setStep(3)}>下一步</button>
             </div>
-          </div>
-        )}
+          );
+        })()}
 
         {/* ============ 3 日期安排 ============ */}
         {step === 3 && (
@@ -512,7 +584,7 @@ export default function WizardView({ lists, reload, goTasks }) {
             <label style={{ display: 'block', marginTop: 12 }}>
               <input type="checkbox" checked={bySubject} onChange={e => setBySubject(e.target.checked)} /> 各科目用不同日期範圍
             </label>
-            {groups.length > 1 && (
+            {(typeScope === 'per' ? bySubject : groups.length > 1) && (
               <label style={{ display: 'block', marginTop: 4 }}>
                 <input type="checkbox" checked={byGroup} onChange={e => setByGroup(e.target.checked)} /> 各題型組用不同日期範圍
               </label>
@@ -521,10 +593,34 @@ export default function WizardView({ lists, reload, goTasks }) {
               <div style={{ marginTop: 10 }}>
                 {(bySubject ? [...new Set(items.map(i => i.subject_id))] : ['all']).map(sid => {
                   const sname = sid === 'all' ? '' : lists.find(l => l.id === sid)?.name || '';
-                  return (byGroup ? groups.map((g, gi) => dateInput(`${bySubject ? sid : 'all'}|${gi}`, `${sname}${sname && g ? '・' : ''}${gLabel(g) || (byGroup ? `第${gi + 1}組` : '')}`))
+                  const gs = sid === 'all' ? groups : groupsFor(sid);
+                  return (byGroup ? gs.map((g, gi) => dateInput(`${bySubject ? sid : 'all'}|${gi}`, `${sname}${sname && g ? '・' : ''}${gLabel(g) || `第${gi + 1}組`}`))
                     : [dateInput(`${sid}|all`, sname || '全部')]);
                 })}
                 <div className="muted" style={{ marginTop: 6 }}>沒填的會用整體範圍</div>
+              </div>
+            )}
+
+            <b style={{ display: 'block', marginTop: 14 }}>有沒有不想排讀書的日子？</b>
+            <div className="row" style={{ marginTop: 6 }}>
+              <span className="muted">星期：</span>
+              {[1, 2, 3, 4, 5, 6, 0].map(d => (
+                <span key={d} className={'tag-pill' + (exWd.includes(d) ? ' on' : '')} style={{ cursor: 'pointer' }}
+                  onClick={() => setExWd(w => w.includes(d) ? w.filter(x => x !== d) : [...w, d])}>{WD[d]}</span>
+              ))}
+            </div>
+            <div className="row" style={{ marginTop: 6 }}>
+              <span className="muted">日期：</span>
+              <input type="date" value={exDateInput} onChange={e => setExDateInput(e.target.value)} />
+              <button className="btn sm ghost" onClick={() => exDateInput && !exDates.includes(exDateInput) && setExDates(x => [...x, exDateInput].sort())}>＋不排這天</button>
+            </div>
+            {exDates.length > 0 && (
+              <div className="row" style={{ marginTop: 6, flexWrap: 'wrap' }}>
+                {exDates.map(d => (
+                  <span key={d} className="tag-pill on" style={{ cursor: 'pointer' }} onClick={() => setExDates(x => x.filter(y => y !== d))}>
+                    {`${+d.slice(5, 7)}/${+d.slice(8)}`} ✕
+                  </span>
+                ))}
               </div>
             )}
             {err && <div className="error" style={{ marginTop: 8 }}>{err}</div>}
