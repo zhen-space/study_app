@@ -345,18 +345,35 @@ export default function WizardView({ lists, reload, goTasks }) {
                           onChange={e => upd(x => ({ ...x, end_time: e.target.value, all: x.all.map(ev => ({ ...ev, end_time: e.target.value })) }))} />
                         {g.past && <span className="error" style={{ fontSize: 12 }}>⚠️ 過去</span>}
                       </div>
-                      <div className="row" style={{ marginTop: 4, marginLeft: 24, flexWrap: 'wrap' }}>
+                      <div className="row" style={{ marginTop: 4, marginLeft: 24, flexWrap: 'wrap', gap: 6 }}>
                         {g.recurring
                           ? <span className="muted">{g.when}</span>
-                          : g.dates.map(d => (
-                            <span key={d} className="tag-pill" style={{ cursor: 'pointer' }} title="點一下移除這天"
-                              onClick={() => upd(x => {
-                                const dates = x.dates.filter(y => y !== d);
-                                return { ...x, dates, all: x.all.filter(ev => ev.date !== d), checked: dates.length ? x.checked : false };
-                              })}>
-                              {`${+d.slice(5, 7)}/${+d.slice(8)}`} ✕
-                            </span>
-                          ))}
+                          : <>
+                            {g.dates.map((d, di) => (
+                              <span key={di} className="row" style={{ gap: 2 }}>
+                                <input type="date" value={d} style={{ padding: '3px 4px', fontSize: 13 }}
+                                  onChange={e => {
+                                    const nd = e.target.value;
+                                    if (!nd) return;
+                                    upd(x => ({
+                                      ...x,
+                                      dates: x.dates.map((y, j) => j === di ? nd : y),
+                                      all: x.all.map(ev => ev.date === d ? { ...ev, date: nd } : ev),
+                                    }));
+                                  }} />
+                                <button className="icon-btn" title="移除這天" onClick={() => upd(x => {
+                                  const dates = x.dates.filter((_, j) => j !== di);
+                                  return { ...x, dates, all: x.all.filter(ev => ev.date !== d), checked: dates.length ? x.checked : false };
+                                })}>✕</button>
+                              </span>
+                            ))}
+                            <button className="btn sm ghost" onClick={() => upd(x => {
+                              const last = x.dates[x.dates.length - 1] || today();
+                              const nd = addDays(last, 1);
+                              const tpl = x.all[0] || { title: x.title, start_time: x.start_time, end_time: x.end_time, recurring: null };
+                              return { ...x, dates: [...x.dates, nd], all: [...x.all, { ...tpl, date: nd }], checked: true };
+                            })}>＋加一天</button>
+                          </>}
                       </div>
                     </div>
                   );
