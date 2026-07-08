@@ -23,7 +23,59 @@ export default function CalendarView({ tasks, reload }) {
 
   const monday = (() => { const d = new Date(anchor + 'T00:00:00'); d.setDate(d.getDate() - ((d.getDay() + 6) % 7)); return d.toISOString().slice(0, 10); })();
   const weekDays = [...Array(7)].map((_, i) => addDays(monday, i));
-  const shift = n => setAnchor(addDays(anchor, view === 'day' ? n : view === 'week' ? n * 7 : 0));
+  const shift = n => setAnchor(addDays(anchor, view === 'day' ? n : view === '3day' ? n * 3 : view === 'week' ? n * 7 : 0));
+
+  /* ---- 清單視圖（List）：未來 60 天的行程依日期列出 ---- */
+  const ListView = () => {
+    const upcoming = tasks.filter(t => t.due_date && t.due_date >= today() && t.due_date <= addDays(today(), 60))
+      .sort((a, b) => a.due_date === b.due_date ? (a.due_time || '99').localeCompare(b.due_time || '99') : a.due_date.localeCompare(b.due_date));
+    const byDate = {};
+    upcoming.forEach(t => (byDate[t.due_date] = byDate[t.due_date] || []).push(t));
+    return (
+      <div>
+        {Object.entries(byDate).map(([d, list]) => (
+          <div key={d} className="tgroup">
+            <div className="glabel">{`${+d.slice(5, 7)}/${+d.slice(8)}`} 週{WD[(new Date(d + 'T00:00:00').getDay() + 6) % 7]}{d === today() ? '（今天）' : ''}</div>
+            {list.map(t => (
+              <div key={t.id} className={'trow' + (t.completed ? ' done' : '')} style={{ cursor: 'default' }}>
+                <input type="checkbox" checked={!!t.completed} onChange={() => toggle(t)} />
+                <span className="title">{t.title}</span>
+                {t.due_time && <span className="muted">{t.due_time.slice(0, 5)}</span>}
+              </div>
+            ))}
+          </div>
+        ))}
+        {!upcoming.length && <div className="muted" style={{ marginTop: 30, textAlign: 'center' }}>未來 60 天沒有行程</div>}
+      </div>
+    );
+  };
+
+  /* ---- 年視圖：12 個月卡片，點了跳該月 ---- */
+  const YearView = () => {
+    const y = +anchor.slice(0, 4);
+    return (
+      <div>
+        <div className="row" style={{ justifyContent: 'center', margin: '8px 0' }}>
+          <button className="icon-btn" onClick={() => setAnchor(`${y - 1}-01-01`)}>◀</button>
+          <b>{y} 年</b>
+          <button className="icon-btn" onClick={() => setAnchor(`${y + 1}-01-01`)}>▶</button>
+        </div>
+        <div className="stat-tiles">
+          {[...Array(12)].map((_, i) => {
+            const m = String(i + 1).padStart(2, '0');
+            const n = tasks.filter(t => t.due_date?.startsWith(`${y}-${m}`)).length;
+            return (
+              <button key={m} className="tile" style={{ cursor: 'pointer', textAlign: 'center' }}
+                onClick={() => { setAnchor(`${y}-${m}-01`); setView('month'); }}>
+                <div style={{ fontWeight: 700 }}>{i + 1} 月</div>
+                <div className="muted">{n ? `${n} 項` : '—'}</div>
+              </button>
+            );
+          })}
+        </div>
+      </div>
+    );
+  };
 
   /* ---- 小時制格線（日/週共用） ---- */
   const HourGrid = ({ days }) => (
@@ -97,19 +149,27 @@ export default function CalendarView({ tasks, reload }) {
     <div className="main">
       <div className="main-head">
         <h2>日曆</h2>
-        <div className="row" style={{ gap: 4 }}>
-          {[['day', '日'], ['week', '週'], ['month', '月']].map(([v, label]) => (
-            <button key={v} className={'btn sm' + (view === v ? '' : ' ghost')} onClick={() => setView(v)}>{label}</button>
-          ))}
-        </div>
-        <button className="icon-btn" onClick={() => view === 'month' ? navMonth(-1) : shift(-1)}>◀</button>
-        <b style={{ fontSize: 14 }}>{view === 'month' ? `${+anchor.slice(0, 4)}年${+anchor.slice(5, 7)}月` : view === 'week' ? `${monday.slice(5)} 起` : anchor.slice(5)}</b>
-        <button className="icon-btn" onClick={() => view === 'month' ? navMonth(1) : shift(1)}>▶</button>
+        <select value={view} onChange={e => setView(e.target.value)}>
+          <option value="list">☰ 清單</option>
+          <option value="year">年</option>
+          <option value="month">月</option>
+          <option value="week">週</option>
+          <option value="3day">3 日</option>
+          <option value="day">日</option>
+        </select>
+        {view !== 'list' && view !== 'year' && <>
+          <button className="icon-btn" onClick={() => view === 'month' ? navMonth(-1) : shift(-1)}>◀</button>
+          <b style={{ fontSize: 14 }}>{view === 'month' ? `${+anchor.slice(0, 4)}年${+anchor.slice(5, 7)}月` : view === 'week' ? `${monday.slice(5)} 起` : anchor.slice(5)}</b>
+          <button className="icon-btn" onClick={() => view === 'month' ? navMonth(1) : shift(1)}>▶</button>
+        </>}
         <button className="btn sm ghost" onClick={() => setAnchor(today())}>今天</button>
       </div>
       <div className="main-body">
-        {view !== 'month' && <div className="muted" style={{ margin: '6px 0' }}>點空格可直接新增該時段的行程</div>}
+        {['day', '3day', 'week'].includes(view) && <div className="muted" style={{ margin: '6px 0' }}>點空格可直接新增該時段的行程</div>}
+        {view === 'list' && <ListView />}
+        {view === 'year' && <YearView />}
         {view === 'day' && <HourGrid days={[anchor]} />}
+        {view === '3day' && <HourGrid days={[anchor, addDays(anchor, 1), addDays(anchor, 2)]} />}
         {view === 'week' && <HourGrid days={weekDays} />}
         {view === 'month' && <MonthGrid />}
       </div>

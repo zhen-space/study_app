@@ -126,4 +126,6 @@ export async function initSchema() {
     try { await client.execute(`ALTER TABLE users ADD COLUMN ${col}`); } catch {}
   }
   try { await client.execute("ALTER TABLE toc_items ADD COLUMN level TEXT DEFAULT '章'"); } catch {}
+  try { await client.execute("ALTER TABLE tasks ADD COLUMN miss_policy TEXT DEFAULT 'keep'"); } catch {}
+  try { await client.execute("ALTER TABLE habits ADD COLUMN miss_policy TEXT DEFAULT 'drop'"); } catch {}
 }

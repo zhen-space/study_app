@@ -137,7 +137,7 @@ export default function Shell({ onLogout }) {
         : view.type === 'stats' ? <StatsView />
         : view.type === 'pet' ? <PetView />
         : view.type === 'wizard' ? <WizardView lists={lists} reload={reload} goTasks={() => setView({ type: 'today' })} />
-        : <Tasks view={view} tasks={tasks} lists={lists} filters={filters} reload={reload} title={titleOf()} />}
+        : <Tasks view={view} tasks={tasks} lists={lists} filters={filters} habits={habits} reload={reload} title={titleOf()} />}
 
       {view.type !== 'pet' && petData && <Companion pet={petData.pet} tasks={tasks} />}
 

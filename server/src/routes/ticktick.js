@@ -47,27 +47,62 @@ router.delete('/lists/:id', async (req, res) => {
 });
 
 // ---- tasks ----
-router.get('/tasks', async (req, res) =>
-  res.json((await q.all('SELECT * FROM tasks WHERE user_id=? ORDER BY order_index, id DESC', [req.userId])).map(parseTask)));
+router.get('/tasks', async (req, res) => {
+  const rows = await q.all('SELECT * FROM tasks WHERE user_id=? ORDER BY order_index, id DESC', [req.userId]);
+  // miss_policy=drop 的重複任務：過期沒做就自動滾到下一次（不留逾期）
+  const todayStr = new Date().toISOString().slice(0, 10);
+  for (const t of rows) {
+    if (t.recurring && !t.completed && t.miss_policy === 'drop' && t.due_date && t.due_date < todayStr) {
+      let nd = t.due_date, guard = 0;
+      while (nd && nd < todayStr && guard++ < 400) nd = nextDate(nd, t.recurring);
+      if (nd) { await q.run('UPDATE tasks SET due_date=? WHERE id=?', [nd, t.id]); t.due_date = nd; }
+    }
+  }
+  res.json(rows.map(parseTask));
+});
 
 router.post('/tasks', async (req, res) => {
-  const { title, list_id, notes, due_date, due_time, priority, tags, subtasks, recurring } = req.body;
+  const { title, list_id, notes, due_date, due_time, priority, tags, subtasks, recurring, miss_policy } = req.body;
   if (!title) return res.status(400).json({ error: '請輸入標題' });
-  const r = await q.run(`INSERT INTO tasks (user_id,list_id,title,notes,due_date,due_time,priority,tags,subtasks,recurring)
-    VALUES (?,?,?,?,?,?,?,?,?,?)`,
+  const r = await q.run(`INSERT INTO tasks (user_id,list_id,title,notes,due_date,due_time,priority,tags,subtasks,recurring,miss_policy)
+    VALUES (?,?,?,?,?,?,?,?,?,?,?)`,
     [req.userId, list_id || null, title, notes || '', due_date || null, due_time || null,
-      priority || 0, JSON.stringify(tags || []), JSON.stringify(subtasks || []), recurring || null]);
+      priority || 0, JSON.stringify(tags || []), JSON.stringify(subtasks || []), recurring || null, miss_policy || 'keep']);
   res.json(parseTask(await q.get('SELECT * FROM tasks WHERE id=?', [r.lastInsertRowid])));
 });
 
+// 重複規則：daily/weekly/monthly/yearly/weekdays 或自訂 JSON {"every":2,"unit":"week","days":[1,3,5]}
 function nextDate(dateStr, rule) {
   const d = new Date(dateStr + 'T00:00:00');
-  if (rule === 'daily') d.setDate(d.getDate() + 1);
-  else if (rule === 'weekly') d.setDate(d.getDate() + 7);
-  else if (rule === 'monthly') d.setMonth(d.getMonth() + 1);
-  else if (rule === 'yearly') d.setFullYear(d.getFullYear() + 1);
-  else return null;
-  return d.toISOString().slice(0, 10);
+  const iso = x => x.toISOString().slice(0, 10);
+  if (rule === 'daily') { d.setDate(d.getDate() + 1); return iso(d); }
+  if (rule === 'weekly') { d.setDate(d.getDate() + 7); return iso(d); }
+  if (rule === 'monthly') { d.setMonth(d.getMonth() + 1); return iso(d); }
+  if (rule === 'yearly') { d.setFullYear(d.getFullYear() + 1); return iso(d); }
+  if (rule === 'weekdays') { // 週一至週五
+    do { d.setDate(d.getDate() + 1); } while (d.getDay() === 0 || d.getDay() === 6);
+    return iso(d);
+  }
+  if (rule && rule.startsWith('{')) {
+    let cfg;
+    try { cfg = JSON.parse(rule); } catch { return null; }
+    const every = Math.max(1, cfg.every || 1);
+    if (cfg.unit === 'day') { d.setDate(d.getDate() + every); return iso(d); }
+    if (cfg.unit === 'month') { d.setMonth(d.getMonth() + every); return iso(d); }
+    if (cfg.unit === 'year') { d.setFullYear(d.getFullYear() + every); return iso(d); }
+    // week：每 N 週的指定星期（以起始日的當週為第 0 週）
+    const days = cfg.days?.length ? cfg.days : [d.getDay()];
+    const week0 = new Date(d); week0.setDate(d.getDate() - d.getDay());
+    for (let i = 1; i <= 7 * every + 7; i++) {
+      const c = new Date(d); c.setDate(d.getDate() + i);
+      if (!days.includes(c.getDay())) continue;
+      const wk = Math.round((c - week0) / (7 * 864e5) - ((c.getDay() ? 0 : 0)));
+      if (Math.floor((c - week0) / (7 * 864e5)) % every !== 0) continue;
+      return iso(c);
+    }
+    return null;
+  }
+  return null;
 }
 
 router.patch('/tasks/:id', async (req, res) => {
@@ -84,14 +119,15 @@ router.patch('/tasks/:id', async (req, res) => {
     tags: b.tags !== undefined ? JSON.stringify(b.tags) : t.tags,
     subtasks: b.subtasks !== undefined ? JSON.stringify(b.subtasks) : t.subtasks,
     recurring: b.recurring !== undefined ? b.recurring : t.recurring,
+    miss_policy: b.miss_policy ?? t.miss_policy ?? 'keep',
     completed: b.completed !== undefined ? (b.completed ? 1 : 0) : t.completed,
     completed_at: b.completed !== undefined ? (b.completed ? new Date().toISOString() : null) : t.completed_at,
     order_index: b.order_index ?? t.order_index,
   };
   await q.run(`UPDATE tasks SET list_id=?,title=?,notes=?,due_date=?,due_time=?,priority=?,tags=?,subtasks=?,
-    recurring=?,completed=?,completed_at=?,order_index=? WHERE id=?`,
+    recurring=?,miss_policy=?,completed=?,completed_at=?,order_index=? WHERE id=?`,
     [f.list_id, f.title, f.notes, f.due_date, f.due_time, f.priority, f.tags, f.subtasks,
-      f.recurring, f.completed, f.completed_at, f.order_index, t.id]);
+      f.recurring, f.miss_policy, f.completed, f.completed_at, f.order_index, t.id]);
 
   if (b.completed && !t.completed && t.recurring && t.due_date) {
     const nd = nextDate(t.due_date, t.recurring);
@@ -116,10 +152,10 @@ router.get('/habits', async (req, res) => {
   res.json(habits.map(h => ({ ...h, days: JSON.parse(h.days), checkins: checkins.filter(c => c.habit_id === h.id).map(c => c.date) })));
 });
 router.post('/habits', async (req, res) => {
-  const { name, icon, color, days } = req.body;
+  const { name, icon, color, days, miss_policy } = req.body;
   if (!name) return res.status(400).json({ error: '請輸入名稱' });
-  const r = await q.run('INSERT INTO habits (user_id,name,icon,color,days) VALUES (?,?,?,?,?)',
-    [req.userId, name, icon || '⭐', color || '#16a34a', JSON.stringify(days || [0, 1, 2, 3, 4, 5, 6])]);
+  const r = await q.run('INSERT INTO habits (user_id,name,icon,color,days,miss_policy) VALUES (?,?,?,?,?,?)',
+    [req.userId, name, icon || '⭐', color || '#16a34a', JSON.stringify(days || [0, 1, 2, 3, 4, 5, 6]), miss_policy || 'drop']);
   res.json({ id: r.lastInsertRowid });
 });
 router.delete('/habits/:id', async (req, res) => {

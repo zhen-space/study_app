@@ -2,6 +2,86 @@ import { useState } from 'react';
 import { api } from '../api';
 import { matchView, groupTasks, PRI, today } from './helpers';
 
+const WDC = '日一二三四五六';
+export function repeatLabel(r, dueDate) {
+  if (!r) return '不重複';
+  if (r === 'daily') return '每天';
+  if (r === 'weekly') return dueDate ? `每週${WDC[new Date(dueDate + 'T00:00:00').getDay()]}` : '每週';
+  if (r === 'monthly') return dueDate ? `每月${+dueDate.slice(8)}日` : '每月';
+  if (r === 'yearly') return dueDate ? `每年${+dueDate.slice(5, 7)}/${+dueDate.slice(8)}` : '每年';
+  if (r === 'weekdays') return '週一至週五';
+  try {
+    const c = JSON.parse(r);
+    const u = { day: '天', week: '週', month: '個月', year: '年' }[c.unit] || c.unit;
+    let s = `每${c.every > 1 ? ` ${c.every} ` : ''}${u}`;
+    if (c.unit === 'week' && c.days?.length) s += `（${c.days.map(d => '週' + WDC[d]).join('、')}）`;
+    return s;
+  } catch { return r; }
+}
+
+// 詳細重複設定（仿 TickTick：無/每天/每週/每月/每年/平日/自訂每N天週月年+選星期）
+function RepeatPicker({ value, dueDate, missPolicy, onChange }) {
+  const isCustom = value?.startsWith('{');
+  const cfg = isCustom ? JSON.parse(value) : { every: 1, unit: 'week', days: [] };
+  const setCustom = patch => onChange(JSON.stringify({ ...cfg, ...patch }), missPolicy);
+  const mode = isCustom ? 'custom' : (value || '');
+
+  return (
+    <div style={{ border: '1px solid var(--border)', borderRadius: 8, padding: 10 }}>
+      <div className="drow">
+        <label>重複</label>
+        <select value={mode} onChange={e => {
+          const v = e.target.value;
+          onChange(v === 'custom' ? JSON.stringify({ every: 1, unit: 'week', days: dueDate ? [new Date(dueDate + 'T00:00:00').getDay()] : [] }) : (v || null), missPolicy);
+        }}>
+          <option value="">不重複</option>
+          <option value="daily">每天</option>
+          <option value="weekly">每週{dueDate ? `（${WDC[new Date(dueDate + 'T00:00:00').getDay()]}）` : ''}</option>
+          <option value="monthly">每月{dueDate ? `（${+dueDate.slice(8)}日）` : ''}</option>
+          <option value="yearly">每年{dueDate ? `（${+dueDate.slice(5, 7)}/${+dueDate.slice(8)}）` : ''}</option>
+          <option value="weekdays">每個平日（週一至週五）</option>
+          <option value="custom">自訂…</option>
+        </select>
+      </div>
+
+      {isCustom && (
+        <div style={{ marginTop: 8 }}>
+          <div className="drow">
+            <label>每</label>
+            <input type="number" min="1" max="99" value={cfg.every} style={{ width: 58 }}
+              onChange={e => setCustom({ every: Math.max(1, +e.target.value || 1) })} />
+            <select value={cfg.unit} onChange={e => setCustom({ unit: e.target.value })}>
+              <option value="day">天</option><option value="week">週</option>
+              <option value="month">個月</option><option value="year">年</option>
+            </select>
+          </div>
+          {cfg.unit === 'week' && (
+            <div className="drow" style={{ marginTop: 6, flexWrap: 'wrap' }}>
+              {[1, 2, 3, 4, 5, 6, 0].map(d => (
+                <span key={d} className={'tag-pill' + (cfg.days?.includes(d) ? ' on' : '')} style={{ cursor: 'pointer' }}
+                  onClick={() => setCustom({ days: cfg.days?.includes(d) ? cfg.days.filter(x => x !== d) : [...(cfg.days || []), d] })}>
+                  {WDC[d]}
+                </span>
+              ))}
+            </div>
+          )}
+          <div className="muted" style={{ marginTop: 4 }}>{repeatLabel(value, dueDate)}</div>
+        </div>
+      )}
+
+      {mode && (
+        <div className="drow" style={{ marginTop: 8 }}>
+          <label style={{ width: 'auto' }}>沒做到時</label>
+          <select value={missPolicy || 'keep'} onChange={e => onChange(value, e.target.value)}>
+            <option value="keep">保留在那一天，直到做完</option>
+            <option value="drop">當天沒做就跳過，自動移到下一次</option>
+          </select>
+        </div>
+      )}
+    </div>
+  );
+}
+
 function TaskRow({ t, lists, sel, onSel, onToggle }) {
   const list = lists.find(l => l.id === t.list_id);
   const overdue = t.due_date && t.due_date < today() && !t.completed;
@@ -43,12 +123,9 @@ export function Detail({ task, lists, onSave, onDelete, onClose }) {
         <select value={t.priority} onChange={e => up({ priority: +e.target.value })}>
           {[0, 1, 2, 3].map(p => <option key={p} value={p}>{PRI[p][0]}</option>)}
         </select>
-        <label>重複</label>
-        <select value={t.recurring || ''} onChange={e => up({ recurring: e.target.value || null })}>
-          <option value="">不重複</option><option value="daily">每天</option>
-          <option value="weekly">每週</option><option value="monthly">每月</option><option value="yearly">每年</option>
-        </select>
       </div>
+      <RepeatPicker value={t.recurring} dueDate={t.due_date} missPolicy={t.miss_policy}
+        onChange={(recurring, miss_policy) => up({ recurring, miss_policy })} />
       <div className="drow">
         <label>標籤</label>
         <input placeholder="用逗號分隔" value={t.tags.join(',')}
@@ -114,7 +191,7 @@ function AddSheet({ view, lists, onDone, onClose }) {
   );
 }
 
-export default function Tasks({ view, tasks, lists, filters, reload, title }) {
+export default function Tasks({ view, tasks, lists, filters, habits = [], reload, title }) {
   const [selId, setSelId] = useState(null);
   const [quick, setQuick] = useState('');
   const [showAdd, setShowAdd] = useState(false);
@@ -138,8 +215,8 @@ export default function Tasks({ view, tasks, lists, filters, reload, title }) {
     reload();
   }
   async function save(t) {
-    const { id, title, notes, due_date, due_time, priority, tags, subtasks, recurring, list_id } = t;
-    await api(`/tasks/${id}`, { method: 'PATCH', body: { title, notes, due_date, due_time, priority, tags, subtasks, recurring, list_id } });
+    const { id, title, notes, due_date, due_time, priority, tags, subtasks, recurring, miss_policy, list_id } = t;
+    await api(`/tasks/${id}`, { method: 'PATCH', body: { title, notes, due_date, due_time, priority, tags, subtasks, recurring, miss_policy, list_id } });
     reload();
   }
   async function del(t) {
@@ -176,6 +253,30 @@ export default function Tasks({ view, tasks, lists, filters, reload, title }) {
             </div>
           ))}
           {shown.length === 0 && <div className="muted" style={{ marginTop: 30, textAlign: 'center' }}>沒有任務</div>}
+
+          {view.type === 'today' && habits.length > 0 && (
+            <div className="tgroup" style={{ marginTop: 24, borderTop: '2px dashed var(--border)', paddingTop: 12 }}>
+              <div className="glabel">🌱 今日習慣</div>
+              {habits.map(h => {
+                const done = h.checkins.includes(today());
+                // keep 政策：計算近 7 天（不含今天）漏打卡的天數
+                const owed = h.miss_policy === 'keep'
+                  ? [...Array(7)].map((_, i) => { const d = new Date(); d.setDate(d.getDate() - i - 1); return d.toISOString().slice(0, 10); })
+                    .filter(d => !h.checkins.includes(d)).length
+                  : 0;
+                return (
+                  <div key={h.id} className={'todo' + (done ? ' done' : '')} style={{ marginTop: 6 }}>
+                    <input type="checkbox" checked={done}
+                      onChange={() => api(`/habits/${h.id}/checkin`, { method: 'POST', body: { date: today(), undo: done } }).then(reload)} />
+                    <span>{h.icon}</span>
+                    <span className="todo-title">{h.name}</span>
+                    {owed > 0 && <span className="chip" style={{ color: 'var(--red)' }}>欠 {owed} 天，到習慣頁補卡</span>}
+                    <span className="muted" style={{ marginLeft: 'auto' }}>🔥 {(() => { let s = 0, d = today(); if (!h.checkins.includes(d)) { const x = new Date(); x.setDate(x.getDate() - 1); d = x.toISOString().slice(0, 10); } while (h.checkins.includes(d)) { s++; const x = new Date(d + 'T00:00:00'); x.setDate(x.getDate() - 1); d = x.toISOString().slice(0, 10); } return s; })()} 天</span>
+                  </div>
+                );
+              })}
+            </div>
+          )}
 
           {view.type === 'today' && (
             <div className="tgroup" style={{ marginTop: 24, borderTop: '2px dashed var(--border)', paddingTop: 12 }}>

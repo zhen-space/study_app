@@ -7,6 +7,7 @@ const ICONS = ['⭐', '💧', '🏃', '📖', '🧘', '💪', '🌙', '🍎'];
 export default function HabitsView({ habits, reload }) {
   const [name, setName] = useState('');
   const [icon, setIcon] = useState('⭐');
+  const [missPolicy, setMissPolicy] = useState('drop');
 
   const week = [...Array(7)].map((_, i) => addDays(today(), i - 6));
 
@@ -19,7 +20,7 @@ export default function HabitsView({ habits, reload }) {
   async function add(e) {
     e.preventDefault();
     if (!name.trim()) return;
-    await api('/habits', { method: 'POST', body: { name: name.trim(), icon } });
+    await api('/habits', { method: 'POST', body: { name: name.trim(), icon, miss_policy: missPolicy } });
     setName('');
     reload();
   }
@@ -32,10 +33,19 @@ export default function HabitsView({ habits, reload }) {
     <div className="main">
       <div className="main-head"><h2>習慣打卡</h2></div>
       <div className="main-body">
-        <form className="quick-add" style={{ margin: '6px 0' }} onSubmit={add}>
-          <select value={icon} onChange={e => setIcon(e.target.value)}>{ICONS.map(i => <option key={i}>{i}</option>)}</select>
-          <input placeholder="＋ 新增習慣（如：背 10 個單字）" value={name} onChange={e => setName(e.target.value)} />
-          <button className="btn sm">新增</button>
+        <form onSubmit={add} style={{ margin: '6px 0' }}>
+          <div className="row">
+            <select value={icon} onChange={e => setIcon(e.target.value)}>{ICONS.map(i => <option key={i}>{i}</option>)}</select>
+            <input placeholder="＋ 新增習慣（如：背 10 個單字）" value={name} onChange={e => setName(e.target.value)} style={{ flex: 1 }} />
+            <button className="btn sm">新增</button>
+          </div>
+          <div className="row" style={{ marginTop: 6 }}>
+            <span className="muted">沒打卡時：</span>
+            <select value={missPolicy} onChange={e => setMissPolicy(e.target.value)}>
+              <option value="drop">跳過就好，不用補</option>
+              <option value="keep">保留，要回來補卡</option>
+            </select>
+          </div>
         </form>
         {habits.map(h => (
           <div className="habit-row" key={h.id}>
