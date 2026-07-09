@@ -44,8 +44,21 @@ function freeSlotsForDay(dateStr, events, settings) {
 // POST /api/schedule/preview
 // { items:[{subject_id, title, minutes, start, end, final}], mode:'order'|'spread', startDate?, endDate? }
 // 每個項目可有自己的日期範圍；final=true 的項目（壓軸）會排在其他項目全部結束之後
+// 某天既定行程（含週期）的總分鐘數
+function busyMinutesForDay(dateStr, events) {
+  const dow = new Date(dateStr + 'T00:00:00').getDay();
+  let m = 0;
+  for (const e of events) {
+    const applies = e.recurring === 'weekly'
+      ? new Date(e.date + 'T00:00:00').getDay() === dow && e.date <= dateStr
+      : e.date === dateStr;
+    if (applies) m += toMin(e.end_time) - toMin(e.start_time);
+  }
+  return m;
+}
+
 router.post('/preview', async (req, res) => {
-  const { items, excludeWeekdays = [], excludeDates = [] } = req.body;
+  const { items, excludeWeekdays = [], excludeDates = [], skipIfBusyHours = 0 } = req.body;
   if (!items?.length) return res.status(400).json({ error: '參數不完整' });
   const today = new Date().toISOString().slice(0, 10);
   const gStart = req.body.startDate || today, gEnd = req.body.endDate || today;
@@ -67,6 +80,7 @@ router.post('/preview', async (req, res) => {
     if (ds < today) continue;
     if (excludeDates.includes(ds)) continue;                      // 指定不排的日期
     if (excludeWeekdays.includes(d.getDay())) continue;           // 不排的星期
+    if (skipIfBusyHours > 0 && busyMinutesForDay(ds, events) >= skipIfBusyHours * 60) continue; // 既定行程太滿
     days.push({ date: ds, slots: freeSlotsForDay(ds, events, settings), slotIdx: 0 });
   }
   if (!days.length) return res.status(400).json({ error: '沒有可排的日期' });

@@ -223,14 +223,23 @@ router.post('/toc', async (req, res) => {
 2. 節（第二層）：常用國字數字「壹、貳、參、肆、伍、陸…」或「3-1」「一、二、三」開頭，如「壹 大氣的性質與分層結構」。level 填「節」。
 3. 主題／小節（第三層）：常寫「主題 1」「重點 2」，如「主題1 大氣的成分」。level 填「主題」（或課本實際用的詞，如「小節」「重點」）。
 
-【重要】
-- 千萬不要把「壹貳參…」的節誤當成章，也不要漏掉「主題N」這一層——照片裡有幾層就輸出幾層。
+【最重要｜巢狀階層，不可攤平】
+資料是三層巢狀樹，務必正確歸屬父子關係：
+- chapters[] 只放「章」（大數字，如「3 大氣」）。
+- 每個「章」的 children[] 只放它底下的「節」（壹貳參肆伍陸…）。
+- 每個「節」的 children[] 只放它底下的「主題／小節」（主題1、主題2…）。
+- 「主題N」一定要放進它所屬那個「節」的 children 裡，絕對不可以和「壹貳參」並列成為章的直接子項。
+- level 要標對：大數字=「章」、壹貳參=「節」、主題N=「主題」。千萬不要把每一項都標成「節」。
+
+【其他】
 - title 保留原始編號與名稱；level 只能用：章、節、主題、課、單元、小節、重點。
 - 沒有下一層就給空的 children 陣列；國文英文以「課」為單位、通常沒有子項。
 - 照片邊緣被切到、名稱讀不完整的項目就略過不要猜。忽略附錄、索引、頁碼。
 
-【範例】照片是「3 大氣 → 壹 大氣的性質與分層結構 → 主題1 大氣的成分、主題2 大氣的垂直分布」時，輸出：
-{"chapters":[{"title":"3 大氣","level":"章","children":[{"title":"壹 大氣的性質與分層結構","level":"節","children":[{"title":"主題1 大氣的成分","level":"主題"},{"title":"主題2 大氣的垂直分布","level":"主題"}]}]}]}`,
+【正確範例】「3 大氣」底下有「壹 大氣的性質與分層結構」，而「壹」底下有「主題1 大氣的成分、主題2 大氣的垂直分布」，正確輸出（注意主題在壹的 children 裡）：
+{"chapters":[{"title":"3 大氣","level":"章","children":[{"title":"壹 大氣的性質與分層結構","level":"節","children":[{"title":"主題1 大氣的成分","level":"主題"},{"title":"主題2 大氣的垂直分布","level":"主題"}]},{"title":"貳 溼度與水氣凝結","level":"節","children":[]}]}]}
+【錯誤示範｜不要這樣】把主題和壹貳並列、全標成節：
+{"chapters":[{"title":"3 大氣","level":"章","children":[{"title":"壹…","level":"節","children":[]},{"title":"主題1…","level":"節","children":[]}]}]}  ← 錯！主題被攤平了`,
       output_config: { format: { type: 'json_schema', schema: TOC_SCHEMA } },
       messages: [{
         role: 'user',
@@ -244,16 +253,20 @@ router.post('/toc', async (req, res) => {
     const { chapters } = JSON.parse(text);
     if (!chapters.length) return res.status(400).json({ error: 'AI 沒有讀到章節，請拍更清楚的目錄照片' });
 
+    let base = 0;
     if (replace !== false) {
       await q.run('DELETE FROM toc_items WHERE user_id=? AND list_id=?', [req.userId, list_id]);
+    } else {
+      const mx = await q.get('SELECT MAX(order_index) AS m FROM toc_items WHERE user_id=? AND list_id=?', [req.userId, list_id]);
+      base = (mx?.m ?? -1) + 1;
     }
     const items = [];
     for (let i = 0; i < chapters.length; i++) {
       const c = chapters[i];
       const kids = c.children || [];
       const r = await q.run('INSERT INTO toc_items (user_id, list_id, title, level, sections, order_index) VALUES (?,?,?,?,?,?)',
-        [req.userId, list_id, c.title, c.level || '章', JSON.stringify(kids), i]);
-      items.push({ id: r.lastInsertRowid, list_id, title: c.title, level: c.level || '章', sections: kids, order_index: i });
+        [req.userId, list_id, c.title, c.level || '章', JSON.stringify(kids), base + i]);
+      items.push({ id: r.lastInsertRowid, list_id, title: c.title, level: c.level || '章', sections: kids, order_index: base + i });
     }
     res.json({ items });
   } catch (err) {

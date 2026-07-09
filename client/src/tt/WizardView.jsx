@@ -52,6 +52,8 @@ export default function WizardView({ lists, reload, goTasks }) {
   const [exWd, setExWd] = useState([]);               // 不排的星期 0-6
   const [exDates, setExDates] = useState([]);         // 不排的日期
   const [exDateInput, setExDateInput] = useState(today());
+  const [levelMin, setLevelMin] = useState({});       // 使用者固定的各層級時數
+  const [busyHours, setBusyHours] = useState(0);      // 既定行程超過幾小時就不排（0=不限）
   const [bySubject, setBySubject] = useState(false);
   const [byGroup, setByGroup] = useState(false);
   const [dGlobal, setDGlobal] = useState({ start: today(), end: addDays(today(), 6) });
@@ -200,7 +202,8 @@ export default function WizardView({ lists, reload, goTasks }) {
     await api('/lists', { method: 'POST', body: { name: name.trim(), color: LIST_COLORS[lists.length % LIST_COLORS.length] } });
     reload();
   }
-  async function uploadTOC(l, e) {
+  // append=true 表示追加（不清掉既有章節，接在後面）
+  async function uploadTOC(l, e, append = false) {
     const fileList = [...e.target.files];
     if (!fileList.length) return;
     if (fileList.length > 12) { setTocMsg(m => ({ ...m, [l.id]: '一次最多 12 張照片' })); e.target.value = ''; return; }
@@ -209,17 +212,26 @@ export default function WizardView({ lists, reload, goTasks }) {
     try {
       const files = [];
       for (const f of fileList) files.push({ filename: f.name, mime: f.type, data: await fileToB64(f) });
-      await api('/import/toc', { method: 'POST', body: { list_id: l.id, files } });
+      await api('/import/toc', { method: 'POST', body: { list_id: l.id, files, replace: !append } });
       setTocs(await api('/import/toc'));
-      setItems(a => a.filter(x => x.subject_id !== l.id || !String(x.key).startsWith('toc-')));
+      if (!append) setItems(a => a.filter(x => x.subject_id !== l.id || !String(x.key).startsWith('toc-')));
       setTocMsg(m => ({ ...m, [l.id]: '' }));
     } catch (err2) { setTocMsg(m => ({ ...m, [l.id]: err2.message })); }
     setTocBusy(null);
     e.target.value = '';
   }
-  // 依單位大小的預設時數（大單位＝多時間）
+  // 依單位大小的預設時數（大單位＝多時間），可被使用者固定覆寫
   const LEVEL_MIN = { 章: 120, 課: 120, 單元: 120, 節: 60, 小節: 60, 主題: 30, 重點: 30, 節次: 60 };
-  const minutesFor = (level, depth) => LEVEL_MIN[level] ?? ([120, 60, 30][depth] ?? 60);
+  const minutesFor = (level, depth) => levelMin[level] ?? LEVEL_MIN[level] ?? ([120, 60, 30][depth] ?? 60);
+
+  // 使用者改某項時數 → 選擇是否固定該層級（套用到所有同層級項目、以後也用這個）
+  function changeMinutes(it, val) {
+    setItems(a => a.map(x => x.key === it.key ? { ...x, minutes: val } : x));
+    if (window.confirm(`要把所有「${it.level}」都固定成 ${val} 分鐘嗎？\n（確定＝全部套用並記住，取消＝只改這一項）`)) {
+      setLevelMin(m => ({ ...m, [it.level]: val }));
+      setItems(a => a.map(x => x.level === it.level ? { ...x, minutes: val } : x));
+    }
+  }
 
   // 把一列 toc（章）正規化成樹：舊資料的 sections 是字串陣列，新資料是物件樹
   const normKids = kids => (kids || []).map(k =>
@@ -275,7 +287,7 @@ export default function WizardView({ lists, reload, goTasks }) {
     try {
       const body = {
         items: expanded2, startDate: dGlobal.start, endDate: dGlobal.end,
-        excludeWeekdays: exWd, excludeDates: exDates,
+        excludeWeekdays: exWd, excludeDates: exDates, skipIfBusyHours: busyHours,
       };
       if (!follow) { body.sleep_start = shift.sleep_start; body.sleep_end = shift.sleep_end; }
       setPreview(await api('/schedule/preview', { method: 'POST', body }));
@@ -464,7 +476,8 @@ export default function WizardView({ lists, reload, goTasks }) {
                       </span>
                       {it && <>
                         <input type="number" min="10" step="10" value={it.minutes} style={{ width: 66 }}
-                          onChange={e => setItems(a => a.map(x => x.key === it.key ? { ...x, minutes: +e.target.value } : x))} />
+                          onChange={e => setItems(a => a.map(x => x.key === it.key ? { ...x, minutes: +e.target.value || 0 } : x))}
+                          onBlur={e => { const v = +e.target.value; if (v && v !== (levelMin[it.level] ?? null)) changeMinutes(it, v); }} />
                         <span className="muted">分</span>
                       </>}
                     </div>
@@ -482,9 +495,15 @@ export default function WizardView({ lists, reload, goTasks }) {
                       📷 {rows.length ? '重拍目錄' : '拍課本目錄（可多張）'}
                       <input type="file" multiple disabled={tocBusy !== null} accept="image/*,.pdf" style={{ display: 'none' }} onChange={e => uploadTOC(l, e)} />
                     </label>
+                    {rows.length > 0 && (
+                      <label className="btn sm ghost" style={{ opacity: tocBusy === l.id ? .5 : 1 }}>
+                        ➕ 追加照片
+                        <input type="file" multiple disabled={tocBusy !== null} accept="image/*,.pdf" style={{ display: 'none' }} onChange={e => uploadTOC(l, e, true)} />
+                      </label>
+                    )}
                     {rows.length > 0 && <button className="btn sm ghost" onClick={() => selectAllChapters(l, rows)}>{allSel ? '全不選' : '全選（整章）'}</button>}
                   </div>
-                  {rows.length > 0 && <div className="muted" style={{ marginTop: 4 }}>點名稱展開更小單位，可勾章／節／小節任一層（勾小的會取代大的；時數依單位大小自動帶入，可改）</div>}
+                  {rows.length > 0 && <div className="muted" style={{ marginTop: 4 }}>點名稱展開更小單位，可勾章／節／主題任一層（勾小的會取代大的）。改時數會問要不要固定整個層級。目錄不完整可用「追加照片」補後面幾頁</div>}
                   {tocMsg[l.id] && <div className="muted" style={{ marginTop: 4 }}>{tocMsg[l.id]}</div>}
                   {nodes.map(renderNode)}
                   <div className="row" style={{ marginTop: 8 }}>
@@ -640,6 +659,11 @@ export default function WizardView({ lists, reload, goTasks }) {
                 ))}
               </div>
             )}
+            <div className="row" style={{ marginTop: 10 }}>
+              <span className="muted">當天既定行程（上課、補習等）超過</span>
+              <input type="number" min="0" max="24" value={busyHours} style={{ width: 60 }} onChange={e => setBusyHours(+e.target.value || 0)} />
+              <span className="muted">小時，就不排讀書（填 0＝不限制）</span>
+            </div>
             {err && <div className="error" style={{ marginTop: 8 }}>{err}</div>}
             <div className="row" style={{ marginTop: 14 }}>
               <button className="btn ghost" onClick={() => setStep(2)}>上一步</button>
