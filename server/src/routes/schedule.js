@@ -123,7 +123,7 @@ router.post('/preview', async (req, res) => {
 
   const blocks = [];
   const failed = [];
-  days.forEach(d => { d.load = 0; d.count = 0; }); // load=分鐘數 count=項數
+  days.forEach(d => { d.load = 0; d.count = 0; d.subs = new Set(); }); // load=分鐘數 count=項數 subs=當天已排科目
 
   function tryDay(day, w) {
     if (!timed) {
@@ -131,7 +131,7 @@ router.post('/preview', async (req, res) => {
       const cap = perDay > 0 ? perDay : Infinity;
       if (day.count >= cap || !day.slots.length) return false;
       blocks.push({ subject_id: w.subject_id, title: w.title, date: day.date });
-      day.count++; day.load++;
+      day.count++; day.load++; day.subs.add(w.subject_id);
       return true;
     }
     while (day.slotIdx < day.slots.length) {
@@ -140,6 +140,7 @@ router.post('/preview', async (req, res) => {
         blocks.push({ subject_id: w.subject_id, title: w.title, date: day.date, start_time: toHM(day.pos), end_time: toHM(day.pos + w.chunk) });
         day.pos += w.chunk + BREAK;
         day.load += w.chunk;
+        day.subs.add(w.subject_id);
         if (day.pos >= end) { day.slotIdx++; day.pos = day.slots[day.slotIdx]?.[0] ?? null; }
         return true;
       }
@@ -149,20 +150,24 @@ router.post('/preview', async (req, res) => {
     return false;
   }
 
-  function place(w, minDate) {
-    let pool = days.filter(d => d.date >= w.start && d.date <= w.end && (!minDate || d.date >= minDate));
-    if (!pool.length) pool = days.filter(d => d.date >= w.start && d.date <= w.end);
-    // 負載平衡：優先放到目前讀書量最少的那天（同量取較早的日期）
-    pool = [...pool].sort((a, b) => a.load - b.load || a.date.localeCompare(b.date));
-    for (const day of pool) if (tryDay(day, w)) return true;
+  // avoidSameSubject=true 時，第一輪只考慮「當天還沒排過這科」的日子，排不下再放寬
+  function place(w, minDate, avoidSameSubject) {
+    const base = days.filter(d => d.date >= w.start && d.date <= w.end && (!minDate || d.date >= minDate));
+    const inRange = base.length ? base : days.filter(d => d.date >= w.start && d.date <= w.end);
+    const sortByLoad = arr => [...arr].sort((a, b) => a.load - b.load || a.date.localeCompare(b.date));
+    if (avoidSameSubject) {
+      const fresh = sortByLoad(inRange.filter(d => !d.subs.has(w.subject_id)));
+      for (const day of fresh) if (tryDay(day, w)) return true;
+    }
+    for (const day of sortByLoad(inRange)) if (tryDay(day, w)) return true;
     return false;
   }
 
-  for (const w of firstsQ) if (!place(w)) failed.push(w.title); // 先完成的最先排（自然落在最早的日期）
-  for (const w of work) if (!place(w)) failed.push(w.title);
+  for (const w of firstsQ) if (!place(w, null, true)) failed.push(w.title); // 先完成的最先排
+  for (const w of work) if (!place(w, null, true)) failed.push(w.title);    // 同一天盡量不同科
   // 壓軸：排在所有一般項目最後一天之後（若其範圍允許）
   const lastNormal = blocks.reduce((a, b) => b.date > a ? b.date : a, '0000');
-  for (const w of finals) if (!place(w, lastNormal)) failed.push(w.title);
+  for (const w of finals) if (!place(w, lastNormal, true)) failed.push(w.title);
 
   blocks.sort((a, b) => a.date === b.date ? (a.start_time || '').localeCompare(b.start_time || '') : a.date.localeCompare(b.date));
   res.json({

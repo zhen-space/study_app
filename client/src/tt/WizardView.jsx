@@ -49,6 +49,7 @@ export default function WizardView({ lists, reload, goTasks }) {
   const [typeGroupBy, setTypeGroupBy] = useState({});
   const [finals, setFinals] = useState({});           // 壓軸項目
   const [firstsSel, setFirstsSel] = useState({});     // 要先完成的項目
+  const [plainSel, setPlainSel] = useState({});       // 純題目：不套題型、照順序（如模考）
   const [exWd, setExWd] = useState([]);               // 不排的星期 0-6
   const [exDates, setExDates] = useState([]);         // 不排的日期
   const [exDateInput, setExDateInput] = useState(today());
@@ -200,10 +201,19 @@ export default function WizardView({ lists, reload, goTasks }) {
   }
 
   /* ---------- 科目章節 ---------- */
+  // 常見科目的預設顏色（英文=藍）
+  const SUBJ_COLOR = { 英文: '#4772fa', 英語: '#4772fa', 國文: '#e03131', 數學: '#16a34a', 化學: '#f59f00', 物理: '#9333ea', 生物: '#0891b2', 地科: '#0d9488', 歷史: '#b45309', 地理: '#65a30d', 公民: '#db2777' };
   async function addSubject() {
     const name = prompt('科目名稱（如：數學）：');
     if (!name?.trim()) return;
-    await api('/lists', { method: 'POST', body: { name: name.trim(), color: LIST_COLORS[lists.length % LIST_COLORS.length] } });
+    const nm = name.trim();
+    const used = new Set(lists.map(l => l.color));
+    const color = SUBJ_COLOR[nm] || LIST_COLORS.find(c => !used.has(c)) || LIST_COLORS[lists.length % LIST_COLORS.length];
+    await api('/lists', { method: 'POST', body: { name: nm, color } });
+    reload();
+  }
+  async function setSubjectColor(l, color) {
+    await api(`/lists/${l.id}`, { method: 'PATCH', body: { color } });
     reload();
   }
   // append=true 表示追加（不清掉既有章節，接在後面）
@@ -319,7 +329,10 @@ export default function WizardView({ lists, reload, goTasks }) {
 
     const expanded2 = [];
     for (const it of merged) {
-      groupsFor(it.subject_id).forEach((g, gi) => {
+      const plain = anyFlag(it, plainSel);
+      // 純題目：不套題型、照順序；否則依題型組展開
+      const gs = plain ? [null] : groupsFor(it.subject_id);
+      gs.forEach((g, gi) => {
         const w = winOf(it.subject_id, gi);
         expanded2.push({
           subject_id: it.subject_id,
@@ -328,7 +341,7 @@ export default function WizardView({ lists, reload, goTasks }) {
           start: w.start, end: w.end,
           final: anyFlag(it, finals),
           first: anyFlag(it, firstsSel),
-          spread: (subjSpread[it.subject_id] ?? 'spread') === 'spread',
+          spread: plain ? false : (subjSpread[it.subject_id] ?? 'spread') === 'spread',
         });
       });
     }
@@ -559,6 +572,8 @@ export default function WizardView({ lists, reload, goTasks }) {
                 <div key={l.id} style={{ marginTop: 14, borderTop: '1px solid var(--border)', paddingTop: 10 }}>
                   <div className="row">
                     <span className="tag" style={{ background: l.color, color: '#fff', padding: '2px 8px', borderRadius: 999, fontSize: 12 }}>{l.name}</span>
+                    <input type="color" value={l.color} title="改科目顏色" style={{ width: 28, height: 24, padding: 0, border: 'none', background: 'none' }}
+                      onChange={e => setSubjectColor(l, e.target.value)} />
                     <label className="btn sm ghost" style={{ opacity: tocBusy === l.id ? .5 : 1 }}>
                       📷 {rows.length ? '重拍目錄' : '拍課本目錄（可多張）'}
                       <input type="file" multiple disabled={tocBusy !== null} accept="image/*,.pdf" style={{ display: 'none' }} onChange={e => uploadTOC(l, e)} />
@@ -677,13 +692,19 @@ export default function WizardView({ lists, reload, goTasks }) {
               <b style={{ display: 'block', marginTop: 16 }}>有沒有章節需要「先完成」或「壓軸」？</b>
               <div className="muted">先完成＝最先排；壓軸＝其他全部讀完才排（如：學測模擬試題、115 學測試題）</div>
               {items.map(it => (
-                <div key={it.key} className="row" style={{ marginTop: 4 }}>
-                  <span style={{ color: it.color }}>■</span>
-                  <span style={{ flex: 1 }}>{it.name}｜{it.title}</span>
-                  <label className={'tag-pill' + (firstsSel[it.key] ? ' on' : '')} style={{ cursor: 'pointer' }}
-                    onClick={() => { setFirstsSel(f => ({ ...f, [it.key]: !f[it.key] })); setFinals(f => ({ ...f, [it.key]: false })); }}>先完成</label>
-                  <label className={'tag-pill' + (finals[it.key] ? ' on' : '')} style={{ cursor: 'pointer' }}
-                    onClick={() => { setFinals(f => ({ ...f, [it.key]: !f[it.key] })); setFirstsSel(f => ({ ...f, [it.key]: false })); }}>壓軸</label>
+                <div key={it.key} style={{ marginTop: 6 }}>
+                  <div className="row">
+                    <span style={{ color: it.color }}>■</span>
+                    <span style={{ flex: 1 }}>{it.name}｜{it.title}</span>
+                    <label className={'tag-pill' + (firstsSel[it.key] ? ' on' : '')} style={{ cursor: 'pointer' }}
+                      onClick={() => { setFirstsSel(f => ({ ...f, [it.key]: !f[it.key] })); setFinals(f => ({ ...f, [it.key]: false })); }}>先完成</label>
+                    <label className={'tag-pill' + (finals[it.key] ? ' on' : '')} style={{ cursor: 'pointer' }}
+                      onClick={() => { setFinals(f => ({ ...f, [it.key]: !f[it.key] })); setFirstsSel(f => ({ ...f, [it.key]: false })); }}>壓軸</label>
+                  </div>
+                  <div className="row" style={{ marginLeft: 18, marginTop: 2 }}>
+                    <label className={'tag-pill' + (plainSel[it.key] ? ' on' : '')} style={{ cursor: 'pointer' }}
+                      onClick={() => setPlainSel(f => ({ ...f, [it.key]: !f[it.key] }))}>純題目·照順序（如模考，不套題型）</label>
+                  </div>
                 </div>
               ))}
 
