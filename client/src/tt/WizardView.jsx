@@ -55,7 +55,9 @@ export default function WizardView({ lists, reload, goTasks }) {
   const [levelMin, setLevelMin] = useState({});       // 使用者固定的各層級時數
   const [busyHours, setBusyHours] = useState(0);      // 既定行程超過幾小時就不排（0=不限）
   const [timed, setTimed] = useState(true);           // 是否計算時間
-  const [perDay, setPerDay] = useState(3);            // 不計時模式：每天幾項
+  const [limitPerDay, setLimitPerDay] = useState(false); // 不計時模式是否限制每天數量
+  const [perDay, setPerDay] = useState(3);            // 每天幾項
+  const [groupSize, setGroupSize] = useState({});     // 每科：把連續 N 個單位綁成一組（0/1=不綁）
   const [bySubject, setBySubject] = useState(false);
   const [byGroup, setByGroup] = useState(false);
   const [dGlobal, setDGlobal] = useState({ start: today(), end: addDays(today(), 6) });
@@ -288,11 +290,35 @@ export default function WizardView({ lists, reload, goTasks }) {
     setRangeInput(r => ({ ...r, [l.id]: '' }));
   }
 
+  // 取單位標記（標題第一個詞，如「主題1」「壹」），供合併命名
+  const unitTok = title => title.split(/[\s　]/)[0] || title;
+
   /* ---------- 產生排程 ---------- */
   async function genPreview() {
     setErr('');
+    // 先依各科「N 個一組」把連續章節單位合併
+    const merged = [];
+    const bySub = {};
+    items.forEach(it => (bySub[it.subject_id] = bySub[it.subject_id] || []).push(it));
+    Object.entries(bySub).forEach(([sid, list]) => {
+      const n = groupSize[sid] || 1;
+      if (n <= 1) { merged.push(...list); return; }
+      for (let i = 0; i < list.length; i += n) {
+        const grp = list.slice(i, i + n);
+        if (grp.length === 1) { merged.push(grp[0]); continue; }
+        merged.push({
+          ...grp[0],
+          key: grp.map(x => x.key).join('+'),
+          title: `${unitTok(grp[0].title)}～${unitTok(grp[grp.length - 1].title)}`,
+          minutes: grp.reduce((a, x) => a + (x.minutes || 0), 0),
+          _members: grp.map(x => x.key),
+        });
+      }
+    });
+    const anyFlag = (m, sel) => (m._members || [m.key]).some(k => sel[k]);
+
     const expanded2 = [];
-    for (const it of items) {
+    for (const it of merged) {
       groupsFor(it.subject_id).forEach((g, gi) => {
         const w = winOf(it.subject_id, gi);
         expanded2.push({
@@ -300,8 +326,8 @@ export default function WizardView({ lists, reload, goTasks }) {
           title: it.title + (g ? `｜${gLabel(g)}` : ''),
           minutes: it.minutes,
           start: w.start, end: w.end,
-          final: !!finals[it.key],
-          first: !!firstsSel[it.key],
+          final: anyFlag(it, finals),
+          first: anyFlag(it, firstsSel),
           spread: (subjSpread[it.subject_id] ?? 'spread') === 'spread',
         });
       });
@@ -310,7 +336,7 @@ export default function WizardView({ lists, reload, goTasks }) {
       const body = {
         items: expanded2, startDate: dGlobal.start, endDate: dGlobal.end,
         excludeWeekdays: exWd, excludeDates: exDates, skipIfBusyHours: busyHours,
-        timed, perDay,
+        timed, perDay: (timed || limitPerDay) ? perDay : 0,
       };
       if (!follow) { body.sleep_start = shift.sleep_start; body.sleep_end = shift.sleep_end; }
       setPreview(await api('/schedule/preview', { method: 'POST', body }));
@@ -364,9 +390,13 @@ export default function WizardView({ lists, reload, goTasks }) {
               </label>
               {!timed && (
                 <div className="row" style={{ marginTop: 6 }}>
-                  <span className="muted">每天排</span>
-                  <input type="number" min="1" max="10" value={perDay} style={{ width: 56 }} onChange={e => setPerDay(Math.max(1, +e.target.value || 1))} />
-                  <span className="muted">個章節單位</span>
+                  <label><input type="checkbox" checked={limitPerDay} onChange={e => setLimitPerDay(e.target.checked)} /> 限制每天數量</label>
+                  {limitPerDay && <>
+                    <span className="muted">每天排</span>
+                    <input type="number" min="1" max="10" value={perDay} style={{ width: 56 }} onChange={e => setPerDay(Math.max(1, +e.target.value || 1))} />
+                    <span className="muted">個</span>
+                  </>}
+                  {!limitPerDay && <span className="muted">（不限，平均鋪滿日期範圍）</span>}
                 </div>
               )}
             </div>
@@ -611,10 +641,19 @@ export default function WizardView({ lists, reload, goTasks }) {
             <div className="tile">
               <b>各科的章節要打散還是照順序？</b>
               {sids.map(sid => (
-                <div className="row" key={sid} style={{ marginTop: 6 }}>
-                  <span className="tag" style={{ background: lists.find(l => l.id === sid)?.color, color: '#fff', padding: '2px 8px', borderRadius: 999, fontSize: 12 }}>{sname(sid)}</span>
-                  <label><input type="radio" checked={(subjSpread[sid] ?? 'spread') === 'spread'} onChange={() => setSubjSpread(s => ({ ...s, [sid]: 'spread' }))} /> 打散平均</label>
-                  <label><input type="radio" checked={subjSpread[sid] === 'order'} onChange={() => setSubjSpread(s => ({ ...s, [sid]: 'order' }))} /> 照章節順序</label>
+                <div key={sid} style={{ marginTop: 8 }}>
+                  <div className="row">
+                    <span className="tag" style={{ background: lists.find(l => l.id === sid)?.color, color: '#fff', padding: '2px 8px', borderRadius: 999, fontSize: 12 }}>{sname(sid)}</span>
+                    <label><input type="radio" checked={(subjSpread[sid] ?? 'spread') === 'spread'} onChange={() => setSubjSpread(s => ({ ...s, [sid]: 'spread' }))} /> 打散平均</label>
+                    <label><input type="radio" checked={subjSpread[sid] === 'order'} onChange={() => setSubjSpread(s => ({ ...s, [sid]: 'order' }))} /> 照章節順序</label>
+                  </div>
+                  <div className="row" style={{ marginTop: 4, marginLeft: 10 }}>
+                    <label><input type="checkbox" checked={(groupSize[sid] || 1) > 1} onChange={e => setGroupSize(g => ({ ...g, [sid]: e.target.checked ? 2 : 1 }))} /> 幾個單位綁一組排</label>
+                    {(groupSize[sid] || 1) > 1 && <>
+                      <input type="number" min="2" max="20" value={groupSize[sid]} style={{ width: 56 }} onChange={e => setGroupSize(g => ({ ...g, [sid]: Math.max(2, +e.target.value || 2) }))} />
+                      <span className="muted">個一組（如「主題1～主題3」一次排）</span>
+                    </>}
+                  </div>
                 </div>
               ))}
 

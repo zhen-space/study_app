@@ -127,8 +127,9 @@ router.post('/preview', async (req, res) => {
 
   function tryDay(day, w) {
     if (!timed) {
-      // 不計時：一天最多 perDay 個單位，只要當天有任何空檔即可
-      if (day.count >= perDay || !day.slots.length) return false;
+      // 不計時：一天最多 perDay 個單位（perDay<=0 表示不限），只要當天有任何空檔即可
+      const cap = perDay > 0 ? perDay : Infinity;
+      if (day.count >= cap || !day.slots.length) return false;
       blocks.push({ subject_id: w.subject_id, title: w.title, date: day.date });
       day.count++; day.load++;
       return true;
