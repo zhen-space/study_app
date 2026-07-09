@@ -58,7 +58,7 @@ function busyMinutesForDay(dateStr, events) {
 }
 
 router.post('/preview', async (req, res) => {
-  const { items, excludeWeekdays = [], excludeDates = [], skipIfBusyHours = 0 } = req.body;
+  const { items, excludeWeekdays = [], excludeDates = [], skipIfBusyHours = 0, timed = true, perDay = 3 } = req.body;
   if (!items?.length) return res.status(400).json({ error: '參數不完整' });
   const today = new Date().toISOString().slice(0, 10);
   const gStart = req.body.startDate || today, gEnd = req.body.endDate || today;
@@ -90,6 +90,7 @@ router.post('/preview', async (req, res) => {
   const mkChunks = list => {
     const out = [];
     for (const it of list) {
+      if (!timed) { out.push({ ...it, chunk: 0 }); continue; } // 不計時：一項就是一個單位
       let rem = it.minutes || 120;
       while (rem > 0) {
         const c = Math.min(CHUNK, rem);
@@ -122,9 +123,16 @@ router.post('/preview', async (req, res) => {
 
   const blocks = [];
   const failed = [];
-  days.forEach(d => { d.load = 0; }); // 每日已排讀書分鐘數 → 用來平均分配
+  days.forEach(d => { d.load = 0; d.count = 0; }); // load=分鐘數 count=項數
 
   function tryDay(day, w) {
+    if (!timed) {
+      // 不計時：一天最多 perDay 個單位，只要當天有任何空檔即可
+      if (day.count >= perDay || !day.slots.length) return false;
+      blocks.push({ subject_id: w.subject_id, title: w.title, date: day.date });
+      day.count++; day.load++;
+      return true;
+    }
     while (day.slotIdx < day.slots.length) {
       const [, end] = day.slots[day.slotIdx];
       if (day.pos + w.chunk <= end) {
@@ -155,7 +163,7 @@ router.post('/preview', async (req, res) => {
   const lastNormal = blocks.reduce((a, b) => b.date > a ? b.date : a, '0000');
   for (const w of finals) if (!place(w, lastNormal)) failed.push(w.title);
 
-  blocks.sort((a, b) => a.date === b.date ? a.start_time.localeCompare(b.start_time) : a.date.localeCompare(b.date));
+  blocks.sort((a, b) => a.date === b.date ? (a.start_time || '').localeCompare(b.start_time || '') : a.date.localeCompare(b.date));
   res.json({
     blocks, unplaced: failed.length > 0,
     message: failed.length ? `空檔不足，排不進去：${[...new Set(failed)].slice(0, 5).join('、')}${failed.length > 5 ? '…' : ''}（請延長日期或減少內容）` : undefined,

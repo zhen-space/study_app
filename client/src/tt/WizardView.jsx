@@ -54,6 +54,8 @@ export default function WizardView({ lists, reload, goTasks }) {
   const [exDateInput, setExDateInput] = useState(today());
   const [levelMin, setLevelMin] = useState({});       // 使用者固定的各層級時數
   const [busyHours, setBusyHours] = useState(0);      // 既定行程超過幾小時就不排（0=不限）
+  const [timed, setTimed] = useState(true);           // 是否計算時間
+  const [perDay, setPerDay] = useState(3);            // 不計時模式：每天幾項
   const [bySubject, setBySubject] = useState(false);
   const [byGroup, setByGroup] = useState(false);
   const [dGlobal, setDGlobal] = useState({ start: today(), end: addDays(today(), 6) });
@@ -250,14 +252,34 @@ export default function WizardView({ lists, reload, goTasks }) {
       return [...cleaned, { key, subject_id: l.id, name: l.name, color: l.color, title, minutes: minutesFor(level, depth), level }];
     });
   }
-  function selectAllChapters(l, rows) {
-    const nodes = rows.map(chapterNode);
+  // 收集某科所有節點（含深度、level）
+  function allNodes(l) {
+    const out = [];
+    const walk = (n, key, depth) => {
+      out.push({ key, title: n.title, level: n.level, depth });
+      (n.children || []).forEach((c, i) => walk(c, `${key}.${i}`, depth + 1));
+    };
+    tocs.filter(t => t.list_id === l.id).map(chapterNode).forEach(n => walk(n, n.key, 0));
+    return out;
+  }
+  // 全選某一層（章/節/主題）：勾選該層所有節點，並清掉同支祖先後代
+  function selectLevel(l, targetLevel) {
+    const nodes = allNodes(l).filter(n => n.level === targetLevel);
+    if (!nodes.length) return;
     const allChecked = nodes.every(n => findItem(n.key));
     setItems(a => {
-      const rest = a.filter(x => !(x.subject_id === l.id && String(x.key).startsWith('toc-')));
-      return allChecked ? rest : [...rest,
-        ...nodes.map(n => ({ key: n.key, subject_id: l.id, name: l.name, color: l.color, title: n.title, minutes: minutesFor(n.level, 0), level: n.level }))];
+      // 移除該科所有 toc 選取，重建
+      let rest = a.filter(x => !(x.subject_id === l.id && String(x.key).startsWith('toc-')));
+      if (allChecked) return rest;
+      return [...rest, ...nodes.map(n => ({ key: n.key, subject_id: l.id, name: l.name, color: l.color, title: n.title, minutes: minutesFor(n.level, n.depth), level: n.level }))];
     });
+  }
+  function selectAllChapters(l) { selectLevel(l, allNodes(l)[0]?.level || '章'); }
+  // 該科出現過的層級（去重、依深度排序）
+  function subjectLevels(l) {
+    const seen = new Map();
+    allNodes(l).forEach(n => { if (!seen.has(n.level)) seen.set(n.level, n.depth); });
+    return [...seen.entries()].sort((a, b) => a[1] - b[1]).map(x => x[0]);
   }
   function addRange(l) {
     const title = (rangeInput[l.id] || '').trim();
@@ -288,6 +310,7 @@ export default function WizardView({ lists, reload, goTasks }) {
       const body = {
         items: expanded2, startDate: dGlobal.start, endDate: dGlobal.end,
         excludeWeekdays: exWd, excludeDates: exDates, skipIfBusyHours: busyHours,
+        timed, perDay,
       };
       if (!follow) { body.sleep_start = shift.sleep_start; body.sleep_end = shift.sleep_end; }
       setPreview(await api('/schedule/preview', { method: 'POST', body }));
@@ -297,10 +320,9 @@ export default function WizardView({ lists, reload, goTasks }) {
   async function confirm() {
     setSaving(true);
     for (const b of preview.blocks) {
-      await api('/tasks', { method: 'POST', body: {
-        title: b.title, list_id: b.subject_id, due_date: b.date, due_time: b.start_time,
-        notes: `讀書時段 ${b.start_time}–${b.end_time}`, tags: ['讀書計劃'],
-      } });
+      const body = { title: b.title, list_id: b.subject_id, due_date: b.date, tags: ['讀書計劃'] };
+      if (b.start_time) { body.due_time = b.start_time; body.notes = `讀書時段 ${b.start_time}–${b.end_time}`; }
+      await api('/tasks', { method: 'POST', body });
     }
     setSaving(false);
     reload();
@@ -332,7 +354,23 @@ export default function WizardView({ lists, reload, goTasks }) {
         {/* ============ 0 行程與作息 ============ */}
         {step === 0 && settings && (
           <div className="tile">
-            <p>排程會自動避開<b>既定行程</b>與睡覺、吃飯時間。</p>
+            <div style={{ background: 'var(--bg)', borderRadius: 8, padding: 10, marginBottom: 10 }}>
+              <b>要怎麼安排讀書進度？</b>
+              <label style={{ display: 'block', marginTop: 6 }}>
+                <input type="radio" checked={timed} onChange={() => setTimed(true)} /> <b>計算時間</b>：算出每章/節要花多久，排成含時段的讀書計劃
+              </label>
+              <label style={{ display: 'block', marginTop: 4 }}>
+                <input type="radio" checked={!timed} onChange={() => setTimed(false)} /> <b>只排進度</b>：單純把章節平均分到每天，不算時間、不顯示時段
+              </label>
+              {!timed && (
+                <div className="row" style={{ marginTop: 6 }}>
+                  <span className="muted">每天排</span>
+                  <input type="number" min="1" max="10" value={perDay} style={{ width: 56 }} onChange={e => setPerDay(Math.max(1, +e.target.value || 1))} />
+                  <span className="muted">個章節單位</span>
+                </div>
+              )}
+            </div>
+            <p>排程會自動避開<b>既定行程</b>{timed ? '與睡覺、吃飯時間' : ''}。</p>
             <div className="row" style={{ marginTop: 10 }}>
               <label className="btn sm ghost">📅 匯入 .ics<input type="file" accept=".ics,text/calendar" style={{ display: 'none' }} onChange={importICS} /></label>
               <label className="btn sm" style={{ opacity: aiBusy ? .6 : 1 }}>🤖 AI 匯入課表<input type="file" disabled={aiBusy} accept=".pdf,.docx,.xlsx,.xls,.csv,.txt,image/*" style={{ display: 'none' }} onChange={importAI} /></label>
@@ -474,7 +512,7 @@ export default function WizardView({ lists, reload, goTasks }) {
                         {hasKids && <span className="muted"> {open ? '▾' : '▸'}</span>}
                         {n.depth > 0 && <span className="chip" style={{ marginLeft: 6 }}>{n.level}</span>}
                       </span>
-                      {it && <>
+                      {it && timed && <>
                         <input type="number" min="10" step="10" value={it.minutes} style={{ width: 66 }}
                           onChange={e => setItems(a => a.map(x => x.key === it.key ? { ...x, minutes: +e.target.value || 0 } : x))}
                           onBlur={e => { const v = +e.target.value; if (v && v !== (levelMin[it.level] ?? null)) changeMinutes(it, v); }} />
@@ -501,8 +539,16 @@ export default function WizardView({ lists, reload, goTasks }) {
                         <input type="file" multiple disabled={tocBusy !== null} accept="image/*,.pdf" style={{ display: 'none' }} onChange={e => uploadTOC(l, e, true)} />
                       </label>
                     )}
-                    {rows.length > 0 && <button className="btn sm ghost" onClick={() => selectAllChapters(l, rows)}>{allSel ? '全不選' : '全選（整章）'}</button>}
                   </div>
+                  {rows.length > 0 && (
+                    <div className="row" style={{ marginTop: 6, flexWrap: 'wrap' }}>
+                      <span className="muted">快速勾選：</span>
+                      {subjectLevels(l).map(lv => (
+                        <button key={lv} className="btn sm ghost" onClick={() => selectLevel(l, lv)}>全選{lv}</button>
+                      ))}
+                      <button className="btn sm ghost" onClick={() => setItems(a => a.filter(x => !(x.subject_id === l.id && String(x.key).startsWith('toc-'))))}>清除</button>
+                    </div>
+                  )}
                   {rows.length > 0 && <div className="muted" style={{ marginTop: 4 }}>點名稱展開更小單位，可勾章／節／主題任一層（勾小的會取代大的）。改時數會問要不要固定整個層級。目錄不完整可用「追加照片」補後面幾頁</div>}
                   {tocMsg[l.id] && <div className="muted" style={{ marginTop: 4 }}>{tocMsg[l.id]}</div>}
                   {nodes.map(renderNode)}
@@ -512,10 +558,12 @@ export default function WizardView({ lists, reload, goTasks }) {
                   </div>
                   {items.filter(it => it.subject_id === l.id && !String(it.key).startsWith('toc-')).map(it => (
                     <div key={it.key} className="row" style={{ marginTop: 6, marginLeft: 10 }}>
-                      <span>• {it.title}</span>
-                      <input type="number" min="30" step="30" value={it.minutes} style={{ width: 70 }}
-                        onChange={e => setItems(a => a.map(x => x.key === it.key ? { ...x, minutes: +e.target.value } : x))} />
-                      <span className="muted">分</span>
+                      <span style={{ flex: 1 }}>• {it.title}</span>
+                      {timed && <>
+                        <input type="number" min="30" step="30" value={it.minutes} style={{ width: 70 }}
+                          onChange={e => setItems(a => a.map(x => x.key === it.key ? { ...x, minutes: +e.target.value } : x))} />
+                        <span className="muted">分</span>
+                      </>}
                       <button className="icon-btn" onClick={() => setItems(a => a.filter(x => x.key !== it.key))}>✕</button>
                     </div>
                   ))}
@@ -675,14 +723,25 @@ export default function WizardView({ lists, reload, goTasks }) {
         {/* ============ 4 確認 ============ */}
         {step === 4 && preview && (
           <div className="tile">
-            {preview.unplaced && <div className="error">{preview.message}</div>}
+            {preview.unplaced && (
+              <div style={{ border: '1px solid var(--red)', borderRadius: 8, padding: 10, marginBottom: 10 }}>
+                <div className="error"><b>空檔不足，有內容排不進去</b></div>
+                <div className="muted" style={{ margin: '4px 0 8px' }}>{preview.message}</div>
+                <div className="muted">想怎麼處理？</div>
+                <div className="row" style={{ marginTop: 6, flexWrap: 'wrap' }}>
+                  <button className="btn sm" onClick={() => setStep(1)}>刪掉一些內容</button>
+                  <button className="btn sm ghost" onClick={() => setStep(3)}>增加讀書天數/延長日期</button>
+                  {timed && <button className="btn sm ghost" onClick={() => { setTimed(false); genPreview(); }}>改成「不計時、只排進度」</button>}
+                </div>
+              </div>
+            )}
             {Object.entries(preview.blocks.reduce((a, b) => { (a[b.date] = a[b.date] || []).push(b); return a; }, {})).map(([d, list]) => (
               <div key={d} style={{ marginBottom: 10 }}>
                 <b>{d}（週{WD[new Date(d + 'T00:00:00').getDay()]}）</b>
                 {list.map((b, i) => {
                   const l = lists.find(x => x.id === b.subject_id);
                   return <div key={i} className="row" style={{ marginTop: 4 }}>
-                    <span className="muted">{b.start_time}–{b.end_time}</span>
+                    {b.start_time && <span className="muted">{b.start_time}–{b.end_time}</span>}
                     <span style={{ color: l?.color }}>■</span><span>{l?.name}｜{b.title}</span>
                   </div>;
                 })}
@@ -690,7 +749,7 @@ export default function WizardView({ lists, reload, goTasks }) {
             ))}
             <div className="row" style={{ marginTop: 14 }}>
               <button className="btn ghost" onClick={() => setStep(3)}>不滿意，重新調整</button>
-              <button className="btn" disabled={saving} onClick={confirm}>{saving ? '建立中…' : `滿意，加入待辦（${preview.blocks.length} 段）！`}</button>
+              <button className="btn" disabled={saving} onClick={confirm}>{saving ? '建立中…' : `滿意，加入待辦（${preview.blocks.length} ${timed ? '段' : '項'}）！`}</button>
             </div>
           </div>
         )}
