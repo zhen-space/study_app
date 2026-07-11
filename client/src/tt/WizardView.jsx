@@ -55,6 +55,7 @@ export default function WizardView({ lists, reload, goTasks }) {
   const [timed, setTimed] = useState(true);           // 是否計算時間
   const [limitPerDay, setLimitPerDay] = useState(false); // 不計時模式是否限制每天數量
   const [perDay, setPerDay] = useState(3);            // 每天幾項
+  const [pace, setPace] = useState('even');           // even=平均分配 front=盡早排完（前面多排）
   const [groupSize, setGroupSize] = useState({});     // 每科：把連續 N 個單位綁成一組（0/1=不綁）
   const [bySubject, setBySubject] = useState(false);
   const [byGroup, setByGroup] = useState(false);
@@ -353,7 +354,7 @@ export default function WizardView({ lists, reload, goTasks }) {
       const body = {
         items: expanded2, startDate: dGlobal.start, endDate: dGlobal.end,
         excludeWeekdays: exWd, excludeDates: exDates, skipIfBusyHours: busyHours,
-        timed, perDay: (timed || limitPerDay) ? perDay : 0,
+        timed, perDay: (timed || limitPerDay) ? perDay : 0, pace,
       };
       if (!follow) { body.sleep_start = shift.sleep_start; body.sleep_end = shift.sleep_end; }
       setPreview(await api('/schedule/preview', { method: 'POST', body }));
@@ -738,6 +739,17 @@ export default function WizardView({ lists, reload, goTasks }) {
               <span>–</span>
               <input type="date" value={dGlobal.end} onChange={e => setDGlobal(d => ({ ...d, end: e.target.value }))} />
             </div>
+
+            <b style={{ display: 'block', marginTop: 14 }}>怎麼分配到這些日子？</b>
+            <div style={{ marginTop: 6 }}>
+              <label style={{ display: 'block' }}>
+                <input type="radio" checked={pace === 'even'} onChange={() => setPace('even')} /> 平均分配（每天差不多，排到截止日）
+              </label>
+              <label style={{ display: 'block', marginTop: 4 }}>
+                <input type="radio" checked={pace === 'front'} onChange={() => setPace('front')} /> 盡早排完（前面多排，早點讀完、後面留空）
+              </label>
+            </div>
+
             <label style={{ display: 'block', marginTop: 12 }}>
               <input type="checkbox" checked={bySubject} onChange={e => setBySubject(e.target.checked)} /> 各科目用不同日期範圍
             </label>

@@ -58,7 +58,7 @@ function busyMinutesForDay(dateStr, events) {
 }
 
 router.post('/preview', async (req, res) => {
-  const { items, excludeWeekdays = [], excludeDates = [], skipIfBusyHours = 0, timed = true, perDay = 3 } = req.body;
+  const { items, excludeWeekdays = [], excludeDates = [], skipIfBusyHours = 0, timed = true, perDay = 3, pace = 'even' } = req.body;
   if (!items?.length) return res.status(400).json({ error: '參數不完整' });
   const today = new Date().toISOString().slice(0, 10);
   const gStart = req.body.startDate || today, gEnd = req.body.endDate || today;
@@ -171,9 +171,13 @@ router.post('/preview', async (req, res) => {
     const spanDates = new Set();
     queue.forEach(w => eligible(w, minDate).forEach(d => spanDates.add(d.date)));
     const nDays = Math.max(1, spanDates.size);
-    const capCount = !timed ? (perDay > 0 ? perDay : Math.ceil(queue.length / nDays)) : Infinity;
+    // pace='front' 盡早排完：前面的日子塞多一點（不計時用約 6 成天數消化、計時則每天填滿）
+    const front = pace === 'front';
+    const capCount = !timed
+      ? (perDay > 0 ? perDay : Math.ceil(queue.length / (front ? Math.max(1, Math.ceil(nDays * 0.6)) : nDays)))
+      : Infinity;
     const totalMin = queue.reduce((a, w) => a + (w.chunk || 0), 0);
-    const fairMin = Math.max(CHUNK, Math.ceil(totalMin / nDays));
+    const fairMin = front ? Infinity : Math.max(CHUNK, Math.ceil(totalMin / nDays));
     for (const w of queue) {
       const keepOrder = w.spread === false;
       let pool = eligible(w, minDate).filter(d => !keepOrder || dayIndex[d.date] >= (subjCursor[w.subject_id] ?? 0));
