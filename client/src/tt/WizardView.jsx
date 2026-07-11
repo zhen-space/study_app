@@ -384,7 +384,8 @@ export default function WizardView({ lists, reload, goTasks }) {
     const expanded2 = [];
     const mergedBySub = {};
     merged.forEach(it => { (mergedBySub[it.subject_id] = mergedBySub[it.subject_id] || []).push(it); });
-    Object.entries(mergedBySub).forEach(([sid, list]) => {
+    Object.values(mergedBySub).forEach(list => {
+      const sid = list[0].subject_id; // 保留原始型別（Object 的 key 會變字串，導致比對失敗、沒顏色）
       const normal = list.filter(it => !anyFlag(it, plainSel));
       const plains = list.filter(it => anyFlag(it, plainSel));
       groupsFor(sid).forEach((g, gi) => {

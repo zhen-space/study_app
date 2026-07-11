@@ -155,8 +155,9 @@ router.post('/preview', async (req, res) => {
     }
     return false;
   }
-  const eligible = (w, minDate) => {
-    const base = days.filter(d => d.date >= w.start && d.date <= w.end && (!minDate || d.date >= minDate));
+  const eligible = (w, minDate, maxDate) => {
+    const base = days.filter(d => d.date >= w.start && d.date <= w.end
+      && (!minDate || d.date >= minDate) && (!maxDate || d.date <= maxDate));
     return base.length ? base : days.filter(d => d.date >= w.start && d.date <= w.end);
   };
 
@@ -164,7 +165,7 @@ router.post('/preview', async (req, res) => {
   // 整個日期範圍，再換下一科。這樣每科都會用到全部日子，不會某科擠前面、某科擠後面。
   // pace='front' 盡早排完：改用約 6 成天數消化，前面的日子塞多一點、後面留空。
   const front = pace === 'front';
-  function distribute(queue, minDate) {
+  function distribute(queue, minDate, maxDate) {
     if (!queue.length) return;
     // 以「科目＋日期範圍」分組：同一科不同題型組可各有自己的日期範圍（如例題排前段、
     // 練習排後段），各組在自己的範圍內平均鋪滿，互不干擾。
@@ -173,7 +174,7 @@ router.post('/preview', async (req, res) => {
     for (const list of Object.values(groups)) {
       const n = list.length;
       const daySet = new Set();
-      list.forEach(w => eligible(w, minDate).forEach(d => daySet.add(d.date)));
+      list.forEach(w => eligible(w, minDate, maxDate).forEach(d => daySet.add(d.date)));
       const D = days.filter(d => daySet.has(d.date));           // 這組可排的日子（已依日期排序）
       if (!D.length) { list.forEach(w => failed.push(w.title)); continue; } // 範圍內沒有可排的日子
       const m = D.length;
@@ -197,10 +198,17 @@ router.post('/preview', async (req, res) => {
     }
   }
 
-  distribute(firstsQ, null);   // 先完成的最先排
-  distribute(work, null);      // 一般項目：平均分配、照章節順序
-  // 壓軸（模考、學測實驗必考重點等）：絕對排在所有一般項目之後——
-  // 優先用「最後一般日的隔天以後」，沒有更晚的日子才退回與最後一天共用
+  // 壓軸（模考、學測實驗必考重點等）要「絕對排最後」，所以先按項數比例
+  // 幫壓軸保留尾端的日子，一般項目只能排到保留日之前，壓軸再平均鋪在尾端。
+  // 否則一般項目鋪滿到截止日時，壓軸會全部擠在最後一天、甚至排不進去。
+  let normalMax = null;
+  if (finals.length && (firstsQ.length + work.length)) {
+    const F = finals.length, W = firstsQ.length + work.length;
+    const nF = Math.max(1, Math.min(F, Math.min(days.length - 1, Math.round(days.length * F / (F + W)))));
+    normalMax = days[days.length - nF - 1].date;
+  }
+  distribute(firstsQ, null, normalMax);   // 先完成的最先排
+  distribute(work, null, normalMax);      // 一般項目：平均分配、照章節順序（讓出尾端）
   const lastNormal = blocks.reduce((a, b) => b.date > a ? b.date : a, '0000');
   const afterDay = days.find(d => d.date > lastNormal);
   distribute(finals, afterDay ? afterDay.date : lastNormal);
