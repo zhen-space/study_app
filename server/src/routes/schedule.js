@@ -279,32 +279,77 @@ router.post('/preview', async (req, res) => {
       if (!movedAny) break;
     }
   }
-  // 2) 各科分佈檢查：在該科「第一次～最後一次」的期間內，出現間隔不得明顯大於預期
-  //    （預期間隔 = 期間天數 ÷ 出現次數），異常就回報警告給前端顯示
-  const checkWarnings = [];
-  {
-    const bySub = {};
-    blocks.forEach(b => { (bySub[b.subject_id] = bySub[b.subject_id] || []).push(b.date); });
-    for (const [sid, ds0] of Object.entries(bySub)) {
+  // 2) 各科空窗檢查＋自動修補：在該科「第一次～最後一次」的期間內，出現間隔若明顯
+  //    大於預期（期間÷次數），自動把該科空窗後的下一個項目搬進空窗補平。
+  //    用 Map 保留 subject_id 原始型別（Object key 會變字串，前端就對不到科目名）。
+  const calcGaps = () => {
+    const out = [];
+    const bySub = new Map();
+    blocks.forEach(b => { if (!bySub.has(b.subject_id)) bySub.set(b.subject_id, []); bySub.get(b.subject_id).push(b.date); });
+    for (const [sid, ds0] of bySub) {
       const ds = [...new Set(ds0)].sort();
       if (ds.length < 2) continue;
       const span = days.filter(d => d.date >= ds[0] && d.date <= ds[ds.length - 1]).length;
       const expGap = Math.max(1, Math.ceil(span / ds.length));
-      let maxGap = 1;
       for (let i = 1; i < ds.length; i++) {
-        const g = days.filter(d => d.date > ds[i - 1] && d.date <= ds[i]).length;
-        if (g > maxGap) maxGap = g;
+        const between = days.filter(d => d.date > ds[i - 1] && d.date < ds[i]);
+        if (between.length + 1 > expGap + 1) out.push({ sid, to: ds[i], between, expGap, gap: between.length + 1 });
       }
-      if (maxGap > expGap + 1) checkWarnings.push({ subject_id: sid, maxGap, expGap });
+    }
+    return out;
+  };
+  if (!timed && blocks.length && days.length > 1) {
+    const cap = Math.ceil(blocks.length / days.length);
+    const cnt = {}; days.forEach(d => { cnt[d.date] = 0; }); blocks.forEach(b => cnt[b.date]++);
+    const maxNormal = {};
+    blocks.forEach(b => { if (!b._fin && (!maxNormal[b.subject_id] || b.date > maxNormal[b.subject_id])) maxNormal[b.subject_id] = b.date; });
+    for (let pass = 0; pass < 4; pass++) {
+      const gaps = calcGaps();
+      if (!gaps.length) break;
+      let changed = false;
+      for (const g of gaps) {
+        const b = blocks.find(x => x.subject_id === g.sid && x.date === g.to); // 空窗後的第一個項目
+        if (!b) continue;
+        const mates = blocks.filter(x => x._bk === b._bk);
+        const i = mates.indexOf(b);
+        const lo = i > 0 ? mates[i - 1].date : null;                 // 往前搬不能超過同桶前一項
+        const target = g.between.find(d => cnt[d.date] <= cap
+          && d.date >= b._ws && d.date <= b._we && (!lo || d.date >= lo)
+          && (!b._fin || !maxNormal[b.subject_id] || d.date > maxNormal[b.subject_id]) // 壓軸仍在該科之後
+          && d.slots.length);
+        if (target) { cnt[b.date]--; cnt[target.date]++; b.date = target.date; changed = true; }
+      }
+      if (!changed) break;
     }
   }
+  // 修補後還剩的空窗＝使用者自訂日期範圍造成（不能擅自違反），僅回報說明
+  const checkWarnings = calcGaps().reduce((acc, g) => {
+    const ex = acc.find(x => x.subject_id === g.sid);
+    if (ex) { if (g.gap > ex.maxGap) ex.maxGap = g.gap; }
+    else acc.push({ subject_id: g.sid, maxGap: g.gap, expGap: g.expGap });
+    return acc;
+  }, []);
   const dayCounts = {};
   blocks.forEach(b => { dayCounts[b.date] = (dayCounts[b.date] || 0) + 1; });
   const cs = Object.values(dayCounts);
+  // 每科實際排到的期間，讓使用者看得出「某科很快排完」是因為它的日期範圍較短
+  const subjSpan = [];
+  {
+    const m = new Map();
+    blocks.forEach(b => {
+      const s = m.get(b.subject_id) || { subject_id: b.subject_id, first: b.date, last: b.date, count: 0 };
+      if (b.date < s.first) s.first = b.date;
+      if (b.date > s.last) s.last = b.date;
+      s.count++;
+      m.set(b.subject_id, s);
+    });
+    subjSpan.push(...m.values());
+  }
   const check = {
     dailyMin: cs.length ? Math.min(...cs) : 0,
     dailyMax: cs.length ? Math.max(...cs) : 0,
     warnings: checkWarnings,
+    subjects: subjSpan,
   };
 
   blocks.forEach(b => { delete b._bk; delete b._ws; delete b._we; });

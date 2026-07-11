@@ -914,9 +914,16 @@ export default function WizardView({ lists, reload, goTasks }) {
                   ✓ 已自我檢查：每日 {preview.check.dailyMin}～{preview.check.dailyMax} 項
                   {(!preview.check.warnings || !preview.check.warnings.length) && '，各科分佈正常'}
                 </span>
+                {(preview.check.subjects || []).length > 0 && (
+                  <div className="muted" style={{ marginTop: 4 }}>
+                    {preview.check.subjects.map(s =>
+                      `${lists.find(l => l.id === s.subject_id)?.name || '?'} ${s.first.slice(5).replace('-', '/')}–${s.last.slice(5).replace('-', '/')}（${s.count}項）`
+                    ).join('・')}
+                  </div>
+                )}
                 {(preview.check.warnings || []).map((w, i) => (
-                  <div key={i} className="error" style={{ marginTop: 4 }}>
-                    ⚠ {lists.find(l => l.id === w.subject_id)?.name || '某科'}：最長 {w.maxGap} 天沒出現（預期約每 {w.expGap} 天一次）——可減少該科其他日期的內容或縮短範圍
+                  <div key={i} className="muted" style={{ marginTop: 4 }}>
+                    ℹ️ {lists.find(l => l.id === w.subject_id)?.name || '有一科'}中間有 {w.maxGap} 天不會出現——這是你設定的日期範圍造成的（如例題和練習的範圍中間有空檔），有需要可調整範圍
                   </div>
                 ))}
               </div>
