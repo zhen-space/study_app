@@ -392,21 +392,46 @@ export default function WizardView({ lists, reload, goTasks }) {
     const expanded2 = [];
     const mergedBySub = {};
     merged.forEach(it => { (mergedBySub[it.subject_id] = mergedBySub[it.subject_id] || []).push(it); });
+    // 單元練習、歷屆試題是「每章一份」，不跟著節/主題各生一份
+    const CH_TYPES = ['單元練習', '歷屆試題'];
+    const chapTitle = {};
+    tocs.forEach(r => { chapTitle[`toc-${r.id}`] = r.title; });
     Object.values(mergedBySub).forEach(list => {
       const sid = list[0].subject_id; // 保留原始型別（Object 的 key 會變字串，導致比對失敗、沒顏色）
       const normal = list.filter(it => !anyFlag(it, plainSel));
       const plains = list.filter(it => anyFlag(it, plainSel));
       groupsFor(sid).forEach((g, gi) => {
         const w = fixWin(winOf(sid, gi));
-        normal.forEach(it => expanded2.push({
+        const gNode = g ? g.filter(t => !CH_TYPES.includes(t)) : null;   // 跟著節/主題的題型
+        const gChap = g ? g.filter(t => CH_TYPES.includes(t)) : [];      // 以章為單位的題型
+        if (!g || gNode.length) normal.forEach(it => expanded2.push({
           subject_id: sid,
-          title: it.title + (g ? `｜${gLabel(g)}` : ''),
+          title: it.title + (gNode?.length ? `｜${gNode.join('+')}` : ''),
           minutes: it.minutes,
           start: w.start, end: w.end,
           final: anyFlag(it, finals),
           first: anyFlag(it, firstsSel),
           spread: (subjSpread[sid] ?? 'spread') === 'spread',
         }));
+        if (gChap.length) {
+          const seen = new Set();
+          normal.forEach(it => {
+            // 找出這個項目所屬的章：key 形如 toc-12.0.2 → 章＝toc-12
+            const base = String((it._members?.[0]) ?? it.key).split('+')[0].split('.')[0];
+            const chKey = base.startsWith('toc-') ? base : String(it.key);
+            if (seen.has(chKey)) return;
+            seen.add(chKey);
+            expanded2.push({
+              subject_id: sid,
+              title: `${chapTitle[chKey] || it.title}｜${gChap.join('+')}`,
+              minutes: minutesFor('章', 0),
+              start: w.start, end: w.end,
+              final: false,
+              first: false,
+              spread: (subjSpread[sid] ?? 'spread') === 'spread',
+            });
+          });
+        }
       });
       // 純題目（模考、學測實驗必考重點等）：不套題型、照順序、一律壓軸排最後。
       // 日期用科目整體範圍（沒設就用全域），不能被某個題型組的前段範圍框住
@@ -749,7 +774,7 @@ export default function WizardView({ lists, reload, goTasks }) {
               ))}
 
               <b style={{ display: 'block', marginTop: 16 }}>教材題型（範例/例題/單元練習/歷屆試題）</b>
-              <div className="muted" style={{ marginTop: 2 }}>每科可自己設，也可選「跟某科一樣」共用設定</div>
+              <div className="muted" style={{ marginTop: 2 }}>每科可自己設，也可選「跟某科一樣」共用設定。範例/例題跟著你勾的單位；單元練習/歷屆試題以「章」為單位，每章一份</div>
               {sids.map((sid, idx) => {
                 const ref = typeRef[sid] && typeRef[sid] !== 'self' ? typeRef[sid] : null;
                 return (
