@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { api } from '../api';
 import { today, addDays } from './helpers';
 import { parseICS } from './ics';
@@ -82,6 +82,52 @@ export default function WizardView({ lists, reload, goTasks }) {
       else localStorage.removeItem('wizardAiPreview');
     } catch {}
   }, [aiPreview]);
+
+  /* ---------- 精靈草稿自動記憶：勾選、範圍、日期、排法等全部設定 ---------- */
+  const draftLoaded = useRef(false);
+  useEffect(() => {
+    try {
+      const d = JSON.parse(localStorage.getItem('wizardDraft') || 'null');
+      if (d) {
+        d.items && setItems(d.items);
+        d.subjSpread && setSubjSpread(d.subjSpread);
+        d.typeRef && setTypeRef(d.typeRef);
+        d.typesBy && setTypesBy(d.typesBy);
+        d.combineBy && setCombineBy(d.combineBy);
+        d.typeGroupBy && setTypeGroupBy(d.typeGroupBy);
+        d.finals && setFinals(d.finals);
+        d.firstsSel && setFirstsSel(d.firstsSel);
+        d.plainSel && setPlainSel(d.plainSel);
+        d.exWd && setExWd(d.exWd);
+        d.exDates && setExDates(d.exDates);
+        d.levelMin && setLevelMin(d.levelMin);
+        d.busyHours != null && setBusyHours(d.busyHours);
+        d.timed != null && setTimed(d.timed);
+        d.limitPerDay != null && setLimitPerDay(d.limitPerDay);
+        d.perDay != null && setPerDay(d.perDay);
+        d.pace && setPace(d.pace);
+        d.groupSize && setGroupSize(d.groupSize);
+        d.bySubject != null && setBySubject(d.bySubject);
+        d.byGroup != null && setByGroup(d.byGroup);
+        d.dGlobal && setDGlobal(d.dGlobal);
+        d.dMap && setDMap(d.dMap);
+        d.step != null && setStep(Math.min(d.step, 3)); // 確認頁需重新產生預覽，最多回到日期步
+      }
+    } catch {}
+    draftLoaded.current = true;
+  }, []);
+  useEffect(() => {
+    if (!draftLoaded.current) return;
+    try {
+      localStorage.setItem('wizardDraft', JSON.stringify({
+        items, subjSpread, typeRef, typesBy, combineBy, typeGroupBy, finals, firstsSel, plainSel,
+        exWd, exDates, levelMin, busyHours, timed, limitPerDay, perDay, pace, groupSize,
+        bySubject, byGroup, dGlobal, dMap, step,
+      }));
+    } catch {}
+  }, [items, subjSpread, typeRef, typesBy, combineBy, typeGroupBy, finals, firstsSel, plainSel,
+    exWd, exDates, levelMin, busyHours, timed, limitPerDay, perDay, pace, groupSize,
+    bySubject, byGroup, dGlobal, dMap, step]);
 
   const evGroups = useMemo(() => groupEvents(events), [events]);
 
