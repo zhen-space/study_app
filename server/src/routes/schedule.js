@@ -166,6 +166,7 @@ router.post('/preview', async (req, res) => {
   // 某天塞不下就之後立刻補回，不會整串往後推、擠在最後面。
   // pace='front' 盡早排完：速率加快（約 6 成天數消化），前面多排、後面留空。
   const front = pace === 'front';
+  // minDate / maxDate 可以是函式（依科目不同）：收到桶的第一個項目，回傳該桶的界線
   function distribute(queue, minDate, maxDate) {
     if (!queue.length) return;
     const capOk = day => timed ? true : (perDay > 0 ? day.count < perDay : true);
@@ -177,11 +178,14 @@ router.post('/preview', async (req, res) => {
       byKey[key].list.push(w);
     });
     for (const b of buckets) {
-      let D = eligible(b.list[0], minDate, maxDate);             // 同桶共用日期範圍
+      const md = typeof minDate === 'function' ? minDate(b.list[0]) : minDate;
+      const xd = typeof maxDate === 'function' ? maxDate(b.list[0]) : maxDate;
+      b.minDate = md;
+      let D = eligible(b.list[0], md, xd);                       // 同桶共用日期範圍
       if (!D.length) {
         // 範圍內完全沒有可排日（範圍設錯、已過期，或全被排除條件蓋掉）：
         // 退回用全部可排日（壓軸仍維持在 minDate 之後），至少排得進去
-        D = days.filter(d => !minDate || d.date >= minDate);
+        D = days.filter(d => !md || d.date >= md);
         if (!D.length) D = days;
       }
       b.dates = new Set(D.map(d => d.date));
@@ -214,20 +218,31 @@ router.post('/preview', async (req, res) => {
     }
   }
 
-  // 壓軸（模考、學測實驗必考重點等）要「絕對排最後」，所以先按項數比例
-  // 幫壓軸保留尾端的日子，一般項目只能排到保留日之前，壓軸再平均鋪在尾端。
-  // 否則一般項目鋪滿到截止日時，壓軸會全部擠在最後一天、甚至排不進去。
-  let normalMax = null;
-  if (finals.length && (firstsQ.length + work.length)) {
-    const F = finals.length, W = firstsQ.length + work.length;
+  // 壓軸（模考、學測實驗必考重點等）「排在該科所有一般項目之後」——分科計算：
+  // 生物的模考只要等生物的練習/歷屆做完，不用等其他科。這樣壓軸可以從該科
+  // 內容結束後就開始平均鋪開（該科每天都會出現），不會全部擠在最後幾天。
+  // 先按「該科壓軸÷該科總項數」的比例，幫每科的壓軸保留尾端日子。
+  const cntBy = (arr) => arr.reduce((m, w) => (m[w.subject_id] = (m[w.subject_id] || 0) + 1, m), {});
+  const finalsBySub = cntBy(finals);
+  const normalsBySub = cntBy([...firstsQ, ...work]);
+  const normalMaxBySub = {};
+  for (const sid of Object.keys(finalsBySub)) {
+    const F = finalsBySub[sid], W = normalsBySub[sid] || 0;
+    if (!W) continue;
     const nF = Math.max(1, Math.min(F, Math.min(days.length - 1, Math.round(days.length * F / (F + W)))));
-    normalMax = days[days.length - nF - 1].date;
+    normalMaxBySub[sid] = days[days.length - nF - 1].date;
   }
-  distribute(firstsQ, null, normalMax);   // 先完成的最先排
-  distribute(work, null, normalMax);      // 一般項目：平均分配、照章節順序（讓出尾端）
-  const lastNormal = blocks.reduce((a, b) => b.date > a ? b.date : a, '0000');
-  const afterDay = days.find(d => d.date > lastNormal);
-  distribute(finals, afterDay ? afterDay.date : lastNormal);
+  const normalMaxFor = w => normalMaxBySub[w.subject_id] ?? null;
+  distribute(firstsQ, null, normalMaxFor);   // 先完成的最先排
+  distribute(work, null, normalMaxFor);      // 一般項目：平均分配、照章節順序（讓出該科尾端）
+  const lastNormalBySub = {};
+  blocks.forEach(b => { if (!lastNormalBySub[b.subject_id] || b.date > lastNormalBySub[b.subject_id]) lastNormalBySub[b.subject_id] = b.date; });
+  distribute(finals, w => {
+    const ln = lastNormalBySub[w.subject_id];
+    if (!ln) return null;                    // 這科只有壓軸：全範圍平均排
+    const after = days.find(d => d.date > ln);
+    return after ? after.date : ln;          // 該科一般項目最後一天的隔天以後
+  });
 
   blocks.sort((a, b) => a.date === b.date ? (a.start_time || '').localeCompare(b.start_time || '') : a.date.localeCompare(b.date));
   res.json({
