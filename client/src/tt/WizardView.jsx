@@ -332,24 +332,40 @@ export default function WizardView({ lists, reload, goTasks }) {
     });
     const anyFlag = (m, sel) => (m._members || [m.key]).some(k => sel[k]);
 
+    // 展開順序＝「一個題型組一個題型組」：先送出全科所有章的第 1 組（如範例+例題），
+    // 再送第 2 組（如單元練習+歷屆試題）。這樣同一範圍內會先做完整輪第 1 組再進第 2 組；
+    // 若各組有自己的日期範圍，則各在自己的範圍內平均鋪滿。
     const expanded2 = [];
-    for (const it of merged) {
-      const plain = anyFlag(it, plainSel);
-      // 純題目（模考、學測實驗必考重點等）：不套題型、照順序，且一律壓軸排最後
-      const gs = plain ? [null] : groupsFor(it.subject_id);
-      gs.forEach((g, gi) => {
-        const w = winOf(it.subject_id, gi);
-        expanded2.push({
-          subject_id: it.subject_id,
+    const mergedBySub = {};
+    merged.forEach(it => { (mergedBySub[it.subject_id] = mergedBySub[it.subject_id] || []).push(it); });
+    Object.entries(mergedBySub).forEach(([sid, list]) => {
+      const normal = list.filter(it => !anyFlag(it, plainSel));
+      const plains = list.filter(it => anyFlag(it, plainSel));
+      groupsFor(sid).forEach((g, gi) => {
+        const w = winOf(sid, gi);
+        normal.forEach(it => expanded2.push({
+          subject_id: sid,
           title: it.title + (g ? `｜${gLabel(g)}` : ''),
           minutes: it.minutes,
           start: w.start, end: w.end,
-          final: anyFlag(it, finals) || plain,
+          final: anyFlag(it, finals),
           first: anyFlag(it, firstsSel),
-          spread: plain ? false : (subjSpread[it.subject_id] ?? 'spread') === 'spread',
-        });
+          spread: (subjSpread[sid] ?? 'spread') === 'spread',
+        }));
       });
-    }
+      // 純題目（模考、學測實驗必考重點等）：不套題型、照順序、一律壓軸排最後。
+      // 日期用科目整體範圍（沒設就用全域），不能被某個題型組的前段範圍框住
+      const pw = dMap[`${bySubject ? sid : 'all'}|all`] || dGlobal;
+      plains.forEach(it => expanded2.push({
+        subject_id: sid,
+        title: it.title,
+        minutes: it.minutes,
+        start: pw.start, end: pw.end,
+        final: true,
+        first: false,
+        spread: false,
+      }));
+    });
     try {
       const body = {
         items: expanded2, startDate: dGlobal.start, endDate: dGlobal.end,
