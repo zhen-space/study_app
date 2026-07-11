@@ -119,55 +119,90 @@ router.post('/preview', async (req, res) => {
 
   const firstsQ = buildQueue(items.filter(i => i.first && !i.final));  // 要先完成的
   const work = buildQueue(items.filter(i => !i.first && !i.final));
-  const finals = mkChunks(items.filter(i => i.final));
+  const finals = buildQueue(items.filter(i => i.final));               // 壓軸也照順序
 
   const blocks = [];
   const failed = [];
   days.forEach(d => { d.load = 0; d.count = 0; d.subs = new Set(); }); // load=分鐘數 count=項數 subs=當天已排科目
+  const dayIndex = {};
+  days.forEach((d, i) => { dayIndex[d.date] = i; });
+  const subjCursor = {}; // 各科「照章節順序」時，下一單位不可排在此日期索引之前（維持章節順序）
 
-  function tryDay(day, w) {
+  // 這一天塞不塞得下這個 chunk（timed 才需要判斷時間）
+  function fits(day, w) {
+    if (!timed) return day.slots.length > 0;
+    let idx = day.slotIdx, pos = day.pos;
+    while (idx < day.slots.length) {
+      if (pos + w.chunk <= day.slots[idx][1]) return true;
+      idx++; pos = day.slots[idx]?.[0] ?? null;
+    }
+    return false;
+  }
+  // 真的排進去
+  function put(day, w) {
     if (!timed) {
-      // 不計時：一天最多 perDay 個單位（perDay<=0 表示不限），只要當天有任何空檔即可
-      const cap = perDay > 0 ? perDay : Infinity;
-      if (day.count >= cap || !day.slots.length) return false;
+      if (!day.slots.length) return false;
       blocks.push({ subject_id: w.subject_id, title: w.title, date: day.date });
       day.count++; day.load++; day.subs.add(w.subject_id);
       return true;
     }
     while (day.slotIdx < day.slots.length) {
-      const [, end] = day.slots[day.slotIdx];
+      const end = day.slots[day.slotIdx][1];
       if (day.pos + w.chunk <= end) {
         blocks.push({ subject_id: w.subject_id, title: w.title, date: day.date, start_time: toHM(day.pos), end_time: toHM(day.pos + w.chunk) });
-        day.pos += w.chunk + BREAK;
-        day.load += w.chunk;
-        day.subs.add(w.subject_id);
+        day.pos += w.chunk + BREAK; day.load += w.chunk; day.count++; day.subs.add(w.subject_id);
         if (day.pos >= end) { day.slotIdx++; day.pos = day.slots[day.slotIdx]?.[0] ?? null; }
         return true;
       }
-      day.slotIdx++;
-      day.pos = day.slots[day.slotIdx]?.[0] ?? null;
+      day.slotIdx++; day.pos = day.slots[day.slotIdx]?.[0] ?? null;
     }
     return false;
   }
-
-  // avoidSameSubject=true 時，第一輪只考慮「當天還沒排過這科」的日子，排不下再放寬
-  function place(w, minDate, avoidSameSubject) {
+  const eligible = (w, minDate) => {
     const base = days.filter(d => d.date >= w.start && d.date <= w.end && (!minDate || d.date >= minDate));
-    const inRange = base.length ? base : days.filter(d => d.date >= w.start && d.date <= w.end);
-    const sortByLoad = arr => [...arr].sort((a, b) => a.load - b.load || a.date.localeCompare(b.date));
-    if (avoidSameSubject) {
-      const fresh = sortByLoad(inRange.filter(d => !d.subs.has(w.subject_id)));
-      for (const day of fresh) if (tryDay(day, w)) return true;
+    return base.length ? base : days.filter(d => d.date >= w.start && d.date <= w.end);
+  };
+
+  // 平均分配：依 queue 順序、照「日期先後」往前掃，每天填到公平額度就換下一天。
+  // 照章節順序（spread===false）的科目只會往後排、絕不回頭，章節順序因此保持正確；
+  // 打散的科目排不進公平額度時，才允許回頭找最空的日子。
+  function distribute(queue, minDate) {
+    if (!queue.length) return;
+    const spanDates = new Set();
+    queue.forEach(w => eligible(w, minDate).forEach(d => spanDates.add(d.date)));
+    const nDays = Math.max(1, spanDates.size);
+    const capCount = !timed ? (perDay > 0 ? perDay : Math.ceil(queue.length / nDays)) : Infinity;
+    const totalMin = queue.reduce((a, w) => a + (w.chunk || 0), 0);
+    const fairMin = Math.max(CHUNK, Math.ceil(totalMin / nDays));
+    for (const w of queue) {
+      const keepOrder = w.spread === false;
+      let pool = eligible(w, minDate).filter(d => !keepOrder || dayIndex[d.date] >= (subjCursor[w.subject_id] ?? 0));
+      if (!pool.length) pool = eligible(w, minDate);           // 章節順序把日子用完了就放寬
+      const commit = day => { if (keepOrder) subjCursor[w.subject_id] = dayIndex[day.date]; };
+      let done = false;
+      // 第一輪：照日期順序，找「還沒填滿公平額度、且塞得下」的最早日子
+      for (const day of pool) {
+        const under = timed ? day.load < fairMin : day.count < capCount;
+        if (under && fits(day, w) && put(day, w)) { commit(day); done = true; break; }
+      }
+      // 第二輪：放寬額度，只要塞得下（仍照日期順序，維持章節順序）
+      if (!done) for (const day of pool) {
+        if (fits(day, w) && put(day, w)) { commit(day); done = true; break; }
+      }
+      // 第三輪：只有打散的科目才允許回頭找最空的日子
+      if (!done && !keepOrder) {
+        for (const day of [...eligible(w, minDate)].sort((a, b) => a.load - b.load || a.date.localeCompare(b.date)))
+          if (fits(day, w) && put(day, w)) { done = true; break; }
+      }
+      if (!done) failed.push(w.title);
     }
-    for (const day of sortByLoad(inRange)) if (tryDay(day, w)) return true;
-    return false;
   }
 
-  for (const w of firstsQ) if (!place(w, null, true)) failed.push(w.title); // 先完成的最先排
-  for (const w of work) if (!place(w, null, true)) failed.push(w.title);    // 同一天盡量不同科
+  distribute(firstsQ, null);   // 先完成的最先排
+  distribute(work, null);      // 一般項目：平均分配、照章節順序
   // 壓軸：排在所有一般項目最後一天之後（若其範圍允許）
   const lastNormal = blocks.reduce((a, b) => b.date > a ? b.date : a, '0000');
-  for (const w of finals) if (!place(w, lastNormal, true)) failed.push(w.title);
+  distribute(finals, lastNormal);
 
   blocks.sort((a, b) => a.date === b.date ? (a.start_time || '').localeCompare(b.start_time || '') : a.date.localeCompare(b.date));
   res.json({
