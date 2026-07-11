@@ -166,14 +166,17 @@ router.post('/preview', async (req, res) => {
   const front = pace === 'front';
   function distribute(queue, minDate) {
     if (!queue.length) return;
-    const bySub = {};
-    queue.forEach(w => { (bySub[w.subject_id] = bySub[w.subject_id] || []).push(w); });
-    for (const list of Object.values(bySub)) {
+    // 以「科目＋日期範圍」分組：同一科不同題型組可各有自己的日期範圍（如例題排前段、
+    // 練習排後段），各組在自己的範圍內平均鋪滿，互不干擾。
+    const groups = {};
+    queue.forEach(w => { const key = `${w.subject_id}|${w.start}|${w.end}`; (groups[key] = groups[key] || []).push(w); });
+    for (const list of Object.values(groups)) {
       const n = list.length;
       const daySet = new Set();
       list.forEach(w => eligible(w, minDate).forEach(d => daySet.add(d.date)));
-      const D = days.filter(d => daySet.has(d.date));           // 這科可排的日子（已依日期排序）
-      const m = Math.max(1, D.length);
+      const D = days.filter(d => daySet.has(d.date));           // 這組可排的日子（已依日期排序）
+      if (!D.length) { list.forEach(w => failed.push(w.title)); continue; } // 範圍內沒有可排的日子
+      const m = D.length;
       const keepOrder = list[0].spread === false;               // 照章節順序：只往後排
       const capOk = day => timed ? true : (perDay > 0 ? day.count < perDay : true);
       const rate = Math.max(1, Math.ceil(n / Math.max(1, Math.ceil(m * 0.6)))); // front 用的速率
