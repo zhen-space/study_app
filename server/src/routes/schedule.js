@@ -124,9 +124,6 @@ router.post('/preview', async (req, res) => {
   const blocks = [];
   const failed = [];
   days.forEach(d => { d.load = 0; d.count = 0; d.subs = new Set(); }); // load=分鐘數 count=項數 subs=當天已排科目
-  const dayIndex = {};
-  days.forEach((d, i) => { dayIndex[d.date] = i; });
-  const subjCursor = {}; // 各科「照章節順序」時，下一單位不可排在此日期索引之前（維持章節順序）
 
   // 這一天塞不塞得下這個 chunk（timed 才需要判斷時間）
   function fits(day, w) {
@@ -163,42 +160,37 @@ router.post('/preview', async (req, res) => {
     return base.length ? base : days.filter(d => d.date >= w.start && d.date <= w.end);
   };
 
-  // 平均分配：依 queue 順序、照「日期先後」往前掃，每天填到公平額度就換下一天。
-  // 照章節順序（spread===false）的科目只會往後排、絕不回頭，章節順序因此保持正確；
-  // 打散的科目排不進公平額度時，才允許回頭找最空的日子。
+  // 平均分配（一科一科分）：每科用「項數 ÷ 可排天數」得到每日速率，把該科平均鋪滿
+  // 整個日期範圍，再換下一科。這樣每科都會用到全部日子，不會某科擠前面、某科擠後面。
+  // pace='front' 盡早排完：改用約 6 成天數消化，前面的日子塞多一點、後面留空。
+  const front = pace === 'front';
   function distribute(queue, minDate) {
     if (!queue.length) return;
-    const spanDates = new Set();
-    queue.forEach(w => eligible(w, minDate).forEach(d => spanDates.add(d.date)));
-    const nDays = Math.max(1, spanDates.size);
-    // pace='front' 盡早排完：前面的日子塞多一點（不計時用約 6 成天數消化、計時則每天填滿）
-    const front = pace === 'front';
-    const capCount = !timed
-      ? (perDay > 0 ? perDay : Math.ceil(queue.length / (front ? Math.max(1, Math.ceil(nDays * 0.6)) : nDays)))
-      : Infinity;
-    const totalMin = queue.reduce((a, w) => a + (w.chunk || 0), 0);
-    const fairMin = front ? Infinity : Math.max(CHUNK, Math.ceil(totalMin / nDays));
-    for (const w of queue) {
-      const keepOrder = w.spread === false;
-      let pool = eligible(w, minDate).filter(d => !keepOrder || dayIndex[d.date] >= (subjCursor[w.subject_id] ?? 0));
-      if (!pool.length) pool = eligible(w, minDate);           // 章節順序把日子用完了就放寬
-      const commit = day => { if (keepOrder) subjCursor[w.subject_id] = dayIndex[day.date]; };
-      let done = false;
-      // 第一輪：照日期順序，找「還沒填滿公平額度、且塞得下」的最早日子
-      for (const day of pool) {
-        const under = timed ? day.load < fairMin : day.count < capCount;
-        if (under && fits(day, w) && put(day, w)) { commit(day); done = true; break; }
-      }
-      // 第二輪：放寬額度，只要塞得下（仍照日期順序，維持章節順序）
-      if (!done) for (const day of pool) {
-        if (fits(day, w) && put(day, w)) { commit(day); done = true; break; }
-      }
-      // 第三輪：只有打散的科目才允許回頭找最空的日子
-      if (!done && !keepOrder) {
-        for (const day of [...eligible(w, minDate)].sort((a, b) => a.load - b.load || a.date.localeCompare(b.date)))
-          if (fits(day, w) && put(day, w)) { done = true; break; }
-      }
-      if (!done) failed.push(w.title);
+    const bySub = {};
+    queue.forEach(w => { (bySub[w.subject_id] = bySub[w.subject_id] || []).push(w); });
+    for (const list of Object.values(bySub)) {
+      const n = list.length;
+      const daySet = new Set();
+      list.forEach(w => eligible(w, minDate).forEach(d => daySet.add(d.date)));
+      const D = days.filter(d => daySet.has(d.date));           // 這科可排的日子（已依日期排序）
+      const m = Math.max(1, D.length);
+      const keepOrder = list[0].spread === false;               // 照章節順序：只往後排
+      const capOk = day => timed ? true : (perDay > 0 ? day.count < perDay : true);
+      const rate = Math.max(1, Math.ceil(n / Math.max(1, Math.ceil(m * 0.6)))); // front 用的速率
+      let lastIdx = 0;
+      list.forEach((w, k) => {
+        const ti = Math.min(m - 1, front ? Math.floor(k / rate) : Math.floor(k * m / n)); // 目標日子索引
+        const start = keepOrder ? Math.max(ti, lastIdx) : ti;
+        let done = false;
+        // 從目標日往後找塞得下、未超過每日上限的日子
+        for (let i = start; i < m && !done; i++) if (capOk(D[i]) && fits(D[i], w)) { put(D[i], w); lastIdx = i; done = true; }
+        // 打散科目：往前找
+        if (!done && !keepOrder) for (let i = start - 1; i >= 0 && !done; i--) if (capOk(D[i]) && fits(D[i], w)) { put(D[i], w); done = true; }
+        // 放寬每日上限，往後找（維持章節順序）
+        if (!done) for (let i = start; i < m && !done; i++) if (fits(D[i], w)) { put(D[i], w); lastIdx = i; done = true; }
+        if (!done && !keepOrder) for (let i = start - 1; i >= 0 && !done; i--) if (fits(D[i], w)) { put(D[i], w); done = true; }
+        if (!done) failed.push(w.title);
+      });
     }
   }
 
