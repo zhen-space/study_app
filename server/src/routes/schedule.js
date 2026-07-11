@@ -135,11 +135,11 @@ router.post('/preview', async (req, res) => {
     }
     return false;
   }
-  // 真的排進去
+  // 真的排進去（_bk/_ws/_we 供產出前的平衡搬移用，回傳前會清掉）
   function put(day, w) {
     if (!timed) {
       if (!day.slots.length) return false;
-      blocks.push({ subject_id: w.subject_id, title: w.title, date: day.date });
+      blocks.push({ subject_id: w.subject_id, title: w.title, date: day.date, _bk: w._bk, _ws: w.start, _we: w.end, _fin: !!w.final });
       day.count++; day.load++; day.subs.add(w.subject_id);
       return true;
     }
@@ -166,15 +166,18 @@ router.post('/preview', async (req, res) => {
   // 某天塞不下就之後立刻補回，不會整串往後推、擠在最後面。
   // pace='front' 盡早排完：速率加快（約 6 成天數消化），前面多排、後面留空。
   const front = pace === 'front';
+  let bkSeq = 0; // 每次 distribute 遞增，避免不同批（一般/壓軸）同鍵誤連
   // minDate / maxDate 可以是函式（依科目不同）：收到桶的第一個項目，回傳該桶的界線
   function distribute(queue, minDate, maxDate) {
     if (!queue.length) return;
+    bkSeq++;
     const capOk = day => timed ? true : (perDay > 0 ? day.count < perDay : true);
     const buckets = [];
     const byKey = {};
     queue.forEach(w => {
       const key = `${w.subject_id}|${w.start}|${w.end}`;
       if (!byKey[key]) { byKey[key] = { list: [] }; buckets.push(byKey[key]); }
+      w._bk = `${bkSeq}|${key}`;                                 // 桶識別：搬移時用來維持桶內順序
       byKey[key].list.push(w);
     });
     for (const b of buckets) {
@@ -244,9 +247,70 @@ router.post('/preview', async (req, res) => {
     return after ? after.date : ln;          // 該科一般項目最後一天的隔天以後
   });
 
+  // ===== 產出前自我檢查 =====
+  // 1) 平衡每日量（不計時模式）：超量日的項目搬到未滿日。
+  //    可搬條件：目標日在該項目的日期範圍內、且介於同桶前後項的日期之間（順序不破）。
+  if (!timed && blocks.length && days.length > 1) {
+    const cap = Math.ceil(blocks.length / days.length);
+    const cnt = {}; days.forEach(d => { cnt[d.date] = 0; }); blocks.forEach(b => cnt[b.date]++);
+    // 科目層級界線：壓軸不可搬到該科一般項目（含當天）之前；一般項目不可搬到該科壓軸（含當天）之後
+    const maxNormal = {}, minFinal = {};
+    blocks.forEach(b => {
+      if (b._fin) { if (!minFinal[b.subject_id] || b.date < minFinal[b.subject_id]) minFinal[b.subject_id] = b.date; }
+      else { if (!maxNormal[b.subject_id] || b.date > maxNormal[b.subject_id]) maxNormal[b.subject_id] = b.date; }
+    });
+    for (let pass = 0; pass < 3; pass++) {
+      let movedAny = false;
+      for (const b of blocks) {
+        if (cnt[b.date] <= cap) continue;
+        const mates = blocks.filter(x => x._bk === b._bk);
+        const i = mates.indexOf(b);
+        const lo = i > 0 ? mates[i - 1].date : null;
+        const hi = i < mates.length - 1 ? mates[i + 1].date : null;
+        const target = days.find(d => d.date !== b.date
+          && cnt[d.date] < cap && cnt[d.date] <= cnt[b.date] - 2   // 未達上限且搬了有實質改善
+          && d.date >= b._ws && d.date <= b._we
+          && (!lo || d.date >= lo) && (!hi || d.date <= hi)
+          && (b._fin ? (!maxNormal[b.subject_id] || d.date > maxNormal[b.subject_id])
+                     : (!minFinal[b.subject_id] || d.date < minFinal[b.subject_id]))
+          && d.slots.length);
+        if (target) { cnt[b.date]--; cnt[target.date]++; b.date = target.date; movedAny = true; }
+      }
+      if (!movedAny) break;
+    }
+  }
+  // 2) 各科分佈檢查：在該科「第一次～最後一次」的期間內，出現間隔不得明顯大於預期
+  //    （預期間隔 = 期間天數 ÷ 出現次數），異常就回報警告給前端顯示
+  const checkWarnings = [];
+  {
+    const bySub = {};
+    blocks.forEach(b => { (bySub[b.subject_id] = bySub[b.subject_id] || []).push(b.date); });
+    for (const [sid, ds0] of Object.entries(bySub)) {
+      const ds = [...new Set(ds0)].sort();
+      if (ds.length < 2) continue;
+      const span = days.filter(d => d.date >= ds[0] && d.date <= ds[ds.length - 1]).length;
+      const expGap = Math.max(1, Math.ceil(span / ds.length));
+      let maxGap = 1;
+      for (let i = 1; i < ds.length; i++) {
+        const g = days.filter(d => d.date > ds[i - 1] && d.date <= ds[i]).length;
+        if (g > maxGap) maxGap = g;
+      }
+      if (maxGap > expGap + 1) checkWarnings.push({ subject_id: sid, maxGap, expGap });
+    }
+  }
+  const dayCounts = {};
+  blocks.forEach(b => { dayCounts[b.date] = (dayCounts[b.date] || 0) + 1; });
+  const cs = Object.values(dayCounts);
+  const check = {
+    dailyMin: cs.length ? Math.min(...cs) : 0,
+    dailyMax: cs.length ? Math.max(...cs) : 0,
+    warnings: checkWarnings,
+  };
+
+  blocks.forEach(b => { delete b._bk; delete b._ws; delete b._we; });
   blocks.sort((a, b) => a.date === b.date ? (a.start_time || '').localeCompare(b.start_time || '') : a.date.localeCompare(b.date));
   res.json({
-    blocks, unplaced: failed.length > 0,
+    blocks, check, unplaced: failed.length > 0,
     message: failed.length ? `空檔不足，排不進去：${[...new Set(failed)].slice(0, 5).join('、')}${failed.length > 5 ? '…' : ''}（請延長日期或減少內容）` : undefined,
   });
 });

@@ -908,6 +908,19 @@ export default function WizardView({ lists, reload, goTasks }) {
         {/* ============ 4 確認 ============ */}
         {step === 4 && preview && (
           <div className="tile">
+            {preview.check && (
+              <div style={{ background: 'var(--fill)', borderRadius: 10, padding: '8px 12px', marginBottom: 10 }}>
+                <span className="muted">
+                  ✓ 已自我檢查：每日 {preview.check.dailyMin}～{preview.check.dailyMax} 項
+                  {(!preview.check.warnings || !preview.check.warnings.length) && '，各科分佈正常'}
+                </span>
+                {(preview.check.warnings || []).map((w, i) => (
+                  <div key={i} className="error" style={{ marginTop: 4 }}>
+                    ⚠ {lists.find(l => l.id === w.subject_id)?.name || '某科'}：最長 {w.maxGap} 天沒出現（預期約每 {w.expGap} 天一次）——可減少該科其他日期的內容或縮短範圍
+                  </div>
+                ))}
+              </div>
+            )}
             {preview.unplaced && (
               <div style={{ border: '1px solid var(--red)', borderRadius: 8, padding: 10, marginBottom: 10 }}>
                 <div className="error"><b>空檔不足，有內容排不進去</b></div>
