@@ -335,7 +335,7 @@ export default function WizardView({ lists, reload, goTasks }) {
     const expanded2 = [];
     for (const it of merged) {
       const plain = anyFlag(it, plainSel);
-      // 純題目：不套題型、照順序；否則依題型組展開
+      // 純題目（模考、學測實驗必考重點等）：不套題型、照順序，且一律壓軸排最後
       const gs = plain ? [null] : groupsFor(it.subject_id);
       gs.forEach((g, gi) => {
         const w = winOf(it.subject_id, gi);
@@ -344,7 +344,7 @@ export default function WizardView({ lists, reload, goTasks }) {
           title: it.title + (g ? `｜${gLabel(g)}` : ''),
           minutes: it.minutes,
           start: w.start, end: w.end,
-          final: anyFlag(it, finals),
+          final: anyFlag(it, finals) || plain,
           first: anyFlag(it, firstsSel),
           spread: plain ? false : (subjSpread[it.subject_id] ?? 'spread') === 'spread',
         });
@@ -717,7 +717,11 @@ export default function WizardView({ lists, reload, goTasks }) {
                   </div>
                   <div className="row" style={{ marginLeft: 18, marginTop: 2 }}>
                     <label className={'tag-pill' + (plainSel[it.key] ? ' on' : '')} style={{ cursor: 'pointer' }}
-                      onClick={() => setPlainSel(f => ({ ...f, [it.key]: !f[it.key] }))}>純題目·照順序（如模考，不套題型）</label>
+                      onClick={() => {
+                        const on = !plainSel[it.key];
+                        setPlainSel(f => ({ ...f, [it.key]: on }));
+                        if (on) { setFinals(f => ({ ...f, [it.key]: true })); setFirstsSel(f => ({ ...f, [it.key]: false })); }
+                      }}>純題目（如模考、學測實驗）— 不套題型・照順序・壓軸排最後</label>
                   </div>
                 </div>
               ))}

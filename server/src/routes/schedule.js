@@ -199,9 +199,11 @@ router.post('/preview', async (req, res) => {
 
   distribute(firstsQ, null);   // 先完成的最先排
   distribute(work, null);      // 一般項目：平均分配、照章節順序
-  // 壓軸：排在所有一般項目最後一天之後（若其範圍允許）
+  // 壓軸（模考、學測實驗必考重點等）：絕對排在所有一般項目之後——
+  // 優先用「最後一般日的隔天以後」，沒有更晚的日子才退回與最後一天共用
   const lastNormal = blocks.reduce((a, b) => b.date > a ? b.date : a, '0000');
-  distribute(finals, lastNormal);
+  const afterDay = days.find(d => d.date > lastNormal);
+  distribute(finals, afterDay ? afterDay.date : lastNormal);
 
   blocks.sort((a, b) => a.date === b.date ? (a.start_time || '').localeCompare(b.start_time || '') : a.date.localeCompare(b.date));
   res.json({
