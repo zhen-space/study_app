@@ -161,45 +161,56 @@ router.post('/preview', async (req, res) => {
     return base.length ? base : days.filter(d => d.date >= w.start && d.date <= w.end);
   };
 
-  // 平均分配（一科一科分）：每科用「項數 ÷ 可排天數」得到每日速率，把該科平均鋪滿
-  // 整個日期範圍，再換下一科。這樣每科都會用到全部日子，不會某科擠前面、某科擠後面。
-  // pace='front' 盡早排完：改用約 6 成天數消化，前面的日子塞多一點、後面留空。
+  // 平均分配（逐日發放）：以「科目＋日期範圍」分桶，照日期逐天輪流看每一桶，
+  // 按速率（項數÷天數）領量。速率≥1 的科目每天都會出現、速率<1 的等距出現，
+  // 某天塞不下就之後立刻補回，不會整串往後推、擠在最後面。
+  // pace='front' 盡早排完：速率加快（約 6 成天數消化），前面多排、後面留空。
   const front = pace === 'front';
   function distribute(queue, minDate, maxDate) {
     if (!queue.length) return;
-    // 以「科目＋日期範圍」分組：同一科不同題型組可各有自己的日期範圍（如例題排前段、
-    // 練習排後段），各組在自己的範圍內平均鋪滿，互不干擾。
-    const groups = {};
-    queue.forEach(w => { const key = `${w.subject_id}|${w.start}|${w.end}`; (groups[key] = groups[key] || []).push(w); });
-    for (const list of Object.values(groups)) {
-      const n = list.length;
-      const daySet = new Set();
-      list.forEach(w => eligible(w, minDate, maxDate).forEach(d => daySet.add(d.date)));
-      let D = days.filter(d => daySet.has(d.date));             // 這組可排的日子（已依日期排序）
+    const capOk = day => timed ? true : (perDay > 0 ? day.count < perDay : true);
+    const buckets = [];
+    const byKey = {};
+    queue.forEach(w => {
+      const key = `${w.subject_id}|${w.start}|${w.end}`;
+      if (!byKey[key]) { byKey[key] = { list: [] }; buckets.push(byKey[key]); }
+      byKey[key].list.push(w);
+    });
+    for (const b of buckets) {
+      let D = eligible(b.list[0], minDate, maxDate);             // 同桶共用日期範圍
       if (!D.length) {
-        // 這組的日期範圍內完全沒有可排日（範圍設錯、已過期，或全被排除條件蓋掉）：
+        // 範圍內完全沒有可排日（範圍設錯、已過期，或全被排除條件蓋掉）：
         // 退回用全部可排日（壓軸仍維持在 minDate 之後），至少排得進去
         D = days.filter(d => !minDate || d.date >= minDate);
         if (!D.length) D = days;
       }
-      const m = D.length;
-      const keepOrder = list[0].spread === false;               // 照章節順序：只往後排
-      const capOk = day => timed ? true : (perDay > 0 ? day.count < perDay : true);
-      const rate = Math.max(1, Math.ceil(n / Math.max(1, Math.ceil(m * 0.6)))); // front 用的速率
-      let lastIdx = 0;
-      list.forEach((w, k) => {
-        const ti = Math.min(m - 1, front ? Math.floor(k / rate) : Math.floor(k * m / n)); // 目標日子索引
-        const start = keepOrder ? Math.max(ti, lastIdx) : ti;
+      b.dates = new Set(D.map(d => d.date));
+      b.rate = (b.list.length / D.length) * (front ? 1 / 0.6 : 1);
+      b.err = 0;
+    }
+    // 主輪：逐天、各桶按速率領量 → 各科每天交錯出現，順序保持
+    for (const day of days) {
+      for (const b of buckets) {
+        if (!b.list.length || !b.dates.has(day.date)) continue;
+        b.err += b.rate;
+        while (b.err >= 0.999 && b.list.length) {
+          const w = b.list[0];
+          if (capOk(day) && fits(day, w) && put(day, w)) { b.list.shift(); b.err -= 1; }
+          else break;                                            // 今天滿了，額度留著之後補
+        }
+      }
+    }
+    // 剩下的（被每日上限/空檔擋住）：照順序找最早塞得下的日子
+    for (const b of buckets) {
+      let ci = 0;
+      for (const w of b.list) {
         let done = false;
-        // 從目標日往後找塞得下、未超過每日上限的日子
-        for (let i = start; i < m && !done; i++) if (capOk(D[i]) && fits(D[i], w)) { put(D[i], w); lastIdx = i; done = true; }
-        // 打散科目：往前找
-        if (!done && !keepOrder) for (let i = start - 1; i >= 0 && !done; i--) if (capOk(D[i]) && fits(D[i], w)) { put(D[i], w); done = true; }
-        // 放寬每日上限，往後找（維持章節順序）
-        if (!done) for (let i = start; i < m && !done; i++) if (fits(D[i], w)) { put(D[i], w); lastIdx = i; done = true; }
-        if (!done && !keepOrder) for (let i = start - 1; i >= 0 && !done; i--) if (fits(D[i], w)) { put(D[i], w); done = true; }
+        for (let i = ci; i < days.length && !done; i++) {
+          if (!b.dates.has(days[i].date)) continue;
+          if (fits(days[i], w) && put(days[i], w)) { done = true; ci = i; }
+        }
         if (!done) failed.push(`${w.title}〔${w.start}～${w.end}〕`); // 附上範圍，方便看出是哪段日期塞不下
-      });
+      }
     }
   }
 
