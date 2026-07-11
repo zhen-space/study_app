@@ -175,8 +175,13 @@ router.post('/preview', async (req, res) => {
       const n = list.length;
       const daySet = new Set();
       list.forEach(w => eligible(w, minDate, maxDate).forEach(d => daySet.add(d.date)));
-      const D = days.filter(d => daySet.has(d.date));           // 這組可排的日子（已依日期排序）
-      if (!D.length) { list.forEach(w => failed.push(w.title)); continue; } // 範圍內沒有可排的日子
+      let D = days.filter(d => daySet.has(d.date));             // 這組可排的日子（已依日期排序）
+      if (!D.length) {
+        // 這組的日期範圍內完全沒有可排日（範圍設錯、已過期，或全被排除條件蓋掉）：
+        // 退回用全部可排日（壓軸仍維持在 minDate 之後），至少排得進去
+        D = days.filter(d => !minDate || d.date >= minDate);
+        if (!D.length) D = days;
+      }
       const m = D.length;
       const keepOrder = list[0].spread === false;               // 照章節順序：只往後排
       const capOk = day => timed ? true : (perDay > 0 ? day.count < perDay : true);
@@ -193,7 +198,7 @@ router.post('/preview', async (req, res) => {
         // 放寬每日上限，往後找（維持章節順序）
         if (!done) for (let i = start; i < m && !done; i++) if (fits(D[i], w)) { put(D[i], w); lastIdx = i; done = true; }
         if (!done && !keepOrder) for (let i = start - 1; i >= 0 && !done; i--) if (fits(D[i], w)) { put(D[i], w); done = true; }
-        if (!done) failed.push(w.title);
+        if (!done) failed.push(`${w.title}〔${w.start}～${w.end}〕`); // 附上範圍，方便看出是哪段日期塞不下
       });
     }
   }

@@ -109,7 +109,7 @@ export default function WizardView({ lists, reload, goTasks }) {
         d.groupSize && setGroupSize(d.groupSize);
         d.bySubject != null && setBySubject(d.bySubject);
         d.byGroup != null && setByGroup(d.byGroup);
-        d.dGlobal && setDGlobal(d.dGlobal);
+        d.dGlobal && d.dGlobal.end >= today() && setDGlobal(d.dGlobal); // 過期的整體範圍不還原
         d.dMap && setDMap(d.dMap);
         d.step != null && setStep(Math.min(d.step, 3)); // 確認頁需重新產生預覽，最多回到日期步
       }
@@ -381,6 +381,14 @@ export default function WizardView({ lists, reload, goTasks }) {
     // 展開順序＝「一個題型組一個題型組」：先送出全科所有章的第 1 組（如範例+例題），
     // 再送第 2 組（如單元練習+歷屆試題）。這樣同一範圍內會先做完整輪第 1 組再進第 2 組；
     // 若各組有自己的日期範圍，則各在自己的範圍內平均鋪滿。
+    // 無效的日期範圍自動修正：開始＞結束就對調；整段已過期（草稿記住的舊設定）就退回整體範圍
+    const fixWin = w => {
+      let { start, end } = w || {};
+      if (!start || !end) return { start: dGlobal.start, end: dGlobal.end };
+      if (start > end) [start, end] = [end, start];
+      if (end < today()) return { start: dGlobal.start, end: dGlobal.end };
+      return { start, end };
+    };
     const expanded2 = [];
     const mergedBySub = {};
     merged.forEach(it => { (mergedBySub[it.subject_id] = mergedBySub[it.subject_id] || []).push(it); });
@@ -389,7 +397,7 @@ export default function WizardView({ lists, reload, goTasks }) {
       const normal = list.filter(it => !anyFlag(it, plainSel));
       const plains = list.filter(it => anyFlag(it, plainSel));
       groupsFor(sid).forEach((g, gi) => {
-        const w = winOf(sid, gi);
+        const w = fixWin(winOf(sid, gi));
         normal.forEach(it => expanded2.push({
           subject_id: sid,
           title: it.title + (g ? `｜${gLabel(g)}` : ''),
@@ -402,7 +410,7 @@ export default function WizardView({ lists, reload, goTasks }) {
       });
       // 純題目（模考、學測實驗必考重點等）：不套題型、照順序、一律壓軸排最後。
       // 日期用科目整體範圍（沒設就用全域），不能被某個題型組的前段範圍框住
-      const pw = dMap[`${bySubject ? sid : 'all'}|all`] || dGlobal;
+      const pw = fixWin(dMap[`${bySubject ? sid : 'all'}|all`] || dGlobal);
       plains.forEach(it => expanded2.push({
         subject_id: sid,
         title: it.title,
