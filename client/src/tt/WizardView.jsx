@@ -40,10 +40,7 @@ export default function WizardView({ lists, reload, goTasks }) {
   const [tocMsg, setTocMsg] = useState({});
   const [expanded, setExpanded] = useState({});
   const [subjSpread, setSubjSpread] = useState({});   // 每科：章節打散(spread)或照順序(order)
-  const [typeScope, setTypeScope] = useState('all');  // 題型設定：all=所有科目相同 / per=分科
-  const [types, setTypes] = useState([]);             // 全域題型
-  const [combine, setCombine] = useState('together');
-  const [typeGroup, setTypeGroup] = useState({});
+  const [typeRef, setTypeRef] = useState({});         // 每科題型：'self'或跟哪個 sid 相同
   const [typesBy, setTypesBy] = useState({});         // 分科題型 sid→types[]
   const [combineBy, setCombineBy] = useState({});
   const [typeGroupBy, setTypeGroupBy] = useState({});
@@ -96,10 +93,10 @@ export default function WizardView({ lists, reload, goTasks }) {
     ts.forEach(t => { const g = tg[t] ?? 0; (m[g] = m[g] || []).push(t); });
     return Object.values(m);
   };
-  const groupsFor = sid => typeScope === 'all'
-    ? calcGroups(types, combine, typeGroup)
-    : calcGroups(typesBy[sid] || [], combineBy[sid] || 'together', typeGroupBy[sid] || {});
-  const groups = useMemo(() => calcGroups(types, combine, typeGroup), [types, combine, typeGroup]);
+  const groupsFor = sid => {
+    const ref = (typeRef[sid] && typeRef[sid] !== 'self') ? typeRef[sid] : sid;
+    return calcGroups(typesBy[ref] || [], combineBy[ref] || 'together', typeGroupBy[ref] || {});
+  };
   const gLabel = g => g ? g.join('+') : '';
 
   const winOf = (sid, gi) => {
@@ -306,10 +303,17 @@ export default function WizardView({ lists, reload, goTasks }) {
   /* ---------- 產生排程 ---------- */
   async function genPreview() {
     setErr('');
+    // 依「課本章節順序」排序（不管使用者點選先後），照順序模式才會正確
+    const ordMap = {};
+    lists.forEach(l => { allNodes(l).forEach((n, i) => { ordMap[n.key] = i; }); });
+    const sortedItems = [...items].sort((a, b) => {
+      const oa = ordMap[a.key] ?? 9999, ob = ordMap[b.key] ?? 9999;
+      return oa - ob;
+    });
     // 先依各科「N 個一組」把連續章節單位合併
     const merged = [];
     const bySub = {};
-    items.forEach(it => (bySub[it.subject_id] = bySub[it.subject_id] || []).push(it));
+    sortedItems.forEach(it => (bySub[it.subject_id] = bySub[it.subject_id] || []).push(it));
     Object.entries(bySub).forEach(([sid, list]) => {
       const n = groupSize[sid] || 1;
       if (n <= 1) { merged.push(...list); return; }
@@ -673,21 +677,30 @@ export default function WizardView({ lists, reload, goTasks }) {
               ))}
 
               <b style={{ display: 'block', marginTop: 16 }}>教材題型（範例/例題/單元練習/歷屆試題）</b>
-              <div className="row" style={{ marginTop: 6 }}>
-                <label><input type="radio" checked={typeScope === 'all'} onChange={() => setTypeScope('all')} /> 所有科目都一樣</label>
-                <label><input type="radio" checked={typeScope === 'per'} onChange={() => setTypeScope('per')} /> 各科分別設定</label>
-              </div>
-              {typeScope === 'all'
-                ? <TypePanel ts={types} cb={combine} tg={typeGroup} onTs={setTypes} onCb={setCombine} onTg={setTypeGroup} />
-                : sids.map(sid => (
+              <div className="muted" style={{ marginTop: 2 }}>每科可自己設，也可選「跟某科一樣」共用設定</div>
+              {sids.map((sid, idx) => {
+                const ref = typeRef[sid] && typeRef[sid] !== 'self' ? typeRef[sid] : null;
+                return (
                   <div key={sid} style={{ marginTop: 10, borderLeft: `3px solid ${lists.find(l => l.id === sid)?.color}`, paddingLeft: 8 }}>
-                    <b>{sname(sid)}</b>
-                    <TypePanel ts={typesBy[sid] || []} cb={combineBy[sid] || 'together'} tg={typeGroupBy[sid] || {}}
-                      onTs={v => setTypesBy(s => ({ ...s, [sid]: v }))}
-                      onCb={v => setCombineBy(s => ({ ...s, [sid]: v }))}
-                      onTg={v => setTypeGroupBy(s => ({ ...s, [sid]: v }))} />
+                    <div className="row">
+                      <b>{sname(sid)}</b>
+                      {idx > 0 && (
+                        <select value={typeRef[sid] || 'self'} onChange={e => setTypeRef(s => ({ ...s, [sid]: e.target.value }))}>
+                          <option value="self">自己設定</option>
+                          {sids.filter(s2 => s2 !== sid && (typeRef[s2] || 'self') === 'self').map(s2 =>
+                            <option key={s2} value={s2}>跟「{sname(s2)}」一樣</option>)}
+                        </select>
+                      )}
+                    </div>
+                    {ref
+                      ? <div className="muted" style={{ marginTop: 4 }}>＝ 使用「{sname(ref)}」的題型設定</div>
+                      : <TypePanel ts={typesBy[sid] || []} cb={combineBy[sid] || 'together'} tg={typeGroupBy[sid] || {}}
+                        onTs={v => setTypesBy(s => ({ ...s, [sid]: v }))}
+                        onCb={v => setCombineBy(s => ({ ...s, [sid]: v }))}
+                      onTg={v => setTypeGroupBy(s => ({ ...s, [sid]: v }))} />}
                   </div>
-                ))}
+                );
+              })}
 
               <b style={{ display: 'block', marginTop: 16 }}>有沒有章節需要「先完成」或「壓軸」？</b>
               <div className="muted">先完成＝最先排；壓軸＝其他全部讀完才排（如：學測模擬試題、115 學測試題）</div>
@@ -728,7 +741,7 @@ export default function WizardView({ lists, reload, goTasks }) {
             <label style={{ display: 'block', marginTop: 12 }}>
               <input type="checkbox" checked={bySubject} onChange={e => setBySubject(e.target.checked)} /> 各科目用不同日期範圍
             </label>
-            {(typeScope === 'per' ? bySubject : groups.length > 1) && (
+            {[...new Set(items.map(i => i.subject_id))].some(sid => groupsFor(sid).length > 1) && (
               <label style={{ display: 'block', marginTop: 4 }}>
                 <input type="checkbox" checked={byGroup} onChange={e => setByGroup(e.target.checked)} /> 各題型組用不同日期範圍
               </label>
@@ -737,7 +750,7 @@ export default function WizardView({ lists, reload, goTasks }) {
               <div style={{ marginTop: 10 }}>
                 {(bySubject ? [...new Set(items.map(i => i.subject_id))] : ['all']).map(sid => {
                   const sname = sid === 'all' ? '' : lists.find(l => l.id === sid)?.name || '';
-                  const gs = sid === 'all' ? groups : groupsFor(sid);
+                  const gs = groupsFor(sid === 'all' ? [...new Set(items.map(i => i.subject_id))][0] : sid);
                   return (byGroup ? gs.map((g, gi) => dateInput(`${bySubject ? sid : 'all'}|${gi}`, `${sname}${sname && g ? '・' : ''}${gLabel(g) || `第${gi + 1}組`}`))
                     : [dateInput(`${sid}|all`, sname || '全部')]);
                 })}
