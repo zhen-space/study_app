@@ -152,11 +152,18 @@ router.get('/habits', async (req, res) => {
   res.json(habits.map(h => ({ ...h, days: JSON.parse(h.days), checkins: checkins.filter(c => c.habit_id === h.id).map(c => c.date) })));
 });
 router.post('/habits', async (req, res) => {
-  const { name, icon, color, days, miss_policy } = req.body;
+  const { name, icon, color, days, miss_policy, category } = req.body;
   if (!name) return res.status(400).json({ error: '請輸入名稱' });
-  const r = await q.run('INSERT INTO habits (user_id,name,icon,color,days,miss_policy) VALUES (?,?,?,?,?,?)',
-    [req.userId, name, icon || '⭐', color || '#16a34a', JSON.stringify(days || [0, 1, 2, 3, 4, 5, 6]), miss_policy || 'drop']);
+  const r = await q.run('INSERT INTO habits (user_id,name,icon,color,days,miss_policy,category) VALUES (?,?,?,?,?,?,?)',
+    [req.userId, name, icon || '⭐', color || '#16a34a', JSON.stringify(days || [0, 1, 2, 3, 4, 5, 6]), miss_policy || 'drop', category || '']);
   res.json({ id: r.lastInsertRowid });
+});
+router.patch('/habits/:id', async (req, res) => {
+  const h = await q.get('SELECT id FROM habits WHERE id=? AND user_id=?', [req.params.id, req.userId]);
+  if (!h) return res.status(404).json({ error: 'not found' });
+  const allowed = ['name', 'icon', 'color', 'miss_policy', 'category'];
+  for (const k of allowed) if (k in req.body) await q.run(`UPDATE habits SET ${k}=? WHERE id=?`, [req.body[k], h.id]);
+  res.json({ ok: true });
 });
 router.delete('/habits/:id', async (req, res) => {
   await q.run('DELETE FROM habits WHERE id=? AND user_id=?', [req.params.id, req.userId]);

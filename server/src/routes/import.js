@@ -54,8 +54,9 @@ const SCHEMA = {
           start_time: { type: 'string', description: 'HH:MM 24小時制' },
           end_time: { type: 'string', description: 'HH:MM 24小時制' },
           recurring: { type: 'boolean', description: '是否每週重複（課表上的課通常是 true）' },
+          location: { type: ['string', 'null'], description: '地點/教室（如有標示），沒有就 null' },
         },
-        required: ['title', 'date', 'day_of_week', 'start_time', 'end_time', 'recurring'],
+        required: ['title', 'date', 'day_of_week', 'start_time', 'end_time', 'recurring', 'location'],
         additionalProperties: false,
       },
     },
@@ -130,6 +131,7 @@ router.post('/parse', async (req, res) => {
         start_time: e.start_time,
         end_time: e.end_time,
         recurring: e.recurring ? 'weekly' : null,
+        location: e.location || '',
       };
     }).filter(e => /^\d{2}:\d{2}/.test(e.start_time) && /^\d{2}:\d{2}/.test(e.end_time));
 

@@ -22,10 +22,10 @@ router.get('/events', async (req, res) => {
   res.json(await q.all('SELECT * FROM fixed_events WHERE user_id=? ORDER BY date, start_time', [req.userId]));
 });
 router.post('/events', async (req, res) => {
-  const { title, date, start_time, end_time, recurring } = req.body;
+  const { title, date, start_time, end_time, recurring, location } = req.body;
   if (!title || !date || !start_time || !end_time) return res.status(400).json({ error: '欄位不完整' });
-  const r = await q.run('INSERT INTO fixed_events (user_id,title,date,start_time,end_time,recurring) VALUES (?,?,?,?,?,?)',
-    [req.userId, title, date, start_time, end_time, recurring || null]);
+  const r = await q.run('INSERT INTO fixed_events (user_id,title,date,start_time,end_time,recurring,location) VALUES (?,?,?,?,?,?,?)',
+    [req.userId, title, date, start_time, end_time, recurring || null, location || '']);
   res.json({ id: r.lastInsertRowid });
 });
 router.delete('/events/:id', async (req, res) => {

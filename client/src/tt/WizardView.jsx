@@ -31,7 +31,7 @@ export default function WizardView({ lists, reload, goTasks }) {
   const [settings, setSettings] = useState(null);
   const [follow, setFollow] = useState(true);
   const [shift, setShift] = useState({ sleep_start: '', sleep_end: '' });
-  const [evForm, setEvForm] = useState({ title: '', date: today(), start_time: '08:00', end_time: '09:00', recurring: '' });
+  const [evForm, setEvForm] = useState({ title: '', date: today(), start_time: '08:00', end_time: '09:00', recurring: '', location: '' });
   const [selEv, setSelEv] = useState({});           // 行程多選刪除
   const [items, setItems] = useState([]);           // 已勾選的章節項目
   const [rangeInput, setRangeInput] = useState({});
@@ -245,8 +245,13 @@ export default function WizardView({ lists, reload, goTasks }) {
   }
 
   /* ---------- 科目章節 ---------- */
-  // 常見科目的預設顏色（英文=藍）
-  const SUBJ_COLOR = { 英文: '#4772fa', 英語: '#4772fa', 國文: '#e03131', 數學: '#16a34a', 化學: '#f59f00', 物理: '#9333ea', 生物: '#0891b2', 地科: '#0d9488', 歷史: '#b45309', 地理: '#65a30d', 公民: '#db2777' };
+  // 常見科目的預設顏色（英文=藍、生物=黃）
+  const SUBJ_COLOR = { 英文: '#4772fa', 英語: '#4772fa', 國文: '#e03131', 數學: '#16a34a', 化學: '#f59f00', 物理: '#9333ea', 生物: '#eab308', 地科: '#0d9488', 歷史: '#b45309', 地理: '#65a30d', 公民: '#db2777' };
+  // 生物舊預設色（青藍/藍）跟英文太像：既有清單若還是舊色就自動改黃
+  useEffect(() => {
+    lists.filter(l => l.name === '生物' && ['#0891b2', '#4772fa'].includes(l.color))
+      .forEach(l => api(`/lists/${l.id}`, { method: 'PATCH', body: { color: '#eab308' } }).then(reload).catch(() => {}));
+  }, [lists.length]);
   async function addSubject() {
     const name = prompt('科目名稱（如：數學）：');
     if (!name?.trim()) return;
@@ -537,6 +542,8 @@ export default function WizardView({ lists, reload, goTasks }) {
                         <span>–</span>
                         <input type="time" value={g.end_time} style={{ padding: '4px 4px' }}
                           onChange={e => upd(x => ({ ...x, end_time: e.target.value, all: x.all.map(ev => ({ ...ev, end_time: e.target.value })) }))} />
+                        <input value={g.location || ''} placeholder="地點" style={{ width: 80, padding: '4px 6px' }}
+                          onChange={e => upd(x => ({ ...x, location: e.target.value, all: x.all.map(ev => ({ ...ev, location: e.target.value })) }))} />
                         {g.past && <span className="error" style={{ fontSize: 12 }}>⚠️ 過去</span>}
                       </div>
                       <div className="row" style={{ marginTop: 4, marginLeft: 24, flexWrap: 'wrap', gap: 6 }}>
@@ -585,6 +592,7 @@ export default function WizardView({ lists, reload, goTasks }) {
               <input type="date" value={evForm.date} onChange={e => setEvForm(f => ({ ...f, date: e.target.value }))} />
               <input type="time" value={evForm.start_time} onChange={e => setEvForm(f => ({ ...f, start_time: e.target.value }))} />
               <input type="time" value={evForm.end_time} onChange={e => setEvForm(f => ({ ...f, end_time: e.target.value }))} />
+              <input placeholder="地點" value={evForm.location} style={{ width: 80 }} onChange={e => setEvForm(f => ({ ...f, location: e.target.value }))} />
               <select value={evForm.recurring} onChange={e => setEvForm(f => ({ ...f, recurring: e.target.value }))}>
                 <option value="">單次</option><option value="weekly">每週</option>
               </select>

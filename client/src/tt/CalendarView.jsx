@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { api } from '../api';
 import { today, addDays } from './helpers';
 
@@ -9,6 +9,16 @@ const ROW = 44;
 export default function CalendarView({ tasks, reload }) {
   const [view, setView] = useState('week'); // day | week | month
   const [anchor, setAnchor] = useState(today());
+  const [events, setEvents] = useState([]);           // 匯入/新增的既定行程（課表、補習等）
+  useEffect(() => { api('/events').then(setEvents).catch(() => {}); }, []);
+  // 某天有哪些既定行程（含每週重複）
+  const eventsOn = d => {
+    const dow = new Date(d + 'T00:00:00').getDay();
+    return events.filter(e => e.recurring === 'weekly'
+      ? new Date(e.date + 'T00:00:00').getDay() === dow && e.date <= d
+      : e.date === d)
+      .sort((a, b) => a.start_time.localeCompare(b.start_time));
+  };
 
   const toggle = async t => {
     await api(`/tasks/${t.id}`, { method: 'PATCH', body: { completed: !t.completed } });
@@ -25,18 +35,28 @@ export default function CalendarView({ tasks, reload }) {
   const weekDays = [...Array(7)].map((_, i) => addDays(monday, i));
   const shift = n => setAnchor(addDays(anchor, view === 'day' ? n : view === '3day' ? n * 3 : view === 'week' ? n * 7 : 0));
 
-  /* ---- 清單視圖（List）：未來 60 天的行程依日期列出 ---- */
+  /* ---- 清單視圖（List）：未來 60 天的行程依日期列出（含既定行程） ---- */
   const ListView = () => {
     const upcoming = tasks.filter(t => t.due_date && t.due_date >= today() && t.due_date <= addDays(today(), 60))
       .sort((a, b) => a.due_date === b.due_date ? (a.due_time || '99').localeCompare(b.due_time || '99') : a.due_date.localeCompare(b.due_date));
     const byDate = {};
     upcoming.forEach(t => (byDate[t.due_date] = byDate[t.due_date] || []).push(t));
+    const dates = new Set(Object.keys(byDate));
+    for (let i = 0; i <= 60; i++) { const d = addDays(today(), i); if (eventsOn(d).length) dates.add(d); }
+    const sorted = [...dates].sort();
     return (
       <div>
-        {Object.entries(byDate).map(([d, list]) => (
+        {sorted.map(d => (
           <div key={d} className="tgroup">
             <div className="glabel">{`${+d.slice(5, 7)}/${+d.slice(8)}`} 週{WD[(new Date(d + 'T00:00:00').getDay() + 6) % 7]}{d === today() ? '（今天）' : ''}</div>
-            {list.map(t => (
+            {eventsOn(d).map(e => (
+              <div key={'e' + e.id} className="trow" style={{ cursor: 'default' }}>
+                <span className="cal-ev-dot" />
+                <span className="title">{e.title}{e.location ? <span className="muted">（{e.location}）</span> : null}</span>
+                <span className="muted">{e.start_time.slice(0, 5)}–{e.end_time.slice(0, 5)}</span>
+              </div>
+            ))}
+            {(byDate[d] || []).map(t => (
               <div key={t.id} className={'trow' + (t.completed ? ' done' : '')} style={{ cursor: 'default' }}>
                 <input type="checkbox" checked={!!t.completed} onChange={() => toggle(t)} />
                 <span className="title">{t.title}</span>
@@ -45,7 +65,7 @@ export default function CalendarView({ tasks, reload }) {
             ))}
           </div>
         ))}
-        {!upcoming.length && <div className="muted" style={{ marginTop: 30, textAlign: 'center' }}>未來 60 天沒有行程</div>}
+        {!sorted.length && <div className="muted" style={{ marginTop: 30, textAlign: 'center' }}>未來 60 天沒有行程</div>}
       </div>
     );
   };
@@ -91,9 +111,18 @@ export default function CalendarView({ tasks, reload }) {
           <div style={{ fontSize: 11, color: 'var(--muted)', textAlign: 'right', paddingRight: 4, height: ROW, borderTop: '1px solid var(--border)' }}>{String(h).padStart(2, '0')}:00</div>
           {days.map(d => {
             const cell = tasks.filter(t => t.due_date === d && t.due_time && +t.due_time.slice(0, 2) === h);
+            // 蓋到這個小時的既定行程；起始小時顯示文字，其餘小時淡色底
+            const evs = eventsOn(d).filter(e => +e.start_time.slice(0, 2) <= h && +e.end_time.slice(0, 2) + (+e.end_time.slice(3, 5) > 0 ? 1 : 0) > h);
+            const evStart = evs.filter(e => +e.start_time.slice(0, 2) === h);
             return (
-              <div key={d + h} onClick={() => !cell.length && quickCreate(d, h)}
-                style={{ height: ROW, borderTop: '1px solid var(--border)', borderLeft: '1px solid var(--border)', position: 'relative', overflow: 'hidden', cursor: 'pointer', background: d === today() ? 'rgba(71,114,250,.04)' : undefined }}>
+              <div key={d + h} onClick={() => !cell.length && !evStart.length && quickCreate(d, h)}
+                style={{ height: ROW, borderTop: '1px solid var(--border)', borderLeft: '1px solid var(--border)', position: 'relative', overflow: 'hidden', cursor: 'pointer',
+                  background: evs.length ? 'rgba(147,51,234,.08)' : d === today() ? 'rgba(71,114,250,.04)' : undefined }}>
+                {evStart.map(e => (
+                  <div key={'e' + e.id} className="cal-ev" style={{ position: 'absolute', inset: 1, fontSize: 11, lineHeight: 1.2, whiteSpace: 'normal', overflow: 'hidden' }}>
+                    {e.start_time.slice(0, 5)}–{e.end_time.slice(0, 5)} {e.title}{e.location ? `＠${e.location}` : ''}
+                  </div>
+                ))}
                 {cell.map(t => (
                   <div key={t.id} className={'cal-task' + (t.completed ? ' done' : '')} onClick={e => { e.stopPropagation(); toggle(t); }}
                     style={{ position: 'absolute', inset: 1, fontSize: 11, lineHeight: 1.2, whiteSpace: 'normal', overflow: 'hidden' }}>
@@ -128,6 +157,11 @@ export default function CalendarView({ tasks, reload }) {
             <div key={c.ds} className={'cal-cell' + (c.dim ? ' dim' : '') + (c.ds === today() ? ' today' : '')}
               onClick={() => { setAnchor(c.ds); setView('day'); }} style={{ cursor: 'pointer' }}>
               <span className="dnum">{c.day}</span>
+              {eventsOn(c.ds).slice(0, 2).map(e => (
+                <div key={'e' + e.id} className="cal-ev" title={`${e.start_time.slice(0, 5)}–${e.end_time.slice(0, 5)} ${e.title}${e.location ? '＠' + e.location : ''}`}>
+                  {e.start_time.slice(0, 5)} {e.title}
+                </div>
+              ))}
               {tasks.filter(t => t.due_date === c.ds).slice(0, 3).map(t => (
                 <div key={t.id} className={'cal-task' + (t.completed ? ' done' : '')} title={t.title}
                   onClick={e => { e.stopPropagation(); toggle(t); }}>{t.title}</div>
