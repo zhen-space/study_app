@@ -259,6 +259,9 @@ router.post('/preview', async (req, res) => {
       if (b._fin) { if (!minFinal[b.subject_id] || b.date < minFinal[b.subject_id]) minFinal[b.subject_id] = b.date; }
       else { if (!maxNormal[b.subject_id] || b.date > maxNormal[b.subject_id]) maxNormal[b.subject_id] = b.date; }
     });
+    // 同科同日數：搬移不可以把同一科堆到同一天（總量平衡了、科目卻擠在一起）
+    const sCnt = (date, sid) => blocks.reduce((a, x) => a + (x.date === date && x.subject_id === sid ? 1 : 0), 0);
+    const idxOf = {}; days.forEach((d, i) => { idxOf[d.date] = i; });
     for (let pass = 0; pass < 3; pass++) {
       let movedAny = false;
       for (const b of blocks) {
@@ -267,13 +270,16 @@ router.post('/preview', async (req, res) => {
         const i = mates.indexOf(b);
         const lo = i > 0 ? mates[i - 1].date : null;
         const hi = i < mates.length - 1 ? mates[i + 1].date : null;
-        const target = days.find(d => d.date !== b.date
+        // 只能搬到同桶前後項「之間」（不含同日，維持等距），且從離原日最近的開始挑，不會整串往前擠
+        const cands = days.filter(d => d.date !== b.date
           && cnt[d.date] < cap && cnt[d.date] <= cnt[b.date] - 2   // 未達上限且搬了有實質改善
+          && sCnt(d.date, b.subject_id) < sCnt(b.date, b.subject_id) // 這科在目標日要比原日少，不能越搬越擠
           && d.date >= b._ws && d.date <= b._we
-          && (!lo || d.date >= lo) && (!hi || d.date <= hi)
+          && (!lo || d.date > lo) && (!hi || d.date < hi)
           && (b._fin ? (!maxNormal[b.subject_id] || d.date > maxNormal[b.subject_id])
                      : (!minFinal[b.subject_id] || d.date < minFinal[b.subject_id]))
           && d.slots.length);
+        const target = cands.sort((a, c) => Math.abs(idxOf[a.date] - idxOf[b.date]) - Math.abs(idxOf[c.date] - idxOf[b.date]))[0];
         if (target) { cnt[b.date]--; cnt[target.date]++; b.date = target.date; movedAny = true; }
       }
       if (!movedAny) break;
@@ -282,6 +288,7 @@ router.post('/preview', async (req, res) => {
   // 2) 各科空窗檢查＋自動修補：在該科「第一次～最後一次」的期間內，出現間隔若明顯
   //    大於預期（期間÷次數），自動把該科空窗後的下一個項目搬進空窗補平。
   //    用 Map 保留 subject_id 原始型別（Object key 會變字串，前端就對不到科目名）。
+  const subjExp = new Map(); // 各科預期間隔在第一次計算後凍結，避免「越補越密」的惡性循環
   const calcGaps = () => {
     const out = [];
     const bySub = new Map();
@@ -290,10 +297,12 @@ router.post('/preview', async (req, res) => {
       const ds = [...new Set(ds0)].sort();
       if (ds.length < 2) continue;
       const span = days.filter(d => d.date >= ds[0] && d.date <= ds[ds.length - 1]).length;
-      const expGap = Math.max(1, Math.ceil(span / ds.length));
+      if (!subjExp.has(sid)) subjExp.set(sid, Math.max(1, Math.ceil(span / ds.length)));
+      const expGap = subjExp.get(sid);
       for (let i = 1; i < ds.length; i++) {
         const between = days.filter(d => d.date > ds[i - 1] && d.date < ds[i]);
-        if (between.length + 1 > expGap + 1) out.push({ sid, to: ds[i], between, expGap, gap: between.length + 1 });
+        // 天天出現的科目（預期間隔1）少一天就算空窗；低頻科目容忍 +1
+        if (between.length + 1 > expGap + (expGap > 1 ? 1 : 0)) out.push({ sid, to: ds[i], between, expGap, gap: between.length + 1 });
       }
     }
     return out;
@@ -303,21 +312,28 @@ router.post('/preview', async (req, res) => {
     const cnt = {}; days.forEach(d => { cnt[d.date] = 0; }); blocks.forEach(b => cnt[b.date]++);
     const maxNormal = {};
     blocks.forEach(b => { if (!b._fin && (!maxNormal[b.subject_id] || b.date > maxNormal[b.subject_id])) maxNormal[b.subject_id] = b.date; });
-    for (let pass = 0; pass < 4; pass++) {
+    const sCnt2 = (date, sid) => blocks.reduce((a, x) => a + (x.date === date && x.subject_id === sid ? 1 : 0), 0);
+    for (let pass = 0; pass < 10; pass++) {
       const gaps = calcGaps();
       if (!gaps.length) break;
       let changed = false;
       for (const g of gaps) {
-        const b = blocks.find(x => x.subject_id === g.sid && x.date === g.to); // 空窗後的第一個項目
-        if (!b) continue;
-        const mates = blocks.filter(x => x._bk === b._bk);
-        const i = mates.indexOf(b);
-        const lo = i > 0 ? mates[i - 1].date : null;                 // 往前搬不能超過同桶前一項
-        const target = g.between.find(d => cnt[d.date] <= cap
-          && d.date >= b._ws && d.date <= b._we && (!lo || d.date >= lo)
-          && (!b._fin || !maxNormal[b.subject_id] || d.date > maxNormal[b.subject_id]) // 壓軸仍在該科之後
-          && d.slots.length);
-        if (target) { cnt[b.date]--; cnt[target.date]++; b.date = target.date; changed = true; }
+        // 只從「當天有 2 項以上這科」的日子借來填洞——搬走後那天還有這科，
+        // 不會挖出新洞、也不會連鎖把整串往前拉
+        const donors = blocks
+          .filter(x => x.subject_id === g.sid && x.date >= g.to && sCnt2(x.date, g.sid) >= 2)
+          .sort((a, b2) => a.date.localeCompare(b2.date));
+        let moved = false;
+        for (const b of donors) {
+          const mates = blocks.filter(x => x._bk === b._bk);
+          const i = mates.indexOf(b);
+          const lo = i > 0 ? mates[i - 1].date : null;               // 往前搬不能超過同桶前一項
+          const target = g.between.find(d => cnt[d.date] <= cap
+            && d.date >= b._ws && d.date <= b._we && (!lo || d.date > lo)
+            && (!b._fin || !maxNormal[b.subject_id] || d.date > maxNormal[b.subject_id]) // 壓軸仍在該科之後
+            && d.slots.length);
+          if (target) { cnt[b.date]--; cnt[target.date]++; b.date = target.date; moved = changed = true; break; }
+        }
       }
       if (!changed) break;
     }
