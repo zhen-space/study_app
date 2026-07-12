@@ -439,6 +439,7 @@ export default function WizardView({ lists, reload, goTasks }) {
               final: false,
               first: false,
               spread: (subjSpread[sid] ?? 'order') === 'spread',
+              onePerDay: true, // 單元練習/歷屆試題盡量一天一課；擠不下優先讓範例+例題一天兩課
             });
           });
         }

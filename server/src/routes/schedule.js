@@ -231,21 +231,29 @@ router.post('/preview', async (req, res) => {
         if (!b.list.length || !b.dates.has(day.date)) continue;
         const sid = b.list[0].subject_id;
         b.err += b.rate;
+        let putToday = 0;
         while (b.err >= 0.999 && subjErr[sid] >= 0.999 && b.list.length) {
           const w = b.list[0];
-          if (capOk(day) && fits(day, w) && put(day, w)) { b.list.shift(); b.err -= 1; subjErr[sid] -= 1; }
+          if (w.onePerDay && putToday >= 1) break;               // 練習/歷屆盡量一天一課
+          if (capOk(day) && fits(day, w) && put(day, w)) { b.list.shift(); b.err -= 1; subjErr[sid] -= 1; putToday++; }
           else break;                                            // 今天滿了，額度留著之後補
         }
       }
     }
     // 剩下的（被每日上限/空檔擋住）：照順序找最早塞得下的日子
+    // onePerDay（練習/歷屆）補位時也一天一項往後排，不要疊同一天
     for (const b of buckets) {
       let ci = 0;
       for (const w of b.list) {
         let done = false;
         for (let i = ci; i < days.length && !done; i++) {
           if (!b.dates.has(days[i].date)) continue;
-          if (fits(days[i], w) && put(days[i], w)) { done = true; ci = i; }
+          if (fits(days[i], w) && put(days[i], w)) { done = true; ci = w.onePerDay ? i + 1 : i; }
+        }
+        // 一天一課排不完時放寬：寧可一天兩課也不要排不進去
+        if (!done && w.onePerDay) for (let i = 0; i < days.length && !done; i++) {
+          if (!b.dates.has(days[i].date)) continue;
+          if (fits(days[i], w) && put(days[i], w)) done = true;
         }
         if (!done) failed.push(`${w.title}〔${w.start}～${w.end}〕`); // 附上範圍，方便看出是哪段日期塞不下
       }
