@@ -208,7 +208,13 @@ router.post('/preview', async (req, res) => {
       for (let i = 1; i < arr.length; i++) {
         const prevEnd = arr[i - 1].list[0].end;
         if (arr[i].list[0].start <= prevEnd) {
-          const D2 = [...arr[i].dates].filter(dt => dt > prevEnd);
+          let D2 = [...arr[i].dates].filter(dt => dt > prevEnd).sort();
+          const need = arr[i].list.length;
+          // 裁掉重疊後剩的天數連「一天一項」都塞不下（如練習範圍只比例題多一天）：
+          // 自動往後延伸到夠排為止（一天一項的步調），不會整批灌進同一天
+          if (D2.length < need) {
+            D2 = days.filter(d => d.date > prevEnd).slice(0, need).map(d => d.date);
+          }
           if (D2.length) {
             arr[i].dates = new Set(D2);
             arr[i].rate = (arr[i].list.length / D2.length) * (front ? 1 / 0.6 : 1);
