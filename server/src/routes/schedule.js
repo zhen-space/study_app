@@ -195,14 +195,24 @@ router.post('/preview', async (req, res) => {
       b.rate = (b.list.length / D.length) * (front ? 1 / 0.6 : 1);
       b.err = 0;
     }
-    // 主輪：逐天、各桶按速率領量 → 各科每天交錯出現，順序保持
+    // 主輪：逐天、各桶按速率領量 → 各科每天交錯出現，順序保持。
+    // 另設「科目總速率閘門」：同科多個桶（如例題桶＋練習桶）共用一個科目額度，
+    // 桶自己的額度滿了還要科目額度也滿才能排 → 物理整體約兩天一次就真的兩天一次，
+    // 不會兩桶同天一起出手變 2 項、隔天又都沒有。
+    const subjErr = {};
     for (const day of days) {
       for (const b of buckets) {
         if (!b.list.length || !b.dates.has(day.date)) continue;
+        const sid = b.list[0].subject_id;
+        subjErr[sid] = (subjErr[sid] || 0) + b.rate;             // 科目額度＝當天各活躍桶速率之和
+      }
+      for (const b of buckets) {
+        if (!b.list.length || !b.dates.has(day.date)) continue;
+        const sid = b.list[0].subject_id;
         b.err += b.rate;
-        while (b.err >= 0.999 && b.list.length) {
+        while (b.err >= 0.999 && subjErr[sid] >= 0.999 && b.list.length) {
           const w = b.list[0];
-          if (capOk(day) && fits(day, w) && put(day, w)) { b.list.shift(); b.err -= 1; }
+          if (capOk(day) && fits(day, w) && put(day, w)) { b.list.shift(); b.err -= 1; subjErr[sid] -= 1; }
           else break;                                            // 今天滿了，額度留著之後補
         }
       }
