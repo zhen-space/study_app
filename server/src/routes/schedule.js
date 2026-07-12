@@ -294,6 +294,34 @@ router.post('/preview', async (req, res) => {
       }
       if (!movedAny) break;
     }
+    // 同科一天 2 項時，把多的那項搬到附近「完全沒有這科」的日子——
+    // 可以略為超出原設定範圍（往後最多 7 天），但絕不越過該科下一階段（如練習）
+    // 或壓軸的日期，也不會早於原範圍的開始日。
+    for (let pass = 0; pass < 3; pass++) {
+      let movedAny = false;
+      for (const b of blocks) {
+        if (sCnt(b.date, b.subject_id) < 2) continue;
+        const mates = blocks.filter(x => x._bk === b._bk);
+        const i = mates.indexOf(b);
+        const lo = i > 0 ? mates[i - 1].date : null;
+        const hi = i < mates.length - 1 ? mates[i + 1].date : null;
+        // 同科其他桶（別的題型階段、壓軸）最近的前後日期：搬移不可越界
+        const others = blocks.filter(x => x.subject_id === b.subject_id && x._bk !== b._bk);
+        const nextOther = others.filter(x => x.date > b.date).reduce((a, x) => (!a || x.date < a) ? x.date : a, null);
+        const prevOther = others.filter(x => x.date < b.date).reduce((a, x) => (!a || x.date > a) ? x.date : a, null);
+        const cands = days.filter(d => d.date !== b.date
+          && sCnt(d.date, b.subject_id) === 0                     // 目標日完全沒這科
+          && cnt[d.date] <= cap
+          && d.date >= b._ws                                      // 不可早於範圍開始
+          && (!lo || d.date > lo) && (!hi || d.date < hi)
+          && (!nextOther || d.date < nextOther) && (!prevOther || d.date > prevOther)
+          && Math.abs(idxOf[d.date] - idxOf[b.date]) <= 7         // 就近，最多 7 天
+          && d.slots.length);
+        const target = cands.sort((a, c) => Math.abs(idxOf[a.date] - idxOf[b.date]) - Math.abs(idxOf[c.date] - idxOf[b.date]))[0];
+        if (target) { cnt[b.date]--; cnt[target.date]++; b.date = target.date; movedAny = true; }
+      }
+      if (!movedAny) break;
+    }
   }
   // 2) 各科空窗檢查＋自動修補：在該科「第一次～最後一次」的期間內，出現間隔若明顯
   //    大於預期（期間÷次數），自動把該科空窗後的下一個項目搬進空窗補平。
