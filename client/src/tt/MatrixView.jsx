@@ -1,10 +1,17 @@
+import { useState } from 'react';
 import { api } from '../api';
 import { today, addDays } from './helpers';
 
 export default function MatrixView({ tasks, reload }) {
+  // 規則可自訂（記在本機）：緊急＝幾天內到期、重要＝優先級門檻
+  const [rule, setRule] = useState(() => {
+    try { return { days: 3, pri: 2, ...JSON.parse(localStorage.getItem('matrixRule') || '{}') }; }
+    catch { return { days: 3, pri: 2 }; }
+  });
+  const setR = patch => setRule(r => { const n = { ...r, ...patch }; localStorage.setItem('matrixRule', JSON.stringify(n)); return n; });
   const active = tasks.filter(t => !t.completed);
-  const urgent = t => t.due_date && t.due_date <= addDays(today(), 2);
-  const important = t => t.priority >= 2;
+  const urgent = t => t.due_date && t.due_date <= addDays(today(), rule.days - 1);
+  const important = t => t.priority >= rule.pri;
   const quads = [
     ['重要且緊急', 'var(--red)', active.filter(t => important(t) && urgent(t))],
     ['重要不緊急', 'var(--orange)', active.filter(t => important(t) && !urgent(t))],
@@ -17,7 +24,17 @@ export default function MatrixView({ tasks, reload }) {
   };
   return (
     <div className="main">
-      <div className="main-head"><h2>艾森豪矩陣</h2><span className="muted">緊急＝3 天內到期；重要＝中/高優先級</span></div>
+      <div className="main-head">
+        <h2>艾森豪矩陣</h2>
+        <span className="muted">緊急＝</span>
+        <select value={rule.days} onChange={e => setR({ days: +e.target.value })} style={{ fontSize: 13, padding: '3px 22px 3px 8px' }}>
+          {[1, 2, 3, 5, 7].map(d => <option key={d} value={d}>{d} 天內</option>)}
+        </select>
+        <span className="muted">重要＝</span>
+        <select value={rule.pri} onChange={e => setR({ pri: +e.target.value })} style={{ fontSize: 13, padding: '3px 22px 3px 8px' }}>
+          <option value={1}>低以上</option><option value={2}>中以上</option><option value={3}>高</option>
+        </select>
+      </div>
       <div className="main-body" style={{ paddingTop: 10 }}>
         <div style={{ position: 'relative', paddingLeft: 22, paddingBottom: 24 }}>
           {/* 十字座標軸 */}

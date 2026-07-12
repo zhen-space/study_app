@@ -232,3 +232,16 @@ select { -webkit-appearance: none; appearance: none; padding-right: 26px;
 .tag-pill.on { background: var(--primary); color: #fff; }
 .icon-btn { color: var(--muted); padding: 6px; border-radius: 8px; transition: background .12s; }
 .icon-btn:hover { background: var(--fill); }
+
+/* 底部復原提示 */
+.toast {
+  position: fixed; left: 50%; transform: translateX(-50%);
+  bottom: calc(76px + env(safe-area-inset-bottom));
+  background: var(--text); color: var(--bg);
+  padding: 10px 16px; border-radius: 12px; display: flex; gap: 14px; align-items: center;
+  box-shadow: 0 6px 24px rgba(0,0,0,.25); z-index: 60; font-size: 14px; max-width: 90vw;
+  animation: toast-in .2s ease-out;
+}
+.toast span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.toast button { color: #4da3ff; font-weight: 700; flex-shrink: 0; }
+@keyframes toast-in { from { opacity: 0; transform: translate(-50%, 8px); } to { opacity: 1; transform: translate(-50%, 0); } }

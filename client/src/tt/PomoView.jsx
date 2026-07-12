@@ -65,31 +65,36 @@ export default function PomoView({ tasks }) {
     <div className="main">
       <div className="main-head"><h2>番茄專注</h2></div>
       <div className="main-body">
-        <div className="pomo">
-          <div className="pomo-ring"><div className="time">{fmt(left)}</div></div>
-          <div className="drow">
-            <select value={taskId} onChange={e => setTaskId(e.target.value)}>
-              <option value="">不綁定任務</option>
-              {tasks.filter(t => !t.completed).map(t => <option key={t.id} value={t.id}>{t.title}</option>)}
-            </select>
-            <select value={mins} disabled={running} onChange={e => { setMins(+e.target.value); setLeft(+e.target.value * 60); }}>
-              {[5, 15, 25, 45, 60].map(m => <option key={m} value={m}>{m} 分鐘</option>)}
-            </select>
-          </div>
-          <div className="drow">
-            {!running
-              ? <button className="btn" onClick={start}>開始專注</button>
-              : <button className="btn" style={{ background: 'var(--red)' }} onClick={() => { setRunning(false); setLeft(mins * 60); }}>放棄</button>}
-          </div>
-          <div className="drow">
-            <span className="muted">背景音：</span>
-            {[['off', '🔇 無'], ['white', '📻 白噪音'], ['rain', '🌧️ 雨聲'], ['brown', '🌊 深沉']].map(([v, l]) => (
-              <span key={v} className={'tag-pill' + (noise === v ? ' on' : '')} style={{ cursor: 'pointer' }} onClick={() => setNoise(v)}>{l}</span>
+        <div className="pomo" style={{ gap: 14, paddingTop: 16 }}>
+          {/* 時長：點圈圈旁的膠囊選，不用又醜又擠的下拉 */}
+          <div className="row" style={{ justifyContent: 'center' }}>
+            {[15, 25, 45, 60].map(m => (
+              <span key={m} className={'tag-pill' + (mins === m ? ' on' : '')} style={{ cursor: running ? 'default' : 'pointer', opacity: running ? .5 : 1 }}
+                onClick={() => !running && (setMins(m), setLeft(m * 60))}>{m} 分</span>
             ))}
           </div>
-          <div style={{ width: '100%', maxWidth: 480 }}>
-            <h4 style={{ margin: '10px 0 6px' }}>專注紀錄</h4>
-            {log.map(s => (
+          <div className="pomo-ring" style={{ width: 210, height: 210, borderWidth: 8 }}>
+            <div className="time" style={{ fontSize: 52 }}>{fmt(left)}</div>
+          </div>
+          {!running
+            ? <button className="btn" style={{ padding: '12px 40px', fontSize: 16 }} onClick={start}>開始專注</button>
+            : <button className="btn" style={{ background: 'var(--red)', padding: '12px 40px', fontSize: 16 }} onClick={() => { setRunning(false); setLeft(mins * 60); }}>放棄</button>}
+          <div style={{ width: '100%', maxWidth: 440 }}>
+            <div className="row" style={{ marginTop: 4 }}>
+              <span className="muted" style={{ flexShrink: 0 }}>綁定任務</span>
+              <select value={taskId} onChange={e => setTaskId(e.target.value)} style={{ flex: 1, minWidth: 0 }}>
+                <option value="">（不綁定）</option>
+                {tasks.filter(t => !t.completed).map(t => <option key={t.id} value={t.id}>{t.title}</option>)}
+              </select>
+            </div>
+            <div className="row" style={{ marginTop: 10 }}>
+              <span className="muted" style={{ flexShrink: 0 }}>背景音</span>
+              {[['off', '無'], ['white', '白噪音'], ['rain', '雨聲'], ['brown', '深沉']].map(([v, l]) => (
+                <span key={v} className={'tag-pill' + (noise === v ? ' on' : '')} style={{ cursor: 'pointer' }} onClick={() => setNoise(v)}>{l}</span>
+              ))}
+            </div>
+            <h4 style={{ margin: '18px 0 6px' }}>專注紀錄</h4>
+            {log.slice(0, 15).map(s => (
               <div key={s.id} className="trow" style={{ cursor: 'default' }}>
                 <span>🍅</span>
                 <span className="title">{s.task_title || '專注'}</span>

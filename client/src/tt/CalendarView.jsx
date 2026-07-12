@@ -10,7 +10,37 @@ export default function CalendarView({ tasks, reload }) {
   const [view, setView] = useState('week'); // day | week | month
   const [anchor, setAnchor] = useState(today());
   const [events, setEvents] = useState([]);           // 匯入/新增的既定行程（課表、補習等）
-  useEffect(() => { api('/events').then(setEvents).catch(() => {}); }, []);
+  const loadEvents = () => api('/events').then(setEvents).catch(() => {});
+  useEffect(() => { loadEvents(); setAnchor(today()); }, []); // 每次打開都回到今天那一週
+
+  // 直接在日曆匯入課表/行程（AI 解析 → 勾選 → 加入）
+  const [aiBusy, setAiBusy] = useState(false);
+  const [aiList, setAiList] = useState(null);
+  async function importFile(e) {
+    const file = e.target.files[0];
+    if (!file) return;
+    setAiBusy(true);
+    try {
+      const bytes = new Uint8Array(await file.arrayBuffer());
+      let bin = '';
+      for (let i = 0; i < bytes.length; i += 8192) bin += String.fromCharCode(...bytes.subarray(i, i + 8192));
+      const { events: parsed } = await api('/import/parse', {
+        method: 'POST', body: { filename: file.name, mime: file.type, data: btoa(bin) },
+      });
+      if (!parsed.length) alert('AI 沒有在檔案中找到行程');
+      else setAiList(parsed.map(p => ({ ...p, checked: true })));
+    } catch (err) { alert(err.message); }
+    setAiBusy(false);
+    e.target.value = '';
+  }
+  async function confirmImport() {
+    for (const ev of aiList.filter(x => x.checked)) {
+      const { checked, ...body } = ev;
+      await api('/events', { method: 'POST', body });
+    }
+    setAiList(null);
+    loadEvents();
+  }
   // 某天有哪些既定行程（含每週重複）
   const eventsOn = d => {
     const dow = new Date(d + 'T00:00:00').getDay();
@@ -197,8 +227,28 @@ export default function CalendarView({ tasks, reload }) {
           <button className="icon-btn" onClick={() => view === 'month' ? navMonth(1) : shift(1)}>▶</button>
         </>}
         <button className="btn sm ghost" onClick={() => setAnchor(today())}>今天</button>
+        <label className="btn sm ghost" style={{ cursor: 'pointer' }}>
+          {aiBusy ? 'AI 解析中…' : '📷 匯入'}
+          <input type="file" accept="image/*,.pdf,.ics" style={{ display: 'none' }} onChange={importFile} disabled={aiBusy} />
+        </label>
       </div>
       <div className="main-body">
+        {aiList && (
+          <div className="tile" style={{ margin: '8px 0' }}>
+            <b>AI 讀到 {aiList.length} 筆行程，勾選要加入的：</b>
+            {aiList.map((ev, i) => (
+              <div key={i} className="row" style={{ marginTop: 6 }}>
+                <input type="checkbox" checked={ev.checked} onChange={() => setAiList(a => a.map((x, j) => j === i ? { ...x, checked: !x.checked } : x))} />
+                <span style={{ flex: 1 }}>{ev.title}{ev.location ? `＠${ev.location}` : ''}</span>
+                <span className="muted">{ev.recurring ? '每週' : ev.date?.slice(5)} {ev.start_time}–{ev.end_time}</span>
+              </div>
+            ))}
+            <div className="row" style={{ marginTop: 10 }}>
+              <button className="btn sm" onClick={confirmImport}>加入日曆</button>
+              <button className="btn sm ghost" onClick={() => setAiList(null)}>取消</button>
+            </div>
+          </div>
+        )}
         {['day', '3day', 'week'].includes(view) && <div className="muted" style={{ margin: '6px 0' }}>點空格可直接新增該時段的行程</div>}
         {view === 'list' && <ListView />}
         {view === 'year' && <YearView />}

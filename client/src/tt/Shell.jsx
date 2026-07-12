@@ -67,7 +67,26 @@ export default function Shell({ onLogout }) {
     return () => clearInterval(iv);
   }, [tasks]);
 
-  const tags = useMemo(() => [...new Set(tasks.flatMap(t => t.tags))], [tasks]);
+  // 自訂標籤（存在帳號設定）＋任務上實際出現的標籤；防髒資料：tags 一定要是陣列
+  const [customTags, setCustomTags] = useState([]);
+  useEffect(() => { api('/settings').then(s => setCustomTags(s.custom_tags || [])).catch(() => {}); }, []);
+  const tags = useMemo(() => [...new Set([
+    ...customTags,
+    ...tasks.flatMap(t => Array.isArray(t.tags) ? t.tags : []),
+  ])].filter(Boolean), [tasks, customTags]);
+  async function addTag() {
+    const name = prompt('新標籤名稱：');
+    if (!name?.trim()) return;
+    const next = [...new Set([...customTags, name.trim()])];
+    setCustomTags(next);
+    await api('/settings', { method: 'PUT', body: { custom_tags: next } });
+  }
+  async function delTag(t) {
+    if (!confirm(`移除標籤「${t}」？（不影響已標記的任務）`)) return;
+    const next = customTags.filter(x => x !== t);
+    setCustomTags(next);
+    await api('/settings', { method: 'PUT', body: { custom_tags: next } });
+  }
   const count = v => tasks.filter(t => matchView(t, v, { filters })).length;
 
   async function addList() {
@@ -187,10 +206,12 @@ export default function Shell({ onLogout }) {
             <button className="icon-btn" style={{ marginLeft: 'auto' }} onClick={e => { e.stopPropagation(); api(`/filters/${f.id}`, { method: 'DELETE' }).then(reload); }}>✕</button>
           </div>
         ))}
-        {tags.length > 0 && <div className="side-sec">標籤</div>}
+        <div className="side-sec">標籤 <button className="icon-btn" onClick={addTag}><Icon name="plus" size={14} /></button></div>
         <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, padding: '0 10px' }}>
           {tags.map(t => (
-            <span key={t} className={'tag-pill' + (is({ type: 'tag', tag: t }) ? ' on' : '')} onClick={() => setView({ type: 'tag', tag: t })}>#{t}</span>
+            <span key={t} className={'tag-pill' + (is({ type: 'tag', tag: t }) ? ' on' : '')} onClick={() => setView({ type: 'tag', tag: t })}>
+              #{t}{customTags.includes(t) && <span style={{ marginLeft: 4, opacity: .6 }} onClick={e => { e.stopPropagation(); delTag(t); }}>×</span>}
+            </span>
           ))}
         </div>
         <div className="side-sec">更多</div>
@@ -217,9 +238,9 @@ export default function Shell({ onLogout }) {
       <div className="bottom-nav">
         {[
           [{ type: 'today' }, 'today', '任務', v => !['calendar', 'matrix', 'habits', 'pomo', 'stats', 'pet', 'wizard'].includes(v.type)],
-          [{ type: 'wizard' }, 'wizard', '排程'],
           [{ type: 'calendar' }, 'calendar', '日曆'],
           [{ type: 'habits' }, 'habit', '習慣'],
+          [{ type: 'pomo' }, 'pomo', '番茄鐘'],
           [{ type: 'pet' }, 'paw', '寵物'],
         ].map(([v, icon, label, test]) => (
           <button key={label} className={(test ? test(view) : view.type === v.type) ? 'on' : ''} onClick={() => setView(v)}>

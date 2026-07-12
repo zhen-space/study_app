@@ -7,11 +7,16 @@ router.use(requireAuth);
 
 // ---- settings (sleep/meals) ----
 router.get('/settings', async (req, res) => {
-  const u = await q.get('SELECT sleep_start, sleep_end, meal_windows FROM users WHERE id=?', [req.userId]);
-  res.json({ ...u, meal_windows: JSON.parse(u.meal_windows) });
+  const u = await q.get('SELECT sleep_start, sleep_end, meal_windows, custom_tags FROM users WHERE id=?', [req.userId]);
+  let ct = []; try { ct = JSON.parse(u.custom_tags || '[]'); } catch {}
+  res.json({ ...u, meal_windows: JSON.parse(u.meal_windows), custom_tags: Array.isArray(ct) ? ct : [] });
 });
 router.put('/settings', async (req, res) => {
-  const { sleep_start, sleep_end, meal_windows } = req.body;
+  const { sleep_start, sleep_end, meal_windows, custom_tags } = req.body;
+  if (custom_tags !== undefined) {
+    await q.run('UPDATE users SET custom_tags=? WHERE id=?', [JSON.stringify(custom_tags || []), req.userId]);
+    if (sleep_start === undefined) return res.json({ ok: true }); // 只更新標籤
+  }
   await q.run('UPDATE users SET sleep_start=?, sleep_end=?, meal_windows=? WHERE id=?',
     [sleep_start, sleep_end, JSON.stringify(meal_windows), req.userId]);
   res.json({ ok: true });

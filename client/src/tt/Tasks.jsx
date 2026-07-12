@@ -276,9 +276,21 @@ export default function Tasks({ view, tasks, lists, filters, habits = [], reload
     reload();
   }
 
+  // 底部小提示（可復原，防誤按）
+  const [toast, setToast] = useState(null);
+  const toastTimer = useRef(null);
+  function showToast(msg, undo) {
+    clearTimeout(toastTimer.current);
+    setToast({ msg, undo });
+    toastTimer.current = setTimeout(() => setToast(null), 5000);
+  }
   async function toggle(t) {
     setHidden(h => new Set([...h, t.id]));   // 勾完成立即從當前列表消失
     api(`/tasks/${t.id}`, { method: 'PATCH', body: { completed: !t.completed } }).then(reload).catch(reload);
+    if (!t.completed) showToast(`已完成「${t.title}」`, async () => {
+      await api(`/tasks/${t.id}`, { method: 'PATCH', body: { completed: false } });
+      reload();
+    });
   }
   async function quickAdd(e) {
     e.preventDefault();
@@ -315,6 +327,10 @@ export default function Tasks({ view, tasks, lists, filters, habits = [], reload
     setHidden(h => new Set([...h, t.id]));   // 立刻消失
     setSelId(null);
     api(`/tasks/${t.id}`, { method: 'DELETE' }).then(reload).catch(reload);
+    showToast(`已刪除「${t.title}」`, async () => {
+      await api(`/tasks/${t.id}`, { method: 'PATCH', body: { deleted: false } });
+      reload();
+    });
   }
 
   // 願望清單：想做/要記得的事（無日期、無清單）
@@ -413,6 +429,12 @@ export default function Tasks({ view, tasks, lists, filters, habits = [], reload
       </div>
       {showAdd && <AddSheet view={view} lists={lists} onDone={() => { setShowAdd(false); reload(); }} onClose={() => setShowAdd(false)} />}
       {sel && <Detail key={sel.id} task={sel} lists={lists} onSave={save} onDelete={del} onClose={closeDetail} />}
+      {toast && (
+        <div className="toast">
+          <span>{toast.msg}</span>
+          <button onClick={() => { toast.undo(); setToast(null); }}>復原</button>
+        </div>
+      )}
     </>
   );
 }

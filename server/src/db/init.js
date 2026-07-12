@@ -137,7 +137,7 @@ export async function initSchema() {
     await client.execute(stmt);
   }
   // 舊資料庫補欄位
-  for (const col of ["coins INTEGER DEFAULT 0", "coins_total INTEGER DEFAULT 0", "pet TEXT DEFAULT '{}'"]) {
+  for (const col of ["coins INTEGER DEFAULT 0", "coins_total INTEGER DEFAULT 0", "pet TEXT DEFAULT '{}'", "custom_tags TEXT DEFAULT '[]'"]) {
     try { await client.execute(`ALTER TABLE users ADD COLUMN ${col}`); } catch {}
   }
   try { await client.execute("ALTER TABLE toc_items ADD COLUMN level TEXT DEFAULT '章'"); } catch {}

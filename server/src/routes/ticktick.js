@@ -5,7 +5,9 @@ import { requireAuth } from '../middleware/auth.js';
 const router = Router();
 router.use(requireAuth);
 
-const parseTask = t => ({ ...t, tags: JSON.parse(t.tags), subtasks: JSON.parse(t.subtasks) });
+// tags/subtasks 一定回傳陣列（曾有存成字串的髒資料，前端 flatMap 會拆成單一字母）
+const asArr = s => { try { const v = JSON.parse(s); return Array.isArray(v) ? v : []; } catch { return []; } };
+const parseTask = t => ({ ...t, tags: asArr(t.tags), subtasks: asArr(t.subtasks) });
 
 // 每個 (kind, ref) 只發一次金幣，避免反覆勾選刷幣
 async function award(userId, kind, refId, coins, refKey = '') {
