@@ -11,12 +11,13 @@ import PetView from './PetView';
 import WizardView from './WizardView';
 import Companion from './Companion';
 
-const LIST_COLORS = ['#4772fa', '#e03131', '#16a34a', '#f59f00', '#9333ea', '#0891b2'];
+const LIST_COLORS = ['#4772fa', '#e03131', '#16a34a', '#f59f00', '#9333ea', '#0891b2', '#eab308'];
 
 export default function Shell({ onLogout }) {
   const [view, setViewRaw] = useState({ type: 'today' });
   const [side, setSide] = useState(false);
   const setView = v => { setViewRaw(v); setSide(false); };
+  const [searchQ, setSearchQ] = useState('');
   const [tasks, setTasks] = useState([]);
   const [lists, setLists] = useState([]);
   const [filters, setFilters] = useState([]);
@@ -32,6 +33,10 @@ export default function Shell({ onLogout }) {
   };
   useEffect(reload, []);
   useEffect(() => { api('/pet').then(setPetData).catch(() => {}); }, [view.type]);
+  // 提醒通知需要授權（之前從沒請求過，通知一直發不出來）
+  useEffect(() => {
+    try { if ('Notification' in window && Notification.permission === 'default') Notification.requestPermission(); } catch {}
+  }, []);
 
   // due-time reminders (while app open)
   useEffect(() => {
@@ -79,8 +84,19 @@ export default function Shell({ onLogout }) {
 
   const smart = [
     ['today', '📅 今天'], ['week', '🗓️ 未來 7 天'], ['inbox', '💭 願望清單'],
-    ['all', '📋 所有任務'], ['completed', '✅ 已完成'],
+    ['all', '📋 所有任務'], ['completed', '✅ 已完成'], ['trash', '🗑️ 垃圾桶'],
   ];
+  async function renameList(l) {
+    const name = prompt('清單名稱：', l.name);
+    if (!name?.trim() || name.trim() === l.name) return;
+    await api(`/lists/${l.id}`, { method: 'PATCH', body: { name: name.trim() } });
+    reload();
+  }
+  async function cycleColor(l) {
+    const next = LIST_COLORS[(LIST_COLORS.indexOf(l.color) + 1) % LIST_COLORS.length];
+    await api(`/lists/${l.id}`, { method: 'PATCH', body: { color: next } });
+    reload();
+  }
   const pages = [['wizard', '🪄 排程精靈'], ['calendar', '🗓 日曆'], ['matrix', '🔲 矩陣'], ['habits', '🌱 習慣'], ['pomo', '🍅 番茄鐘'], ['pet', '🐾 寵物'], ['stats', '📊 統計']];
 
   const is = v => JSON.stringify(view) === JSON.stringify(v);
@@ -88,6 +104,7 @@ export default function Shell({ onLogout }) {
     if (view.type === 'list') return lists.find(l => l.id === view.id)?.name || '';
     if (view.type === 'tag') return '#' + view.tag;
     if (view.type === 'filter') return filters.find(f => f.id === view.id)?.name || '';
+    if (view.type === 'search') return `搜尋「${view.q}」`;
     return smart.find(([t]) => t === view.type)?.[1].slice(2) || '';
   };
 
@@ -96,16 +113,20 @@ export default function Shell({ onLogout }) {
       <button className="menu-btn" style={{ position: 'fixed', top: 'calc(4px + env(safe-area-inset-top))', left: 4, zIndex: 10 }} onClick={() => setSide(true)}>☰</button>
       {side && <div className="backdrop" onClick={() => setSide(false)} />}
       <div className={'sidebar' + (side ? ' open' : '')}>
+        <input placeholder="🔍 搜尋任務" value={searchQ} style={{ margin: '0 2px 8px', width: 'calc(100% - 4px)' }}
+          onChange={e => { const q = e.target.value; setSearchQ(q); setViewRaw(q.trim() ? { type: 'search', q } : { type: 'today' }); }} />
         {smart.map(([type, label]) => (
           <div key={type} className={'side-item' + (is({ type }) ? ' active' : '')} onClick={() => setView({ type })}>
-            {label}<span className="count">{type !== 'completed' ? count({ type }) : ''}</span>
+            {label}<span className="count">{!['completed', 'trash'].includes(type) ? count({ type }) : ''}</span>
           </div>
         ))}
         <div className="side-sec">清單 <button className="icon-btn" onClick={addList}>＋</button></div>
         {lists.map(l => (
           <div key={l.id} className={'side-item' + (is({ type: 'list', id: l.id }) ? ' active' : '')} onClick={() => setView({ type: 'list', id: l.id })}>
-            <span className="dot" style={{ background: l.color }} />{l.name}
+            <span className="dot" style={{ background: l.color, cursor: 'pointer' }} title="點擊換顏色"
+              onClick={e => { e.stopPropagation(); cycleColor(l); }} />{l.name}
             <span className="count">{count({ type: 'list', id: l.id })}</span>
+            <button className="icon-btn" title="改名" onClick={e => { e.stopPropagation(); renameList(l); }}>✏️</button>
             <button className="icon-btn" onClick={e => { e.stopPropagation(); delList(l); }}>✕</button>
           </div>
         ))}
@@ -130,10 +151,10 @@ export default function Shell({ onLogout }) {
         <div className="side-item" onClick={onLogout}>🚪 登出</div>
       </div>
 
-      {view.type === 'calendar' ? <CalendarView tasks={tasks} reload={reload} />
-        : view.type === 'matrix' ? <MatrixView tasks={tasks} reload={reload} />
+      {view.type === 'calendar' ? <CalendarView tasks={tasks.filter(t => !t.deleted)} reload={reload} />
+        : view.type === 'matrix' ? <MatrixView tasks={tasks.filter(t => !t.deleted)} reload={reload} />
         : view.type === 'habits' ? <HabitsView habits={habits} reload={reload} />
-        : view.type === 'pomo' ? <PomoView tasks={tasks} />
+        : view.type === 'pomo' ? <PomoView tasks={tasks.filter(t => !t.deleted)} />
         : view.type === 'stats' ? <StatsView />
         : view.type === 'pet' ? <PetView />
         : view.type === 'wizard' ? <WizardView lists={lists} reload={reload} goTasks={() => setView({ type: 'today' })} />

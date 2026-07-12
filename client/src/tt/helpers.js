@@ -4,7 +4,14 @@ export const PRI = { 0: ['無', ''], 1: ['低', 'p1'], 2: ['中', 'p2'], 3: ['�
 
 export function matchView(t, view, ctx) {
   const td = today();
+  if (view.type === 'trash') return !!t.deleted;
+  if (t.deleted) return false;                     // 垃圾桶以外的視圖都不顯示已刪除
   switch (view.type) {
+    case 'search': {
+      const q = (view.q || '').trim();
+      if (!q) return false;
+      return !t.completed && ((t.title || '').includes(q) || (t.notes || '').includes(q) || t.tags.some(x => x.includes(q)));
+    }
     case 'inbox': return !t.list_id && !t.completed;
     case 'today': return t.due_date === td && !t.completed;
     case 'week': return t.due_date && t.due_date >= td && t.due_date <= addDays(td, 6) && !t.completed;
@@ -30,6 +37,8 @@ export function matchView(t, view, ctx) {
 export function groupTasks(tasks, viewType) {
   const td = today();
   if (viewType === 'completed') return [['已完成', tasks]];
+  if (viewType === 'trash') return [['垃圾桶', tasks]];
+  if (viewType === 'search') return [['搜尋結果', tasks]];
   const overdue = tasks.filter(t => t.due_date && t.due_date < td);
   const todays = tasks.filter(t => t.due_date === td);
   const later = tasks.filter(t => t.due_date && t.due_date > td);

@@ -130,4 +130,5 @@ export async function initSchema() {
   try { await client.execute("ALTER TABLE habits ADD COLUMN miss_policy TEXT DEFAULT 'drop'"); } catch {}
   try { await client.execute("ALTER TABLE fixed_events ADD COLUMN location TEXT DEFAULT ''"); } catch {}
   try { await client.execute("ALTER TABLE habits ADD COLUMN category TEXT DEFAULT ''"); } catch {}
+  try { await client.execute("ALTER TABLE tasks ADD COLUMN deleted INTEGER DEFAULT 0"); } catch {}
 }

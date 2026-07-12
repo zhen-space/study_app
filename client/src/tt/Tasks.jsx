@@ -195,9 +195,32 @@ export default function Tasks({ view, tasks, lists, filters, habits = [], reload
   const [selId, setSelId] = useState(null);
   const [quick, setQuick] = useState('');
   const [showAdd, setShowAdd] = useState(false);
+  const [sortBy, setSortBy] = useState('default'); // default | time | priority | title
+
+  const sortFns = {
+    time: (a, b) => ((a.due_date || '9999') + (a.due_time || '99')).localeCompare((b.due_date || '9999') + (b.due_time || '99')),
+    priority: (a, b) => b.priority - a.priority,
+    title: (a, b) => a.title.localeCompare(b.title, 'zh-Hant'),
+  };
+  const applySort = list => sortFns[sortBy] ? [...list].sort(sortFns[sortBy]) : list;
 
   const shown = tasks.filter(t => matchView(t, view, { filters }));
   const sel = tasks.find(t => t.id === selId);
+
+  async function restore(t) {
+    await api(`/tasks/${t.id}`, { method: 'PATCH', body: { deleted: false } });
+    reload();
+  }
+  async function hardDel(t) {
+    if (!window.confirm(`永久刪除「${t.title}」？無法復原`)) return;
+    await api(`/tasks/${t.id}?hard=1`, { method: 'DELETE' });
+    reload();
+  }
+  async function emptyTrash() {
+    if (!window.confirm('清空垃圾桶？所有項目將永久刪除')) return;
+    await api('/trash', { method: 'DELETE' });
+    reload();
+  }
 
   async function toggle(t) {
     await api(`/tasks/${t.id}`, { method: 'PATCH', body: { completed: !t.completed } });
@@ -227,7 +250,7 @@ export default function Tasks({ view, tasks, lists, filters, habits = [], reload
 
   // 願望清單：想做/要記得的事（無日期、無清單）
   const [wish, setWish] = useState('');
-  const wishes = tasks.filter(t => !t.list_id && !t.completed && !t.due_date);
+  const wishes = tasks.filter(t => !t.list_id && !t.completed && !t.due_date && !t.deleted);
   async function addWish(e) {
     e.preventDefault();
     if (!wish.trim()) return;
@@ -239,19 +262,41 @@ export default function Tasks({ view, tasks, lists, filters, habits = [], reload
   return (
     <>
       <div className="main">
-        <div className="main-head"><h2>{title}</h2><span className="muted">{shown.length} 項</span></div>
-        {view.type !== 'completed' && (
+        <div className="main-head">
+          <h2>{title}</h2><span className="muted">{shown.length} 項</span>
+          {!['trash', 'completed'].includes(view.type) && shown.length > 1 && (
+            <select value={sortBy} onChange={e => setSortBy(e.target.value)} style={{ marginLeft: 'auto', fontSize: 13 }}>
+              <option value="default">預設排序</option>
+              <option value="time">依時間</option>
+              <option value="priority">依優先級</option>
+              <option value="title">依標題</option>
+            </select>
+          )}
+          {view.type === 'trash' && shown.length > 0 && (
+            <button className="btn sm ghost" style={{ marginLeft: 'auto' }} onClick={emptyTrash}>清空垃圾桶</button>
+          )}
+        </div>
+        {!['completed', 'trash', 'search'].includes(view.type) && (
           <form className="quick-add" onSubmit={quickAdd}>
             <input placeholder="＋ 新增任務，按 Enter 儲存" value={quick} onChange={e => setQuick(e.target.value)} />
           </form>
         )}
         <div className="main-body">
-          {groupTasks(shown, view.type).map(([label, list]) => (
-            <div className="tgroup" key={label}>
-              <div className="glabel">{label}</div>
-              {list.map(t => <TaskRow key={t.id} t={t} lists={lists} sel={t.id === selId} onSel={x => setSelId(x.id)} onToggle={toggle} />)}
-            </div>
-          ))}
+          {view.type === 'trash'
+            ? shown.map(t => (
+              <div key={t.id} className="trow" style={{ cursor: 'default' }}>
+                <span className="title" style={{ color: 'var(--muted)' }}>{t.title}</span>
+                {t.due_date && <span className="muted">{t.due_date.slice(5)}</span>}
+                <button className="btn sm ghost" onClick={() => restore(t)}>還原</button>
+                <button className="icon-btn" title="永久刪除" onClick={() => hardDel(t)}>✕</button>
+              </div>
+            ))
+            : groupTasks(shown, view.type).map(([label, list]) => (
+              <div className="tgroup" key={label}>
+                <div className="glabel">{label}</div>
+                {applySort(list).map(t => <TaskRow key={t.id} t={t} lists={lists} sel={t.id === selId} onSel={x => setSelId(x.id)} onToggle={toggle} />)}
+              </div>
+            ))}
           {shown.length === 0 && <div className="muted" style={{ marginTop: 30, textAlign: 'center' }}>沒有任務</div>}
 
           {view.type === 'today' && habits.length > 0 && (

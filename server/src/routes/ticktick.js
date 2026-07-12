@@ -52,7 +52,7 @@ router.get('/tasks', async (req, res) => {
   // miss_policy=drop 的重複任務：過期沒做就自動滾到下一次（不留逾期）
   const todayStr = new Date().toISOString().slice(0, 10);
   for (const t of rows) {
-    if (t.recurring && !t.completed && t.miss_policy === 'drop' && t.due_date && t.due_date < todayStr) {
+    if (t.recurring && !t.completed && !t.deleted && t.miss_policy === 'drop' && t.due_date && t.due_date < todayStr) {
       let nd = t.due_date, guard = 0;
       while (nd && nd < todayStr && guard++ < 400) nd = nextDate(nd, t.recurring);
       if (nd) { await q.run('UPDATE tasks SET due_date=? WHERE id=?', [nd, t.id]); t.due_date = nd; }
@@ -123,11 +123,12 @@ router.patch('/tasks/:id', async (req, res) => {
     completed: b.completed !== undefined ? (b.completed ? 1 : 0) : t.completed,
     completed_at: b.completed !== undefined ? (b.completed ? new Date().toISOString() : null) : t.completed_at,
     order_index: b.order_index ?? t.order_index,
+    deleted: b.deleted !== undefined ? (b.deleted ? 1 : 0) : (t.deleted || 0),
   };
   await q.run(`UPDATE tasks SET list_id=?,title=?,notes=?,due_date=?,due_time=?,priority=?,tags=?,subtasks=?,
-    recurring=?,miss_policy=?,completed=?,completed_at=?,order_index=? WHERE id=?`,
+    recurring=?,miss_policy=?,completed=?,completed_at=?,order_index=?,deleted=? WHERE id=?`,
     [f.list_id, f.title, f.notes, f.due_date, f.due_time, f.priority, f.tags, f.subtasks,
-      f.recurring, f.miss_policy, f.completed, f.completed_at, f.order_index, t.id]);
+      f.recurring, f.miss_policy, f.completed, f.completed_at, f.order_index, f.deleted, t.id]);
 
   if (b.completed && !t.completed && t.recurring && t.due_date) {
     const nd = nextDate(t.due_date, t.recurring);
@@ -141,8 +142,15 @@ router.patch('/tasks/:id', async (req, res) => {
   res.json({ ok: true, earned });
 });
 router.delete('/tasks/:id', async (req, res) => {
-  await q.run('DELETE FROM tasks WHERE id=? AND user_id=?', [req.params.id, req.userId]);
+  // 預設軟刪除進垃圾桶；?hard=1 才真的刪
+  if (req.query.hard) await q.run('DELETE FROM tasks WHERE id=? AND user_id=?', [req.params.id, req.userId]);
+  else await q.run('UPDATE tasks SET deleted=1 WHERE id=? AND user_id=?', [req.params.id, req.userId]);
   res.json({ ok: true });
+});
+// 清空垃圾桶
+router.delete('/trash', async (req, res) => {
+  const r = await q.run('DELETE FROM tasks WHERE user_id=? AND deleted=1', [req.userId]);
+  res.json({ removed: r.rowsAffected ?? 0 });
 });
 // 清掉上一次讀書計劃建立的待辦（已完成的保留當紀錄），建立新排程前呼叫
 router.delete('/plan-tasks', async (req, res) => {
