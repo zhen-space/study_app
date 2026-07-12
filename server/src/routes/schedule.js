@@ -195,6 +195,27 @@ router.post('/preview', async (req, res) => {
       b.rate = (b.list.length / D.length) * (front ? 1 / 0.6 : 1);
       b.err = 0;
     }
+    // 同科的階段（桶）必須「接續」：範圍重疊時，後一階段（如單元練習+歷屆）
+    // 自動從前一階段（範例+例題）的範圍結束隔天才開始——先做完全部例題再進練習，
+    // 不會在例題期間亂入練習。
+    const phaseBySubj = new Map();
+    buckets.forEach(b => {
+      const sid = b.list[0].subject_id;
+      if (!phaseBySubj.has(sid)) phaseBySubj.set(sid, []);
+      phaseBySubj.get(sid).push(b);
+    });
+    for (const arr of phaseBySubj.values()) {
+      for (let i = 1; i < arr.length; i++) {
+        const prevEnd = arr[i - 1].list[0].end;
+        if (arr[i].list[0].start <= prevEnd) {
+          const D2 = [...arr[i].dates].filter(dt => dt > prevEnd);
+          if (D2.length) {
+            arr[i].dates = new Set(D2);
+            arr[i].rate = (arr[i].list.length / D2.length) * (front ? 1 / 0.6 : 1);
+          }
+        }
+      }
+    }
     // 主輪：逐天、各桶按速率領量 → 各科每天交錯出現，順序保持。
     // 另設「科目總速率閘門」：同科多個桶（如例題桶＋練習桶）共用一個科目額度，
     // 桶自己的額度滿了還要科目額度也滿才能排 → 物理整體約兩天一次就真的兩天一次，
@@ -280,12 +301,17 @@ router.post('/preview', async (req, res) => {
         const i = mates.indexOf(b);
         const lo = i > 0 ? mates[i - 1].date : null;
         const hi = i < mates.length - 1 ? mates[i + 1].date : null;
+        // 跨階段護欄：不可越過同科其他桶（別的題型階段、壓軸）的日期
+        const others = blocks.filter(x => x.subject_id === b.subject_id && x._bk !== b._bk);
+        const nextOther = others.filter(x => x.date > b.date).reduce((a, x) => (!a || x.date < a) ? x.date : a, null);
+        const prevOther = others.filter(x => x.date < b.date).reduce((a, x) => (!a || x.date > a) ? x.date : a, null);
         // 只能搬到同桶前後項「之間」（不含同日，維持等距），且從離原日最近的開始挑，不會整串往前擠
         const cands = days.filter(d => d.date !== b.date
           && cnt[d.date] < cap && cnt[d.date] <= cnt[b.date] - 2   // 未達上限且搬了有實質改善
           && sCnt(d.date, b.subject_id) < sCnt(b.date, b.subject_id) // 這科在目標日要比原日少，不能越搬越擠
           && d.date >= b._ws && d.date <= b._we
           && (!lo || d.date > lo) && (!hi || d.date < hi)
+          && (!nextOther || d.date < nextOther) && (!prevOther || d.date > prevOther)
           && (b._fin ? (!maxNormal[b.subject_id] || d.date > maxNormal[b.subject_id])
                      : (!minFinal[b.subject_id] || d.date < minFinal[b.subject_id]))
           && d.slots.length);
@@ -366,8 +392,11 @@ router.post('/preview', async (req, res) => {
           const mates = blocks.filter(x => x._bk === b._bk);
           const i = mates.indexOf(b);
           const lo = i > 0 ? mates[i - 1].date : null;               // 往前搬不能超過同桶前一項
+          const others = blocks.filter(x => x.subject_id === b.subject_id && x._bk !== b._bk);
+          const prevOther = others.filter(x => x.date < b.date).reduce((a, x) => (!a || x.date > a) ? x.date : a, null);
           const target = g.between.find(d => cnt[d.date] <= cap
             && d.date >= b._ws && d.date <= b._we && (!lo || d.date > lo)
+            && (!prevOther || d.date > prevOther)                    // 不可越到同科前一階段裡面
             && (!b._fin || !maxNormal[b.subject_id] || d.date > maxNormal[b.subject_id]) // 壓軸仍在該科之後
             && d.slots.length);
           if (target) { cnt[b.date]--; cnt[target.date]++; b.date = target.date; moved = changed = true; break; }
