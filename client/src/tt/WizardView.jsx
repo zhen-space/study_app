@@ -464,6 +464,8 @@ export default function WizardView({ lists, reload, goTasks }) {
   }
   async function confirm() {
     setSaving(true);
+    // 新排程取代舊排程：先清掉上一次建立、還沒完成的讀書計劃待辦（已完成的保留當紀錄）
+    try { await api('/plan-tasks', { method: 'DELETE' }); } catch {}
     for (const b of preview.blocks) {
       const body = { title: b.title, list_id: b.subject_id, due_date: b.date, tags: ['讀書計劃'] };
       if (b.start_time) { body.due_time = b.start_time; body.notes = `讀書時段 ${b.start_time}–${b.end_time}`; }

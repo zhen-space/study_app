@@ -144,6 +144,11 @@ router.delete('/tasks/:id', async (req, res) => {
   await q.run('DELETE FROM tasks WHERE id=? AND user_id=?', [req.params.id, req.userId]);
   res.json({ ok: true });
 });
+// 清掉上一次讀書計劃建立的待辦（已完成的保留當紀錄），建立新排程前呼叫
+router.delete('/plan-tasks', async (req, res) => {
+  const r = await q.run(`DELETE FROM tasks WHERE user_id=? AND completed=0 AND tags LIKE '%讀書計劃%'`, [req.userId]);
+  res.json({ removed: r.rowsAffected ?? 0 });
+});
 
 // ---- habits ----
 router.get('/habits', async (req, res) => {
