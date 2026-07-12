@@ -115,6 +115,21 @@ CREATE TABLE IF NOT EXISTS coin_awards (
   coins INTEGER NOT NULL,
   PRIMARY KEY (user_id, kind, ref_id, ref_key)
 );
+CREATE TABLE IF NOT EXISTS attachments (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  task_id INTEGER NOT NULL,
+  user_id INTEGER NOT NULL,
+  name TEXT NOT NULL,
+  mime TEXT DEFAULT '',
+  data TEXT NOT NULL,
+  created_at TEXT DEFAULT ''
+);
+CREATE TABLE IF NOT EXISTS list_shares (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  list_id INTEGER NOT NULL,
+  owner_id INTEGER NOT NULL,
+  member_id INTEGER NOT NULL
+);
 `;
 
 export async function initSchema() {

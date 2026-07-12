@@ -33,6 +33,48 @@ export default function StatsView() {
             {days.map(d => <div key={d} className="hcell" title={`${d}：完成 ${s.completedByDay[d] || 0} 項`} style={{ background: heat(s.completedByDay[d] || 0) }} />)}
           </div>
         </div>
+
+        {s.year && (
+          <div className="tile" style={{ marginTop: 12 }}>
+            <div style={{ fontWeight: 700 }}>📖 {new Date().getFullYear()} 年度回顧</div>
+            <div className="muted" style={{ marginTop: 8 }}>每月完成任務</div>
+            <div style={{ display: 'flex', alignItems: 'flex-end', gap: 4, height: 70, marginTop: 6 }}>
+              {s.year.byMonth.map((n, i) => {
+                const mx = Math.max(1, ...s.year.byMonth);
+                return (
+                  <div key={i} style={{ flex: 1, textAlign: 'center' }} title={`${i + 1}月：${n} 項`}>
+                    <div style={{ height: Math.max(2, n / mx * 52), background: 'var(--primary)', opacity: n ? 1 : .15, borderRadius: 4 }} />
+                    <div className="muted" style={{ fontSize: 10 }}>{i + 1}</div>
+                  </div>
+                );
+              })}
+            </div>
+            <div className="muted" style={{ marginTop: 10 }}>每月專注時數</div>
+            <div style={{ display: 'flex', alignItems: 'flex-end', gap: 4, height: 70, marginTop: 6 }}>
+              {s.year.focusByMonth.map((m, i) => {
+                const mx = Math.max(1, ...s.year.focusByMonth);
+                return (
+                  <div key={i} style={{ flex: 1, textAlign: 'center' }} title={`${i + 1}月：${(m / 60).toFixed(1)} 小時`}>
+                    <div style={{ height: Math.max(2, m / mx * 52), background: 'var(--orange)', opacity: m ? 1 : .15, borderRadius: 4 }} />
+                    <div className="muted" style={{ fontSize: 10 }}>{i + 1}</div>
+                  </div>
+                );
+              })}
+            </div>
+            {s.year.topLists?.length > 0 && (
+              <>
+                <div className="muted" style={{ marginTop: 10 }}>完成最多的清單</div>
+                {s.year.topLists.map((l, i) => (
+                  <div key={i} className="row" style={{ marginTop: 4 }}>
+                    <span className="dot" style={{ background: l.color }} />
+                    <span style={{ flex: 1 }}>{l.name}</span>
+                    <b>{l.c} 項</b>
+                  </div>
+                ))}
+              </>
+            )}
+          </div>
+        )}
       </div>
     </div>
   );

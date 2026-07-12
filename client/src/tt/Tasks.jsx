@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { api } from '../api';
 import { matchView, groupTasks, PRI, today } from './helpers';
 
@@ -82,11 +82,15 @@ function RepeatPicker({ value, dueDate, missPolicy, onChange }) {
   );
 }
 
-function TaskRow({ t, lists, sel, onSel, onToggle }) {
+function TaskRow({ t, lists, sel, onSel, onToggle, onDragStart, onDropOn }) {
   const list = lists.find(l => l.id === t.list_id);
   const overdue = t.due_date && t.due_date < today() && !t.completed;
   return (
-    <div className={'trow' + (t.completed ? ' done' : '') + (sel ? ' sel' : '')} onClick={() => onSel(t)}>
+    <div className={'trow' + (t.completed ? ' done' : '') + (sel ? ' sel' : '')} onClick={() => onSel(t)}
+      draggable={!!onDragStart}
+      onDragStart={onDragStart ? () => onDragStart(t) : undefined}
+      onDragOver={onDropOn ? e => e.preventDefault() : undefined}
+      onDrop={onDropOn ? () => onDropOn(t) : undefined}>
       <input type="checkbox" checked={!!t.completed} onClick={e => e.stopPropagation()} onChange={() => onToggle(t)} />
       {t.priority > 0 && <span className={PRI[t.priority][1]}>⚑</span>}
       <span className="title">{t.title}</span>
@@ -102,6 +106,32 @@ export function Detail({ task, lists, onSave, onDelete, onClose }) {
   const [t, setT] = useState(task);
   const up = patch => { const nt = { ...t, ...patch }; setT(nt); onSave(nt); };
   const [newSub, setNewSub] = useState('');
+
+  // 附件
+  const [atts, setAtts] = useState([]);
+  const loadAtts = () => api(`/tasks/${task.id}/attachments`).then(setAtts).catch(() => {});
+  useEffect(loadAtts, [task.id]);
+  async function addAtt(e) {
+    const file = e.target.files[0];
+    if (!file) return;
+    if (file.size > 3 * 1024 * 1024) { alert('檔案太大（上限 3MB）'); return; }
+    const bytes = new Uint8Array(await file.arrayBuffer());
+    let bin = '';
+    for (let i = 0; i < bytes.length; i += 8192) bin += String.fromCharCode(...bytes.subarray(i, i + 8192));
+    await api(`/tasks/${task.id}/attachments`, { method: 'POST', body: { name: file.name, mime: file.type, data: btoa(bin) } });
+    e.target.value = '';
+    loadAtts();
+  }
+  async function openAtt(a) {
+    const full = await api(`/attachments/${a.id}`);
+    const bin = atob(full.data);
+    const bytes = new Uint8Array(bin.length);
+    for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+    const url = URL.createObjectURL(new Blob([bytes], { type: full.mime || 'application/octet-stream' }));
+    const aEl = document.createElement('a');
+    aEl.href = url; aEl.download = full.name; aEl.click();
+    setTimeout(() => URL.revokeObjectURL(url), 5000);
+  }
 
   return (
     <div className="detail">
@@ -145,6 +175,17 @@ export function Detail({ task, lists, onSave, onDelete, onClose }) {
         </form>
       </div>
       <textarea placeholder="備註..." value={t.notes} onChange={e => up({ notes: e.target.value })} />
+      <div>
+        <label className="muted">📎 附件</label>
+        {atts.map(a => (
+          <div key={a.id} className="subtask">
+            <span style={{ flex: 1, cursor: 'pointer', color: 'var(--primary)' }} onClick={() => openAtt(a)}>{a.name}</span>
+            <span className="muted">{Math.round(a.size * 0.75 / 1024)}KB</span>
+            <button className="icon-btn" onClick={() => api(`/attachments/${a.id}`, { method: 'DELETE' }).then(loadAtts)}>✕</button>
+          </div>
+        ))}
+        <input type="file" onChange={addAtt} style={{ marginTop: 4, width: '100%' }} />
+      </div>
       <button className="btn sm" style={{ background: 'var(--red)', alignSelf: 'flex-start' }} onClick={() => onDelete(t)}>刪除任務</button>
     </div>
   );
@@ -221,6 +262,16 @@ export default function Tasks({ view, tasks, lists, filters, habits = [], reload
     await api('/trash', { method: 'DELETE' });
     reload();
   }
+  // 拖曳排序（預設排序時才能拖）
+  const [dragT, setDragT] = useState(null);
+  async function dropOn(target, list) {
+    if (!dragT || dragT.id === target.id) return;
+    const ids = list.map(x => x.id).filter(id => id !== dragT.id);
+    ids.splice(ids.indexOf(target.id), 0, dragT.id);
+    setDragT(null);
+    await api('/tasks/reorder', { method: 'POST', body: { ids } });
+    reload();
+  }
 
   async function toggle(t) {
     await api(`/tasks/${t.id}`, { method: 'PATCH', body: { completed: !t.completed } });
@@ -291,12 +342,18 @@ export default function Tasks({ view, tasks, lists, filters, habits = [], reload
                 <button className="icon-btn" title="永久刪除" onClick={() => hardDel(t)}>✕</button>
               </div>
             ))
-            : groupTasks(shown, view.type).map(([label, list]) => (
-              <div className="tgroup" key={label}>
-                <div className="glabel">{label}</div>
-                {applySort(list).map(t => <TaskRow key={t.id} t={t} lists={lists} sel={t.id === selId} onSel={x => setSelId(x.id)} onToggle={toggle} />)}
-              </div>
-            ))}
+            : groupTasks(shown, view.type).map(([label, list]) => {
+              const sorted = applySort(list);
+              const canDrag = sortBy === 'default';
+              return (
+                <div className="tgroup" key={label}>
+                  <div className="glabel">{label}</div>
+                  {sorted.map(t => <TaskRow key={t.id} t={t} lists={lists} sel={t.id === selId} onSel={x => setSelId(x.id)} onToggle={toggle}
+                    onDragStart={canDrag ? setDragT : undefined}
+                    onDropOn={canDrag ? x => dropOn(x, sorted) : undefined} />)}
+                </div>
+              );
+            })}
           {shown.length === 0 && <div className="muted" style={{ marginTop: 30, textAlign: 'center' }}>沒有任務</div>}
 
           {view.type === 'today' && habits.length > 0 && (

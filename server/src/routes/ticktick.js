@@ -27,8 +27,41 @@ export const SHOP = [
 ];
 
 // ---- lists ----
-router.get('/lists', async (req, res) =>
-  res.json(await q.all('SELECT * FROM lists WHERE user_id=? ORDER BY order_index, id', [req.userId])));
+// 自己的清單＋別人分享給我的清單（shared_in=1、附擁有者 email）
+router.get('/lists', async (req, res) => {
+  const own = await q.all('SELECT * FROM lists WHERE user_id=? ORDER BY order_index, id', [req.userId]);
+  const outIds = new Set((await q.all('SELECT DISTINCT list_id FROM list_shares WHERE owner_id=?', [req.userId])).map(r => r.list_id));
+  const sharedIn = await q.all(`SELECT l.*, u.email AS owner_email, 1 AS shared_in FROM list_shares s
+    JOIN lists l ON l.id=s.list_id JOIN users u ON u.id=s.owner_id WHERE s.member_id=?`, [req.userId]);
+  res.json([...own.map(l => ({ ...l, shared_out: outIds.has(l.id) ? 1 : 0 })), ...sharedIn]);
+});
+// 分享清單給其他使用者（用 email）
+router.get('/lists/:id/shares', async (req, res) => {
+  const rows = await q.all(`SELECT s.id, s.member_id, u.email FROM list_shares s JOIN users u ON u.id=s.member_id
+    WHERE s.list_id=? AND s.owner_id=?`, [req.params.id, req.userId]);
+  res.json(rows);
+});
+router.post('/lists/:id/share', async (req, res) => {
+  const l = await q.get('SELECT * FROM lists WHERE id=? AND user_id=?', [req.params.id, req.userId]);
+  if (!l) return res.status(404).json({ error: '找不到清單（只能分享自己的清單）' });
+  const u = await q.get('SELECT id FROM users WHERE email=?', [(req.body.email || '').trim().toLowerCase()]);
+  if (!u) return res.status(404).json({ error: '找不到這個 email 的使用者（對方要先註冊）' });
+  if (u.id === req.userId) return res.status(400).json({ error: '不用分享給自己啦' });
+  const dup = await q.get('SELECT id FROM list_shares WHERE list_id=? AND member_id=?', [l.id, u.id]);
+  if (!dup) await q.run('INSERT INTO list_shares (list_id,owner_id,member_id) VALUES (?,?,?)', [l.id, req.userId, u.id]);
+  res.json({ ok: true });
+});
+router.delete('/lists/:id/share/:shareId', async (req, res) => {
+  await q.run('DELETE FROM list_shares WHERE id=? AND owner_id=?', [req.params.shareId, req.userId]);
+  res.json({ ok: true });
+});
+// 可以動這個任務嗎：自己的，或它屬於分享給我的清單
+async function canTouch(uid, t) {
+  if (!t) return false;
+  if (t.user_id === uid) return true;
+  if (!t.list_id) return false;
+  return !!(await q.get('SELECT id FROM list_shares WHERE list_id=? AND member_id=?', [t.list_id, uid]));
+}
 router.post('/lists', async (req, res) => {
   const { name, color } = req.body;
   if (!name) return res.status(400).json({ error: '請輸入名稱' });
@@ -48,11 +81,14 @@ router.delete('/lists/:id', async (req, res) => {
 
 // ---- tasks ----
 router.get('/tasks', async (req, res) => {
-  const rows = await q.all('SELECT * FROM tasks WHERE user_id=? ORDER BY order_index, id DESC', [req.userId]);
+  // 自己的任務＋「分享給我的清單」裡的任務
+  const rows = await q.all(`SELECT * FROM tasks WHERE user_id=?
+    UNION SELECT t.* FROM tasks t JOIN list_shares s ON s.list_id=t.list_id AND s.member_id=?
+    ORDER BY order_index, id DESC`, [req.userId, req.userId]);
   // miss_policy=drop 的重複任務：過期沒做就自動滾到下一次（不留逾期）
   const todayStr = new Date().toISOString().slice(0, 10);
   for (const t of rows) {
-    if (t.recurring && !t.completed && !t.deleted && t.miss_policy === 'drop' && t.due_date && t.due_date < todayStr) {
+    if (t.user_id === req.userId && t.recurring && !t.completed && !t.deleted && t.miss_policy === 'drop' && t.due_date && t.due_date < todayStr) {
       let nd = t.due_date, guard = 0;
       while (nd && nd < todayStr && guard++ < 400) nd = nextDate(nd, t.recurring);
       if (nd) { await q.run('UPDATE tasks SET due_date=? WHERE id=?', [nd, t.id]); t.due_date = nd; }
@@ -64,9 +100,19 @@ router.get('/tasks', async (req, res) => {
 router.post('/tasks', async (req, res) => {
   const { title, list_id, notes, due_date, due_time, priority, tags, subtasks, recurring, miss_policy } = req.body;
   if (!title) return res.status(400).json({ error: '請輸入標題' });
+  // 新增到「分享給我的清單」時，任務掛在清單擁有者名下（雙方都看得到）
+  let ownerId = req.userId;
+  if (list_id) {
+    const l = await q.get('SELECT user_id FROM lists WHERE id=?', [list_id]);
+    if (l && l.user_id !== req.userId) {
+      const sh = await q.get('SELECT id FROM list_shares WHERE list_id=? AND member_id=?', [list_id, req.userId]);
+      if (!sh) return res.status(403).json({ error: '沒有這個清單的權限' });
+      ownerId = l.user_id;
+    }
+  }
   const r = await q.run(`INSERT INTO tasks (user_id,list_id,title,notes,due_date,due_time,priority,tags,subtasks,recurring,miss_policy)
     VALUES (?,?,?,?,?,?,?,?,?,?,?)`,
-    [req.userId, list_id || null, title, notes || '', due_date || null, due_time || null,
+    [ownerId, list_id || null, title, notes || '', due_date || null, due_time || null,
       priority || 0, JSON.stringify(tags || []), JSON.stringify(subtasks || []), recurring || null, miss_policy || 'keep']);
   res.json(parseTask(await q.get('SELECT * FROM tasks WHERE id=?', [r.lastInsertRowid])));
 });
@@ -106,8 +152,8 @@ function nextDate(dateStr, rule) {
 }
 
 router.patch('/tasks/:id', async (req, res) => {
-  const t = await q.get('SELECT * FROM tasks WHERE id=? AND user_id=?', [req.params.id, req.userId]);
-  if (!t) return res.status(404).json({ error: 'not found' });
+  const t = await q.get('SELECT * FROM tasks WHERE id=?', [req.params.id]);
+  if (!(await canTouch(req.userId, t))) return res.status(404).json({ error: 'not found' });
   const b = req.body;
   const f = {
     list_id: b.list_id !== undefined ? b.list_id : t.list_id,
@@ -142,9 +188,50 @@ router.patch('/tasks/:id', async (req, res) => {
   res.json({ ok: true, earned });
 });
 router.delete('/tasks/:id', async (req, res) => {
+  const t = await q.get('SELECT * FROM tasks WHERE id=?', [req.params.id]);
+  if (!(await canTouch(req.userId, t))) return res.status(404).json({ error: 'not found' });
   // 預設軟刪除進垃圾桶；?hard=1 才真的刪
-  if (req.query.hard) await q.run('DELETE FROM tasks WHERE id=? AND user_id=?', [req.params.id, req.userId]);
-  else await q.run('UPDATE tasks SET deleted=1 WHERE id=? AND user_id=?', [req.params.id, req.userId]);
+  if (req.query.hard) await q.run('DELETE FROM tasks WHERE id=?', [t.id]);
+  else await q.run('UPDATE tasks SET deleted=1 WHERE id=?', [t.id]);
+  res.json({ ok: true });
+});
+// 拖曳排序：一次寫入一批任務的順序
+router.post('/tasks/reorder', async (req, res) => {
+  const ids = req.body.ids || [];
+  for (let i = 0; i < ids.length; i++) {
+    await q.run('UPDATE tasks SET order_index=? WHERE id=? AND user_id=?', [i, ids[i], req.userId]);
+  }
+  res.json({ ok: true });
+});
+// ---- 附件 ----
+router.get('/tasks/:id/attachments', async (req, res) => {
+  const t = await q.get('SELECT * FROM tasks WHERE id=?', [req.params.id]);
+  if (!(await canTouch(req.userId, t))) return res.status(404).json({ error: 'not found' });
+  res.json(await q.all('SELECT id, name, mime, length(data) AS size, created_at FROM attachments WHERE task_id=?', [t.id]));
+});
+router.post('/tasks/:id/attachments', async (req, res) => {
+  const t = await q.get('SELECT * FROM tasks WHERE id=?', [req.params.id]);
+  if (!(await canTouch(req.userId, t))) return res.status(404).json({ error: 'not found' });
+  const { name, mime, data } = req.body;
+  if (!name || !data) return res.status(400).json({ error: '沒有收到檔案' });
+  if (data.length > 4_000_000) return res.status(400).json({ error: '檔案太大（上限約 3MB）' });
+  const r = await q.run('INSERT INTO attachments (task_id,user_id,name,mime,data,created_at) VALUES (?,?,?,?,?,?)',
+    [t.id, req.userId, name, mime || '', data, new Date().toISOString()]);
+  res.json({ id: r.lastInsertRowid });
+});
+router.get('/attachments/:id', async (req, res) => {
+  const a = await q.get('SELECT * FROM attachments WHERE id=?', [req.params.id]);
+  if (!a) return res.status(404).json({ error: 'not found' });
+  const t = await q.get('SELECT * FROM tasks WHERE id=?', [a.task_id]);
+  if (!(await canTouch(req.userId, t))) return res.status(404).json({ error: 'not found' });
+  res.json(a);
+});
+router.delete('/attachments/:id', async (req, res) => {
+  const a = await q.get('SELECT * FROM attachments WHERE id=?', [req.params.id]);
+  if (a) {
+    const t = await q.get('SELECT * FROM tasks WHERE id=?', [a.task_id]);
+    if (await canTouch(req.userId, t)) await q.run('DELETE FROM attachments WHERE id=?', [a.id]);
+  }
   res.json({ ok: true });
 });
 // 清空垃圾桶
@@ -256,12 +343,20 @@ router.get('/tstats', async (req, res) => {
       days[d] = (days[d] || 0) + 1;
     }
   }
+  // 年度回顧：本年度每月完成數/專注分鐘、完成最多的清單
+  const year = String(new Date().getFullYear());
+  const byMonth = Array(12).fill(0), focusByMonth = Array(12).fill(0);
+  for (const [d, n] of Object.entries(days)) if (d.startsWith(year)) byMonth[+d.slice(5, 7) - 1] += n;
+  for (const p of pomo) if (p.date?.startsWith(year)) focusByMonth[+p.date.slice(5, 7) - 1] += p.m;
+  const topLists = await q.all(`SELECT l.name, l.color, COUNT(*) c FROM tasks t JOIN lists l ON l.id=t.list_id
+    WHERE t.user_id=? AND t.completed=1 GROUP BY l.id ORDER BY c DESC LIMIT 5`, [req.userId]);
   res.json({
     total: tasks.length,
     done: tasks.filter(t => t.completed).length,
     completedByDay: days,
     focusByDay: Object.fromEntries(pomo.map(p => [p.date, p.m])),
     focusTotal: pomo.reduce((a, p) => a + p.m, 0),
+    year: { byMonth, focusByMonth, topLists },
   });
 });
 

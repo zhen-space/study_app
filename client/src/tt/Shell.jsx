@@ -37,6 +37,21 @@ export default function Shell({ onLogout }) {
   useEffect(() => {
     try { if ('Notification' in window && Notification.permission === 'default') Notification.requestPermission(); } catch {}
   }, []);
+  // Siri 捷徑/小工具替代：開 https://…/?add=買牛奶 就直接建一筆今天的任務
+  useEffect(() => {
+    const p = new URLSearchParams(window.location.search);
+    const t = p.get('add');
+    if (t?.trim()) {
+      api('/tasks', { method: 'POST', body: { title: t.trim(), due_date: today() } })
+        .then(() => { window.history.replaceState({}, '', window.location.pathname); reload(); })
+        .catch(() => {});
+    }
+    const go = p.get('go'); // App 圖示快速選單（manifest shortcuts）
+    if (go && ['wizard', 'calendar', 'pomo', 'habits', 'pet', 'stats'].includes(go)) {
+      setViewRaw({ type: go });
+      window.history.replaceState({}, '', window.location.pathname);
+    }
+  }, []);
 
   // due-time reminders (while app open)
   useEffect(() => {
@@ -97,6 +112,20 @@ export default function Shell({ onLogout }) {
     await api(`/lists/${l.id}`, { method: 'PATCH', body: { color: next } });
     reload();
   }
+  async function shareList(l) {
+    const members = await api(`/lists/${l.id}/shares`).catch(() => []);
+    const cur = members.length ? `目前共享給：${members.map(m => m.email).join('、')}\n（輸入其中一個 email 可取消共享）\n\n` : '';
+    const email = prompt(`${cur}輸入要共享「${l.name}」的對象 email：`);
+    if (!email?.trim()) return;
+    const ex = members.find(m => m.email === email.trim().toLowerCase());
+    if (ex) {
+      if (confirm(`取消與 ${ex.email} 的共享？`)) await api(`/lists/${l.id}/share/${ex.id}`, { method: 'DELETE' });
+    } else {
+      try { await api(`/lists/${l.id}/share`, { method: 'POST', body: { email: email.trim() } }); alert('已共享！對方登入後就會看到這個清單'); }
+      catch (e) { alert(e.message); }
+    }
+    reload();
+  }
   const pages = [['wizard', '🪄 排程精靈'], ['calendar', '🗓 日曆'], ['matrix', '🔲 矩陣'], ['habits', '🌱 習慣'], ['pomo', '🍅 番茄鐘'], ['pet', '🐾 寵物'], ['stats', '📊 統計']];
 
   const is = v => JSON.stringify(view) === JSON.stringify(v);
@@ -124,10 +153,14 @@ export default function Shell({ onLogout }) {
         {lists.map(l => (
           <div key={l.id} className={'side-item' + (is({ type: 'list', id: l.id }) ? ' active' : '')} onClick={() => setView({ type: 'list', id: l.id })}>
             <span className="dot" style={{ background: l.color, cursor: 'pointer' }} title="點擊換顏色"
-              onClick={e => { e.stopPropagation(); cycleColor(l); }} />{l.name}
+              onClick={e => { e.stopPropagation(); if (!l.shared_in) cycleColor(l); }} />
+            {l.name}{l.shared_in ? <span className="muted" style={{ fontSize: 11 }}>（{l.owner_email} 共享）</span> : ''}
             <span className="count">{count({ type: 'list', id: l.id })}</span>
-            <button className="icon-btn" title="改名" onClick={e => { e.stopPropagation(); renameList(l); }}>✏️</button>
-            <button className="icon-btn" onClick={e => { e.stopPropagation(); delList(l); }}>✕</button>
+            {!l.shared_in && <>
+              <button className="icon-btn" title="共享給朋友" onClick={e => { e.stopPropagation(); shareList(l); }}>{l.shared_out ? '👥' : '🤝'}</button>
+              <button className="icon-btn" title="改名" onClick={e => { e.stopPropagation(); renameList(l); }}>✏️</button>
+              <button className="icon-btn" onClick={e => { e.stopPropagation(); delList(l); }}>✕</button>
+            </>}
           </div>
         ))}
         <div className="side-sec">篩選器 <button className="icon-btn" onClick={addFilter}>＋</button></div>
