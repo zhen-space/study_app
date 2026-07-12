@@ -166,7 +166,10 @@ select { -webkit-appearance: none; appearance: none; padding-right: 26px;
   .backdrop { position: fixed; inset: 0; background: rgba(0,0,0,.35); z-index: 15; backdrop-filter: blur(2px); }
   .detail { position: fixed; inset: 0; width: auto; z-index: 30; padding-top: calc(20px + env(safe-area-inset-top)); }
   .cal-cell { min-height: 60px; }
-  .matrix { grid-template-columns: 1fr; grid-template-rows: none; height: auto; }
+  /* 矩陣在手機也維持真正的 2×2 四象限 */
+  .matrix { grid-template-columns: 1fr 1fr; grid-template-rows: 1fr 1fr; height: calc(100vh - 240px); min-height: 400px; }
+  .quad { padding: 8px; font-size: 13px; }
+  .quad .trow { padding: 6px 4px; gap: 6px; }
   .quick-add { display: none; }
   .main-head { padding-top: calc(14px + env(safe-area-inset-top)); padding-left: 54px; }
   .main-head h2 { font-size: 24px; }
@@ -193,6 +196,36 @@ select { -webkit-appearance: none; appearance: none; padding-right: 26px;
   .sheet input[type=text] { font-size: 17px; background: var(--fill); padding: 10px 12px; }
   .sheet .opts { display: flex; gap: 8px; flex-wrap: wrap; }
 }
+
+/* 圓形勾選框（TickTick 風格） */
+.trow input[type=checkbox], .subtask input[type=checkbox], .todo input[type=checkbox] {
+  appearance: none; -webkit-appearance: none;
+  width: 21px; height: 21px; border-radius: 50%;
+  border: 1.6px solid var(--fill-strong); background: transparent;
+  display: inline-grid; place-items: center; cursor: pointer; transition: all .15s;
+}
+.trow input[type=checkbox]:checked, .subtask input[type=checkbox]:checked, .todo input[type=checkbox]:checked {
+  background: var(--primary); border-color: var(--primary);
+}
+.trow input[type=checkbox]:checked::after, .subtask input[type=checkbox]:checked::after, .todo input[type=checkbox]:checked::after {
+  content: ''; width: 10px; height: 6px; border: 2px solid #fff; border-top: none; border-right: none;
+  transform: rotate(-45deg) translateY(-1px);
+}
+
+/* 清單編輯器（改名/顏色/圖標/共享/刪除） */
+.list-editor { margin: 2px 10px 8px 12px; padding: 12px; background: var(--card); border-radius: 14px; box-shadow: var(--shadow); }
+.list-editor input { width: 100%; }
+.swatches { display: flex; gap: 7px; flex-wrap: wrap; margin-top: 10px; }
+.swatch { width: 24px; height: 24px; border-radius: 50%; cursor: pointer; transition: transform .1s; border: 2px solid transparent; }
+.swatch:active { transform: scale(.88); }
+.swatch.on { border-color: var(--text); box-shadow: 0 0 0 2px var(--card) inset; }
+.icon-grid { display: flex; gap: 4px; flex-wrap: wrap; margin-top: 10px; }
+.icon-cell { width: 32px; height: 32px; border-radius: 9px; display: grid; place-items: center; cursor: pointer; transition: background .12s; }
+.icon-cell:hover { background: var(--fill); }
+.icon-cell.on { background: var(--primary-soft); }
+
+.side-item svg { flex-shrink: 0; }
+.bottom-nav button svg { display: block; margin: 0 auto 1px; }
 
 .tag-pill { font-size: 13px; background: var(--fill); padding: 5px 12px; border-radius: 999px; cursor: pointer; transition: background .12s, transform .1s; }
 .tag-pill:active { transform: scale(.94); }

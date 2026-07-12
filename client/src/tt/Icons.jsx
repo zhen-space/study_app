@@ -1,0 +1,50 @@
+// 自製線條圖標（取代 emoji）：24×24、圓角線條，跟隨文字顏色
+const P = {
+  today: <><rect x="3" y="4" width="18" height="17" rx="3" /><path d="M16 2v4M8 2v4M3 9.5h18" /><path d="M9 15l2 2 4-4" /></>,
+  week: <><rect x="3" y="4" width="18" height="17" rx="3" /><path d="M16 2v4M8 2v4M3 9.5h18" /><path d="M8 14h.01M12 14h.01M16 14h.01M8 17.5h.01M12 17.5h.01" /></>,
+  inbox: <><path d="M22 13h-5.5l-2 3h-5l-2-3H2" /><path d="M5.4 5.6 2 13v5a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-5l-3.4-7.4A2 2 0 0 0 16.8 4H7.2a2 2 0 0 0-1.8 1.6z" /></>,
+  all: <><path d="M12 2 2 7l10 5 10-5-10-5z" /><path d="M2 17l10 5 10-5" /><path d="M2 12l10 5 10-5" /></>,
+  done: <><path d="M22 11.1V12a10 10 0 1 1-5.9-9.1" /><path d="M22 4 12 14l-3-3" /></>,
+  trash: <><path d="M3 6h18" /><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6" /><path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" /><path d="M10 11v6M14 11v6" /></>,
+  wizard: <><path d="M12 3l1.8 4.7L18.5 9.5l-4.7 1.8L12 16l-1.8-4.7L5.5 9.5l4.7-1.8L12 3z" /><path d="M19 15l.8 2 2 .8-2 .8-.8 2-.8-2-2-.8 2-.8.8-2z" /></>,
+  calendar: <><rect x="3" y="4" width="18" height="17" rx="3" /><path d="M16 2v4M8 2v4M3 9.5h18" /></>,
+  matrix: <><rect x="3" y="3" width="7.5" height="7.5" rx="1.5" /><rect x="13.5" y="3" width="7.5" height="7.5" rx="1.5" /><rect x="3" y="13.5" width="7.5" height="7.5" rx="1.5" /><rect x="13.5" y="13.5" width="7.5" height="7.5" rx="1.5" /></>,
+  habit: <><path d="M7 21h10" /><path d="M12 21v-8" /><path d="M12 13c0-3.5 2.8-6 6.5-6C18.5 10.5 15.7 13 12 13z" /><path d="M12 13c0-3.5-2.8-6-6.5-6C5.5 10.5 8.3 13 12 13z" /></>,
+  pomo: <><circle cx="12" cy="13" r="8" /><path d="M12 10v3l2 2" /><path d="M9.5 2h5" /></>,
+  paw: <><circle cx="5.2" cy="9.5" r="1.9" /><circle cx="9.3" cy="5.6" r="1.9" /><circle cx="14.7" cy="5.6" r="1.9" /><circle cx="18.8" cy="9.5" r="1.9" /><path d="M12 10.5c-2.8 0-5.6 2.6-5.6 5.2 0 1.9 1.4 3.3 3.2 3.3.9 0 1.6-.4 2.4-.4s1.5.4 2.4.4c1.8 0 3.2-1.4 3.2-3.3 0-2.6-2.8-5.2-5.6-5.2z" /></>,
+  stats: <><path d="M6 20v-4M12 20V10M18 20V4" /><path d="M3 20h18" /></>,
+  search: <><circle cx="11" cy="11" r="7.5" /><path d="M21 21l-4.8-4.8" /></>,
+  pencil: <><path d="M17 3a2.83 2.83 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5L17 3z" /></>,
+  share: <><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2" /><circle cx="9" cy="7" r="4" /><path d="M23 21v-2a4 4 0 0 0-3-3.9" /><path d="M16 3.1a4 4 0 0 1 0 7.8" /></>,
+  logout: <><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4" /><path d="M16 17l5-5-5-5" /><path d="M21 12H9" /></>,
+  plus: <><path d="M12 5v14M5 12h14" /></>,
+  x: <><path d="M18 6 6 18M6 6l12 12" /></>,
+  check: <><path d="M20 6 9 17l-5-5" /></>,
+  // ↓ 清單可選的圖標
+  book: <><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20" /><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z" /></>,
+  flask: <><path d="M9 3h6" /><path d="M10 3v6l-5 8.5A2 2 0 0 0 6.7 21h10.6a2 2 0 0 0 1.7-3.5L14 9V3" /><path d="M7.5 15h9" /></>,
+  calc: <><rect x="4" y="2" width="16" height="20" rx="2" /><path d="M8 6.5h8" /><path d="M8 11h.01M12 11h.01M16 11h.01M8 15h.01M12 15h.01M16 15h.01M8 19h.01M12 19h.01M16 19h.01" /></>,
+  globe: <><circle cx="12" cy="12" r="10" /><path d="M2 12h20" /><path d="M12 2a15 15 0 0 1 4 10 15 15 0 0 1-4 10 15 15 0 0 1-4-10 15 15 0 0 1 4-10z" /></>,
+  pen: <><path d="M20.2 12.2a6 6 0 0 0-8.5-8.5L5 10.5V19h8.5l6.7-6.8z" /><path d="M16 8 2 22" /><path d="M17.5 15H9" /></>,
+  atom: <><circle cx="12" cy="12" r="1.6" /><ellipse cx="12" cy="12" rx="10" ry="4.2" /><ellipse cx="12" cy="12" rx="10" ry="4.2" transform="rotate(60 12 12)" /><ellipse cx="12" cy="12" rx="10" ry="4.2" transform="rotate(120 12 12)" /></>,
+  mountain: <><path d="M8 3l4.5 9L17 7l5 14H2L8 3z" /></>,
+  music: <><path d="M9 18V5l12-2v13" /><circle cx="6" cy="18" r="3" /><circle cx="18" cy="16" r="3" /></>,
+  palette: <><path d="M12 2a10 10 0 0 0 0 20c.9 0 1.5-.7 1.5-1.5 0-.4-.2-.7-.4-1-.2-.3-.4-.6-.4-1 0-.8.7-1.5 1.5-1.5H16a6 6 0 0 0 6-6c0-5-4.5-9-10-9z" /><path d="M7.5 11h.01M11 7h.01M15.5 7.5h.01" /></>,
+  ball: <><circle cx="12" cy="12" r="10" /><path d="M5 5.5c4 3.8 10 3.8 14 0M5 18.5c4-3.8 10-3.8 14 0" /><path d="M12 2v20M2 12h20" /></>,
+  star: <><path d="M12 2l3.1 6.3 6.9 1-5 4.9 1.2 6.8L12 17.8 5.8 21l1.2-6.8-5-4.9 6.9-1L12 2z" /></>,
+  heart: <><path d="M20.8 4.6a5.5 5.5 0 0 0-7.8 0L12 5.7l-1-1.1a5.5 5.5 0 1 0-7.8 7.8l1 1.1L12 21.2l7.8-7.8 1-1a5.5 5.5 0 0 0 0-7.8z" /></>,
+  bulb: <><path d="M9 18h6M10 22h4" /><path d="M12 2a7 7 0 0 0-4 12.7c.6.5 1 1.4 1 2.3h6c0-.9.4-1.8 1-2.3A7 7 0 0 0 12 2z" /></>,
+};
+
+export const LIST_ICONS = ['book', 'flask', 'calc', 'globe', 'pen', 'atom', 'mountain', 'music', 'palette', 'ball', 'star', 'heart', 'bulb'];
+export const LIST_COLORS = ['#4772fa', '#e03131', '#16a34a', '#f59f00', '#9333ea', '#0891b2', '#eab308', '#db2777', '#0d9488', '#65a30d'];
+
+export default function Icon({ name, size = 20, style, ...rest }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor"
+      strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"
+      style={{ flexShrink: 0, ...style }} {...rest}>
+      {P[name] || P.book}
+    </svg>
+  );
+}

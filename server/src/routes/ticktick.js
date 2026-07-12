@@ -69,9 +69,9 @@ router.post('/lists', async (req, res) => {
   res.json({ id: r.lastInsertRowid });
 });
 router.patch('/lists/:id', async (req, res) => {
-  const { name, color } = req.body;
-  await q.run('UPDATE lists SET name=COALESCE(?,name), color=COALESCE(?,color) WHERE id=? AND user_id=?',
-    [name ?? null, color ?? null, req.params.id, req.userId]);
+  const { name, color, icon } = req.body;
+  await q.run('UPDATE lists SET name=COALESCE(?,name), color=COALESCE(?,color), icon=COALESCE(?,icon) WHERE id=? AND user_id=?',
+    [name ?? null, color ?? null, icon ?? null, req.params.id, req.userId]);
   res.json({ ok: true });
 });
 router.delete('/lists/:id', async (req, res) => {

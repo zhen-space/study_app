@@ -416,7 +416,12 @@ export default function WizardView({ lists, reload, goTasks }) {
         const gChap = g ? g.filter(t => CH_TYPES.includes(t)) : [];      // 以章為單位的題型
         if (!g || gNode.length) normal.forEach(it => expanded2.push({
           subject_id: sid,
-          title: it.title + (gNode?.length ? `｜${gNode.join('+')}` : ''),
+          // 標題含章名稱：勾的是節/主題時，前面加上所屬章（如「3 大氣｜主題1 …」）
+          title: (() => {
+            const base = String((it._members?.[0]) ?? it.key).split('+')[0].split('.')[0];
+            const ch = base.startsWith('toc-') && base !== String(it.key).split('+')[0] ? chapTitle[base] : '';
+            return (ch ? `${ch}｜` : '') + it.title + (gNode?.length ? `｜${gNode.join('+')}` : '');
+          })(),
           minutes: it.minutes,
           start: w.start, end: w.end,
           final: anyFlag(it, finals),

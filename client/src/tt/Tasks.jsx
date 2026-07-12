@@ -1,6 +1,6 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { api } from '../api';
-import { matchView, groupTasks, PRI, today } from './helpers';
+import { matchView, groupTasks, defaultSort, PRI, today } from './helpers';
 
 const WDC = '日一二三四五六';
 export function repeatLabel(r, dueDate) {
@@ -140,7 +140,7 @@ export function Detail({ task, lists, onSave, onDelete, onClose }) {
           <option value="">願望清單</option>
           {lists.map(l => <option key={l.id} value={l.id}>{l.name}</option>)}
         </select>
-        <button className="icon-btn" onClick={onClose}>✕</button>
+        <button className="btn sm" onClick={onClose} title="完成編輯">✓ 完成</button>
       </div>
       <input className="title" value={t.title} onChange={e => up({ title: e.target.value })} />
       <div className="drow">
@@ -239,13 +239,16 @@ export default function Tasks({ view, tasks, lists, filters, habits = [], reload
   const [sortBy, setSortBy] = useState('default'); // default | time | priority | title
 
   const sortFns = {
-    time: (a, b) => ((a.due_date || '9999') + (a.due_time || '99')).localeCompare((b.due_date || '9999') + (b.due_time || '99')),
-    priority: (a, b) => b.priority - a.priority,
+    default: defaultSort, // 依時間，同一天依課序
+    priority: (a, b) => b.priority - a.priority || defaultSort(a, b),
     title: (a, b) => a.title.localeCompare(b.title, 'zh-Hant'),
   };
   const applySort = list => sortFns[sortBy] ? [...list].sort(sortFns[sortBy]) : list;
 
-  const shown = tasks.filter(t => matchView(t, view, { filters }));
+  // 刪除/勾選立即從畫面消失，不等伺服器
+  const [hidden, setHidden] = useState(new Set());
+  useEffect(() => { setHidden(new Set()); }, [tasks]);
+  const shown = tasks.filter(t => matchView(t, view, { filters }) && !hidden.has(t.id));
   const sel = tasks.find(t => t.id === selId);
 
   async function restore(t) {
@@ -274,8 +277,8 @@ export default function Tasks({ view, tasks, lists, filters, habits = [], reload
   }
 
   async function toggle(t) {
-    await api(`/tasks/${t.id}`, { method: 'PATCH', body: { completed: !t.completed } });
-    reload();
+    setHidden(h => new Set([...h, t.id]));   // 勾完成立即從當前列表消失
+    api(`/tasks/${t.id}`, { method: 'PATCH', body: { completed: !t.completed } }).then(reload).catch(reload);
   }
   async function quickAdd(e) {
     e.preventDefault();
@@ -288,15 +291,30 @@ export default function Tasks({ view, tasks, lists, filters, habits = [], reload
     setQuick('');
     reload();
   }
-  async function save(t) {
+  // 儲存去抖動：不再每敲一個字就打 API＋全量重載（造成又慢又容易出錯）
+  const saveTimer = useRef(null);
+  const pendingSave = useRef(null);
+  function flushSave() {
+    const t = pendingSave.current;
+    pendingSave.current = null;
+    if (!t) return Promise.resolve();
     const { id, title, notes, due_date, due_time, priority, tags, subtasks, recurring, miss_policy, list_id } = t;
-    await api(`/tasks/${id}`, { method: 'PATCH', body: { title, notes, due_date, due_time, priority, tags, subtasks, recurring, miss_policy, list_id } });
-    reload();
+    return api(`/tasks/${id}`, { method: 'PATCH', body: { title, notes, due_date, due_time, priority, tags, subtasks, recurring, miss_policy, list_id } }).catch(() => {});
+  }
+  function save(t) {
+    pendingSave.current = t;
+    clearTimeout(saveTimer.current);
+    saveTimer.current = setTimeout(flushSave, 400);
+  }
+  function closeDetail() {
+    clearTimeout(saveTimer.current);
+    setSelId(null);
+    flushSave().then(reload);   // 關閉時先送出未儲存的變更，再重新整理
   }
   async function del(t) {
-    await api(`/tasks/${t.id}`, { method: 'DELETE' });
+    setHidden(h => new Set([...h, t.id]));   // 立刻消失
     setSelId(null);
-    reload();
+    api(`/tasks/${t.id}`, { method: 'DELETE' }).then(reload).catch(reload);
   }
 
   // 願望清單：想做/要記得的事（無日期、無清單）
@@ -394,7 +412,7 @@ export default function Tasks({ view, tasks, lists, filters, habits = [], reload
         {view.type !== 'completed' && <button className="fab" onClick={() => setShowAdd(true)}>＋</button>}
       </div>
       {showAdd && <AddSheet view={view} lists={lists} onDone={() => { setShowAdd(false); reload(); }} onClose={() => setShowAdd(false)} />}
-      {sel && <Detail key={sel.id} task={sel} lists={lists} onSave={save} onDelete={del} onClose={() => setSelId(null)} />}
+      {sel && <Detail key={sel.id} task={sel} lists={lists} onSave={save} onDelete={del} onClose={closeDetail} />}
     </>
   );
 }

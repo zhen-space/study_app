@@ -34,6 +34,7 @@ export function matchView(t, view, ctx) {
   }
 }
 
+const WDH = '日一二三四五六';
 export function groupTasks(tasks, viewType) {
   const td = today();
   if (viewType === 'completed') return [['已完成', tasks]];
@@ -43,7 +44,19 @@ export function groupTasks(tasks, viewType) {
   const todays = tasks.filter(t => t.due_date === td);
   const later = tasks.filter(t => t.due_date && t.due_date > td);
   const nodate = tasks.filter(t => !t.due_date);
+  // 之後：一天一組，寫出日期
+  const byDate = {};
+  later.forEach(t => { (byDate[t.due_date] = byDate[t.due_date] || []).push(t); });
+  const laterGroups = Object.keys(byDate).sort().map(d =>
+    [`${+d.slice(5, 7)}/${+d.slice(8)}（週${WDH[new Date(d + 'T00:00:00').getDay()]}）`, byDate[d]]);
   return [
-    ['已逾期', overdue], ['今天', todays], ['之後', later], ['無日期', nodate],
+    ['已逾期', overdue], ['今天', todays], ...laterGroups, ['無日期', nodate],
   ].filter(([, l]) => l.length);
+}
+// 預設排序：依時間；同一天依課序（order_index，再依建立先後）
+export function defaultSort(a, b) {
+  return (a.due_date || '9999').localeCompare(b.due_date || '9999')
+    || (a.due_time || '99').localeCompare(b.due_time || '99')
+    || (a.order_index - b.order_index)
+    || (a.id - b.id);
 }
