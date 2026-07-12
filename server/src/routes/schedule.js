@@ -175,7 +175,8 @@ router.post('/preview', async (req, res) => {
     const buckets = [];
     const byKey = {};
     queue.forEach(w => {
-      const key = `${w.subject_id}|${w.start}|${w.end}`;
+      // key 含 onePerDay：範例+例題和單元練習+歷屆就算同日期範圍也要分桶，階段邏輯才會生效
+      const key = `${w.subject_id}|${w.start}|${w.end}|${w.onePerDay ? 1 : 0}`;
       if (!byKey[key]) { byKey[key] = { list: [] }; buckets.push(byKey[key]); }
       w._bk = `${bkSeq}|${key}`;                                 // 桶識別：搬移時用來維持桶內順序
       byKey[key].list.push(w);
@@ -195,9 +196,10 @@ router.post('/preview', async (req, res) => {
       b.rate = (b.list.length / D.length) * (front ? 1 / 0.6 : 1);
       b.err = 0;
     }
-    // 同科的階段（桶）必須「接續」：範圍重疊時，後一階段（如單元練習+歷屆）
-    // 自動從前一階段（範例+例題）的範圍結束隔天才開始——先做完全部例題再進練習，
-    // 不會在例題期間亂入練習。
+    // 同科的階段（桶）必須「接續」：先做完全部範例+例題，練習/歷屆才開始。
+    // 而且由「後往前」保留天數——練習（一天一課）需要 n 天就先保留尾端 n 天，
+    // 範例被壓縮時自動加速（一天兩課）讓位，不會讓練習擠到截止日疊在一起。
+    const dayIdx = {}; days.forEach((d, i) => { dayIdx[d.date] = i; });
     const phaseBySubj = new Map();
     buckets.forEach(b => {
       const sid = b.list[0].subject_id;
@@ -205,15 +207,34 @@ router.post('/preview', async (req, res) => {
       phaseBySubj.get(sid).push(b);
     });
     for (const arr of phaseBySubj.values()) {
-      for (let i = 1; i < arr.length; i++) {
-        const prevEnd = arr[i - 1].list[0].end;
-        if (arr[i].list[0].start <= prevEnd) {
-          const D2 = [...arr[i].dates].filter(dt => dt > prevEnd);
-          if (D2.length) {
-            arr[i].dates = new Set(D2);
-            arr[i].rate = (arr[i].list.length / D2.length) * (front ? 1 / 0.6 : 1);
-          }
+      if (arr.length < 2) continue;
+      const winArr = arr.map(b => [...b.dates].map(dt => dayIdx[dt]).sort((x, y) => x - y));
+      // 各階段至少需要的天數：一天一課的＝項數；可加速的（範例+例題）＝項數÷2
+      const minNeed = arr.map(b => b.list[0].onePerDay ? b.list.length : Math.ceil(b.list.length / 2));
+      // 由後往前：每階段最晚開始的索引（要讓後面的階段裝得下）
+      const latestStart = new Array(arr.length);
+      for (let i = arr.length - 1; i >= 0; i--) {
+        const w = winArr[i];
+        if (!w.length) { latestStart[i] = Infinity; continue; }
+        let ls = w[w.length - 1] - minNeed[i] + 1;
+        if (i < arr.length - 1 && latestStart[i + 1] !== Infinity) ls = Math.min(ls, latestStart[i + 1] - minNeed[i]);
+        latestStart[i] = ls;
+      }
+      // 前向切割：每階段只用「上一階段之後」的日子；且結束前要讓出下一階段的保留區
+      let prevEndIdx = -1;
+      for (let i = 0; i < arr.length; i++) {
+        const b = arr[i];
+        let ds = winArr[i].filter(j => j > prevEndIdx);
+        if (i < arr.length - 1 && latestStart[i + 1] !== Infinity) {
+          const cut = ds.filter(j => j < latestStart[i + 1]);
+          if (cut.length) ds = cut;                              // 讓位（範例壓縮成一天兩課）
         }
+        if (!ds.length) ds = winArr[i].filter(j => j > prevEndIdx);
+        if (!ds.length) ds = winArr[i];
+        if (!ds.length) continue;
+        b.dates = new Set(ds.map(j => days[j].date));
+        b.rate = (b.list.length / ds.length) * (front ? 1 / 0.6 : 1);
+        prevEndIdx = ds[ds.length - 1];
       }
     }
     // 主輪：逐天、各桶按速率領量 → 各科每天交錯出現，順序保持。
@@ -234,8 +255,9 @@ router.post('/preview', async (req, res) => {
         let putToday = 0;
         while (b.err >= 0.999 && subjErr[sid] >= 0.999 && b.list.length) {
           const w = b.list[0];
-          if (w.onePerDay && putToday >= 1) break;               // 練習/歷屆盡量一天一課
-          if (capOk(day) && fits(day, w) && put(day, w)) { b.list.shift(); b.err -= 1; subjErr[sid] -= 1; putToday++; }
+          // 練習/歷屆盡量一天一課；課數多於天數時放寬為「速率的進位」（如 16 課 10 天→一天最多 2），均勻消化
+          if (w.onePerDay && putToday >= Math.max(1, Math.ceil(b.rate - 1e-9))) break;
+          if (capOk(day) && fits(day, w) && put(day, w)) { b.list.shift(); b.err -= 1; subjErr[sid] -= 1; putToday++; b.lastIdx = dayIdx[day.date]; }
           else break;                                            // 今天滿了，額度留著之後補
         }
       }
@@ -243,15 +265,17 @@ router.post('/preview', async (req, res) => {
     // 剩下的（被每日上限/空檔擋住）：照順序找最早塞得下的日子
     // onePerDay（練習/歷屆）補位時也一天一項往後排，不要疊同一天
     for (const b of buckets) {
-      let ci = 0;
+      // 照順序的桶：補位不可以繞回「已排到的日子」之前，順序才不會亂
+      const base = (b.list[0] && b.list[0].spread === false && b.lastIdx != null) ? b.lastIdx + 1 : 0;
+      let ci = base;
       for (const w of b.list) {
         let done = false;
         for (let i = ci; i < days.length && !done; i++) {
           if (!b.dates.has(days[i].date)) continue;
           if (fits(days[i], w) && put(days[i], w)) { done = true; ci = w.onePerDay ? i + 1 : i; }
         }
-        // 一天一課排不完時放寬：寧可一天兩課也不要排不進去
-        if (!done && w.onePerDay) for (let i = 0; i < days.length && !done; i++) {
+        // 一天一課排不完時放寬：寧可一天兩課也不要排不進去（可與已排的最後一天同日，不繞到更前面）
+        if (!done && w.onePerDay) for (let i = Math.max(0, base - 1); i < days.length && !done; i++) {
           if (!b.dates.has(days[i].date)) continue;
           if (fits(days[i], w) && put(days[i], w)) done = true;
         }
