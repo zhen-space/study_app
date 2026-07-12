@@ -1,5 +1,7 @@
-export const today = () => new Date().toISOString().slice(0, 10);
-export const addDays = (s, n) => { const d = new Date(s + 'T00:00:00'); d.setDate(d.getDate() + n); return d.toISOString().slice(0, 10); };
+// 一律用「本地時區」的日期字串——toISOString 是 UTC，台灣(+8)凌晨會差一天、整週偏移
+export const localISO = d => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+export const today = () => localISO(new Date());
+export const addDays = (s, n) => { const d = new Date(s + 'T00:00:00'); d.setDate(d.getDate() + n); return localISO(d); };
 export const PRI = { 0: ['無', ''], 1: ['低', 'p1'], 2: ['中', 'p2'], 3: ['高', 'p3'] };
 
 export function matchView(t, view, ctx) {

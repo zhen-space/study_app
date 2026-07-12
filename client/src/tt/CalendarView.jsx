@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { api } from '../api';
-import { today, addDays } from './helpers';
+import { today, addDays, localISO } from './helpers';
 
 const WD = ['一', '二', '三', '四', '五', '六', '日'];
 const HOURS = Array.from({ length: 18 }, (_, i) => i + 6); // 06:00–23:00
@@ -34,12 +34,19 @@ export default function CalendarView({ tasks, reload }) {
     e.target.value = '';
   }
   async function confirmImport() {
-    for (const ev of aiList.filter(x => x.checked)) {
-      const { checked, ...body } = ev;
-      await api('/events', { method: 'POST', body });
-    }
+    const chosen = aiList.filter(x => x.checked);
+    try {
+      for (const ev of chosen) {
+        const { checked, ...body } = ev;
+        await api('/events', { method: 'POST', body });
+      }
+    } catch (err) { alert('加入失敗：' + err.message); return; }
     setAiList(null);
     loadEvents();
+    // 跳到第一筆行程那一週，不然加在未來看不到、像沒加成功
+    const first = chosen.map(x => x.date).sort()[0];
+    if (first && first > today()) { setAnchor(first); }
+    alert(`已加入 ${chosen.length} 筆行程${first && first > today() ? `（已跳到 ${first.slice(5).replace('-', '/')} 那週）` : ''}`);
   }
   // 某天有哪些既定行程（含每週重複）
   const eventsOn = d => {
@@ -61,7 +68,7 @@ export default function CalendarView({ tasks, reload }) {
     reload();
   }
 
-  const monday = (() => { const d = new Date(anchor + 'T00:00:00'); d.setDate(d.getDate() - ((d.getDay() + 6) % 7)); return d.toISOString().slice(0, 10); })();
+  const monday = (() => { const d = new Date(anchor + 'T00:00:00'); d.setDate(d.getDate() - ((d.getDay() + 6) % 7)); return localISO(d); })();
   const weekDays = [...Array(7)].map((_, i) => addDays(monday, i));
   const shift = n => setAnchor(addDays(anchor, view === 'day' ? n : view === '3day' ? n * 3 : view === 'week' ? n * 7 : 0));
 

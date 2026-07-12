@@ -60,7 +60,7 @@ function busyMinutesForDay(dateStr, events) {
 router.post('/preview', async (req, res) => {
   const { items, excludeWeekdays = [], excludeDates = [], skipIfBusyHours = 0, timed = true, perDay = 3, pace = 'even' } = req.body;
   if (!items?.length) return res.status(400).json({ error: '參數不完整' });
-  const today = new Date().toISOString().slice(0, 10);
+  const today = new Date(Date.now() + 8 * 3600e3).toISOString().slice(0, 10); // 台灣時區的今天
   const gStart = req.body.startDate || today, gEnd = req.body.endDate || today;
   for (const it of items) { it.start = it.start || gStart; it.end = it.end || gEnd; }
 

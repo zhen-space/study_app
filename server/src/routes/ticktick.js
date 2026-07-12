@@ -88,7 +88,7 @@ router.get('/tasks', async (req, res) => {
     UNION SELECT t.* FROM tasks t JOIN list_shares s ON s.list_id=t.list_id AND s.member_id=?
     ORDER BY order_index, id DESC`, [req.userId, req.userId]);
   // miss_policy=drop 的重複任務：過期沒做就自動滾到下一次（不留逾期）
-  const todayStr = new Date().toISOString().slice(0, 10);
+  const todayStr = new Date(Date.now() + 8 * 3600e3).toISOString().slice(0, 10); // 台灣時區
   for (const t of rows) {
     if (t.user_id === req.userId && t.recurring && !t.completed && !t.deleted && t.miss_policy === 'drop' && t.due_date && t.due_date < todayStr) {
       let nd = t.due_date, guard = 0;
@@ -291,7 +291,7 @@ router.get('/pomo', async (req, res) =>
 router.post('/pomo', async (req, res) => {
   const { task_id, minutes, date } = req.body;
   const r = await q.run('INSERT INTO pomo_sessions (user_id,task_id,date,minutes) VALUES (?,?,?,?)',
-    [req.userId, task_id || null, date || new Date().toISOString().slice(0, 10), minutes || 25]);
+    [req.userId, task_id || null, date || new Date(Date.now() + 8 * 3600e3).toISOString().slice(0, 10), minutes || 25]);
   const earned = await award(req.userId, 'pomo', r.lastInsertRowid, Math.max(2, Math.round((minutes || 25) / 5)));
   res.json({ ok: true, earned });
 });

@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { api } from '../api';
-import { matchView, groupTasks, defaultSort, PRI, today } from './helpers';
+import { matchView, groupTasks, defaultSort, PRI, today, addDays } from './helpers';
 
 const WDC = '日一二三四五六';
 export function repeatLabel(r, dueDate) {
@@ -193,7 +193,7 @@ export function Detail({ task, lists, onSave, onDelete, onClose }) {
 
 function AddSheet({ view, lists, onDone, onClose }) {
   const td = today();
-  const tm = (() => { const d = new Date(); d.setDate(d.getDate() + 1); return d.toISOString().slice(0, 10); })();
+  const tm = addDays(today(), 1);
   const [f, setF] = useState({
     title: '',
     due_date: view.type === 'today' ? td : '',
@@ -397,7 +397,7 @@ export default function Tasks({ view, tasks, lists, filters, habits = [], reload
                 const done = h.checkins.includes(today());
                 // keep 政策：計算近 7 天（不含今天）漏打卡的天數
                 const owed = h.miss_policy === 'keep'
-                  ? [...Array(7)].map((_, i) => { const d = new Date(); d.setDate(d.getDate() - i - 1); return d.toISOString().slice(0, 10); })
+                  ? [...Array(7)].map((_, i) => addDays(today(), -i - 1))
                     .filter(d => !h.checkins.includes(d)).length
                   : 0;
                 return (
@@ -407,7 +407,7 @@ export default function Tasks({ view, tasks, lists, filters, habits = [], reload
                     <span>{h.icon}</span>
                     <span className="todo-title">{h.name}</span>
                     {owed > 0 && <span className="chip" style={{ color: 'var(--red)' }}>欠 {owed} 天，到習慣頁補卡</span>}
-                    <span className="muted" style={{ marginLeft: 'auto' }}>🔥 {(() => { let s = 0, d = today(); if (!h.checkins.includes(d)) { const x = new Date(); x.setDate(x.getDate() - 1); d = x.toISOString().slice(0, 10); } while (h.checkins.includes(d)) { s++; const x = new Date(d + 'T00:00:00'); x.setDate(x.getDate() - 1); d = x.toISOString().slice(0, 10); } return s; })()} 天</span>
+                    <span className="muted" style={{ marginLeft: 'auto' }}>🔥 {(() => { let s = 0, d = today(); if (!h.checkins.includes(d)) d = addDays(d, -1); while (h.checkins.includes(d)) { s++; d = addDays(d, -1); } return s; })()} 天</span>
                   </div>
                 );
               })}

@@ -147,4 +147,20 @@ export async function initSchema() {
   try { await client.execute("ALTER TABLE habits ADD COLUMN category TEXT DEFAULT ''"); } catch {}
   try { await client.execute("ALTER TABLE tasks ADD COLUMN deleted INTEGER DEFAULT 0"); } catch {}
   try { await client.execute("ALTER TABLE lists ADD COLUMN icon TEXT DEFAULT 'book'"); } catch {}
+  // 一次性清理：舊 bug 產生的碎片標籤（純 1–2 個英文字母，如 ek、ne、l）
+  try {
+    const rs = await client.execute('SELECT id, tags FROM tasks');
+    for (const r of rs.rows) {
+      let t;
+      try { t = JSON.parse(r.tags); } catch { t = null; }
+      if (!Array.isArray(t)) {
+        await client.execute({ sql: 'UPDATE tasks SET tags=? WHERE id=?', args: ['[]', r.id] });
+        continue;
+      }
+      const clean = t.filter(x => !(typeof x === 'string' && /^[a-zA-Z]{1,2}$/.test(x)));
+      if (clean.length !== t.length) {
+        await client.execute({ sql: 'UPDATE tasks SET tags=? WHERE id=?', args: [JSON.stringify(clean), r.id] });
+      }
+    }
+  } catch (e) { console.error('tag cleanup:', e.message); }
 }

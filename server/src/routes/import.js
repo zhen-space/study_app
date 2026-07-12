@@ -81,7 +81,7 @@ router.post('/parse', async (req, res) => {
   }
 
   try {
-    const todayStr = new Date().toISOString().slice(0, 10);
+    const todayStr = new Date(Date.now() + 8 * 3600e3).toISOString().slice(0, 10); // 台灣時區
     const client = new Anthropic();
     const response = await client.messages.create({
       model: 'claude-opus-4-8',
