@@ -5,6 +5,10 @@ import { parseICS } from './ics';
 
 const LIST_COLORS = ['#4772fa', '#e03131', '#16a34a', '#f59f00', '#9333ea', '#0891b2'];
 const TYPE_OPTIONS = ['範例', '例題', '單元練習', '歷屆試題'];
+// 合理預設：不調整也能直接產生——範例+例題一組、單元練習+歷屆試題一組
+const DEF_TYPES = ['範例', '例題', '單元練習', '歷屆試題'];
+const DEF_COMBINE = 'custom';
+const DEF_TG = { 範例: 0, 例題: 0, 單元練習: 1, 歷屆試題: 1 };
 const WD = '日一二三四五六';
 
 // 把多筆同名同時段的行程統整成一列
@@ -142,7 +146,8 @@ export default function WizardView({ lists, reload, goTasks }) {
   };
   const groupsFor = sid => {
     const ref = (typeRef[sid] && typeRef[sid] !== 'self') ? typeRef[sid] : sid;
-    return calcGroups(typesBy[ref] || [], combineBy[ref] || 'together', typeGroupBy[ref] || {});
+    // 沒動過的科目用預設兩組（範例+例題／單元練習+歷屆）；清空過的（[]）尊重使用者
+    return calcGroups(typesBy[ref] ?? DEF_TYPES, combineBy[ref] ?? DEF_COMBINE, typeGroupBy[ref] ?? DEF_TG);
   };
   const gLabel = g => g ? g.join('+') : '';
 
@@ -416,7 +421,7 @@ export default function WizardView({ lists, reload, goTasks }) {
           start: w.start, end: w.end,
           final: anyFlag(it, finals),
           first: anyFlag(it, firstsSel),
-          spread: (subjSpread[sid] ?? 'spread') === 'spread',
+          spread: (subjSpread[sid] ?? 'order') === 'spread',
         }));
         if (gChap.length) {
           const seen = new Set();
@@ -433,7 +438,7 @@ export default function WizardView({ lists, reload, goTasks }) {
               start: w.start, end: w.end,
               final: false,
               first: false,
-              spread: (subjSpread[sid] ?? 'spread') === 'spread',
+              spread: (subjSpread[sid] ?? 'order') === 'spread',
             });
           });
         }
@@ -770,8 +775,8 @@ export default function WizardView({ lists, reload, goTasks }) {
                 <div key={sid} style={{ marginTop: 8 }}>
                   <div className="row">
                     <span className="tag" style={{ background: lists.find(l => l.id === sid)?.color, color: '#fff', padding: '2px 8px', borderRadius: 999, fontSize: 12 }}>{sname(sid)}</span>
-                    <label><input type="radio" checked={(subjSpread[sid] ?? 'spread') === 'spread'} onChange={() => setSubjSpread(s => ({ ...s, [sid]: 'spread' }))} /> 打散平均</label>
-                    <label><input type="radio" checked={subjSpread[sid] === 'order'} onChange={() => setSubjSpread(s => ({ ...s, [sid]: 'order' }))} /> 照章節順序</label>
+                    <label><input type="radio" checked={(subjSpread[sid] ?? 'order') === 'order'} onChange={() => setSubjSpread(s => ({ ...s, [sid]: 'order' }))} /> 照章節順序（預設）</label>
+                    <label><input type="radio" checked={subjSpread[sid] === 'spread'} onChange={() => setSubjSpread(s => ({ ...s, [sid]: 'spread' }))} /> 打散平均</label>
                   </div>
                   <div className="row" style={{ marginTop: 4, marginLeft: 10 }}>
                     <label><input type="checkbox" checked={(groupSize[sid] || 1) > 1} onChange={e => setGroupSize(g => ({ ...g, [sid]: e.target.checked ? 2 : 1 }))} /> 幾個單位綁一組排</label>
@@ -784,7 +789,7 @@ export default function WizardView({ lists, reload, goTasks }) {
               ))}
 
               <b style={{ display: 'block', marginTop: 16 }}>教材題型（範例/例題/單元練習/歷屆試題）</b>
-              <div className="muted" style={{ marginTop: 2 }}>每科可自己設，也可選「跟某科一樣」共用設定。範例/例題跟著你勾的單位；單元練習/歷屆試題以「章」為單位，每章一份</div>
+              <div className="muted" style={{ marginTop: 2 }}>已幫你預設好：範例+例題一組、單元練習+歷屆試題一組（練習/歷屆以「章」為單位，每章一份）。不用改就能直接下一步；想調整再展開各科設定</div>
               {sids.map((sid, idx) => {
                 const ref = typeRef[sid] && typeRef[sid] !== 'self' ? typeRef[sid] : null;
                 return (
@@ -801,7 +806,7 @@ export default function WizardView({ lists, reload, goTasks }) {
                     </div>
                     {ref
                       ? <div className="muted" style={{ marginTop: 4 }}>＝ 使用「{sname(ref)}」的題型設定</div>
-                      : <TypePanel ts={typesBy[sid] || []} cb={combineBy[sid] || 'together'} tg={typeGroupBy[sid] || {}}
+                      : <TypePanel ts={typesBy[sid] ?? DEF_TYPES} cb={combineBy[sid] ?? DEF_COMBINE} tg={typeGroupBy[sid] ?? DEF_TG}
                         onTs={v => setTypesBy(s => ({ ...s, [sid]: v }))}
                         onCb={v => setCombineBy(s => ({ ...s, [sid]: v }))}
                       onTg={v => setTypeGroupBy(s => ({ ...s, [sid]: v }))} />}
