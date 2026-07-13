@@ -37,13 +37,14 @@ router.post('/events', async (req, res) => {
 router.patch('/events/:id', async (req, res) => {
   const ev = await q.get('SELECT * FROM fixed_events WHERE id=? AND user_id=?', [req.params.id, req.userId]);
   if (!ev) return res.status(404).json({ error: 'not found' });
-  const { color, title, location } = req.body;
-  if (color !== undefined && req.body.applyAll) {
-    await q.run('UPDATE fixed_events SET color=? WHERE user_id=? AND title=? AND start_time=? AND end_time=?',
-      [color, req.userId, ev.title, ev.start_time, ev.end_time]);
+  const { color, title, location, start_time, end_time } = req.body;
+  if (req.body.applyAll) {
+    // 每週重複：套用到同名同時段的每一筆（用「原本」的時段比對）
+    await q.run('UPDATE fixed_events SET color=COALESCE(?,color), title=COALESCE(?,title), location=COALESCE(?,location), start_time=COALESCE(?,start_time), end_time=COALESCE(?,end_time) WHERE user_id=? AND title=? AND start_time=? AND end_time=?',
+      [color ?? null, title ?? null, location ?? null, start_time ?? null, end_time ?? null, req.userId, ev.title, ev.start_time, ev.end_time]);
   } else {
-    await q.run('UPDATE fixed_events SET color=COALESCE(?,color), title=COALESCE(?,title), location=COALESCE(?,location) WHERE id=? AND user_id=?',
-      [color ?? null, title ?? null, location ?? null, req.params.id, req.userId]);
+    await q.run('UPDATE fixed_events SET color=COALESCE(?,color), title=COALESCE(?,title), location=COALESCE(?,location), start_time=COALESCE(?,start_time), end_time=COALESCE(?,end_time) WHERE id=? AND user_id=?',
+      [color ?? null, title ?? null, location ?? null, start_time ?? null, end_time ?? null, req.params.id, req.userId]);
   }
   res.json({ ok: true });
 });

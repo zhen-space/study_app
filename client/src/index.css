@@ -125,6 +125,17 @@ select { -webkit-appearance: none; appearance: none; padding-right: 26px;
 .cal-cell.today .dnum { background: var(--primary); color: #fff; border-radius: 50%; width: 22px; height: 22px; display: inline-grid; place-items: center; font-weight: 600; }
 .cal-task { background: var(--primary-soft); color: var(--primary); border-radius: 6px; padding: 2px 5px; margin-top: 2px; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; cursor: pointer; font-weight: 500; }
 .cal-task.done { opacity: .5; text-decoration: line-through; }
+/* 日曆頂列：緊湊、不換行、視圖選單縮小 */
+.cal-head { flex-wrap: wrap; row-gap: 6px; }
+.cal-head h2 { font-size: 22px; }
+.cal-view-sel { padding: 6px 26px 6px 10px; font-size: 14px; width: auto; }
+.add-menu { position: absolute; right: 0; top: 40px; z-index: 30; background: var(--card); border-radius: 12px;
+  box-shadow: var(--shadow); padding: 6px; min-width: 168px; }
+.add-menu > div, .add-menu > label { display: flex; align-items: center; gap: 8px; padding: 9px 10px; border-radius: 8px; cursor: pointer; font-size: 14px; }
+.add-menu > div:hover, .add-menu > label:hover { background: var(--fill); }
+.cal-modal-back { position: fixed; inset: 0; background: rgba(0,0,0,.35); z-index: 50; display: flex; align-items: center; justify-content: center; padding: 16px; }
+.cal-modal { width: 320px; max-width: 100%; max-height: 84vh; overflow-y: auto; }
+
 .cal-ev { background: #fff; color: #111; border: 1px solid var(--border); border-radius: 6px; padding: 2px 5px; margin-top: 2px; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; font-weight: 500; cursor: pointer; }
 .cal-ev-dot { width: 10px; height: 10px; border-radius: 3px; background: #c7c7cc; flex-shrink: 0; }
 

@@ -39,6 +39,16 @@ const P = {
 export const LIST_ICONS = ['book', 'flask', 'calc', 'globe', 'pen', 'atom', 'mountain', 'music', 'palette', 'ball', 'star', 'heart', 'bulb'];
 export const LIST_COLORS = ['#4772fa', '#e03131', '#16a34a', '#f59f00', '#9333ea', '#0891b2', '#eab308', '#db2777', '#0d9488', '#65a30d'];
 
+// 更豐富的可選色盤：鮮明 + 莫蘭迪（低飽和灰調）+ 日系（柔和粉彩）
+export const PALETTE = [
+  // 鮮明
+  { name: '鮮明', colors: ['#ff3b30', '#ff9500', '#ffcc00', '#34c759', '#00c7be', '#007aff', '#5856d6', '#af52de', '#ff2d55', '#8e8e93'] },
+  // 莫蘭迪
+  { name: '莫蘭迪', colors: ['#b8a99a', '#a3b1a1', '#c9b8b0', '#8f9e9d', '#c4b7a6', '#9a8f97', '#7d8ca3', '#b0a3b3', '#a89f8f', '#8a9a8b'] },
+  // 日系柔和
+  { name: '日系', colors: ['#f7c8c8', '#f9dfc0', '#f6efc3', '#cfe8c9', '#c3e3e0', '#c5d5f0', '#d8ccec', '#eec9dd', '#e8d3b8', '#d9d9e3'] },
+];
+
 export default function Icon({ name, size = 20, style, ...rest }) {
   return (
     <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor"

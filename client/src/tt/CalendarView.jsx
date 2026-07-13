@@ -1,7 +1,8 @@
 import { useEffect, useState } from 'react';
 import { api } from '../api';
 import { today, addDays, localISO } from './helpers';
-import { LIST_COLORS } from './Icons';
+import { PALETTE } from './Icons';
+import Icon from './Icons';
 
 const WD = ['一', '二', '三', '四', '五', '六', '日'];
 const HOURS = Array.from({ length: 18 }, (_, i) => i + 6); // 06:00–23:00
@@ -16,6 +17,28 @@ const textOn = hex => {
   const r = parseInt(c.slice(0, 2), 16), g = parseInt(c.slice(2, 4), 16), b = parseInt(c.slice(4, 6), 16);
   return (r * 299 + g * 587 + b * 114) / 1000 > 150 ? '#111' : '#fff';
 };
+
+// 顏色選擇：白底 + 鮮明 / 莫蘭迪 / 日系 三組色盤
+function ColorPicker({ value, onPick }) {
+  return (
+    <div style={{ marginTop: 10 }}>
+      <div className="muted" style={{ marginBottom: 4 }}>顏色</div>
+      <div className="swatches" style={{ marginBottom: 8 }}>
+        <span className={'swatch' + (!value ? ' on' : '')} style={{ background: '#fff', border: '1px solid var(--border)' }} title="白底黑字" onClick={() => onPick('')} />
+      </div>
+      {PALETTE.map(g => (
+        <div key={g.name} style={{ marginBottom: 6 }}>
+          <div className="muted" style={{ fontSize: 11 }}>{g.name}</div>
+          <div className="swatches">
+            {g.colors.map(c => (
+              <span key={c} className={'swatch' + (value === c ? ' on' : '')} style={{ background: c }} onClick={() => onPick(c)} />
+            ))}
+          </div>
+        </div>
+      ))}
+    </div>
+  );
+}
 
 export default function CalendarView({ tasks, reload }) {
   const [view, setView] = useState('week'); // day | week | month
@@ -68,22 +91,40 @@ export default function CalendarView({ tasks, reload }) {
       .sort((a, b) => a.start_time.localeCompare(b.start_time));
   };
 
-  // 點行程 → 改顏色（每個行程一種顏色，預設白底黑字）
-  const [colorEv, setColorEv] = useState(null);
-  async function setEventColor(ev, color) {
-    setColorEv(null);
-    await api(`/events/${ev.id}`, { method: 'PATCH', body: { color, applyAll: !!ev.recurring } });
+  // 點行程 → 開編輯（名稱、時間、顏色、刪除）；預設白底黑字
+  const [editEv, setEditEv] = useState(null);
+  async function saveEvent() {
+    const ev = editEv;
+    if (!ev.title.trim()) { alert('請輸入行程名稱'); return; }
+    await api(`/events/${ev.id}`, {
+      method: 'PATCH',
+      body: { title: ev.title.trim(), location: ev.location || '', color: ev.color || '', start_time: ev.start_time, end_time: ev.end_time, applyAll: !!ev.recurring },
+    });
+    setEditEv(null);
     loadEvents();
   }
   async function deleteEvent(ev) {
-    setColorEv(null);
     if (!window.confirm(`刪除行程「${ev.title}」？`)) return;
+    setEditEv(null);
     if (ev.recurring) {
-      // 每週重複：刪掉同名同時段的所有筆
       for (const e of events.filter(x => x.title === ev.title && x.start_time === ev.start_time && x.recurring)) {
         await api(`/events/${e.id}`, { method: 'DELETE' });
       }
     } else await api(`/events/${ev.id}`, { method: 'DELETE' });
+    loadEvents();
+  }
+
+  // 手動新增行程
+  const [addMenu, setAddMenu] = useState(false);
+  const [addForm, setAddForm] = useState(null);
+  function openAdd(date = anchor) {
+    setAddMenu(false);
+    setAddForm({ title: '', date, start_time: '08:00', end_time: '09:00', location: '', color: '', recurring: '' });
+  }
+  async function submitAdd() {
+    if (!addForm.title.trim()) { alert('請輸入行程名稱'); return; }
+    await api('/events', { method: 'POST', body: { ...addForm, title: addForm.title.trim(), recurring: addForm.recurring || null } });
+    setAddForm(null);
     loadEvents();
   }
 
@@ -117,7 +158,7 @@ export default function CalendarView({ tasks, reload }) {
           <div key={d} className="tgroup">
             <div className="glabel">{`${+d.slice(5, 7)}/${+d.slice(8)}`} 週{WD[(new Date(d + 'T00:00:00').getDay() + 6) % 7]}{d === today() ? '（今天）' : ''}</div>
             {eventsOn(d).map(e => (
-              <div key={'e' + e.id} className="trow" style={{ cursor: 'pointer' }} onClick={() => setColorEv(e)}>
+              <div key={'e' + e.id} className="trow" style={{ cursor: 'pointer' }} onClick={() => setEditEv({ ...e })}>
                 <span className="cal-ev-dot" style={{ background: e.color || '#c7c7cc' }} />
                 <span className="title">{e.title}{e.location ? <span className="muted">（{e.location}）</span> : null}</span>
                 <span className="muted">{e.start_time.slice(0, 5)}–{e.end_time.slice(0, 5)}</span>
@@ -186,8 +227,10 @@ export default function CalendarView({ tasks, reload }) {
         {days.map(d => (
           <div key={d} style={{ position: 'relative', height: totalH, borderLeft: '1px solid var(--border)', background: d === today() ? 'rgba(0,122,255,.03)' : undefined }}>
             {HOURS.map((h, i) => (
-              <div key={h} onClick={() => quickCreate(d, h)} title="點一下新增行程"
-                style={{ position: 'absolute', top: i * ROW, left: 0, right: 0, height: ROW, borderTop: '1px solid var(--border)', cursor: 'pointer' }} />
+              <div key={h} style={{ position: 'absolute', top: i * ROW, left: 0, right: 0, height: ROW }}>
+                <div onClick={() => openAdd(d)} title="點一下新增行程" style={{ position: 'absolute', top: 0, left: 0, right: 0, height: ROW / 2, borderTop: '1px solid var(--border)', cursor: 'pointer' }} />
+                <div onClick={() => openAdd(d)} style={{ position: 'absolute', top: ROW / 2, left: 0, right: 0, height: ROW / 2, borderTop: '1px dashed rgba(120,120,128,.18)', cursor: 'pointer' }} />
+              </div>
             ))}
             {/* 既定行程：白底黑字，可點擊改色，高度＝時長 */}
             {eventsOn(d).map(e => {
@@ -195,7 +238,7 @@ export default function CalendarView({ tasks, reload }) {
               const height = Math.max(16, yOf(toMin(e.end_time)) - top);
               const bg = e.color || '#ffffff';
               return (
-                <div key={'e' + e.id} onClick={ev => { ev.stopPropagation(); setColorEv(e); }} title="點一下改顏色"
+                <div key={'e' + e.id} onClick={ev => { ev.stopPropagation(); setEditEv({ ...e }); }} title="點一下改顏色"
                   style={{
                     position: 'absolute', top, height, left: 2, right: 2, zIndex: 2,
                     background: bg, color: textOn(e.color), border: `1px solid ${e.color || 'var(--border)'}`,
@@ -245,7 +288,7 @@ export default function CalendarView({ tasks, reload }) {
               {eventsOn(c.ds).slice(0, 2).map(e => (
                 <div key={'e' + e.id} className="cal-ev" title={e.title}
                   style={e.color ? { background: e.color, color: textOn(e.color) } : { background: '#fff', color: '#111', border: '1px solid var(--border)' }}
-                  onClick={ev => { ev.stopPropagation(); setColorEv(e); }}>
+                  onClick={ev => { ev.stopPropagation(); setEditEv({ ...e }); }}>
                   {e.title}
                 </div>
               ))}
@@ -268,26 +311,37 @@ export default function CalendarView({ tasks, reload }) {
 
   return (
     <div className="main">
-      <div className="main-head">
+      <div className="main-head cal-head">
         <h2>日曆</h2>
-        <select value={view} onChange={e => setView(e.target.value)}>
-          <option value="list">☰ 清單</option>
+        <select value={view} onChange={e => setView(e.target.value)} className="cal-view-sel">
+          <option value="list">清單</option>
           <option value="year">年</option>
           <option value="month">月</option>
           <option value="week">週</option>
-          <option value="3day">3 日</option>
+          <option value="3day">3日</option>
           <option value="day">日</option>
         </select>
         {view !== 'list' && view !== 'year' && <>
           <button className="icon-btn" onClick={() => view === 'month' ? navMonth(-1) : shift(-1)}>◀</button>
-          <b style={{ fontSize: 14 }}>{view === 'month' ? `${+anchor.slice(0, 4)}年${+anchor.slice(5, 7)}月` : view === 'week' ? `${monday.slice(5)} 起` : anchor.slice(5)}</b>
+          <b style={{ fontSize: 14, whiteSpace: 'nowrap' }}>{view === 'month' ? `${+anchor.slice(0, 4)}年${+anchor.slice(5, 7)}月` : view === 'week' ? `${+monday.slice(5, 7)}/${+monday.slice(8)} 起` : `${+anchor.slice(5, 7)}/${+anchor.slice(8)}`}</b>
           <button className="icon-btn" onClick={() => view === 'month' ? navMonth(1) : shift(1)}>▶</button>
         </>}
         <button className="btn sm ghost" onClick={() => setAnchor(today())}>今天</button>
-        <label className="btn sm ghost" style={{ cursor: 'pointer' }}>
-          {aiBusy ? 'AI 解析中…' : '📷 匯入'}
-          <input type="file" accept="image/*,.pdf,.ics" style={{ display: 'none' }} onChange={importFile} disabled={aiBusy} />
-        </label>
+        <div style={{ position: 'relative', marginLeft: 'auto' }}>
+          <button className="btn sm" onClick={() => setAddMenu(m => !m)} style={{ display: 'flex', alignItems: 'center', gap: 3 }}><Icon name="plus" size={16} /></button>
+          {addMenu && (
+            <>
+              <div style={{ position: 'fixed', inset: 0, zIndex: 20 }} onClick={() => setAddMenu(false)} />
+              <div className="add-menu">
+                <div onClick={() => openAdd()}><Icon name="pencil" size={15} /> 手動新增行程</div>
+                <label style={{ cursor: 'pointer' }}>
+                  <Icon name="calendar" size={15} /> {aiBusy ? 'AI 解析中…' : '匯入課表照片'}
+                  <input type="file" accept="image/*,.pdf,.ics" style={{ display: 'none' }} onChange={e => { setAddMenu(false); importFile(e); }} disabled={aiBusy} />
+                </label>
+              </div>
+            </>
+          )}
+        </div>
       </div>
       <div className="main-body">
         {aiList && (
@@ -315,21 +369,61 @@ export default function CalendarView({ tasks, reload }) {
         {view === 'month' && <MonthGrid />}
       </div>
 
-      {/* 行程改色 / 刪除 */}
-      {colorEv && (
-        <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,.35)', zIndex: 50, display: 'flex', alignItems: 'center', justifyContent: 'center' }} onClick={() => setColorEv(null)}>
-          <div className="tile" style={{ width: 300, maxWidth: '90vw' }} onClick={e => e.stopPropagation()}>
-            <b>{colorEv.title}</b>
-            <div className="muted" style={{ margin: '2px 0 10px' }}>{colorEv.start_time.slice(0, 5)}–{colorEv.end_time.slice(0, 5)}{colorEv.recurring ? '・每週' : ''}</div>
-            <div className="swatches">
-              <span className="swatch" style={{ background: '#fff', border: '1px solid var(--border)' }} title="白底黑字" onClick={() => setEventColor(colorEv, '')} />
-              {LIST_COLORS.map(c => (
-                <span key={c} className={'swatch' + (colorEv.color === c ? ' on' : '')} style={{ background: c }} onClick={() => setEventColor(colorEv, c)} />
-              ))}
+      {/* 編輯行程：名稱、時間、顏色、刪除 */}
+      {editEv && (
+        <div className="cal-modal-back" onClick={() => setEditEv(null)}>
+          <div className="tile cal-modal" onClick={e => e.stopPropagation()}>
+            <input className="title" value={editEv.title} placeholder="行程名稱"
+              onChange={e => setEditEv(v => ({ ...v, title: e.target.value }))} style={{ fontSize: 17, fontWeight: 700, width: '100%' }} />
+            <div className="row" style={{ marginTop: 8 }}>
+              <span className="muted">時間</span>
+              <input type="time" value={editEv.start_time?.slice(0, 5)} onChange={e => setEditEv(v => ({ ...v, start_time: e.target.value }))} />
+              <span>–</span>
+              <input type="time" value={editEv.end_time?.slice(0, 5)} onChange={e => setEditEv(v => ({ ...v, end_time: e.target.value }))} />
             </div>
+            <div className="row" style={{ marginTop: 8 }}>
+              <span className="muted">地點</span>
+              <input value={editEv.location || ''} placeholder="（選填）" onChange={e => setEditEv(v => ({ ...v, location: e.target.value }))} style={{ flex: 1 }} />
+            </div>
+            {editEv.recurring && <div className="muted" style={{ marginTop: 6 }}>每週重複・改動會套用到每一週</div>}
+            <ColorPicker value={editEv.color} onPick={c => setEditEv(v => ({ ...v, color: c }))} />
             <div className="row" style={{ marginTop: 12 }}>
-              <button className="btn sm ghost" style={{ color: 'var(--red)' }} onClick={() => deleteEvent(colorEv)}>刪除行程</button>
-              <button className="btn sm" style={{ marginLeft: 'auto' }} onClick={() => setColorEv(null)}>完成</button>
+              <button className="btn sm ghost" style={{ color: 'var(--red)' }} onClick={() => deleteEvent(editEv)}>刪除</button>
+              <button className="btn sm" style={{ marginLeft: 'auto' }} onClick={saveEvent}>儲存</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* 手動新增行程 */}
+      {addForm && (
+        <div className="cal-modal-back" onClick={() => setAddForm(null)}>
+          <div className="tile cal-modal" onClick={e => e.stopPropagation()}>
+            <b>新增行程</b>
+            <input value={addForm.title} placeholder="行程名稱（如：數學課、補習）" autoFocus
+              onChange={e => setAddForm(v => ({ ...v, title: e.target.value }))} style={{ width: '100%', marginTop: 8 }} />
+            <div className="row" style={{ marginTop: 8 }}>
+              <span className="muted">日期</span>
+              <input type="date" value={addForm.date} onChange={e => setAddForm(v => ({ ...v, date: e.target.value }))} />
+            </div>
+            <div className="row" style={{ marginTop: 8 }}>
+              <span className="muted">時間</span>
+              <input type="time" value={addForm.start_time} onChange={e => setAddForm(v => ({ ...v, start_time: e.target.value }))} />
+              <span>–</span>
+              <input type="time" value={addForm.end_time} onChange={e => setAddForm(v => ({ ...v, end_time: e.target.value }))} />
+            </div>
+            <div className="row" style={{ marginTop: 8 }}>
+              <span className="muted">地點</span>
+              <input value={addForm.location} placeholder="（選填）" onChange={e => setAddForm(v => ({ ...v, location: e.target.value }))} style={{ flex: 1 }} />
+            </div>
+            <label className="row" style={{ marginTop: 8 }}>
+              <input type="checkbox" checked={addForm.recurring === 'weekly'} onChange={e => setAddForm(v => ({ ...v, recurring: e.target.checked ? 'weekly' : '' }))} />
+              <span>每週重複（固定課表）</span>
+            </label>
+            <ColorPicker value={addForm.color} onPick={c => setAddForm(v => ({ ...v, color: c }))} />
+            <div className="row" style={{ marginTop: 12 }}>
+              <button className="btn sm ghost" onClick={() => setAddForm(null)}>取消</button>
+              <button className="btn sm" style={{ marginLeft: 'auto' }} onClick={submitAdd}>新增</button>
             </div>
           </div>
         </div>
