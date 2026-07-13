@@ -125,9 +125,8 @@ select { -webkit-appearance: none; appearance: none; padding-right: 26px;
 .cal-cell.today .dnum { background: var(--primary); color: #fff; border-radius: 50%; width: 22px; height: 22px; display: inline-grid; place-items: center; font-weight: 600; }
 .cal-task { background: var(--primary-soft); color: var(--primary); border-radius: 6px; padding: 2px 5px; margin-top: 2px; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; cursor: pointer; font-weight: 500; }
 .cal-task.done { opacity: .5; text-decoration: line-through; }
-.cal-ev { background: rgba(147,51,234,.14); color: #9333ea; border-radius: 6px; padding: 2px 5px; margin-top: 2px; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; font-weight: 500; }
-.cal-ev-dot { width: 10px; height: 10px; border-radius: 3px; background: #9333ea; flex-shrink: 0; }
-@media (prefers-color-scheme: dark) { .cal-ev { color: #c084fc; } }
+.cal-ev { background: #fff; color: #111; border: 1px solid var(--border); border-radius: 6px; padding: 2px 5px; margin-top: 2px; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; font-weight: 500; cursor: pointer; }
+.cal-ev-dot { width: 10px; height: 10px; border-radius: 3px; background: #c7c7cc; flex-shrink: 0; }
 
 /* matrix */
 .matrix { display: grid; grid-template-columns: 1fr 1fr; grid-template-rows: 1fr 1fr; gap: 14px; height: 100%; }

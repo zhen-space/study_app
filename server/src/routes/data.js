@@ -27,11 +27,25 @@ router.get('/events', async (req, res) => {
   res.json(await q.all('SELECT * FROM fixed_events WHERE user_id=? ORDER BY date, start_time', [req.userId]));
 });
 router.post('/events', async (req, res) => {
-  const { title, date, start_time, end_time, recurring, location } = req.body;
+  const { title, date, start_time, end_time, recurring, location, color } = req.body;
   if (!title || !date || !start_time || !end_time) return res.status(400).json({ error: '欄位不完整' });
-  const r = await q.run('INSERT INTO fixed_events (user_id,title,date,start_time,end_time,recurring,location) VALUES (?,?,?,?,?,?,?)',
-    [req.userId, title, date, start_time, end_time, recurring || null, location || '']);
+  const r = await q.run('INSERT INTO fixed_events (user_id,title,date,start_time,end_time,recurring,location,color) VALUES (?,?,?,?,?,?,?,?)',
+    [req.userId, title, date, start_time, end_time, recurring || null, location || '', color || '']);
   res.json({ id: r.lastInsertRowid });
+});
+// 改行程（顏色、標題等）；recurring 行程改色會套用到同名同時段的所有筆
+router.patch('/events/:id', async (req, res) => {
+  const ev = await q.get('SELECT * FROM fixed_events WHERE id=? AND user_id=?', [req.params.id, req.userId]);
+  if (!ev) return res.status(404).json({ error: 'not found' });
+  const { color, title, location } = req.body;
+  if (color !== undefined && req.body.applyAll) {
+    await q.run('UPDATE fixed_events SET color=? WHERE user_id=? AND title=? AND start_time=? AND end_time=?',
+      [color, req.userId, ev.title, ev.start_time, ev.end_time]);
+  } else {
+    await q.run('UPDATE fixed_events SET color=COALESCE(?,color), title=COALESCE(?,title), location=COALESCE(?,location) WHERE id=? AND user_id=?',
+      [color ?? null, title ?? null, location ?? null, req.params.id, req.userId]);
+  }
+  res.json({ ok: true });
 });
 router.delete('/events/:id', async (req, res) => {
   await q.run('DELETE FROM fixed_events WHERE id=? AND user_id=?', [req.params.id, req.userId]);
