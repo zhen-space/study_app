@@ -7,7 +7,9 @@ router.use(requireAuth);
 
 // tags/subtasks 一定回傳陣列（曾有存成字串的髒資料，前端 flatMap 會拆成單一字母）
 const asArr = s => { try { const v = JSON.parse(s); return Array.isArray(v) ? v : []; } catch { return []; } };
-const parseTask = t => ({ ...t, tags: asArr(t.tags), subtasks: asArr(t.subtasks) });
+// 過濾掉舊 bug 產生的碎片標籤（純 1–2 個英文小寫字母，如 ek、ne、l）
+const cleanTags = arr => arr.filter(x => !(typeof x === 'string' && /^[a-z]{1,2}$/.test(x)));
+const parseTask = t => ({ ...t, tags: cleanTags(asArr(t.tags)), subtasks: asArr(t.subtasks) });
 
 // 每個 (kind, ref) 只發一次金幣，避免反覆勾選刷幣
 async function award(userId, kind, refId, coins, refKey = '') {

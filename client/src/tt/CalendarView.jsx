@@ -30,8 +30,8 @@ function ColorPicker({ value, onPick }) {
         <div key={g.name} style={{ marginBottom: 6 }}>
           <div className="muted" style={{ fontSize: 11 }}>{g.name}</div>
           <div className="swatches">
-            {g.colors.map(c => (
-              <span key={c} className={'swatch' + (value === c ? ' on' : '')} style={{ background: c }} onClick={() => onPick(c)} />
+            {g.colors.map(([c, n]) => (
+              <span key={c} title={n} className={'swatch' + (value === c ? ' on' : '')} style={{ background: c }} onClick={() => onPick(c)} />
             ))}
           </div>
         </div>
@@ -47,9 +47,16 @@ export default function CalendarView({ tasks, reload }) {
   const loadEvents = () => api('/events').then(setEvents).catch(() => {});
   useEffect(() => { loadEvents(); setAnchor(today()); }, []); // 每次打開都回到今天那一週
 
-  // 直接在日曆匯入課表/行程（AI 解析 → 勾選 → 加入）
+  // 直接在日曆匯入課表/行程（AI 解析 → 編輯 → 加入）
   const [aiBusy, setAiBusy] = useState(false);
-  const [aiList, setAiList] = useState(null);
+  // 匯入預覽存 localStorage：解析完可以退出 app、回來繼續編輯匯入
+  const [aiList, setAiListRaw] = useState(() => {
+    try { const s = localStorage.getItem('calImport'); return s ? JSON.parse(s) : null; } catch { return null; }
+  });
+  const setAiList = v => {
+    setAiListRaw(v);
+    try { v ? localStorage.setItem('calImport', JSON.stringify(v)) : localStorage.removeItem('calImport'); } catch {}
+  };
   async function importFile(e) {
     const file = e.target.files[0];
     if (!file) return;
@@ -62,14 +69,25 @@ export default function CalendarView({ tasks, reload }) {
         method: 'POST', body: { filename: file.name, mime: file.type, data: btoa(bin) },
       });
       if (!parsed.length) alert('AI 沒有在檔案中找到行程');
-      else setAiList(parsed.map(p => ({ ...p, checked: true })));
+      else setAiList([...(aiList || []), ...parsed.map(p => ({ ...p, checked: true, date: p.date || today() }))]);
     } catch (err) { alert(err.message); }
     setAiBusy(false);
     e.target.value = '';
   }
+  const updAi = (i, patch) => setAiList(aiList.map((x, j) => j === i ? { ...x, ...patch } : x));
+  const addAiRow = () => setAiList([...(aiList || []), { title: '', date: anchor, start_time: '08:00', end_time: '09:00', location: '', recurring: null, checked: true }]);
   async function confirmImport() {
-    const chosen = aiList.filter(x => x.checked);
+    const chosen = aiList.filter(x => x.checked && x.title.trim() && x.start_time && x.end_time);
+    if (!chosen.length) { alert('沒有可加入的行程'); return; }
+    // #1 取代舊表：這次匯入有涵蓋到的日期，先刪掉該日既有的行程，再加入新的
+    const impDates = new Set(chosen.filter(x => !x.recurring).map(x => x.date));
+    const impWeekdays = new Set(chosen.filter(x => x.recurring).map(x => new Date(x.date + 'T00:00:00').getDay()));
     try {
+      for (const ev of events) {
+        const evDow = new Date(ev.date + 'T00:00:00').getDay();
+        const hit = ev.recurring ? impWeekdays.has(evDow) : impDates.has(ev.date);
+        if (hit) await api(`/events/${ev.id}`, { method: 'DELETE' });
+      }
       for (const ev of chosen) {
         const { checked, ...body } = ev;
         await api('/events', { method: 'POST', body });
@@ -77,9 +95,8 @@ export default function CalendarView({ tasks, reload }) {
     } catch (err) { alert('加入失敗：' + err.message); return; }
     setAiList(null);
     loadEvents();
-    // 跳到第一筆行程那一週，不然加在未來看不到、像沒加成功
     const first = chosen.map(x => x.date).sort()[0];
-    if (first && first > today()) { setAnchor(first); }
+    if (first && first > today()) setAnchor(first);
     alert(`已加入 ${chosen.length} 筆行程${first && first > today() ? `（已跳到 ${first.slice(5).replace('-', '/')} 那週）` : ''}`);
   }
   // 某天有哪些既定行程（含每週重複）
@@ -96,10 +113,21 @@ export default function CalendarView({ tasks, reload }) {
   async function saveEvent() {
     const ev = editEv;
     if (!ev.title.trim()) { alert('請輸入行程名稱'); return; }
+    // #4 顏色有改，且有其他同名行程 → 詢問是否一起變色
+    const orig = events.find(x => x.id === ev.id);
+    const colorChanged = orig && (orig.color || '') !== (ev.color || '');
+    const sameName = events.filter(x => x.title === orig?.title && x.id !== ev.id);
+    let applySameName = false;
+    if (colorChanged && sameName.length) {
+      applySameName = window.confirm(`要把所有「${orig.title}」的行程都改成同一個顏色嗎？（共 ${sameName.length + 1} 筆）\n\n確定＝全部一起變　取消＝只改這一筆`);
+    }
     await api(`/events/${ev.id}`, {
       method: 'PATCH',
       body: { title: ev.title.trim(), location: ev.location || '', color: ev.color || '', start_time: ev.start_time, end_time: ev.end_time, applyAll: !!ev.recurring },
     });
+    if (applySameName) {
+      for (const x of sameName) await api(`/events/${x.id}`, { method: 'PATCH', body: { color: ev.color || '' } });
+    }
     setEditEv(null);
     loadEvents();
   }
@@ -346,16 +374,28 @@ export default function CalendarView({ tasks, reload }) {
       <div className="main-body">
         {aiList && (
           <div className="tile" style={{ margin: '8px 0' }}>
-            <b>AI 讀到 {aiList.length} 筆行程，勾選要加入的：</b>
+            <b>共 {aiList.length} 筆行程，加入前可修改：</b>
+            <div className="muted" style={{ margin: '2px 0 8px' }}>加入時，這些日期原有的行程會被取代（可繼續匯入更多、離開再回來也還在）</div>
             {aiList.map((ev, i) => (
-              <div key={i} className="row" style={{ marginTop: 6 }}>
-                <input type="checkbox" checked={ev.checked} onChange={() => setAiList(a => a.map((x, j) => j === i ? { ...x, checked: !x.checked } : x))} />
-                <span style={{ flex: 1 }}>{ev.title}{ev.location ? `＠${ev.location}` : ''}</span>
-                <span className="muted">{ev.recurring ? '每週' : ev.date?.slice(5)} {ev.start_time}–{ev.end_time}</span>
+              <div key={i} style={{ marginTop: 8, borderTop: i ? '1px solid var(--border)' : 'none', paddingTop: i ? 8 : 0 }}>
+                <div className="row">
+                  <input type="checkbox" checked={ev.checked} onChange={() => updAi(i, { checked: !ev.checked })} />
+                  <input value={ev.title} placeholder="行程名稱" onChange={e => updAi(i, { title: e.target.value })} style={{ flex: 1, minWidth: 0 }} />
+                  <button className="icon-btn" title="刪除這筆" onClick={() => setAiList(aiList.filter((_, j) => j !== i))}><Icon name="x" size={14} /></button>
+                </div>
+                <div className="row" style={{ marginTop: 4, marginLeft: 24, flexWrap: 'wrap' }}>
+                  {ev.recurring
+                    ? <span className="tag-pill on" onClick={() => updAi(i, { recurring: null })}>每週重複（點取消）</span>
+                    : <input type="date" value={ev.date} onChange={e => updAi(i, { date: e.target.value })} />}
+                  <input type="time" value={ev.start_time} onChange={e => updAi(i, { start_time: e.target.value })} />
+                  <span>–</span>
+                  <input type="time" value={ev.end_time} onChange={e => updAi(i, { end_time: e.target.value })} />
+                </div>
               </div>
             ))}
             <div className="row" style={{ marginTop: 10 }}>
-              <button className="btn sm" onClick={confirmImport}>加入日曆</button>
+              <button className="btn sm ghost" onClick={addAiRow}>＋ 加一筆</button>
+              <button className="btn sm" style={{ marginLeft: 'auto' }} onClick={confirmImport}>加入日曆</button>
               <button className="btn sm ghost" onClick={() => setAiList(null)}>取消</button>
             </div>
           </div>
