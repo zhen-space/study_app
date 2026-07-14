@@ -135,12 +135,13 @@ select { -webkit-appearance: none; appearance: none; padding-right: 26px;
 .add-menu > div:hover, .add-menu > label:hover { background: var(--fill); }
 .cal-modal-back { position: fixed; inset: 0; background: rgba(0,0,0,.35); z-index: 50; display: flex; align-items: center; justify-content: center; padding: 16px; }
 .cal-modal { width: 320px; max-width: 100%; max-height: 84vh; overflow-y: auto; }
-/* 匯入預覽：全寬、點擊即打字 */
-.imp-row { display: flex; gap: 10px; align-items: flex-start; padding: 10px 0; border-top: 1px solid var(--border); }
-.imp-fields { display: flex; gap: 8px; margin-top: 6px; flex-wrap: wrap; }
-.imp-fields label { display: flex; flex-direction: column; font-size: 11px; color: var(--muted); gap: 2px; }
-.imp-fields input { width: 96px; }
-.imp-fields label:first-child input { width: 118px; }
+/* 匯入預覽：一行式（日期 名稱 … 時間），無框，點擊即打字 */
+.imp-row { display: flex; gap: 6px; align-items: center; padding: 9px 2px; border-top: 1px solid var(--border); }
+.imp-row input:not([type=checkbox]) { background: transparent; border: none; border-radius: 4px; padding: 3px 4px; }
+.imp-row input:not([type=checkbox]):focus { background: var(--fill); box-shadow: none; }
+.imp-date { width: 46px; color: var(--muted); font-size: 13px; text-align: center; flex-shrink: 0; }
+.imp-title { flex: 1; min-width: 0; font-weight: 600; }
+.imp-time { width: 50px; text-align: center; color: var(--muted); font-size: 13px; flex-shrink: 0; }
 
 .cal-ev { background: #fff; color: #111; border: 1px solid var(--border); border-radius: 6px; padding: 2px 5px; margin-top: 2px; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; font-weight: 500; cursor: pointer; }
 .cal-ev-dot { width: 10px; height: 10px; border-radius: 3px; background: #c7c7cc; flex-shrink: 0; }

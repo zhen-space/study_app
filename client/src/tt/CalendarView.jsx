@@ -403,22 +403,26 @@ export default function CalendarView({ tasks, reload }) {
           <div className="tile" style={{ margin: '8px 0' }}>
             <b>共 {aiList.length} 筆行程，加入前可修改：</b>
             <div className="muted" style={{ margin: '2px 0 8px' }}>加入時，這些日期原有的行程會被取代（可繼續匯入更多、離開再回來也還在）</div>
-            {aiList.map((ev, i) => (
-              <div key={i} className="imp-row">
-                <input type="checkbox" checked={ev.checked} onChange={() => updAi(i, { checked: !ev.checked })} style={{ marginTop: 6 }} />
-                <div style={{ flex: 1, minWidth: 0 }}>
-                  <input value={ev.title || ''} placeholder="行程名稱（點這裡打字）" onChange={e => updAi(i, { title: e.target.value })}
-                    style={{ width: '100%', fontWeight: 600 }} />
-                  <div className="imp-fields">
-                    <label>日期<input value={ev.recurring ? '每週重複' : (ev.date || '')} placeholder="2026-08-31"
-                      onChange={e => updAi(i, { date: e.target.value })} disabled={!!ev.recurring} /></label>
-                    <label>開始<input value={ev.start_time || ''} placeholder="08:00" onChange={e => updAi(i, { start_time: e.target.value })} /></label>
-                    <label>結束<input value={ev.end_time || ''} placeholder="09:00" onChange={e => updAi(i, { end_time: e.target.value })} /></label>
-                  </div>
+            {aiList.map((ev, i) => {
+              const mdVal = ev.recurring ? '每週' : (ev.date && /^\d{4}-\d{2}-\d{2}$/.test(ev.date) ? `${+ev.date.slice(5, 7)}/${+ev.date.slice(8)}` : ev.date || '');
+              const onMd = v => {
+                if (ev.recurring) return;
+                const m = v.match(/(\d{1,2})\s*[\/／.\-]\s*(\d{1,2})/);
+                const yr = (ev.date || today()).slice(0, 4);
+                updAi(i, { date: m ? `${yr}-${String(+m[1]).padStart(2, '0')}-${String(+m[2]).padStart(2, '0')}` : v });
+              };
+              return (
+                <div key={i} className="imp-row">
+                  <input type="checkbox" checked={ev.checked} onChange={() => updAi(i, { checked: !ev.checked })} />
+                  <input className="imp-date" value={mdVal} placeholder="7/12" disabled={!!ev.recurring} onChange={e => onMd(e.target.value)} />
+                  <input className="imp-title" value={ev.title || ''} placeholder="行程名稱" onChange={e => updAi(i, { title: e.target.value })} />
+                  <input className="imp-time" value={ev.start_time || ''} placeholder="10:00" onChange={e => updAi(i, { start_time: e.target.value })} />
+                  <span className="muted">–</span>
+                  <input className="imp-time" value={ev.end_time || ''} placeholder="12:00" onChange={e => updAi(i, { end_time: e.target.value })} />
+                  <button className="icon-btn" title="刪除" onClick={() => setAiList(aiList.filter((_, j) => j !== i))}><Icon name="x" size={13} /></button>
                 </div>
-                <button className="icon-btn" title="刪除這筆" onClick={() => setAiList(aiList.filter((_, j) => j !== i))} style={{ marginTop: 4 }}><Icon name="x" size={14} /></button>
-              </div>
-            ))}
+              );
+            })}
             <div className="row" style={{ marginTop: 10 }}>
               <button className="btn sm ghost" onClick={addAiRow}>＋ 加一筆</button>
               <button className="btn sm" style={{ marginLeft: 'auto' }} onClick={confirmImport}>加入日曆</button>
