@@ -5,16 +5,19 @@ import { requireAuth } from '../middleware/auth.js';
 const router = Router();
 router.use(requireAuth);
 
+// 舊 bug 產生的碎片標籤（純 1–2 個英文字母，如 ek、ne、l）一律過濾掉
+const cleanTags = arr => (Array.isArray(arr) ? arr : []).filter(x => typeof x === 'string' && x.trim() && !/^[a-zA-Z]{1,2}$/.test(x.trim()));
+
 // ---- settings (sleep/meals) ----
 router.get('/settings', async (req, res) => {
   const u = await q.get('SELECT sleep_start, sleep_end, meal_windows, custom_tags FROM users WHERE id=?', [req.userId]);
   let ct = []; try { ct = JSON.parse(u.custom_tags || '[]'); } catch {}
-  res.json({ ...u, meal_windows: JSON.parse(u.meal_windows), custom_tags: Array.isArray(ct) ? ct : [] });
+  res.json({ ...u, meal_windows: JSON.parse(u.meal_windows), custom_tags: cleanTags(ct) });
 });
 router.put('/settings', async (req, res) => {
   const { sleep_start, sleep_end, meal_windows, custom_tags } = req.body;
   if (custom_tags !== undefined) {
-    await q.run('UPDATE users SET custom_tags=? WHERE id=?', [JSON.stringify(custom_tags || []), req.userId]);
+    await q.run('UPDATE users SET custom_tags=? WHERE id=?', [JSON.stringify(cleanTags(custom_tags)), req.userId]);
     if (sleep_start === undefined) return res.json({ ok: true }); // 只更新標籤
   }
   await q.run('UPDATE users SET sleep_start=?, sleep_end=?, meal_windows=? WHERE id=?',
@@ -37,14 +40,16 @@ router.post('/events', async (req, res) => {
 router.patch('/events/:id', async (req, res) => {
   const ev = await q.get('SELECT * FROM fixed_events WHERE id=? AND user_id=?', [req.params.id, req.userId]);
   if (!ev) return res.status(404).json({ error: 'not found' });
-  const { color, title, location, start_time, end_time } = req.body;
+  const { color, title, location, start_time, end_time, date } = req.body;
   if (req.body.applyAll) {
     // 每週重複：套用到同名同時段的每一筆（用「原本」的時段比對）
     await q.run('UPDATE fixed_events SET color=COALESCE(?,color), title=COALESCE(?,title), location=COALESCE(?,location), start_time=COALESCE(?,start_time), end_time=COALESCE(?,end_time) WHERE user_id=? AND title=? AND start_time=? AND end_time=?',
       [color ?? null, title ?? null, location ?? null, start_time ?? null, end_time ?? null, req.userId, ev.title, ev.start_time, ev.end_time]);
+    // 日期（＝每週重複的星期基準）只改被點的這一筆，不然全部會疊在同一天
+    if (date) await q.run('UPDATE fixed_events SET date=? WHERE id=? AND user_id=?', [date, req.params.id, req.userId]);
   } else {
-    await q.run('UPDATE fixed_events SET color=COALESCE(?,color), title=COALESCE(?,title), location=COALESCE(?,location), start_time=COALESCE(?,start_time), end_time=COALESCE(?,end_time) WHERE id=? AND user_id=?',
-      [color ?? null, title ?? null, location ?? null, start_time ?? null, end_time ?? null, req.params.id, req.userId]);
+    await q.run('UPDATE fixed_events SET color=COALESCE(?,color), title=COALESCE(?,title), location=COALESCE(?,location), start_time=COALESCE(?,start_time), end_time=COALESCE(?,end_time), date=COALESCE(?,date) WHERE id=? AND user_id=?',
+      [color ?? null, title ?? null, location ?? null, start_time ?? null, end_time ?? null, date ?? null, req.params.id, req.userId]);
   }
   res.json({ ok: true });
 });

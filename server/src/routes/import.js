@@ -36,6 +36,16 @@ async function toContentBlock(filename, mime, data) {
   throw new Error(`不支援的檔案格式 .${ext}，支援：PDF、圖片、Excel、Word(docx)、CSV、TXT`);
 }
 
+// Fast Mode：同一顆 Opus 4.8 但輸出快很多（research preview）；環境不支援就自動退回一般模式
+async function createFast(client, params) {
+  try {
+    return await client.beta.messages.create({ ...params, betas: ['fast-mode-2026-02-01'], speed: 'fast' });
+  } catch (e) {
+    if (e.status === 400 || e.status === 404) return client.messages.create(params);
+    throw e;
+  }
+}
+
 function aiError(err) {
   return 'AI 解讀失敗：' + (err.status === 401 ? '金鑰無效' : err.status === 429 ? '額度不足或太頻繁，稍後再試' : '請稍後再試');
 }
@@ -83,7 +93,7 @@ router.post('/parse', async (req, res) => {
   try {
     const todayStr = new Date(Date.now() + 8 * 3600e3).toISOString().slice(0, 10); // 台灣時區
     const client = new Anthropic();
-    const response = await client.messages.create({
+    const response = await createFast(client, {
       model: 'claude-opus-4-8',
       max_tokens: 16000,
       system: `你是課表解讀助手。從使用者提供的檔案中擷取所有固定行程（課程、社團、補習、活動等），轉成結構化資料。
@@ -99,7 +109,12 @@ router.post('/parse', async (req, res) => {
 【讀取規則】
 - 若是「欄＝日期、列＝時間」的格狀行事曆，逐欄（逐日）讀每一格；同一天同名活動的相鄰時段合併成一段（如 9:00-10:00 與 10:00-11:00 的數學合併為 9:00-11:00）。
 - 時間一律 24 小時制 HH:MM。只寫節次沒寫時間時，依台灣中學作息推估（第1節08:10-09:00，每節50分、間隔10分，午休12:00-13:10）。
-- 看不出任何行程就回傳空陣列。`,
+- 看不出任何行程就回傳空陣列。
+
+【正確性檢查｜輸出前逐筆核對】
+- 每筆行程的日期一定要對準它「所在的那一欄」的日期、時間對準它「所在的那一列」的時段，不要串欄串列。
+- 名稱與地點照原文抄寫，不要改寫、翻譯或猜測；模糊看不清楚的字寧可略過該筆。
+- 核對總數：表上有幾格行程，就輸出幾筆（相鄰同名時段合併後），不可多也不可漏。`,
       output_config: { format: { type: 'json_schema', schema: SCHEMA } },
       messages: [{
         role: 'user',
@@ -216,7 +231,7 @@ router.post('/toc', async (req, res) => {
 
   try {
     const client = new Anthropic();
-    const response = await client.messages.create({
+    const response = await createFast(client, {
       model: 'claude-opus-4-8',
       max_tokens: 12000,
       system: `你是課本目錄解讀助手。使用者可能上傳多張目錄照片（同一本課本的連續頁面），請把所有照片視為同一份目錄，依頁面順序合併，不要遺漏跨頁內容，也不要重複計算兩張照片重疊處的同一項。

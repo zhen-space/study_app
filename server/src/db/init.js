@@ -168,4 +168,16 @@ export async function initSchema() {
       }
     }
   } catch (e) { console.error('tag cleanup:', e.message); }
+  // 同樣清理帳號設定裡的自訂標籤
+  try {
+    const rs = await client.execute('SELECT id, custom_tags FROM users');
+    for (const r of rs.rows) {
+      let t;
+      try { t = JSON.parse(r.custom_tags || '[]'); } catch { t = null; }
+      const clean = (Array.isArray(t) ? t : []).filter(x => typeof x === 'string' && x.trim() && !/^[a-zA-Z]{1,2}$/.test(x.trim()));
+      if (!Array.isArray(t) || clean.length !== t.length) {
+        await client.execute({ sql: 'UPDATE users SET custom_tags=? WHERE id=?', args: [JSON.stringify(clean), r.id] });
+      }
+    }
+  } catch (e) { console.error('custom_tags cleanup:', e.message); }
 }

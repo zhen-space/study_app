@@ -8,7 +8,7 @@ router.use(requireAuth);
 // tags/subtasks 一定回傳陣列（曾有存成字串的髒資料，前端 flatMap 會拆成單一字母）
 const asArr = s => { try { const v = JSON.parse(s); return Array.isArray(v) ? v : []; } catch { return []; } };
 // 過濾掉舊 bug 產生的碎片標籤（純 1–2 個英文小寫字母，如 ek、ne、l）
-const cleanTags = arr => arr.filter(x => !(typeof x === 'string' && /^[a-z]{1,2}$/.test(x)));
+const cleanTags = arr => arr.filter(x => typeof x === 'string' && x.trim() && !/^[a-zA-Z]{1,2}$/.test(x.trim()));
 const parseTask = t => ({ ...t, tags: cleanTags(asArr(t.tags)), subtasks: asArr(t.subtasks) });
 
 // 每個 (kind, ref) 只發一次金幣，避免反覆勾選刷幣
@@ -117,7 +117,7 @@ router.post('/tasks', async (req, res) => {
   const r = await q.run(`INSERT INTO tasks (user_id,list_id,title,notes,due_date,due_time,priority,tags,subtasks,recurring,miss_policy)
     VALUES (?,?,?,?,?,?,?,?,?,?,?)`,
     [ownerId, list_id || null, title, notes || '', due_date || null, due_time || null,
-      priority || 0, JSON.stringify(tags || []), JSON.stringify(subtasks || []), recurring || null, miss_policy || 'keep']);
+      priority || 0, JSON.stringify(cleanTags(asArr(tags || []))), JSON.stringify(subtasks || []), recurring || null, miss_policy || 'keep']);
   res.json(parseTask(await q.get('SELECT * FROM tasks WHERE id=?', [r.lastInsertRowid])));
 });
 
@@ -166,7 +166,7 @@ router.patch('/tasks/:id', async (req, res) => {
     due_date: b.due_date !== undefined ? b.due_date : t.due_date,
     due_time: b.due_time !== undefined ? b.due_time : t.due_time,
     priority: b.priority ?? t.priority,
-    tags: b.tags !== undefined ? JSON.stringify(b.tags) : t.tags,
+    tags: b.tags !== undefined ? JSON.stringify(cleanTags(asArr(b.tags))) : t.tags,
     subtasks: b.subtasks !== undefined ? JSON.stringify(b.subtasks) : t.subtasks,
     recurring: b.recurring !== undefined ? b.recurring : t.recurring,
     miss_policy: b.miss_policy ?? t.miss_policy ?? 'keep',
@@ -207,7 +207,7 @@ router.post('/tasks/bulk', async (req, res) => {
     `INSERT INTO tasks (user_id,list_id,title,notes,due_date,due_time,priority,tags,subtasks,recurring,miss_policy)
      VALUES (?,?,?,?,?,?,?,?,?,?,?)`,
     [req.userId, t.list_id || null, t.title, t.notes || '', t.due_date || null, t.due_time || null,
-      t.priority || 0, JSON.stringify(t.tags || []), JSON.stringify(t.subtasks || []), t.recurring || null, t.miss_policy || 'keep'],
+      t.priority || 0, JSON.stringify(cleanTags(asArr(t.tags || []))), JSON.stringify(t.subtasks || []), t.recurring || null, t.miss_policy || 'keep'],
   ]));
   res.json({ added: list.length });
 });

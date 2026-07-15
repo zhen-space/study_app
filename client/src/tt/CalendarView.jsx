@@ -149,12 +149,22 @@ export default function CalendarView({ tasks, reload }) {
     }
     await api(`/events/${ev.id}`, {
       method: 'PATCH',
-      body: { title: ev.title.trim(), location: ev.location || '', color: ev.color || '', start_time: ev.start_time, end_time: ev.end_time, applyAll: !!ev.recurring },
+      body: { title: ev.title.trim(), location: ev.location || '', color: ev.color || '', date: ev.date, start_time: ev.start_time, end_time: ev.end_time, applyAll: !!ev.recurring },
     });
     if (applySameName) {
       for (const x of sameName) await api(`/events/${x.id}`, { method: 'PATCH', body: { color: ev.color || '' } });
     }
     setEditEv(null);
+    loadEvents();
+  }
+  // 拖曳行程到別天（像 Excel 一樣）：放開就改日期
+  async function dropEvent(dragEv, d) {
+    dragEv.preventDefault();
+    const id = dragEv.dataTransfer.getData('text/ev-id');
+    if (!id) return;
+    const e = events.find(x => String(x.id) === id);
+    if (!e || e.date === d) return;
+    await api(`/events/${id}`, { method: 'PATCH', body: { date: d } });
     loadEvents();
   }
   async function deleteEvent(ev) {
@@ -279,27 +289,31 @@ export default function CalendarView({ tasks, reload }) {
         </div>
         {/* 每一天一欄：格線 + 絕對定位的行程/任務區塊 */}
         {days.map(d => (
-          <div key={d} style={{ position: 'relative', height: totalH, borderLeft: '1px solid var(--border)', background: d === today() ? 'rgba(0,122,255,.03)' : undefined }}>
+          <div key={d} style={{ position: 'relative', height: totalH, borderLeft: '1px solid var(--border)', background: d === today() ? 'rgba(0,122,255,.03)' : undefined }}
+            onDragOver={ev => ev.preventDefault()} onDrop={ev => dropEvent(ev, d)}>
             {HOURS.map((h, i) => (
               <div key={h} style={{ position: 'absolute', top: i * ROW, left: 0, right: 0, height: ROW }}>
                 <div onClick={() => openAdd(d)} title="點一下新增行程" style={{ position: 'absolute', top: 0, left: 0, right: 0, height: ROW / 2, borderTop: '1px solid var(--border)', cursor: 'pointer' }} />
                 <div onClick={() => openAdd(d)} style={{ position: 'absolute', top: ROW / 2, left: 0, right: 0, height: ROW / 2, borderTop: '1px dashed rgba(120,120,128,.18)', cursor: 'pointer' }} />
               </div>
             ))}
-            {/* 既定行程：白底黑字，可點擊改色，高度＝時長 */}
+            {/* 既定行程：白底黑字，可點擊編輯、可拖曳到別天，高度＝時長 */}
             {eventsOn(d).map(e => {
               const top = yOf(toMin(e.start_time));
               const height = Math.max(16, yOf(toMin(e.end_time)) - top);
               const bg = e.color || '#ffffff';
+              const dark = textOn(e.color) === '#fff';
               return (
-                <div key={'e' + e.id} onClick={ev => { ev.stopPropagation(); setEditEv({ ...e }); }} title="點一下改顏色"
+                <div key={'e' + e.id} onClick={ev => { ev.stopPropagation(); setEditEv({ ...e }); }} title="點一下編輯，拖曳可換天"
+                  draggable onDragStart={ev => { ev.dataTransfer.setData('text/ev-id', String(e.id)); ev.dataTransfer.effectAllowed = 'move'; }}
                   style={{
                     position: 'absolute', top, height, left: 2, right: 2, zIndex: 2,
                     background: bg, color: textOn(e.color), border: `1px solid ${e.color || 'var(--border)'}`,
                     borderLeft: `3px solid ${e.color || '#c7c7cc'}`, borderRadius: 6, padding: '2px 5px',
-                    fontSize: 11, lineHeight: 1.15, overflow: 'hidden', cursor: 'pointer',
+                    fontSize: 11, lineHeight: 1.15, overflow: 'hidden', cursor: 'pointer', textAlign: 'center',
                   }}>
-                  {e.title}{e.location ? <span style={{ opacity: .7 }}> ＠{e.location}</span> : null}
+                  <div style={{ fontWeight: 600 }}>{e.title}</div>
+                  {e.location ? <div style={{ fontSize: 10, color: dark ? 'rgba(255,255,255,.75)' : '#8e8e93' }}>{e.location}</div> : null}
                 </div>
               );
             })}
@@ -382,7 +396,7 @@ export default function CalendarView({ tasks, reload }) {
         </>}
         <button className="btn sm ghost" onClick={() => setAnchor(today())}>今天</button>
         <div style={{ position: 'relative' }}>
-          <button className="btn sm ghost" onClick={() => setAddMenu(m => !m)} style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}><Icon name="plus" size={15} /> 新增</button>
+          <button className="icon-btn" title="新增" onClick={() => setAddMenu(m => !m)}><Icon name="plus" size={18} /></button>
           {addMenu && (
             <>
               <div style={{ position: 'fixed', inset: 0, zIndex: 20 }} onClick={() => setAddMenu(false)} />
@@ -444,6 +458,10 @@ export default function CalendarView({ tasks, reload }) {
           <div className="tile cal-modal" onClick={e => e.stopPropagation()}>
             <input className="title" value={editEv.title} placeholder="行程名稱"
               onChange={e => setEditEv(v => ({ ...v, title: e.target.value }))} style={{ fontSize: 17, fontWeight: 700, width: '100%' }} />
+            <div className="row" style={{ marginTop: 8 }}>
+              <span className="muted">日期</span>
+              <input type="date" value={editEv.date || ''} onChange={e => setEditEv(v => ({ ...v, date: e.target.value }))} />
+            </div>
             <div className="row" style={{ marginTop: 8 }}>
               <span className="muted">時間</span>
               <input type="time" value={editEv.start_time?.slice(0, 5)} onChange={e => setEditEv(v => ({ ...v, start_time: e.target.value }))} />

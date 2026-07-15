@@ -126,8 +126,10 @@ select { -webkit-appearance: none; appearance: none; padding-right: 26px;
 .cal-task { background: var(--primary-soft); color: var(--primary); border-radius: 6px; padding: 2px 5px; margin-top: 2px; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; cursor: pointer; font-weight: 500; }
 .cal-task.done { opacity: .5; text-decoration: line-through; }
 /* 日曆頂列：緊湊、不換行、視圖選單縮小 */
-.cal-head { flex-wrap: wrap; row-gap: 6px; }
-.cal-head h2 { font-size: 22px; }
+.cal-head { flex-wrap: nowrap; gap: 6px; }           /* 全部同一行，不換行 */
+.cal-head h2 { font-size: 22px; flex-shrink: 0; }
+.cal-head .btn.sm { padding: 5px 9px; white-space: nowrap; flex-shrink: 0; }
+.cal-head .icon-btn { flex-shrink: 0; }
 .cal-view-sel { padding: 6px 26px 6px 10px; font-size: 14px; width: auto; }
 .add-menu { position: absolute; right: 0; top: 40px; z-index: 30; background: var(--card); border-radius: 12px;
   box-shadow: var(--shadow); padding: 6px; min-width: 168px; }

@@ -73,7 +73,7 @@ export default function Shell({ onLogout }) {
   const tags = useMemo(() => [...new Set([
     ...customTags,
     ...tasks.flatMap(t => Array.isArray(t.tags) ? t.tags : []),
-  ])].filter(Boolean), [tasks, customTags]);
+  ])].filter(t => typeof t === 'string' && t.trim() && !/^[a-zA-Z]{1,2}$/.test(t.trim())), [tasks, customTags]);
   async function addTag() {
     const name = prompt('新標籤名稱：');
     if (!name?.trim()) return;
