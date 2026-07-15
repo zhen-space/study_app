@@ -475,13 +475,20 @@ export default function WizardView({ lists, reload, goTasks }) {
   }
   async function confirm() {
     setSaving(true);
-    // 新排程取代舊排程：先清掉上一次建立、還沒完成的讀書計劃待辦（已完成的保留當紀錄）
-    try { await api('/plan-tasks', { method: 'DELETE' }); } catch {}
-    for (const b of preview.blocks) {
-      const body = { title: b.title, list_id: b.subject_id, due_date: b.date, tags: ['讀書計劃'] };
-      if (b.start_time) { body.due_time = b.start_time; body.notes = `讀書時段 ${b.start_time}–${b.end_time}`; }
-      await api('/tasks', { method: 'POST', body });
-    }
+    try {
+      // 新排程取代舊排程：先清掉上一次建立、還沒完成的讀書計劃待辦（已完成的保留當紀錄）
+      try { await api('/plan-tasks', { method: 'DELETE' }); } catch {}
+      // 一個請求打包建立全部任務（逐筆等待太慢）
+      await api('/tasks/bulk', {
+        method: 'POST',
+        body: {
+          tasks: preview.blocks.map(b => ({
+            title: b.title, list_id: b.subject_id, due_date: b.date, tags: ['讀書計劃'],
+            ...(b.start_time ? { due_time: b.start_time, notes: `讀書時段 ${b.start_time}–${b.end_time}` } : {}),
+          })),
+        },
+      });
+    } catch (e) { setSaving(false); setErr(e.message); return; }
     setSaving(false);
     reload();
     goTasks();

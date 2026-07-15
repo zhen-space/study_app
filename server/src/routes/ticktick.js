@@ -199,6 +199,18 @@ router.delete('/tasks/:id', async (req, res) => {
   else await q.run('UPDATE tasks SET deleted=1 WHERE id=?', [t.id]);
   res.json({ ok: true });
 });
+// 批次建立任務（排程精靈一次建立整份讀書計劃用，逐筆打 API 太慢）
+router.post('/tasks/bulk', async (req, res) => {
+  const list = (req.body.tasks || []).filter(t => t.title);
+  if (!list.length) return res.status(400).json({ error: '沒有任務' });
+  await q.batch(list.map(t => [
+    `INSERT INTO tasks (user_id,list_id,title,notes,due_date,due_time,priority,tags,subtasks,recurring,miss_policy)
+     VALUES (?,?,?,?,?,?,?,?,?,?,?)`,
+    [req.userId, t.list_id || null, t.title, t.notes || '', t.due_date || null, t.due_time || null,
+      t.priority || 0, JSON.stringify(t.tags || []), JSON.stringify(t.subtasks || []), t.recurring || null, t.miss_policy || 'keep'],
+  ]));
+  res.json({ added: list.length });
+});
 // 拖曳排序：一次寫入一批任務的順序
 router.post('/tasks/reorder', async (req, res) => {
   const ids = req.body.ids || [];

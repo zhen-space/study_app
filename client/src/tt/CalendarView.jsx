@@ -106,20 +106,19 @@ export default function CalendarView({ tasks, reload }) {
     }
     const chosen = picked.map(x => ({ ...x, start_time: x.start_time.length === 4 ? '0' + x.start_time : x.start_time }));
     if (!chosen.length) { alert('沒有可加入的行程（請確認有勾選、且填了名稱與時間）'); return; }
-    // #1 取代舊表：這次匯入有涵蓋到的日期，先刪掉該日既有的行程，再加入新的
-    const impDates = new Set(chosen.filter(x => !x.recurring).map(x => x.date));
-    const impWeekdays = new Set(chosen.filter(x => x.recurring).map(x => new Date(x.date + 'T00:00:00').getDay()));
+    // 一個請求打包送出（取代日期的刪除＋全部新增都在伺服器端做），不再逐筆等待
+    setAiBusy(true);
     try {
-      for (const ev of events) {
-        const evDow = new Date(ev.date + 'T00:00:00').getDay();
-        const hit = ev.recurring ? impWeekdays.has(evDow) : impDates.has(ev.date);
-        if (hit) await api(`/events/${ev.id}`, { method: 'DELETE' });
-      }
-      for (const ev of chosen) {
-        const { checked, ...body } = ev;
-        await api('/events', { method: 'POST', body });
-      }
-    } catch (err) { alert('加入失敗：' + err.message); return; }
+      await api('/events/bulk', {
+        method: 'POST',
+        body: {
+          events: chosen.map(({ checked, ...body }) => body),
+          replaceDates: [...new Set(chosen.filter(x => !x.recurring).map(x => x.date))],
+          replaceWeekdays: [...new Set(chosen.filter(x => x.recurring).map(x => new Date(x.date + 'T00:00:00').getDay()))],
+        },
+      });
+    } catch (err) { setAiBusy(false); alert('加入失敗：' + err.message); return; }
+    setAiBusy(false);
     setAiList(null);
     loadEvents();
     const first = chosen.map(x => x.date).sort()[0];

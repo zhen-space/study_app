@@ -52,5 +52,31 @@ router.delete('/events/:id', async (req, res) => {
   await q.run('DELETE FROM fixed_events WHERE id=? AND user_id=?', [req.params.id, req.userId]);
   res.json({ ok: true });
 });
+// 批次匯入：一個請求完成「刪掉被取代日期的舊行程＋加入全部新行程」（逐筆打 API 太慢）
+router.post('/events/bulk', async (req, res) => {
+  const { events = [], replaceDates = [], replaceWeekdays = [] } = req.body;
+  if (!events.length) return res.status(400).json({ error: '沒有行程' });
+  for (const ev of events) {
+    if (!ev.title || !ev.date || !ev.start_time || !ev.end_time) return res.status(400).json({ error: `「${ev.title || '未命名'}」欄位不完整` });
+  }
+  const stmts = [];
+  // 刪掉被取代的：單次行程比日期、每週行程比星期
+  if (replaceDates.length || replaceWeekdays.length) {
+    const all = await q.all('SELECT id, date, recurring FROM fixed_events WHERE user_id=?', [req.userId]);
+    const dSet = new Set(replaceDates), wSet = new Set(replaceWeekdays);
+    for (const ev of all) {
+      const dow = new Date(ev.date + 'T00:00:00').getDay();
+      if (ev.recurring ? wSet.has(dow) : dSet.has(ev.date)) {
+        stmts.push(['DELETE FROM fixed_events WHERE id=?', [ev.id]]);
+      }
+    }
+  }
+  for (const ev of events) {
+    stmts.push(['INSERT INTO fixed_events (user_id,title,date,start_time,end_time,recurring,location,color) VALUES (?,?,?,?,?,?,?,?)',
+      [req.userId, ev.title, ev.date, ev.start_time, ev.end_time, ev.recurring || null, ev.location || '', ev.color || '']]);
+  }
+  await q.batch(stmts);   // 全部一個來回寫入
+  res.json({ added: events.length });
+});
 
 export default router;

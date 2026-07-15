@@ -24,6 +24,10 @@ export const q = {
     const r = await client.execute({ sql, args });
     return { changes: r.rowsAffected, lastInsertRowid: Number(r.lastInsertRowid ?? 0) };
   },
+  // 一批語句一個網路來回（大量寫入用，遠端 Turso 差很多）
+  async batch(stmts) {
+    if (stmts.length) await client.batch(stmts.map(s => ({ sql: s[0], args: s[1] || [] })), 'write');
+  },
 };
 
 const SCHEMA = `
