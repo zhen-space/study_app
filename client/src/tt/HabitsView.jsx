@@ -10,7 +10,7 @@ export default function HabitsView({ habits, reload }) {
   const [missPolicy, setMissPolicy] = useState('drop');
   const [category, setCategory] = useState('');
 
-  const week = [...Array(7)].map((_, i) => addDays(today(), i - 6));
+  const week = [...Array(7)].map((_, i) => addDays(today(), -i)); // 今天開始，往前推
   const cats = [...new Set(habits.map(h => h.category).filter(Boolean))];
 
   const streak = h => {
@@ -37,12 +37,14 @@ export default function HabitsView({ habits, reload }) {
     reload();
   }
 
-  const HabitRow = h => (
+  // 第一行：名稱＋連續紀錄＋刪除；第二行：打卡圓點（今天開始往前）
+  const HabitRow = (h, showIcon) => (
     <div className="habit-row" key={h.id}>
-      <span className="habit-icon">{h.icon}</span>
-      <div>
-        <div>{h.name}</div>
-        <div className="streak">🔥 連續 {streak(h)} 天・共 {h.checkins.length} 次</div>
+      <div className="habit-main">
+        {showIcon && <span style={{ fontSize: 18 }}>{h.icon}</span>}
+        <span className="habit-name" title="點名稱可改分類" onClick={() => moveCategory(h)}>{h.name}</span>
+        <span className="streak">🔥 連續 {streak(h)} 天・共 {h.checkins.length} 次</span>
+        <button className="icon-btn" style={{ marginLeft: 'auto' }} onClick={() => api(`/habits/${h.id}`, { method: 'DELETE' }).then(reload)}>✕</button>
       </div>
       <div className="week-dots">
         {week.map(d => (
@@ -53,13 +55,13 @@ export default function HabitsView({ habits, reload }) {
           </div>
         ))}
       </div>
-      <button className="icon-btn" title="改分類" onClick={() => moveCategory(h)}>🏷️</button>
-      <button className="icon-btn" onClick={() => window.confirm(`刪除「${h.name}」？`) && api(`/habits/${h.id}`, { method: 'DELETE' }).then(reload)}>✕</button>
     </div>
   );
 
   // 依分類分組顯示：有分類的照名稱排、未分類放最後
   const grouped = [...cats.sort(), ...(habits.some(h => !h.category) ? [''] : [])];
+  // 分類標題的圖標＝該分類第一個習慣的圖標
+  const catIcon = cat => habits.find(h => (h.category || '') === cat)?.icon || '';
 
   return (
     <div className="main">
@@ -85,8 +87,8 @@ export default function HabitsView({ habits, reload }) {
         </form>
         {grouped.map(cat => (
           <div key={cat || '__none'} className="tgroup">
-            {(cat || cats.length > 0) && <div className="glabel">{cat || '未分類'}</div>}
-            {habits.filter(h => (h.category || '') === cat).map(HabitRow)}
+            {(cat || cats.length > 0) && <div className="glabel">{cat ? `${catIcon(cat)} ${cat}` : '未分類'}</div>}
+            {habits.filter(h => (h.category || '') === cat).map(h => HabitRow(h, !cat))}
           </div>
         ))}
         {habits.length === 0 && <div className="muted" style={{ marginTop: 30, textAlign: 'center' }}>還沒有習慣，新增一個開始打卡吧</div>}

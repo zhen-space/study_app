@@ -179,13 +179,17 @@ export default function CalendarView({ tasks, reload }) {
     loadEvents();
   }
   async function deleteEvent(ev) {
-    if (!window.confirm(`刪除行程「${ev.title}」？`)) return;
+    // 不用 window.confirm（iOS 加到主畫面的 App 可能直接吃掉，導致按了沒反應）
     setEditEv(null);
-    if (ev.recurring) {
-      for (const e of events.filter(x => x.title === ev.title && x.start_time === ev.start_time && x.recurring)) {
-        await api(`/events/${e.id}`, { method: 'DELETE' });
-      }
-    } else await api(`/events/${ev.id}`, { method: 'DELETE' });
+    // 用「原本」的資料比對（視窗裡可能已改過名稱/時間）
+    const orig = events.find(x => x.id === ev.id) || ev;
+    setEvents(list => list.filter(x => !(x.id === ev.id || (orig.recurring && x.recurring && x.title === orig.title && x.start_time === orig.start_time)))); // 畫面先消失
+    try {
+      if (orig.recurring) {
+        const same = events.filter(x => x.recurring && x.title === orig.title && x.start_time === orig.start_time);
+        await Promise.all(same.map(e => api(`/events/${e.id}`, { method: 'DELETE' })));
+      } else await api(`/events/${ev.id}`, { method: 'DELETE' });
+    } catch (err) { alert('刪除失敗：' + err.message); }
     loadEvents();
   }
 

@@ -154,10 +154,12 @@ select { -webkit-appearance: none; appearance: none; padding-right: 26px;
 .quad h4 { font-size: 14px; margin-bottom: 8px; }
 
 /* habits */
-.habit-row { display: flex; align-items: center; gap: 14px; padding: 14px; background: var(--card); border-radius: 16px; margin-top: 12px; box-shadow: var(--shadow); }
-.habit-icon { font-size: 24px; }
-.streak { font-size: 13px; color: var(--orange); }
-.week-dots { display: flex; gap: 5px; margin-left: auto; }
+/* 兩行式：第一行名稱＋紀錄＋刪除，第二行打卡圓點，文字不會被擠成直的 */
+.habit-row { padding: 12px 14px; background: var(--card); border-radius: 16px; margin-top: 12px; box-shadow: var(--shadow); }
+.habit-main { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.habit-name { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-weight: 600; }
+.streak { font-size: 13px; color: var(--orange); white-space: nowrap; }
+.week-dots { display: flex; gap: 5px; margin-top: 8px; }
 .wdot { width: 30px; height: 30px; border-radius: 50%; background: var(--fill); display: grid; place-items: center; font-size: 12px; cursor: pointer; transition: transform .1s; }
 .wdot:active { transform: scale(.9); }
 .wdot.on { color: #fff; }
