@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { api } from '../api';
 import { today, addDays, localISO } from './helpers';
 import { PALETTE } from './Icons';
@@ -157,14 +157,25 @@ export default function CalendarView({ tasks, reload }) {
     setEditEv(null);
     loadEvents();
   }
-  // 拖曳行程到別天（像 Excel 一樣）：放開就改日期
+  // 拖曳行程：可移到別天、也可移到同天別的時段（以半小時為單位對齊）
+  const dragRef = useRef({ id: null, offY: 0 });
   async function dropEvent(dragEv, d) {
     dragEv.preventDefault();
-    const id = dragEv.dataTransfer.getData('text/ev-id');
+    const id = dragEv.dataTransfer.getData('text/ev-id') || String(dragRef.current.id || '');
     if (!id) return;
     const e = events.find(x => String(x.id) === id);
-    if (!e || e.date === d) return;
-    await api(`/events/${id}`, { method: 'PATCH', body: { date: d } });
+    if (!e) return;
+    // 放開位置 →（扣掉抓取點在區塊內的高度）→ 對齊到最近的半小時
+    const rect = dragEv.currentTarget.getBoundingClientRect();
+    const y = dragEv.clientY - rect.top - (String(dragRef.current.id) === id ? dragRef.current.offY : 0);
+    const dur = toMin(e.end_time) - toMin(e.start_time);
+    let startMin = Math.round((H0 * 60 + y / ROW * 60) / 30) * 30;
+    startMin = Math.max(H0 * 60, Math.min(24 * 60 - dur, startMin));
+    const hm = m => `${String(Math.floor(m / 60)).padStart(2, '0')}:${String(m % 60).padStart(2, '0')}`;
+    const start = hm(startMin), end = hm(startMin + dur);
+    dragRef.current = { id: null, offY: 0 };
+    if (e.date === d && e.start_time.slice(0, 5) === start) return;
+    await api(`/events/${id}`, { method: 'PATCH', body: { date: d, start_time: start, end_time: end } });
     loadEvents();
   }
   async function deleteEvent(ev) {
@@ -289,7 +300,7 @@ export default function CalendarView({ tasks, reload }) {
         </div>
         {/* 每一天一欄：格線 + 絕對定位的行程/任務區塊 */}
         {days.map(d => (
-          <div key={d} style={{ position: 'relative', height: totalH, borderLeft: '1px solid var(--border)', background: d === today() ? 'rgba(0,122,255,.03)' : undefined }}
+          <div key={d} style={{ position: 'relative', height: totalH, borderLeft: '1px solid var(--border)', background: d === today() ? 'rgba(0,134,204,.05)' : undefined }}
             onDragOver={ev => ev.preventDefault()} onDrop={ev => dropEvent(ev, d)}>
             {HOURS.map((h, i) => (
               <div key={h} style={{ position: 'absolute', top: i * ROW, left: 0, right: 0, height: ROW }}>
@@ -304,8 +315,12 @@ export default function CalendarView({ tasks, reload }) {
               const bg = e.color || '#ffffff';
               const dark = textOn(e.color) === '#fff';
               return (
-                <div key={'e' + e.id} onClick={ev => { ev.stopPropagation(); setEditEv({ ...e }); }} title="點一下編輯，拖曳可換天"
-                  draggable onDragStart={ev => { ev.dataTransfer.setData('text/ev-id', String(e.id)); ev.dataTransfer.effectAllowed = 'move'; }}
+                <div key={'e' + e.id} onClick={ev => { ev.stopPropagation(); setEditEv({ ...e }); }} title="點一下編輯，拖曳可移到別天/別的時段"
+                  draggable onDragStart={ev => {
+                    dragRef.current = { id: e.id, offY: ev.clientY - ev.currentTarget.getBoundingClientRect().top };
+                    ev.dataTransfer.setData('text/ev-id', String(e.id));
+                    ev.dataTransfer.effectAllowed = 'move';
+                  }}
                   style={{
                     position: 'absolute', top, height, left: 2, right: 2, zIndex: 2,
                     background: bg, color: textOn(e.color), border: `1px solid ${e.color || 'var(--border)'}`,

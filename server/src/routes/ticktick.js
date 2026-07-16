@@ -69,7 +69,7 @@ async function canTouch(uid, t) {
 router.post('/lists', async (req, res) => {
   const { name, color } = req.body;
   if (!name) return res.status(400).json({ error: '請輸入名稱' });
-  const r = await q.run('INSERT INTO lists (user_id,name,color) VALUES (?,?,?)', [req.userId, name, color || '#4772fa']);
+  const r = await q.run('INSERT INTO lists (user_id,name,color) VALUES (?,?,?)', [req.userId, name, color || '#0086CC']);
   res.json({ id: r.lastInsertRowid });
 });
 router.patch('/lists/:id', async (req, res) => {

@@ -3,7 +3,7 @@ import { api } from '../api';
 import { today, addDays } from './helpers';
 import { parseICS } from './ics';
 
-const LIST_COLORS = ['#4772fa', '#e03131', '#16a34a', '#f59f00', '#9333ea', '#0891b2'];
+const LIST_COLORS = ['#0086CC', '#e03131', '#16a34a', '#f59f00', '#9333ea', '#0891b2'];
 const TYPE_OPTIONS = ['範例', '例題', '單元練習', '歷屆試題'];
 // 合理預設：不調整也能直接產生——範例+例題一組、單元練習+歷屆試題一組
 const DEF_TYPES = ['範例', '例題', '單元練習', '歷屆試題'];
@@ -251,10 +251,10 @@ export default function WizardView({ lists, reload, goTasks }) {
 
   /* ---------- 科目章節 ---------- */
   // 常見科目的預設顏色（英文=藍、生物=黃）
-  const SUBJ_COLOR = { 英文: '#4772fa', 英語: '#4772fa', 國文: '#e03131', 數學: '#16a34a', 化學: '#f59f00', 物理: '#9333ea', 生物: '#eab308', 地科: '#0d9488', 歷史: '#b45309', 地理: '#65a30d', 公民: '#db2777' };
+  const SUBJ_COLOR = { 英文: '#0086CC', 英語: '#0086CC', 國文: '#e03131', 數學: '#16a34a', 化學: '#f59f00', 物理: '#9333ea', 生物: '#eab308', 地科: '#0d9488', 歷史: '#b45309', 地理: '#65a30d', 公民: '#db2777' };
   // 生物舊預設色（青藍/藍）跟英文太像：既有清單若還是舊色就自動改黃
   useEffect(() => {
-    lists.filter(l => l.name === '生物' && ['#0891b2', '#4772fa'].includes(l.color))
+    lists.filter(l => l.name === '生物' && ['#0891b2', '#0086CC'].includes(l.color))
       .forEach(l => api(`/lists/${l.id}`, { method: 'PATCH', body: { color: '#eab308' } }).then(reload).catch(() => {}));
   }, [lists.length]);
   async function addSubject() {

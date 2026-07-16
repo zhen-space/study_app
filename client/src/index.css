@@ -1,7 +1,7 @@
 * { box-sizing: border-box; margin: 0; -webkit-tap-highlight-color: transparent; }
 :root {
-  --primary: #007aff;          /* iOS system blue */
-  --primary-soft: rgba(0,122,255,.12);
+  --primary: #0086CC;          /* 湛藍（日本傳統色主題） */
+  --primary-soft: rgba(0,134,204,.12);
   --bg: #f2f2f7;               /* iOS grouped background */
   --card: #ffffff;
   --card-2: #ffffff;
@@ -11,17 +11,17 @@
   --border: rgba(60,60,67,.12);/* iOS separator */
   --fill: rgba(120,120,128,.12);/* iOS input fill */
   --fill-strong: rgba(118,118,128,.2);
-  --green: #34c759;
+  --green: #0086CC;            /* 完成/打勾也用主題藍 */
   --red: #ff3b30;
-  --orange: #ff9500;
-  --blue: #007aff;
+  --orange: #6C9BD2;           /* 雲霧藍 */
+  --blue: #0086CC;
   --shadow: 0 1px 3px rgba(0,0,0,.06), 0 8px 24px rgba(0,0,0,.05);
   --radius: 16px;
 }
 @media (prefers-color-scheme: dark) {
   :root {
-    --primary: #0a84ff;
-    --primary-soft: rgba(10,132,255,.18);
+    --primary: #6C9BD2;        /* 深色模式用亮一階的雲霧藍 */
+    --primary-soft: rgba(108,155,210,.22);
     --bg: #000000;
     --card: #1c1c1e;
     --card-2: #2c2c2e;
@@ -31,10 +31,10 @@
     --border: rgba(84,84,88,.4);
     --fill: rgba(118,118,128,.24);
     --fill-strong: rgba(118,118,128,.36);
-    --green: #30d158;
+    --green: #8AC4DE;
     --red: #ff453a;
-    --orange: #ff9f0a;
-    --blue: #0a84ff;
+    --orange: #8AC4DE;
+    --blue: #6C9BD2;
     --shadow: 0 1px 3px rgba(0,0,0,.4);
   }
 }
@@ -126,7 +126,7 @@ select { -webkit-appearance: none; appearance: none; padding-right: 26px;
 .cal-task { background: var(--primary-soft); color: var(--primary); border-radius: 6px; padding: 2px 5px; margin-top: 2px; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; cursor: pointer; font-weight: 500; }
 .cal-task.done { opacity: .5; text-decoration: line-through; }
 /* 日曆頂列：緊湊、不換行、視圖選單縮小 */
-.cal-head { flex-wrap: nowrap; gap: 6px; }           /* 全部同一行，不換行 */
+.cal-head { flex-wrap: nowrap; gap: 6px; justify-content: space-between; } /* 同一行、平均分佈到最右邊 */
 .cal-head h2 { font-size: 22px; flex-shrink: 0; }
 .cal-head .btn.sm { padding: 5px 9px; white-space: nowrap; flex-shrink: 0; }
 .cal-head .icon-btn { flex-shrink: 0; }
@@ -206,7 +206,7 @@ select { -webkit-appearance: none; appearance: none; padding-right: 26px;
 
   .fab { display: grid; place-items: center; position: fixed; right: 18px; bottom: calc(74px + env(safe-area-inset-bottom)); z-index: 18;
     width: 56px; height: 56px; border-radius: 50%; background: var(--primary); color: #fff;
-    font-size: 30px; box-shadow: 0 6px 20px rgba(0,122,255,.4); transition: transform .1s; }
+    font-size: 30px; box-shadow: 0 6px 20px rgba(0,134,204,.4); transition: transform .1s; }
   .fab:active { transform: scale(.92); }
 
   .sheet-back { position: fixed; inset: 0; background: rgba(0,0,0,.4); z-index: 40; display: flex; align-items: flex-end; }
