@@ -158,6 +158,9 @@ export default function CalendarView({ tasks, reload }) {
     loadEvents();
   }
   // 拖曳行程：可移到別天、也可移到同天別的時段（以半小時為單位對齊）
+  // 觸控裝置（iPhone/iPad）不開 draggable：iOS 對 draggable 元素常吞掉點擊，
+  // 會變成「點行程沒反應、無法編輯/刪除」；手機改日期用編輯視窗的日期欄
+  const canDrag = !window.matchMedia('(pointer: coarse)').matches;
   const dragRef = useRef({ id: null, offY: 0 });
   async function dropEvent(dragEv, d) {
     dragEv.preventDefault();
@@ -320,7 +323,7 @@ export default function CalendarView({ tasks, reload }) {
               const dark = textOn(e.color) === '#fff';
               return (
                 <div key={'e' + e.id} onClick={ev => { ev.stopPropagation(); setEditEv({ ...e }); }} title="點一下編輯，拖曳可移到別天/別的時段"
-                  draggable onDragStart={ev => {
+                  draggable={canDrag} onDragStart={ev => {
                     dragRef.current = { id: e.id, offY: ev.clientY - ev.currentTarget.getBoundingClientRect().top };
                     ev.dataTransfer.setData('text/ev-id', String(e.id));
                     ev.dataTransfer.effectAllowed = 'move';
