@@ -43,8 +43,14 @@ function ColorPicker({ value, onPick }) {
 export default function CalendarView({ tasks, reload }) {
   const [view, setView] = useState('week'); // day | week | month
   const [anchor, setAnchor] = useState(today());
-  const [events, setEvents] = useState([]);           // 匯入/新增的既定行程（課表、補習等）
-  const loadEvents = () => api('/events').then(setEvents).catch(() => {});
+  // 匯入/新增的既定行程（課表、補習等）：先用上次的快取立即顯示，再背景更新（不用每次等 API）
+  const [events, setEvents] = useState(() => {
+    try { return JSON.parse(localStorage.getItem('evCache') || '[]'); } catch { return []; }
+  });
+  const loadEvents = () => api('/events').then(list => {
+    setEvents(list);
+    try { localStorage.setItem('evCache', JSON.stringify(list)); } catch {}
+  }).catch(() => {});
   useEffect(() => { loadEvents(); setAnchor(today()); }, []); // 每次打開都回到今天那一週
 
   // 直接在日曆匯入課表/行程（AI 解析 → 編輯 → 加入）
@@ -355,6 +361,35 @@ export default function CalendarView({ tasks, reload }) {
     );
   };
 
+  /* ---- 未完成事項：放在日曆下面（往下滑）。逾期的一起列出，勾了就完成 ---- */
+  const Undone = ({ dates }) => {
+    const byTime = (a, b) => (a.due_date || '').localeCompare(b.due_date || '') || (a.due_time || '99').localeCompare(b.due_time || '99') || (a.order_index || 0) - (b.order_index || 0);
+    const undone = t => !t.deleted && !t.completed && t.due_date;
+    const list = tasks.filter(t => undone(t) && dates.includes(t.due_date)).sort(byTime);
+    const over = dates.includes(today()) ? tasks.filter(t => undone(t) && t.due_date < today()).sort(byTime) : [];
+    if (!list.length && !over.length) return null;
+    const row = (t, late) => (
+      <div key={t.id} className="trow">
+        <input type="checkbox" checked={false} onChange={() => toggle(t)} />
+        <span className="title">{t.title}</span>
+        <span className="muted" style={late ? { color: 'var(--red)' } : {}}>
+          {late ? `逾期 ${+t.due_date.slice(5, 7)}/${+t.due_date.slice(8)}` : `${+t.due_date.slice(5, 7)}/${+t.due_date.slice(8)}${t.due_time ? ' ' + t.due_time.slice(0, 5) : ''}`}
+        </span>
+      </div>
+    );
+    return (
+      <div className="tgroup" style={{ marginTop: 14 }}>
+        <div className="glabel">未完成事項（{over.length + list.length}）</div>
+        {over.map(t => row(t, true))}
+        {list.map(t => row(t))}
+      </div>
+    );
+  };
+  const monthDates = () => {
+    const [y, m] = [+anchor.slice(0, 4), +anchor.slice(5, 7)];
+    return [...Array(31)].map((_, i) => `${y}-${String(m).padStart(2, '0')}-${String(i + 1).padStart(2, '0')}`);
+  };
+
   /* ---- 月視圖 ---- */
   const MonthGrid = () => {
     const [y, m] = [+anchor.slice(0, 4), +anchor.slice(5, 7)];
@@ -468,10 +503,10 @@ export default function CalendarView({ tasks, reload }) {
         {['day', '3day', 'week'].includes(view) && <div className="muted" style={{ margin: '6px 0' }}>點空格可直接新增該時段的行程</div>}
         {view === 'list' && <ListView />}
         {view === 'year' && <YearView />}
-        {view === 'day' && <HourGrid days={[anchor]} />}
-        {view === '3day' && <HourGrid days={[anchor, addDays(anchor, 1), addDays(anchor, 2)]} />}
-        {view === 'week' && <HourGrid days={weekDays} />}
-        {view === 'month' && <MonthGrid />}
+        {view === 'day' && <><HourGrid days={[anchor]} /><Undone dates={[anchor]} /></>}
+        {view === '3day' && <><HourGrid days={[anchor, addDays(anchor, 1), addDays(anchor, 2)]} /><Undone dates={[anchor, addDays(anchor, 1), addDays(anchor, 2)]} /></>}
+        {view === 'week' && <><HourGrid days={weekDays} /><Undone dates={weekDays} /></>}
+        {view === 'month' && <><MonthGrid /><Undone dates={monthDates()} /></>}
       </div>
 
       {/* 編輯行程：名稱、時間、顏色、刪除 */}
