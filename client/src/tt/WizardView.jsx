@@ -843,10 +843,9 @@ export default function WizardView({ lists, reload, goTasks }) {
                   const gs = groupsFor(it.subject_id).map((g, gi) => [g ? g.filter(t => !CH_TYPES.includes(t)) : [], gi]).filter(([gn]) => gn.length);
                   if (!gs.length) return null;
                   return (
-                    <div className="row" key={'sk' + it.key} style={{ marginTop: 6 }}>
-                      <span style={{ color: it.color }}>■</span>
-                      <span style={{ flex: 1 }}>{it.name}｜{it.title}</span>
-                      {gs.map(([gn, gi]) => pill(`${it.key}|${gi}`, gn.join('+')))}
+                    <div key={'sk' + it.key} style={{ marginTop: 8 }}>
+                      <div className="row"><span style={{ color: it.color }}>■</span><span>{it.name}｜{it.title}</span></div>
+                      <div className="row" style={{ marginLeft: 18, marginTop: 3 }}>{gs.map(([gn, gi]) => pill(`${it.key}|${gi}`, gn.join('+')))}</div>
                     </div>
                   );
                 }).filter(Boolean);
@@ -863,10 +862,9 @@ export default function WizardView({ lists, reload, goTasks }) {
                   if (seenCh.has(chKey)) return;
                   seenCh.add(chKey);
                   chapRows.push(
-                    <div className="row" key={'ch' + chKey} style={{ marginTop: 6 }}>
-                      <span style={{ color: it.color }}>■</span>
-                      <span style={{ flex: 1 }}>{it.name}｜{chapTitle[chKey] || it.title}</span>
-                      {gs.map(([gc, gi]) => pill(`ch:${chKey}|${gi}`, gc.join('+')))}
+                    <div key={'ch' + chKey} style={{ marginTop: 8 }}>
+                      <div className="row"><span style={{ color: it.color }}>■</span><span>{it.name}｜{chapTitle[chKey] || it.title}</span></div>
+                      <div className="row" style={{ marginLeft: 18, marginTop: 3 }}>{gs.map(([gc, gi]) => pill(`ch:${chKey}|${gi}`, gc.join('+')))}</div>
                     </div>
                   );
                 });
@@ -887,22 +885,19 @@ export default function WizardView({ lists, reload, goTasks }) {
               <b style={{ display: 'block', marginTop: 16 }}>有沒有章節需要「先完成」或「壓軸」？</b>
               <div className="muted">先完成＝最先排；壓軸＝其他全部讀完才排（如：學測模擬試題、115 學測試題）</div>
               {items.map(it => (
-                <div key={it.key} style={{ marginTop: 6 }}>
-                  <div className="row">
-                    <span style={{ color: it.color }}>■</span>
-                    <span style={{ flex: 1 }}>{it.name}｜{it.title}</span>
+                <div key={it.key} style={{ marginTop: 8 }}>
+                  <div className="row"><span style={{ color: it.color }}>■</span><span>{it.name}｜{it.title}</span></div>
+                  <div className="row" style={{ marginLeft: 18, marginTop: 3 }}>
                     <label className={'tag-pill' + (firstsSel[it.key] ? ' on' : '')} style={{ cursor: 'pointer' }}
                       onClick={() => { setFirstsSel(f => ({ ...f, [it.key]: !f[it.key] })); setFinals(f => ({ ...f, [it.key]: false })); }}>先完成</label>
                     <label className={'tag-pill' + (finals[it.key] ? ' on' : '')} style={{ cursor: 'pointer' }}
                       onClick={() => { setFinals(f => ({ ...f, [it.key]: !f[it.key] })); setFirstsSel(f => ({ ...f, [it.key]: false })); }}>壓軸</label>
-                  </div>
-                  <div className="row" style={{ marginLeft: 18, marginTop: 2 }}>
                     <label className={'tag-pill' + (plainSel[it.key] ? ' on' : '')} style={{ cursor: 'pointer' }}
                       onClick={() => {
                         const on = !plainSel[it.key];
                         setPlainSel(f => ({ ...f, [it.key]: on }));
                         if (on) { setFinals(f => ({ ...f, [it.key]: true })); setFirstsSel(f => ({ ...f, [it.key]: false })); }
-                      }}>純題目（如模考、學測實驗）— 不套題型・照順序・壓軸排最後</label>
+                      }}>純題目</label>
                   </div>
                 </div>
               ))}
