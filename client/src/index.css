@@ -136,7 +136,7 @@ select { -webkit-appearance: none; appearance: none; padding-right: 26px;
 .add-menu > div, .add-menu > label { display: flex; align-items: center; gap: 8px; padding: 9px 10px; border-radius: 8px; cursor: pointer; font-size: 14px; }
 .add-menu > div:hover, .add-menu > label:hover { background: var(--fill); }
 .cal-modal-back { position: fixed; inset: 0; background: rgba(0,0,0,.35); z-index: 50; display: flex; align-items: center; justify-content: center; padding: 16px; }
-.cal-modal { width: 320px; max-width: 100%; max-height: 84vh; overflow-y: auto; }
+.cal-modal { width: 320px; max-width: 100%; max-height: 84vh; overflow-y: auto; -webkit-overflow-scrolling: touch; overscroll-behavior: contain; }
 /* 匯入預覽：一行式（日期 名稱 … 時間），無框，點擊即打字 */
 .imp-row { display: flex; gap: 6px; align-items: center; padding: 9px 2px; border-top: 1px solid var(--border); }
 .imp-row input:not([type=checkbox]) { background: transparent; border: none; border-radius: 4px; padding: 3px 4px; }
@@ -253,6 +253,12 @@ select { -webkit-appearance: none; appearance: none; padding-right: 26px;
 .tag-pill.on { background: var(--primary); color: #fff; }
 .icon-btn { color: var(--muted); padding: 6px; border-radius: 8px; transition: background .12s; }
 .icon-btn:hover { background: var(--fill); }
+
+/* 首頁單字區 */
+.vocab-row { display: flex; align-items: baseline; gap: 10px; padding: 6px 2px; border-bottom: 1px solid var(--border); }
+.vocab-row:last-child { border-bottom: none; }
+.vocab-en { font-weight: 600; min-width: 40%; }
+.vocab-zh { color: var(--muted); flex: 1; }
 
 /* 底部復原提示 */
 .toast {

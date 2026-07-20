@@ -45,6 +45,19 @@ async function createFast(client, params) {
     throw e;
   }
 }
+// 課表解析用：先開延伸思考（讀格狀課表更準），環境不支援再逐步退回
+async function createSmart(client, params) {
+  const think = { thinking: { type: 'enabled', budget_tokens: 4000 } };
+  try {
+    return await client.beta.messages.create({ ...params, ...think, betas: ['fast-mode-2026-02-01'], speed: 'fast' });
+  } catch (e1) {
+    try { return await client.messages.create({ ...params, ...think }); }
+    catch (e2) {
+      if (e2.status === 400) return client.messages.create(params);
+      throw e2;
+    }
+  }
+}
 
 function aiError(err) {
   return 'AI 解讀失敗：' + (err.status === 401 ? '金鑰無效' : err.status === 429 ? '額度不足或太頻繁，稍後再試' : '請稍後再試');
@@ -93,7 +106,7 @@ router.post('/parse', async (req, res) => {
   try {
     const todayStr = new Date(Date.now() + 8 * 3600e3).toISOString().slice(0, 10); // 台灣時區
     const client = new Anthropic();
-    const response = await createFast(client, {
+    const response = await createSmart(client, {
       model: 'claude-opus-4-8',
       max_tokens: 16000,
       system: `你是課表解讀助手。從使用者提供的檔案中擷取所有固定行程（課程、社團、補習、活動等），轉成結構化資料。
@@ -288,6 +301,79 @@ router.post('/toc', async (req, res) => {
     res.json({ items });
   } catch (err) {
     console.error('toc parse error:', err.message);
+    res.status(500).json({ error: aiError(err) });
+  }
+});
+
+// ---- 每日單字：拍照 → AI 擷取單字/片語＋中文意思 ----
+const VOCAB_SCHEMA = {
+  type: 'object',
+  properties: {
+    words: {
+      type: 'array',
+      items: {
+        type: 'object',
+        properties: {
+          english: { type: 'string', description: '英文單字或片語，照原文抄寫' },
+          chinese: { type: 'string', description: '中文意思（照片上有就照抄，沒有才自己給簡短翻譯）' },
+          kind: { type: 'string', enum: ['單字', '片語'], description: '單一個字＝單字；兩個字以上的慣用組合＝片語' },
+        },
+        required: ['english', 'chinese', 'kind'],
+        additionalProperties: false,
+      },
+    },
+  },
+  required: ['words'],
+  additionalProperties: false,
+};
+
+router.get('/vocab', async (req, res) => {
+  res.json(await q.all('SELECT * FROM vocab_items WHERE user_id=? ORDER BY date DESC, id LIMIT 1000', [req.userId]));
+});
+router.delete('/vocab/:id', async (req, res) => {
+  await q.run('DELETE FROM vocab_items WHERE id=? AND user_id=?', [req.params.id, req.userId]);
+  res.json({ ok: true });
+});
+// POST /api/import/vocab { filename, mime, data } → AI 讀單字照片，存到今天
+router.post('/vocab', async (req, res) => {
+  if (!process.env.ANTHROPIC_API_KEY) {
+    return res.status(500).json({ error: '伺服器尚未設定 AI 金鑰（ANTHROPIC_API_KEY）' });
+  }
+  const { filename = '', mime = '', data } = req.body;
+  if (!data) return res.status(400).json({ error: '沒有收到檔案' });
+  let block;
+  try { block = await toContentBlock(filename, mime, data); }
+  catch (e) { return res.status(400).json({ error: e.message }); }
+  try {
+    const client = new Anthropic();
+    const response = await createFast(client, {
+      model: 'claude-opus-4-8',
+      max_tokens: 8000,
+      system: `你是背單字助手。從照片/檔案擷取所有要背的英文單字與片語：
+- english 照原文抄寫（含大小寫），不要自己改拼字；看不清楚的字寧可略過。
+- chinese：照片上有中文意思就照抄；沒有才給最常用的簡短中文意思。
+- kind：單一個字＝「單字」；兩個字以上的慣用組合（如 give up、in front of）＝「片語」。
+- 忽略例句、音標、頁碼；同一個字出現多次只輸出一次。找不到任何單字就回傳空陣列。`,
+      output_config: { format: { type: 'json_schema', schema: VOCAB_SCHEMA } },
+      messages: [{ role: 'user', content: [block, { type: 'text', text: '請擷取這份檔案中所有要背的英文單字與片語。' }] }],
+    });
+    if (response.stop_reason === 'refusal') {
+      return res.status(400).json({ error: 'AI 無法處理這份檔案，請換一張試試' });
+    }
+    const text = response.content.find(b => b.type === 'text')?.text || '{"words":[]}';
+    const { words } = JSON.parse(text);
+    const dateStr = new Date(Date.now() + 8 * 3600e3).toISOString().slice(0, 10); // 台灣時區的今天
+    const clean = words.filter(w => (w.english || '').trim());
+    if (clean.length) {
+      await q.batch(clean.map(w => [
+        'INSERT INTO vocab_items (user_id, date, english, chinese, kind) VALUES (?,?,?,?,?)',
+        [req.userId, dateStr, w.english.trim(), (w.chinese || '').trim(), w.kind === '片語' ? '片語' : '單字'],
+      ]));
+    }
+    const items = await q.all('SELECT * FROM vocab_items WHERE user_id=? AND date=? ORDER BY id', [req.userId, dateStr]);
+    res.json({ items, added: clean.length });
+  } catch (err) {
+    console.error('vocab parse error:', err.message);
     res.status(500).json({ error: aiError(err) });
   }
 });

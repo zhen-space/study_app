@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { api } from '../api';
 import { matchView, groupTasks, defaultSort, PRI, today, addDays } from './helpers';
+import VocabCard from './VocabCard';
 
 const WDC = '日一二三四五六';
 export function repeatLabel(r, dueDate) {
@@ -389,6 +390,8 @@ export default function Tasks({ view, tasks, lists, filters, habits = [], reload
               );
             })}
           {shown.length === 0 && <div className="muted" style={{ marginTop: 30, textAlign: 'center' }}>沒有任務</div>}
+
+          {view.type === 'today' && <VocabCard />}
 
           {view.type === 'today' && habits.length > 0 && (
             <div className="tgroup" style={{ marginTop: 24, borderTop: '2px dashed var(--border)', paddingTop: 12 }}>

@@ -18,23 +18,31 @@ const textOn = hex => {
   return (r * 299 + g * 587 + b * 114) / 1000 > 150 ? '#111' : '#fff';
 };
 
-// 顏色選擇：白底 + 鮮明 / 莫蘭迪 / 日系 三組色盤
+// 顏色選擇：白底＋各色系（收合式，點色系名稱展開，才不會把視窗撐到按鈕看不到）
 function ColorPicker({ value, onPick }) {
   return (
     <div style={{ marginTop: 10 }}>
-      <div className="muted" style={{ marginBottom: 4 }}>顏色</div>
-      <div className="swatches" style={{ marginBottom: 8 }}>
+      <div className="row" style={{ marginBottom: 4 }}>
+        <span className="muted">顏色</span>
         <span className={'swatch' + (!value ? ' on' : '')} style={{ background: '#fff', border: '1px solid var(--border)' }} title="白底黑字" onClick={() => onPick('')} />
+        {value && <span className="swatch on" style={{ background: value }} />}
       </div>
       {PALETTE.map(g => (
-        <div key={g.name} style={{ marginBottom: 6 }}>
-          <div className="muted" style={{ fontSize: 11 }}>{g.name}</div>
-          <div className="swatches">
+        <details key={g.name} open={g.colors.some(([c]) => c === value)} style={{ marginBottom: 4 }}>
+          <summary className="muted" style={{ fontSize: 12, cursor: 'pointer' }}>
+            {g.name}
+            <span style={{ display: 'inline-flex', marginLeft: 6, verticalAlign: 'middle' }}>
+              {g.colors.filter((_, i) => i % Math.max(1, Math.floor(g.colors.length / 5)) === 0).slice(0, 5).map(([c]) => (
+                <span key={c} style={{ width: 10, height: 10, borderRadius: 5, background: c, marginLeft: -2 }} />
+              ))}
+            </span>
+          </summary>
+          <div className="swatches" style={{ marginTop: 4 }}>
             {g.colors.map(([c, n]) => (
               <span key={c} title={n} className={'swatch' + (value === c ? ' on' : '')} style={{ background: c }} onClick={() => onPick(c)} />
             ))}
           </div>
-        </div>
+        </details>
       ))}
     </div>
   );
@@ -142,10 +150,17 @@ export default function CalendarView({ tasks, reload }) {
 
   // 點行程 → 開編輯（名稱、時間、顏色、刪除）；預設白底黑字
   const [editEv, setEditEv] = useState(null);
+  // 改起始時間 → 截止自動＝起始＋n 小時（n 可設定、會記住）
+  const [durH, setDurH] = useState(() => +(localStorage.getItem('evDurH') || 1));
+  const pickDur = h => { setDurH(h); try { localStorage.setItem('evDurH', String(h)); } catch {} };
+  const addH = (t, h) => {
+    const m = Math.min(toMin(t) + Math.round(h * 60), 23 * 60 + 55);
+    return `${String(Math.floor(m / 60)).padStart(2, '0')}:${String(m % 60).padStart(2, '0')}`;
+  };
   async function saveEvent() {
     const ev = editEv;
     if (!ev.title.trim()) { alert('請輸入行程名稱'); return; }
-    // #4 顏色有改，且有其他同名行程 → 詢問是否一起變色
+    // 顏色有改，且有其他同名行程 → 詢問是否一起變色
     const orig = events.find(x => x.id === ev.id);
     const colorChanged = orig && (orig.color || '') !== (ev.color || '');
     const sameName = events.filter(x => x.title === orig?.title && x.id !== ev.id);
@@ -153,14 +168,22 @@ export default function CalendarView({ tasks, reload }) {
     if (colorChanged && sameName.length) {
       applySameName = window.confirm(`要把所有「${orig.title}」的行程都改成同一個顏色嗎？（共 ${sameName.length + 1} 筆）\n\n確定＝全部一起變　取消＝只改這一筆`);
     }
-    await api(`/events/${ev.id}`, {
-      method: 'PATCH',
-      body: { title: ev.title.trim(), location: ev.location || '', color: ev.color || '', date: ev.date, start_time: ev.start_time, end_time: ev.end_time, applyAll: !!ev.recurring },
-    });
-    if (applySameName) {
-      for (const x of sameName) await api(`/events/${x.id}`, { method: 'PATCH', body: { color: ev.color || '' } });
-    }
+    const patch = { title: ev.title.trim(), location: ev.location || '', color: ev.color || '', date: ev.date, start_time: ev.start_time, end_time: ev.end_time };
+    // 畫面立刻更新，API 在背景送（不用等）
     setEditEv(null);
+    setEvents(list => list.map(x => {
+      if (x.id === ev.id) return { ...x, ...patch };
+      if (ev.recurring && orig && x.recurring && x.title === orig.title && x.start_time === orig.start_time && x.end_time === orig.end_time)
+        return { ...x, ...patch, date: x.date };
+      if (applySameName && orig && x.title === orig.title) return { ...x, color: ev.color || '' };
+      return x;
+    }));
+    try {
+      await api(`/events/${ev.id}`, { method: 'PATCH', body: { ...patch, applyAll: !!ev.recurring } });
+      if (applySameName) {
+        await Promise.all(sameName.map(x => api(`/events/${x.id}`, { method: 'PATCH', body: { color: ev.color || '' } })));
+      }
+    } catch (err) { alert('儲存失敗：' + err.message); }
     loadEvents();
   }
   // 拖曳行程：可移到別天、也可移到同天別的時段（以半小時為單位對齊）
@@ -184,7 +207,9 @@ export default function CalendarView({ tasks, reload }) {
     const start = hm(startMin), end = hm(startMin + dur);
     dragRef.current = { id: null, offY: 0 };
     if (e.date === d && e.start_time.slice(0, 5) === start) return;
-    await api(`/events/${id}`, { method: 'PATCH', body: { date: d, start_time: start, end_time: end } });
+    setEvents(list => list.map(x => x.id === e.id ? { ...x, date: d, start_time: start, end_time: end } : x)); // 畫面先動
+    try { await api(`/events/${id}`, { method: 'PATCH', body: { date: d, start_time: start, end_time: end } }); }
+    catch (err) { alert('移動失敗：' + err.message); }
     loadEvents();
   }
   async function deleteEvent(ev) {
@@ -361,12 +386,12 @@ export default function CalendarView({ tasks, reload }) {
     );
   };
 
-  /* ---- 未完成事項：放在日曆下面（往下滑）。逾期的一起列出，勾了就完成 ---- */
-  const Undone = ({ dates }) => {
+  /* ---- 未完成事項：放在日曆下面（往下滑）。只列「今天」＋「過去沒做完」的 ---- */
+  const Undone = () => {
     const byTime = (a, b) => (a.due_date || '').localeCompare(b.due_date || '') || (a.due_time || '99').localeCompare(b.due_time || '99') || (a.order_index || 0) - (b.order_index || 0);
     const undone = t => !t.deleted && !t.completed && t.due_date;
-    const list = tasks.filter(t => undone(t) && dates.includes(t.due_date)).sort(byTime);
-    const over = dates.includes(today()) ? tasks.filter(t => undone(t) && t.due_date < today()).sort(byTime) : [];
+    const list = tasks.filter(t => undone(t) && t.due_date === today()).sort(byTime);
+    const over = tasks.filter(t => undone(t) && t.due_date < today()).sort(byTime);
     if (!list.length && !over.length) return null;
     const row = (t, late) => (
       <div key={t.id} className="trow">
@@ -384,10 +409,6 @@ export default function CalendarView({ tasks, reload }) {
         {list.map(t => row(t))}
       </div>
     );
-  };
-  const monthDates = () => {
-    const [y, m] = [+anchor.slice(0, 4), +anchor.slice(5, 7)];
-    return [...Array(31)].map((_, i) => `${y}-${String(m).padStart(2, '0')}-${String(i + 1).padStart(2, '0')}`);
   };
 
   /* ---- 月視圖 ---- */
@@ -503,10 +524,10 @@ export default function CalendarView({ tasks, reload }) {
         {['day', '3day', 'week'].includes(view) && <div className="muted" style={{ margin: '6px 0' }}>點空格可直接新增該時段的行程</div>}
         {view === 'list' && <ListView />}
         {view === 'year' && <YearView />}
-        {view === 'day' && <><HourGrid days={[anchor]} /><Undone dates={[anchor]} /></>}
-        {view === '3day' && <><HourGrid days={[anchor, addDays(anchor, 1), addDays(anchor, 2)]} /><Undone dates={[anchor, addDays(anchor, 1), addDays(anchor, 2)]} /></>}
-        {view === 'week' && <><HourGrid days={weekDays} /><Undone dates={weekDays} /></>}
-        {view === 'month' && <><MonthGrid /><Undone dates={monthDates()} /></>}
+        {view === 'day' && <><HourGrid days={[anchor]} /><Undone /></>}
+        {view === '3day' && <><HourGrid days={[anchor, addDays(anchor, 1), addDays(anchor, 2)]} /><Undone /></>}
+        {view === 'week' && <><HourGrid days={weekDays} /><Undone /></>}
+        {view === 'month' && <><MonthGrid /><Undone /></>}
       </div>
 
       {/* 編輯行程：名稱、時間、顏色、刪除 */}
@@ -521,20 +542,24 @@ export default function CalendarView({ tasks, reload }) {
             </div>
             <div className="row" style={{ marginTop: 8 }}>
               <span className="muted">時間</span>
-              <input type="time" value={editEv.start_time?.slice(0, 5)} onChange={e => setEditEv(v => ({ ...v, start_time: e.target.value }))} />
+              <input type="time" value={editEv.start_time?.slice(0, 5)}
+                onChange={e => setEditEv(v => ({ ...v, start_time: e.target.value, end_time: addH(e.target.value, durH) }))} />
               <span>–</span>
               <input type="time" value={editEv.end_time?.slice(0, 5)} onChange={e => setEditEv(v => ({ ...v, end_time: e.target.value }))} />
+              <select value={durH} onChange={e => { const h = +e.target.value; pickDur(h); setEditEv(v => ({ ...v, end_time: addH(v.start_time, h) })); }} style={{ fontSize: 12, padding: '4px 22px 4px 6px' }}>
+                {[0.5, 1, 1.5, 2, 2.5, 3].map(h => <option key={h} value={h}>＋{h}時</option>)}
+              </select>
             </div>
             <div className="row" style={{ marginTop: 8 }}>
               <span className="muted">地點</span>
               <input value={editEv.location || ''} placeholder="（選填）" onChange={e => setEditEv(v => ({ ...v, location: e.target.value }))} style={{ flex: 1 }} />
             </div>
             {editEv.recurring && <div className="muted" style={{ marginTop: 6 }}>每週重複・改動會套用到每一週</div>}
-            <ColorPicker value={editEv.color} onPick={c => setEditEv(v => ({ ...v, color: c }))} />
             <div className="row" style={{ marginTop: 12 }}>
               <button className="btn sm ghost" style={{ color: 'var(--red)' }} onClick={() => deleteEvent(editEv)}>刪除</button>
               <button className="btn sm" style={{ marginLeft: 'auto' }} onClick={saveEvent}>儲存</button>
             </div>
+            <ColorPicker value={editEv.color} onPick={c => setEditEv(v => ({ ...v, color: c }))} />
           </div>
         </div>
       )}
@@ -552,9 +577,13 @@ export default function CalendarView({ tasks, reload }) {
             </div>
             <div className="row" style={{ marginTop: 8 }}>
               <span className="muted">時間</span>
-              <input type="time" value={addForm.start_time} onChange={e => setAddForm(v => ({ ...v, start_time: e.target.value }))} />
+              <input type="time" value={addForm.start_time}
+                onChange={e => setAddForm(v => ({ ...v, start_time: e.target.value, end_time: addH(e.target.value, durH) }))} />
               <span>–</span>
               <input type="time" value={addForm.end_time} onChange={e => setAddForm(v => ({ ...v, end_time: e.target.value }))} />
+              <select value={durH} onChange={e => { const h = +e.target.value; pickDur(h); setAddForm(v => ({ ...v, end_time: addH(v.start_time, h) })); }} style={{ fontSize: 12, padding: '4px 22px 4px 6px' }}>
+                {[0.5, 1, 1.5, 2, 2.5, 3].map(h => <option key={h} value={h}>＋{h}時</option>)}
+              </select>
             </div>
             <div className="row" style={{ marginTop: 8 }}>
               <span className="muted">地點</span>
@@ -564,11 +593,11 @@ export default function CalendarView({ tasks, reload }) {
               <input type="checkbox" checked={addForm.recurring === 'weekly'} onChange={e => setAddForm(v => ({ ...v, recurring: e.target.checked ? 'weekly' : '' }))} />
               <span>每週重複（固定課表）</span>
             </label>
-            <ColorPicker value={addForm.color} onPick={c => setAddForm(v => ({ ...v, color: c }))} />
             <div className="row" style={{ marginTop: 12 }}>
               <button className="btn sm ghost" onClick={() => setAddForm(null)}>取消</button>
               <button className="btn sm" style={{ marginLeft: 'auto' }} onClick={submitAdd}>新增</button>
             </div>
+            <ColorPicker value={addForm.color} onPick={c => setAddForm(v => ({ ...v, color: c }))} />
           </div>
         </div>
       )}
