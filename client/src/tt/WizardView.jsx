@@ -904,7 +904,7 @@ export default function WizardView({ lists, reload, goTasks }) {
                   const nodeGs = groupsFor(sid).map((g, gi) => [g ? g.filter(t => !CH_TYPES.includes(t)) : [], gi]).filter(([gn]) => gn.length);
                   const chapGs = groupsFor(sid).map((g, gi) => [g ? g.filter(t => CH_TYPES.includes(t)) : [], gi]).filter(([gc]) => gc.length);
                   const unitRows = subjItems.map(it => {
-                    const isPlain = plainSel[it.key] && !String(it.key).startsWith('toc-');
+                    const isPlain = !!plainSel[it.key]; // 純題目＝不套題型，兩者互斥：標了就不會出現例題那些
                     return (
                       <div key={'sk' + it.key} style={{ marginTop: 8 }}>
                         <div>{it.title}</div>
@@ -917,7 +917,7 @@ export default function WizardView({ lists, reload, goTasks }) {
                   });
                   const seenCh = new Set();
                   const chapRows = [];
-                  if (chapGs.length) subjItems.filter(it => !(plainSel[it.key] && !String(it.key).startsWith('toc-'))).forEach(it => {
+                  if (chapGs.length) subjItems.filter(it => !plainSel[it.key]).forEach(it => {
                     const base = String(it.key).split('+')[0].split('.')[0];
                     const chKey = base.startsWith('toc-') ? base : String(it.key);
                     if (seenCh.has(chKey)) return;
