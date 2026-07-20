@@ -353,8 +353,8 @@ router.post('/preview', async (req, res) => {
       if (!movedAny) break;
     }
     // 同科一天 2 項時，把多的那項搬到附近「完全沒有這科」的日子——
-    // 可以略為超出原設定範圍（往後最多 7 天），但絕不越過該科下一階段（如練習）
-    // 或壓軸的日期，也不會早於原範圍的開始日。
+    // 一律待在使用者設定的日期範圍內（結束日是硬截止，一天也不能超），
+    // 也絕不越過該科下一階段（如練習）或壓軸的日期。
     for (let pass = 0; pass < 3; pass++) {
       let movedAny = false;
       for (const b of blocks) {
@@ -370,7 +370,7 @@ router.post('/preview', async (req, res) => {
         const cands = days.filter(d => d.date !== b.date
           && sCnt(d.date, b.subject_id) === 0                     // 目標日完全沒這科
           && cnt[d.date] <= cap
-          && d.date >= b._ws                                      // 不可早於範圍開始
+          && d.date >= b._ws && d.date <= b._we                   // 不可超出使用者設定的範圍
           && (!lo || d.date > lo) && (!hi || d.date < hi)
           && (!nextOther || d.date < nextOther) && (!prevOther || d.date > prevOther)
           && Math.abs(idxOf[d.date] - idxOf[b.date]) <= 7         // 就近，最多 7 天
