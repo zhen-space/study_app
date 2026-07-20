@@ -222,6 +222,7 @@ export default function Shell({ onLogout }) {
         ))}
         <div style={{ flex: 1 }} />
         <div className="side-item" onClick={onLogout}><Icon name="logout" size={18} style={{ opacity: .8 }} />登出</div>
+        <div className="muted" style={{ padding: '4px 12px', fontSize: 11 }}>版本 {window.APP_VER || ''}</div>
       </div>
 
       {view.type === 'calendar' ? <CalendarView tasks={tasks.filter(t => !t.deleted)} reload={reload} />

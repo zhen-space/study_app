@@ -5,7 +5,7 @@
     <link rel="icon" href="/icon-192.png" />
     <link rel="manifest" href="/manifest.webmanifest" />
     <link rel="apple-touch-icon" href="/icon-192.png" />
-    <meta name="theme-color" content="#4772fa" />
+    <meta name="theme-color" content="#0086CC" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <meta name="apple-mobile-web-app-capable" content="yes" />
     <meta name="apple-mobile-web-app-status-bar-style" content="default" />
@@ -16,7 +16,26 @@
     <div id="root"></div>
     <script type="module" src="/src/main.jsx"></script>
     <script>
-      if ('serviceWorker' in navigator) navigator.serviceWorker.register('/sw.js');
+      window.APP_VER = '7.20.5';
+      // 每次打開都檢查新版：SW 更新完成就自動重新載入一次，確保拿到最新程式
+      if ('serviceWorker' in navigator) {
+        navigator.serviceWorker.register('/sw.js').then(reg => {
+          reg.update();
+          reg.addEventListener('updatefound', () => {
+            const w = reg.installing;
+            w && w.addEventListener('statechange', () => {
+              if (w.state === 'activated' && !sessionStorage.getItem('swReloaded')) {
+                sessionStorage.setItem('swReloaded', '1');
+                location.reload();
+              }
+            });
+          });
+        });
+        // App 從背景回前景也檢查一次
+        document.addEventListener('visibilitychange', () => {
+          if (!document.hidden) navigator.serviceWorker.getRegistration().then(r => r && r.update());
+        });
+      }
     </script>
   </body>
 </html>

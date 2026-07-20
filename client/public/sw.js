@@ -1,4 +1,4 @@
-const CACHE = 'tt-v4';   // 換版號強制丟掉舊快取，確保拿到新程式
+const CACHE = 'tt-v5';   // 換版號強制丟掉舊快取，確保拿到新程式
 self.addEventListener('install', e => self.skipWaiting());
 self.addEventListener('activate', e => e.waitUntil(
   caches.keys().then(keys => Promise.all(keys.filter(k => k !== CACHE).map(k => caches.delete(k)))).then(() => clients.claim())
