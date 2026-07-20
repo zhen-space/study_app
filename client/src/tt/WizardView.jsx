@@ -5,6 +5,8 @@ import { parseICS } from './ics';
 
 const LIST_COLORS = ['#0086CC', '#e03131', '#16a34a', '#f59f00', '#9333ea', '#0891b2'];
 const TYPE_OPTIONS = ['範例', '例題', '單元練習', '歷屆試題'];
+// 範例/例題跟著小節/主題；單元練習/歷屆試題是「每章一份」
+const CH_TYPES = ['單元練習', '歷屆試題'];
 // 合理預設：不調整也能直接產生——範例+例題一組、單元練習+歷屆試題一組
 const DEF_TYPES = ['範例', '例題', '單元練習', '歷屆試題'];
 const DEF_COMBINE = 'custom';
@@ -404,8 +406,6 @@ export default function WizardView({ lists, reload, goTasks }) {
     const expanded2 = [];
     const mergedBySub = {};
     merged.forEach(it => { (mergedBySub[it.subject_id] = mergedBySub[it.subject_id] || []).push(it); });
-    // 單元練習、歷屆試題是「每章一份」，不跟著節/主題各生一份
-    const CH_TYPES = ['單元練習', '歷屆試題'];
     const chapTitle = {};
     tocs.forEach(r => { chapTitle[`toc-${r.id}`] = r.title; });
     Object.values(mergedBySub).forEach(list => {
@@ -416,10 +416,9 @@ export default function WizardView({ lists, reload, goTasks }) {
         const w = fixWin(winOf(sid, gi));
         const gNode = g ? g.filter(t => !CH_TYPES.includes(t)) : null;   // 跟著節/主題的題型
         const gChap = g ? g.filter(t => CH_TYPES.includes(t)) : [];      // 以章為單位的題型
-        // 這單元的這組題型被標「已寫完」→ 跳過（合併組要全部成員都寫完才跳）
-        const skipped = it => g && (it._members || [it.key]).every(k => skipTypes[`${k}|${gi}`]);
-        const active = normal.filter(it => !skipped(it));
-        if (!g || gNode.length) active.forEach(it => expanded2.push({
+        // 小節/主題的題型（範例+例題）被標「已寫完」→ 跳過該單元（合併組要全部成員都寫完才跳）
+        const skipped = it => g && gNode.length && (it._members || [it.key]).every(k => skipTypes[`${k}|${gi}`]);
+        if (!g || gNode.length) normal.filter(it => !skipped(it)).forEach(it => expanded2.push({
           subject_id: sid,
           // 標題含章名稱：勾的是節/主題時，前面加上所屬章（如「3 大氣｜主題1 …」）
           title: (() => {
@@ -435,12 +434,13 @@ export default function WizardView({ lists, reload, goTasks }) {
         }));
         if (gChap.length) {
           const seen = new Set();
-          active.forEach(it => {
+          normal.forEach(it => {
             // 找出這個項目所屬的章：key 形如 toc-12.0.2 → 章＝toc-12
             const base = String((it._members?.[0]) ?? it.key).split('+')[0].split('.')[0];
             const chKey = base.startsWith('toc-') ? base : String(it.key);
             if (seen.has(chKey)) return;
             seen.add(chKey);
+            if (skipTypes[`ch:${chKey}|${gi}`]) return; // 這章的練習/歷屆標「已寫完」→ 不排
             expanded2.push({
               subject_id: sid,
               title: `${chapTitle[chKey] || it.title}｜${gChap.join('+')}`,
@@ -832,18 +832,57 @@ export default function WizardView({ lists, reload, goTasks }) {
                 );
               })}
 
-              <b style={{ display: 'block', marginTop: 16 }}>每個單元要排哪些題型？（藍色＝要排，寫完的點掉）</b>
-              <div className="muted">例：某單元「範例+例題」已經寫完 → 點掉它，還是會排「單元練習+歷屆試題」</div>
-              {items.filter(it => !plainSel[it.key] && groupsFor(it.subject_id).some(g => g)).map(it => (
-                <div className="row" key={'sk' + it.key} style={{ marginTop: 6 }}>
-                  <span style={{ color: it.color }}>■</span>
-                  <span style={{ flex: 1 }}>{it.name}｜{it.title}</span>
-                  {groupsFor(it.subject_id).map((g, gi) => g && (
-                    <label key={gi} className={'tag-pill' + (!skipTypes[`${it.key}|${gi}`] ? ' on' : '')} style={{ cursor: 'pointer', textDecoration: skipTypes[`${it.key}|${gi}`] ? 'line-through' : 'none' }}
-                      onClick={() => setSkipTypes(s => ({ ...s, [`${it.key}|${gi}`]: !s[`${it.key}|${gi}`] }))}>{gLabel(g)}</label>
-                  ))}
-                </div>
-              ))}
+              {(() => {
+                const pill = (key, label) => (
+                  <label key={key} className={'tag-pill' + (!skipTypes[key] ? ' on' : '')}
+                    style={{ cursor: 'pointer', textDecoration: skipTypes[key] ? 'line-through' : 'none' }}
+                    onClick={() => setSkipTypes(s => ({ ...s, [key]: !s[key] }))}>{label}</label>
+                );
+                // 小節/主題層：範例+例題（跟著單元的題型）
+                const unitRows = items.filter(it => !plainSel[it.key]).map(it => {
+                  const gs = groupsFor(it.subject_id).map((g, gi) => [g ? g.filter(t => !CH_TYPES.includes(t)) : [], gi]).filter(([gn]) => gn.length);
+                  if (!gs.length) return null;
+                  return (
+                    <div className="row" key={'sk' + it.key} style={{ marginTop: 6 }}>
+                      <span style={{ color: it.color }}>■</span>
+                      <span style={{ flex: 1 }}>{it.name}｜{it.title}</span>
+                      {gs.map(([gn, gi]) => pill(`${it.key}|${gi}`, gn.join('+')))}
+                    </div>
+                  );
+                }).filter(Boolean);
+                // 章層：單元練習+歷屆試題（每章一份）
+                const chapTitle = {};
+                tocs.forEach(r => { chapTitle[`toc-${r.id}`] = r.title; });
+                const seenCh = new Set();
+                const chapRows = [];
+                items.filter(it => !plainSel[it.key]).forEach(it => {
+                  const gs = groupsFor(it.subject_id).map((g, gi) => [g ? g.filter(t => CH_TYPES.includes(t)) : [], gi]).filter(([gc]) => gc.length);
+                  if (!gs.length) return;
+                  const base = String(it.key).split('+')[0].split('.')[0];
+                  const chKey = base.startsWith('toc-') ? base : String(it.key);
+                  if (seenCh.has(chKey)) return;
+                  seenCh.add(chKey);
+                  chapRows.push(
+                    <div className="row" key={'ch' + chKey} style={{ marginTop: 6 }}>
+                      <span style={{ color: it.color }}>■</span>
+                      <span style={{ flex: 1 }}>{it.name}｜{chapTitle[chKey] || it.title}</span>
+                      {gs.map(([gc, gi]) => pill(`ch:${chKey}|${gi}`, gc.join('+')))}
+                    </div>
+                  );
+                });
+                if (!unitRows.length && !chapRows.length) return null;
+                return <>
+                  <b style={{ display: 'block', marginTop: 16 }}>寫完的題型點掉（藍色＝要排）</b>
+                  {unitRows.length > 0 && <>
+                    <div className="muted" style={{ marginTop: 4 }}>各小節／主題（範例、例題跟著小節）：</div>
+                    {unitRows}
+                  </>}
+                  {chapRows.length > 0 && <>
+                    <div className="muted" style={{ marginTop: 10 }}>各章（單元練習、歷屆試題每章一份）：</div>
+                    {chapRows}
+                  </>}
+                </>;
+              })()}
 
               <b style={{ display: 'block', marginTop: 16 }}>有沒有章節需要「先完成」或「壓軸」？</b>
               <div className="muted">先完成＝最先排；壓軸＝其他全部讀完才排（如：學測模擬試題、115 學測試題）</div>
