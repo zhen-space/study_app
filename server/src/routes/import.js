@@ -36,31 +36,54 @@ async function toContentBlock(filename, mime, data) {
   throw new Error(`不支援的檔案格式 .${ext}，支援：PDF、圖片、Excel、Word(docx)、CSV、TXT`);
 }
 
-// Fast Mode：同一顆 Opus 4.8 但輸出快很多（research preview）；環境不支援就自動退回一般模式
+// Fast Mode：同一顆 Opus 4.8 但輸出快很多（research preview）。
+// 金鑰沒有 Fast Mode 權限、參數不支援等任何錯誤都自動退回一般模式（除了 429 額度問題）
 async function createFast(client, params) {
   try {
     return await client.beta.messages.create({ ...params, betas: ['fast-mode-2026-02-01'], speed: 'fast' });
   } catch (e) {
-    if (e.status === 400 || e.status === 404) return client.messages.create(params);
-    throw e;
+    if (e.status === 429) throw e;
+    console.error('fast-mode fallback:', e.status, e.message?.slice(0, 200));
+    return client.messages.create(params);
   }
 }
-// 課表解析用：先開延伸思考（讀格狀課表更準），環境不支援再逐步退回
+// 課表解析用：先開延伸思考（讀格狀課表更準），不支援就逐步退回
 async function createSmart(client, params) {
   const think = { thinking: { type: 'enabled', budget_tokens: 4000 } };
   try {
     return await client.beta.messages.create({ ...params, ...think, betas: ['fast-mode-2026-02-01'], speed: 'fast' });
   } catch (e1) {
+    if (e1.status === 429) throw e1;
     try { return await client.messages.create({ ...params, ...think }); }
     catch (e2) {
-      if (e2.status === 400) return client.messages.create(params);
-      throw e2;
+      if (e2.status === 429) throw e2;
+      console.error('thinking fallback:', e2.status, e2.message?.slice(0, 200));
+      return client.messages.create(params);
     }
+  }
+}
+// 結構化輸出的 JSON 安全解析：被 max_tokens 截斷或格式錯誤時給明確訊息
+function parseStructured(response, key) {
+  if (response.stop_reason === 'max_tokens') {
+    const e = new Error('內容太多一次讀不完，請分幾次匯入（一次少幾張照片）');
+    e.friendly = true;
+    throw e;
+  }
+  const text = response.content.find(b => b.type === 'text')?.text || '{}';
+  try { return JSON.parse(text)[key] || []; }
+  catch {
+    const e = new Error('AI 回傳格式異常，請再試一次');
+    e.friendly = true;
+    throw e;
   }
 }
 
 function aiError(err) {
-  return 'AI 解讀失敗：' + (err.status === 401 ? '金鑰無效' : err.status === 429 ? '額度不足或太頻繁，稍後再試' : '請稍後再試');
+  if (err.friendly) return err.message;
+  const base = err.status === 401 ? '金鑰無效' : err.status === 429 ? '額度不足或太頻繁，稍後再試' : '請稍後再試';
+  // 附上實際原因，出問題時才看得出是哪裡壞（訊息截短）
+  const detail = err.status || err.message ? `（${err.status || ''} ${String(err.message || '').slice(0, 140)}）` : '';
+  return 'AI 解讀失敗：' + base + detail;
 }
 
 const SCHEMA = {
@@ -141,8 +164,7 @@ router.post('/parse', async (req, res) => {
     if (response.stop_reason === 'refusal') {
       return res.status(400).json({ error: 'AI 無法處理這份檔案，請換一份試試' });
     }
-    const text = response.content.find(b => b.type === 'text')?.text || '{"events":[]}';
-    const { events } = JSON.parse(text);
+    const events = parseStructured(response, 'events');
 
     // day_of_week → 下一次出現的日期（供每週重複的起始日）
     const today = new Date();
@@ -279,8 +301,7 @@ router.post('/toc', async (req, res) => {
     if (response.stop_reason === 'refusal') {
       return res.status(400).json({ error: 'AI 無法處理這份檔案，請換一張更清楚的照片' });
     }
-    const text = response.content.find(b => b.type === 'text')?.text || '{"chapters":[]}';
-    const { chapters } = JSON.parse(text);
+    const chapters = parseStructured(response, 'chapters');
     if (!chapters.length) return res.status(400).json({ error: 'AI 沒有讀到章節，請拍更清楚的目錄照片' });
 
     let base = 0;
@@ -371,8 +392,7 @@ router.post('/vocab', async (req, res) => {
     if (response.stop_reason === 'refusal') {
       return res.status(400).json({ error: 'AI 無法處理這份檔案，請換一張試試' });
     }
-    const text = response.content.find(b => b.type === 'text')?.text || '{"words":[]}';
-    const { words } = JSON.parse(text);
+    const words = parseStructured(response, 'words');
     const todayStr = new Date(Date.now() + 8 * 3600e3).toISOString().slice(0, 10); // 台灣時區的今天
     // 去重（同一批裡同一個字只留一次）
     const seen = new Set();
