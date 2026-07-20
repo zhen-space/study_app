@@ -53,7 +53,7 @@ export default function WizardView({ lists, reload, goTasks }) {
   const [finals, setFinals] = useState({});           // 壓軸項目
   const [firstsSel, setFirstsSel] = useState({});     // 要先完成的項目
   const [plainSel, setPlainSel] = useState({});       // 純題目：不套題型、照順序（如模考）
-  const [skipTypes, setSkipTypes] = useState({});     // 「key|組序」＝true → 這單元的這組題型已寫完，不排
+  const [skipTypes, setSkipTypes] = useState({});     // 「key|組序」→ 'first'先完成｜'final'壓軸｜'off'不寫；沒設＝正常排
   const [exWd, setExWd] = useState([]);               // 不排的星期 0-6
   const [exDates, setExDates] = useState([]);         // 不排的日期
   const [exDateInput, setExDateInput] = useState(today());
@@ -105,7 +105,8 @@ export default function WizardView({ lists, reload, goTasks }) {
         d.finals && setFinals(d.finals);
         d.firstsSel && setFirstsSel(d.firstsSel);
         d.plainSel && setPlainSel(d.plainSel);
-        d.skipTypes && setSkipTypes(d.skipTypes);
+        d.skipTypes && setSkipTypes(Object.fromEntries(
+          Object.entries(d.skipTypes).map(([k, v]) => [k, v === true ? 'off' : v]).filter(([, v]) => v))); // 舊草稿 true＝不寫
         d.exWd && setExWd(d.exWd);
         d.exDates && setExDates(d.exDates);
         d.levelMin && setLevelMin(d.levelMin);
@@ -429,8 +430,13 @@ export default function WizardView({ lists, reload, goTasks }) {
         const w = fixWin(winOf(sid, gi));
         const gNode = g ? g.filter(t => !CH_TYPES.includes(t)) : null;   // 跟著節/主題的題型
         const gChap = g ? g.filter(t => CH_TYPES.includes(t)) : [];      // 以章為單位的題型
-        // 小節/主題的題型（範例+例題）被標「已寫完」→ 跳過該單元（合併組要全部成員都寫完才跳）
-        const skipped = it => g && gNode.length && (it._members || [it.key]).every(k => skipTypes[`${k}|${gi}`]);
+        // 每單元每組題型的狀態：'off'不寫｜'first'先完成｜'final'壓軸｜沒設＝正常排
+        const modeOf = it => {
+          const ms = (it._members || [it.key]).map(k => skipTypes[`${k}|${gi}`]);
+          if (ms.length && ms.every(m => m === 'off')) return 'off';
+          return ms.find(m => m === 'first' || m === 'final') || null;
+        };
+        const skipped = it => g && gNode.length && modeOf(it) === 'off';
         if (!g || gNode.length) normal.filter(it => !skipped(it)).forEach(it => expanded2.push({
           subject_id: sid,
           // 標題含章名稱：勾的是節/主題時，前面加上所屬章（如「3 大氣｜主題1 …」）
@@ -441,8 +447,8 @@ export default function WizardView({ lists, reload, goTasks }) {
           })(),
           minutes: it.minutes,
           start: w.start, end: w.end,
-          final: anyFlag(it, finals),
-          first: anyFlag(it, firstsSel),
+          final: anyFlag(it, finals) || modeOf(it) === 'final',
+          first: anyFlag(it, firstsSel) || modeOf(it) === 'first',
           spread: (subjSpread[sid] ?? 'order') === 'spread',
         }));
         if (gChap.length) {
@@ -453,14 +459,15 @@ export default function WizardView({ lists, reload, goTasks }) {
             const chKey = base.startsWith('toc-') ? base : String(it.key);
             if (seen.has(chKey)) return;
             seen.add(chKey);
-            if (skipTypes[`ch:${chKey}|${gi}`]) return; // 這章的練習/歷屆標「已寫完」→ 不排
+            const chMode = skipTypes[`ch:${chKey}|${gi}`];
+            if (chMode === 'off') return; // 這章的練習/歷屆標「不寫」
             expanded2.push({
               subject_id: sid,
               title: `${chapTitle[chKey] || it.title}｜${gChap.join('+')}`,
               minutes: minutesFor('章', 0),
               start: w.start, end: w.end,
-              final: false,
-              first: false,
+              final: chMode === 'final',
+              first: chMode === 'first',
               spread: (subjSpread[sid] ?? 'order') === 'spread',
               onePerDay: true, // 單元練習/歷屆試題盡量一天一課；擠不下優先讓範例+例題一天兩課
             });
@@ -853,29 +860,37 @@ export default function WizardView({ lists, reload, goTasks }) {
               })}
 
               {(() => {
-                const pill = (key, label) => (
-                  <label key={key} className={'tag-pill' + (!skipTypes[key] ? ' on' : '')}
-                    style={{ cursor: 'pointer', textDecoration: skipTypes[key] ? 'line-through' : 'none' }}
-                    onClick={() => setSkipTypes(s => ({ ...s, [key]: !s[key] }))}>{label}</label>
-                );
+                // 一顆搞定：點題型在「要排 → 先完成 → 壓軸 → 不寫」間切換；不寫就沒有先完成/壓軸的問題
+                const pill = (key, label) => {
+                  const m = skipTypes[key];
+                  const next = m === undefined ? 'first' : m === 'first' ? 'final' : m === 'final' ? 'off' : undefined;
+                  const st = m === 'off' ? { textDecoration: 'line-through', opacity: .55 }
+                    : m === 'first' ? { background: '#8AC4DE', color: '#fff' }
+                    : m === 'final' ? { background: '#005B98', color: '#fff' } : {};
+                  return (
+                    <label key={key} className={'tag-pill' + (!m ? ' on' : '')} style={{ cursor: 'pointer', ...st }}
+                      onClick={() => setSkipTypes(s => { const n = { ...s }; if (next) n[key] = next; else delete n[key]; return n; })}>
+                      {label}{m === 'first' ? '・先完成' : m === 'final' ? '・壓軸' : m === 'off' ? '・不寫' : ''}
+                    </label>
+                  );
+                };
                 const chapTitle = {};
                 tocs.forEach(r => { chapTitle[`toc-${r.id}`] = r.title; });
-                // 先完成/壓軸/純題目 pills（跟題型勾選同一列）
+                // 沒設定題型的科目用這兩顆當後備；純題目只給手動輸入的範圍
                 const ffPills = it => <>
                   <label className={'tag-pill' + (firstsSel[it.key] ? ' on' : '')} style={{ cursor: 'pointer' }}
                     onClick={() => { setFirstsSel(f => ({ ...f, [it.key]: !f[it.key] })); setFinals(f => ({ ...f, [it.key]: false })); }}>先完成</label>
                   <label className={'tag-pill' + (finals[it.key] ? ' on' : '')} style={{ cursor: 'pointer' }}
                     onClick={() => { setFinals(f => ({ ...f, [it.key]: !f[it.key] })); setFirstsSel(f => ({ ...f, [it.key]: false })); }}>壓軸</label>
-                  {/* 純題目只給手動輸入的範圍（如模考），課本章節不會出現 */}
-                  {!String(it.key).startsWith('toc-') && (
-                    <label className={'tag-pill' + (plainSel[it.key] ? ' on' : '')} style={{ cursor: 'pointer' }}
-                      onClick={() => {
-                        const on = !plainSel[it.key];
-                        setPlainSel(f => ({ ...f, [it.key]: on }));
-                        if (on) { setFinals(f => ({ ...f, [it.key]: true })); setFirstsSel(f => ({ ...f, [it.key]: false })); }
-                      }}>純題目</label>
-                  )}
                 </>;
+                const plainPill = it => !String(it.key).startsWith('toc-') && (
+                  <label className={'tag-pill' + (plainSel[it.key] ? ' on' : '')} style={{ cursor: 'pointer' }}
+                    onClick={() => {
+                      const on = !plainSel[it.key];
+                      setPlainSel(f => ({ ...f, [it.key]: on }));
+                      if (on) { setFinals(f => ({ ...f, [it.key]: true })); setFirstsSel(f => ({ ...f, [it.key]: false })); }
+                    }}>純題目</label>
+                );
                 // 一科一區（不管勾選順序）：科目標籤 → 單元列（照課本順序） → 每章一份列
                 const blocks = sids.map(sid => {
                   const l = lists.find(x => x.id === sid);
@@ -889,8 +904,8 @@ export default function WizardView({ lists, reload, goTasks }) {
                     <div key={'sk' + it.key} style={{ marginTop: 8 }}>
                       <div>{it.title}</div>
                       <div className="row" style={{ marginLeft: 12, marginTop: 3 }}>
-                        {!plainSel[it.key] && nodeGs.map(([gn, gi]) => pill(`${it.key}|${gi}`, gn.join('+')))}
-                        {ffPills(it)}
+                        {!plainSel[it.key] && (nodeGs.length ? nodeGs.map(([gn, gi]) => pill(`${it.key}|${gi}`, gn.join('+'))) : ffPills(it))}
+                        {plainPill(it)}
                       </div>
                     </div>
                   ));
@@ -921,7 +936,7 @@ export default function WizardView({ lists, reload, goTasks }) {
                 if (!blocks.length) return null;
                 return <>
                   <b style={{ display: 'block', marginTop: 16 }}>各單元設定</b>
-                  <div className="muted">題型藍色＝要排，寫完的點掉；先完成＝最先排；壓軸＝全部讀完才排；純題目＝模考類，不套題型</div>
+                  <div className="muted">點題型切換：<span className="tag-pill on" style={{ padding: '1px 8px' }}>要排</span> → <span className="tag-pill" style={{ background: '#8AC4DE', color: '#fff', padding: '1px 8px' }}>先完成</span> → <span className="tag-pill" style={{ background: '#005B98', color: '#fff', padding: '1px 8px' }}>壓軸</span> → <span className="tag-pill" style={{ textDecoration: 'line-through', opacity: .55, padding: '1px 8px' }}>不寫</span>；純題目＝模考類，不套題型</div>
                   {blocks}
                 </>;
               })()}
