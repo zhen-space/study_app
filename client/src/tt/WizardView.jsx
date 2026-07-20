@@ -124,6 +124,19 @@ export default function WizardView({ lists, reload, goTasks }) {
     } catch {}
     draftLoaded.current = true;
   }, []);
+  // 草稿是舊的也沒關係：科目改過顏色/名稱就同步成現在的
+  useEffect(() => {
+    if (!lists.length) return;
+    setItems(a => {
+      let changed = false;
+      const next = a.map(it => {
+        const l = lists.find(x => x.id === it.subject_id);
+        if (l && (it.color !== l.color || it.name !== l.name)) { changed = true; return { ...it, color: l.color, name: l.name }; }
+        return it;
+      });
+      return changed ? next : a;
+    });
+  }, [lists]);
   useEffect(() => {
     if (!draftLoaded.current) return;
     try {
@@ -474,7 +487,14 @@ export default function WizardView({ lists, reload, goTasks }) {
         timed, perDay: (timed || limitPerDay) ? perDay : 0, pace,
       };
       if (!follow) { body.sleep_start = shift.sleep_start; body.sleep_end = shift.sleep_end; }
-      setPreview(await api('/schedule/preview', { method: 'POST', body }));
+      const pv = await api('/schedule/preview', { method: 'POST', body });
+      // 同一天之內：同科目排在一起（照科目清單順序），同科目內保持原本順序
+      // （原本是「全科的範例組→全科的練習組」，同一科會被其他科隔開）
+      const subjOrd = {};
+      lists.forEach((l, i) => { subjOrd[String(l.id)] = i; });
+      pv.blocks = [...pv.blocks].sort((a, b) =>
+        a.date.localeCompare(b.date) || (subjOrd[String(a.subject_id)] ?? 99) - (subjOrd[String(b.subject_id)] ?? 99));
+      setPreview(pv);
       setStep(4);
     } catch (e) { setErr(e.message); }
   }
@@ -1041,7 +1061,7 @@ export default function WizardView({ lists, reload, goTasks }) {
               <div key={d} style={{ marginBottom: 10 }}>
                 <b>{d}（週{WD[new Date(d + 'T00:00:00').getDay()]}）</b>
                 {list.map((b, i) => {
-                  const l = lists.find(x => x.id === b.subject_id);
+                  const l = lists.find(x => String(x.id) === String(b.subject_id)); // 字串/數字都對得到，顏色不會消失
                   return <div key={i} className="row" style={{ marginTop: 4 }}>
                     {b.start_time && <span className="muted">{b.start_time}–{b.end_time}</span>}
                     <span style={{ color: l?.color }}>■</span><span>{l?.name}｜{b.title}</span>
