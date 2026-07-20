@@ -926,12 +926,15 @@ export default function WizardView({ lists, reload, goTasks }) {
                             onClick={() => { setFirstsSel(f => ({ ...f, [it.key]: !f[it.key] })); setFinals(f => ({ ...f, [it.key]: false })); }}>先完成</label>
                           <label className={'tag-pill' + (finals[it.key] ? ' on' : '')} style={{ cursor: 'pointer' }}
                             onClick={() => { setFinals(f => ({ ...f, [it.key]: !f[it.key] })); setFirstsSel(f => ({ ...f, [it.key]: false })); }}>壓軸</label>
-                          <label className={'tag-pill' + (plainSel[it.key] ? ' on' : '')} style={{ cursor: 'pointer' }}
-                            onClick={() => {
-                              const on = !plainSel[it.key];
-                              setPlainSel(f => ({ ...f, [it.key]: on }));
-                              if (on) { setFinals(f => ({ ...f, [it.key]: true })); setFirstsSel(f => ({ ...f, [it.key]: false })); }
-                            }}>純題目</label>
+                          {/* 章節（課本目錄勾的）不會是純題目；純題目只給手動輸入的範圍（如模考） */}
+                          {!String(it.key).startsWith('toc-') && (
+                            <label className={'tag-pill' + (plainSel[it.key] ? ' on' : '')} style={{ cursor: 'pointer' }}
+                              onClick={() => {
+                                const on = !plainSel[it.key];
+                                setPlainSel(f => ({ ...f, [it.key]: on }));
+                                if (on) { setFinals(f => ({ ...f, [it.key]: true })); setFirstsSel(f => ({ ...f, [it.key]: false })); }
+                              }}>純題目</label>
+                          )}
                         </div>
                       </div>
                     ))}
