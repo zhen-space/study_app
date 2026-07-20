@@ -878,22 +878,65 @@ export default function WizardView({ lists, reload, goTasks }) {
                 };
                 const chapTitle = {};
                 tocs.forEach(r => { chapTitle[`toc-${r.id}`] = r.title; });
-                // 沒設定題型的科目用這兩顆當後備；純題目只給手動輸入的範圍
+                // 單元的題型 pill：同一顆點擊五段循環 要排→先完成→壓軸→純題目→不寫→要排
+                // （純題目＝整個單元不套題型，所以循環到純題目時題型名稱換成「純題目」）
+                const unitPill = (it, gi, label, allGis) => {
+                  const key = `${it.key}|${gi}`;
+                  const m = skipTypes[key];
+                  const st = m === 'off' ? { textDecoration: 'line-through', opacity: .55 }
+                    : m === 'first' ? { background: '#8AC4DE', color: '#fff' }
+                    : m === 'final' ? { background: '#005B98', color: '#fff' }
+                    : { background: '#0086CC', color: '#fff' };
+                  const onClick = () => {
+                    if (m === undefined) setSkipTypes(s => ({ ...s, [key]: 'first' }));
+                    else if (m === 'first') setSkipTypes(s => ({ ...s, [key]: 'final' }));
+                    else if (m === 'final') {
+                      // 壓軸 → 純題目：整個單元轉純題目（清掉題型狀態）
+                      setSkipTypes(s => { const n = { ...s }; allGis.forEach(g2 => delete n[`${it.key}|${g2}`]); return n; });
+                      setPlainSel(f => ({ ...f, [it.key]: true }));
+                      setFinals(f => ({ ...f, [it.key]: true }));
+                      setFirstsSel(f => ({ ...f, [it.key]: false }));
+                    } else setSkipTypes(s => { const n = { ...s }; delete n[key]; return n; }); // 不寫 → 要排
+                  };
+                  return (
+                    <label key={key} className="tag-pill" style={{ cursor: 'pointer', ...st }} onClick={onClick}>
+                      {label}{m === 'first' ? '・先完成' : m === 'final' ? '・壓軸' : m === 'off' ? '・不寫' : ''}
+                    </label>
+                  );
+                };
+                // 純題目狀態（紺青）：再點一下 → 不寫；再點 → 回到要排
+                const plainStatePill = (it, allGis) => (
+                  <label className="tag-pill" style={{ cursor: 'pointer', background: '#192F60', color: '#fff' }}
+                    onClick={() => {
+                      setPlainSel(f => ({ ...f, [it.key]: false }));
+                      setFinals(f => ({ ...f, [it.key]: false }));
+                      setSkipTypes(s => { const n = { ...s }; allGis.forEach(gi => { n[`${it.key}|${gi}`] = 'off'; }); return n; });
+                    }}>純題目</label>
+                );
+                // 章層 pill（每章一份的練習/歷屆）：四段循環，沒有純題目
+                const pill = (key, label) => {
+                  const m = skipTypes[key];
+                  const next = m === undefined ? 'first' : m === 'first' ? 'final' : m === 'final' ? 'off' : undefined;
+                  const st = m === 'off' ? { textDecoration: 'line-through', opacity: .55 }
+                    : m === 'first' ? { background: '#8AC4DE', color: '#fff' }
+                    : m === 'final' ? { background: '#005B98', color: '#fff' }
+                    : { background: '#0086CC', color: '#fff' };
+                  return (
+                    <label key={key} className="tag-pill" style={{ cursor: 'pointer', ...st }}
+                      onClick={() => setSkipTypes(s => { const n = { ...s }; if (next) n[key] = next; else delete n[key]; return n; })}>
+                      {label}{m === 'first' ? '・先完成' : m === 'final' ? '・壓軸' : m === 'off' ? '・不寫' : ''}
+                    </label>
+                  );
+                };
+                // 沒設定題型的科目用這組當後備（先完成/壓軸/純題目切換）
                 const ffPills = it => <>
                   <label className={'tag-pill' + (firstsSel[it.key] ? ' on' : '')} style={{ cursor: 'pointer' }}
                     onClick={() => { setFirstsSel(f => ({ ...f, [it.key]: !f[it.key] })); setFinals(f => ({ ...f, [it.key]: false })); }}>先完成</label>
                   <label className={'tag-pill' + (finals[it.key] ? ' on' : '')} style={{ cursor: 'pointer' }}
                     onClick={() => { setFinals(f => ({ ...f, [it.key]: !f[it.key] })); setFirstsSel(f => ({ ...f, [it.key]: false })); }}>壓軸</label>
+                  <label className="tag-pill" style={{ cursor: 'pointer' }}
+                    onClick={() => { setPlainSel(f => ({ ...f, [it.key]: true })); setFinals(f => ({ ...f, [it.key]: true })); setFirstsSel(f => ({ ...f, [it.key]: false })); }}>純題目</label>
                 </>;
-                // 每個單元都有「純題目」可標（課本目錄裡也會有模考、練功坊這種）；紺青＝漸層最深，壓軸最後
-                const plainPill = it => (
-                  <label className="tag-pill" style={{ cursor: 'pointer', ...(plainSel[it.key] ? { background: '#192F60', color: '#fff' } : {}) }}
-                    onClick={() => {
-                      const on = !plainSel[it.key];
-                      setPlainSel(f => ({ ...f, [it.key]: on }));
-                      if (on) { setFinals(f => ({ ...f, [it.key]: true })); setFirstsSel(f => ({ ...f, [it.key]: false })); }
-                    }}>純題目</label>
-                );
                 // 一科一區（不管勾選順序）：科目標籤 → 單元列（照課本順序） → 每章一份列
                 const blocks = sids.map(sid => {
                   const l = lists.find(x => x.id === sid);
@@ -903,18 +946,17 @@ export default function WizardView({ lists, reload, goTasks }) {
                     .sort((a, b) => (ord[String(a.key).split('+')[0]] ?? 9999) - (ord[String(b.key).split('+')[0]] ?? 9999));
                   const nodeGs = groupsFor(sid).map((g, gi) => [g ? g.filter(t => !CH_TYPES.includes(t)) : [], gi]).filter(([gn]) => gn.length);
                   const chapGs = groupsFor(sid).map((g, gi) => [g ? g.filter(t => CH_TYPES.includes(t)) : [], gi]).filter(([gc]) => gc.length);
-                  const unitRows = subjItems.map(it => {
-                    const isPlain = !!plainSel[it.key]; // 純題目＝不套題型，兩者互斥：標了就不會出現例題那些
-                    return (
-                      <div key={'sk' + it.key} style={{ marginTop: 8 }}>
-                        <div>{it.title}</div>
-                        <div className="row" style={{ marginLeft: 12, marginTop: 3 }}>
-                          {!isPlain && (nodeGs.length ? nodeGs.map(([gn, gi]) => pill(`${it.key}|${gi}`, gn.join('+'))) : ffPills(it))}
-                          {plainPill(it)}
-                        </div>
+                  const allGis = nodeGs.map(([, gi]) => gi);
+                  const unitRows = subjItems.map(it => (
+                    <div key={'sk' + it.key} style={{ marginTop: 8 }}>
+                      <div>{it.title}</div>
+                      <div className="row" style={{ marginLeft: 12, marginTop: 3 }}>
+                        {plainSel[it.key]
+                          ? plainStatePill(it, allGis)
+                          : (nodeGs.length ? nodeGs.map(([gn, gi]) => unitPill(it, gi, gn.join('+'), allGis)) : ffPills(it))}
                       </div>
-                    );
-                  });
+                    </div>
+                  ));
                   const seenCh = new Set();
                   const chapRows = [];
                   if (chapGs.length) subjItems.filter(it => !plainSel[it.key]).forEach(it => {
@@ -942,7 +984,7 @@ export default function WizardView({ lists, reload, goTasks }) {
                 if (!blocks.length) return null;
                 return <>
                   <b style={{ display: 'block', marginTop: 16 }}>各單元設定</b>
-                  <div className="muted">點題型切換（越深越後面）：<span className="tag-pill" style={{ background: '#8AC4DE', color: '#fff', padding: '1px 8px' }}>先完成</span> <span className="tag-pill" style={{ background: '#0086CC', color: '#fff', padding: '1px 8px' }}>要排</span> <span className="tag-pill" style={{ background: '#005B98', color: '#fff', padding: '1px 8px' }}>壓軸</span> <span className="tag-pill" style={{ background: '#192F60', color: '#fff', padding: '1px 8px' }}>純題目</span> <span className="tag-pill" style={{ textDecoration: 'line-through', opacity: .55, padding: '1px 8px' }}>不寫</span></div>
+                  <div className="muted">同一顆點擊循環（越深越後面）：<span className="tag-pill" style={{ background: '#0086CC', color: '#fff', padding: '1px 8px' }}>要排</span> → <span className="tag-pill" style={{ background: '#8AC4DE', color: '#fff', padding: '1px 8px' }}>先完成</span> → <span className="tag-pill" style={{ background: '#005B98', color: '#fff', padding: '1px 8px' }}>壓軸</span> → <span className="tag-pill" style={{ background: '#192F60', color: '#fff', padding: '1px 8px' }}>純題目</span> → <span className="tag-pill" style={{ textDecoration: 'line-through', opacity: .55, padding: '1px 8px' }}>不寫</span> → 回到要排</div>
                   {blocks}
                 </>;
               })()}
