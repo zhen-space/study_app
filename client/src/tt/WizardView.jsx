@@ -860,22 +860,6 @@ export default function WizardView({ lists, reload, goTasks }) {
               })}
 
               {(() => {
-                // 一顆搞定：點題型在「要排 → 先完成 → 壓軸 → 不寫」間切換；不寫就沒有先完成/壓軸的問題
-                // 顏色是同一組藍的漸層：先完成(最早)天空藍 → 要排湛藍 → 壓軸深海藍 →（純題目紺青最深）
-                const pill = (key, label) => {
-                  const m = skipTypes[key];
-                  const next = m === undefined ? 'first' : m === 'first' ? 'final' : m === 'final' ? 'off' : undefined;
-                  const st = m === 'off' ? { textDecoration: 'line-through', opacity: .55 }
-                    : m === 'first' ? { background: '#8AC4DE', color: '#fff' }
-                    : m === 'final' ? { background: '#005B98', color: '#fff' }
-                    : { background: '#0086CC', color: '#fff' };
-                  return (
-                    <label key={key} className="tag-pill" style={{ cursor: 'pointer', ...st }}
-                      onClick={() => setSkipTypes(s => { const n = { ...s }; if (next) n[key] = next; else delete n[key]; return n; })}>
-                      {label}{m === 'first' ? '・先完成' : m === 'final' ? '・壓軸' : m === 'off' ? '・不寫' : ''}
-                    </label>
-                  );
-                };
                 const chapTitle = {};
                 tocs.forEach(r => { chapTitle[`toc-${r.id}`] = r.title; });
                 // 單元的題型 pill：同一顆點擊五段循環 要排→先完成→壓軸→純題目→不寫→要排
