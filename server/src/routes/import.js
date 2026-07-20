@@ -80,6 +80,9 @@ function parseStructured(response, key) {
 
 function aiError(err) {
   if (err.friendly) return err.message;
+  if (String(err.message || '').includes('credit balance is too low')) {
+    return 'AI 帳戶餘額不足：請到 console.anthropic.com 的 Billing 儲值後再試（儲值完直接重試即可）';
+  }
   const base = err.status === 401 ? '金鑰無效' : err.status === 429 ? '額度不足或太頻繁，稍後再試' : '請稍後再試';
   // 附上實際原因，出問題時才看得出是哪裡壞（訊息截短）
   const detail = err.status || err.message ? `（${err.status || ''} ${String(err.message || '').slice(0, 140)}）` : '';
