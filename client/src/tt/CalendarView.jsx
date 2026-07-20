@@ -3,6 +3,7 @@ import { api } from '../api';
 import { today, addDays, localISO } from './helpers';
 import { PALETTE } from './Icons';
 import Icon from './Icons';
+import { fileToPayload } from './vocabImport';
 
 const WD = ['一', '二', '三', '四', '五', '六', '日'];
 const HOURS = Array.from({ length: 18 }, (_, i) => i + 6); // 06:00–23:00
@@ -92,10 +93,7 @@ export default function CalendarView({ tasks, reload }) {
     const file = e.target.files[0];
     if (!file) return;
     e.target.value = '';
-    const bytes = new Uint8Array(await file.arrayBuffer());
-    let bin = '';
-    for (let i = 0; i < bytes.length; i += 8192) bin += String.fromCharCode(...bytes.subarray(i, i + 8192));
-    const payload = { filename: file.name, mime: file.type, data: btoa(bin) };
+    const payload = await fileToPayload(file); // 照片自動縮圖壓縮：不爆大小限制、讀取更快
     try { localStorage.setItem('calImportPending', JSON.stringify(payload)); } catch {} // 太大就不存，仍可即時解析
     doParse(payload);
   }

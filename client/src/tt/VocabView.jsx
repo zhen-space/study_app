@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import { api } from '../api';
 import { today } from './helpers';
+import { filesToPayload, savePending, runImport, resumePending, importing } from './vocabImport';
 
 // 單字本：匯入與整理都在這裡（像排程精靈一樣獨立一頁）；首頁只顯示當日單字表
 export default function VocabView() {
@@ -14,35 +15,38 @@ export default function VocabView() {
     setItems(list);
     try { localStorage.setItem('vocabCache', JSON.stringify(list)); } catch {}
   }).catch(() => {});
-  useEffect(() => { load(); }, []);
+  useEffect(() => {
+    load();
+    // 上次解析到一半退出 App → 自動接著做
+    if (resumePending((r, err) => { setBusy(false); if (err) alert('讀取失敗：' + err.message + '（檔案已保留，重開會再試）'); else load(); })) setBusy(true);
+    else if (importing()) setBusy(true);
+    const onUpd = () => { setBusy(false); load(); };
+    window.addEventListener('vocab-updated', onUpd);
+    return () => window.removeEventListener('vocab-updated', onUpd);
+  }, []);
 
   const dates = [...new Set(items.map(x => x.date))].sort();
 
-  async function toPayload(fileList) {
-    const files = [];
-    for (const file of [...fileList].slice(0, 12)) {
-      const bytes = new Uint8Array(await file.arrayBuffer());
-      let bin = '';
-      for (let i = 0; i < bytes.length; i += 8192) bin += String.fromCharCode(...bytes.subarray(i, i + 8192));
-      files.push({ filename: file.name, mime: file.type, data: btoa(bin) });
-    }
-    return files;
+  function report(r, mode, over) {
+    if (!r) return;
+    if (!r.added) alert('AI 沒有找到單字');
+    else if (mode === 'spread') alert(`已匯入 ${r.added} 個，從今天起每天 ${perDay} 個、共 ${r.days} 天${over ? '（一次最多 12 份，超過的沒讀）' : ''}`);
+    else alert(`已加入今天 ${r.added} 個單字`);
   }
   async function doImport(e, mode) {
     const list = e.target.files;
     if (!list?.length) return;
     const over = list.length > 12;
-    const files = await toPayload(list);
-    e.target.value = '';
     setBusy(true);
     try {
-      const r = await api('/import/vocab', { method: 'POST', body: { files, mode, perDay } });
-      if (!r.added) alert('AI 沒有找到單字');
-      else alert(mode === 'spread'
-        ? `已匯入 ${r.added} 個，從今天起每天 ${perDay} 個、共 ${r.days} 天${over ? '（一次最多 12 份，超過的沒讀）' : ''}`
-        : `已加入今天 ${r.added} 個單字`);
+      const files = await filesToPayload(list); // 照片自動縮圖壓縮，不會爆大小限制
+      e.target.value = '';
+      const payload = { files, mode, perDay };
+      savePending(payload); // 中途退出 App 也能回來繼續
+      const r = await runImport(payload);
+      report(r, mode, over);
       load();
-    } catch (err) { alert('讀取失敗：' + err.message); }
+    } catch (err) { alert('讀取失敗：' + err.message + '（檔案已保留，重開 App 會自動再試）'); }
     setBusy(false);
   }
   async function del(id) {

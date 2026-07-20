@@ -12,7 +12,7 @@ import importRouter from './routes/import.js';
 
 const app = express();
 app.use(cors());
-app.use(express.json({ limit: '25mb' }));
+app.use(express.json({ limit: '60mb' })); // 多張照片一起匯入（前端已先縮圖，這裡只是保險）
 
 app.use('/api/auth', authRouter);
 app.use('/api', dataRouter);
