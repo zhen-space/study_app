@@ -36,13 +36,20 @@ async function toContentBlock(filename, mime, data) {
   throw new Error(`不支援的檔案格式 .${ext}，支援：PDF、圖片、Excel、Word(docx)、CSV、TXT`);
 }
 
-// Fast Mode：同一顆 Opus 4.8 但輸出快很多（research preview）。
-// 金鑰沒有 Fast Mode 權限、參數不支援等任何錯誤都自動退回一般模式（除了 429 額度問題）
+// Fast Mode 是否為「這個帳戶沒有 Fast Mode 權限」造成的錯誤：
+// 帳戶沒開通時額度＝0，會回 429 rate_limit 且訊息含 "fast mode"——這種要退回一般模式，
+// 不是真的一般 API 限流。其他一般 API 的 429（真的太頻繁）才往上拋。
+const isFastModeIssue = e =>
+  e.status === 400 || e.status === 404 ||
+  /fast[\s_-]?mode/i.test(String(e.message || '')) ||
+  /fast[\s_-]?mode/i.test(String(e.error?.error?.message || ''));
+
+// Fast Mode：同一顆 Opus 4.8 但輸出快很多（research preview）；帳戶沒權限就自動退回一般模式
 async function createFast(client, params) {
   try {
     return await client.beta.messages.create({ ...params, betas: ['fast-mode-2026-02-01'], speed: 'fast' });
   } catch (e) {
-    if (e.status === 429) throw e;
+    if (e.status === 429 && !isFastModeIssue(e)) throw e; // 真正的一般 API 限流才報錯
     console.error('fast-mode fallback:', e.status, e.message?.slice(0, 200));
     return client.messages.create(params);
   }
@@ -53,7 +60,7 @@ async function createSmart(client, params) {
   try {
     return await client.beta.messages.create({ ...params, ...think, betas: ['fast-mode-2026-02-01'], speed: 'fast' });
   } catch (e1) {
-    if (e1.status === 429) throw e1;
+    if (e1.status === 429 && !isFastModeIssue(e1)) throw e1;
     try { return await client.messages.create({ ...params, ...think }); }
     catch (e2) {
       if (e2.status === 429) throw e2;
