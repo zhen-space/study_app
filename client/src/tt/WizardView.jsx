@@ -104,9 +104,7 @@ export default function WizardView({ lists, reload, goTasks }) {
         d.typeGroupBy && setTypeGroupBy(d.typeGroupBy);
         d.finals && setFinals(d.finals);
         d.firstsSel && setFirstsSel(d.firstsSel);
-        // 課本章節不可能是純題目：舊草稿誤標的一律清掉（否則該單元會沒有任何選項）
-        d.plainSel && setPlainSel(Object.fromEntries(
-          Object.entries(d.plainSel).filter(([k, v]) => v && !String(k).startsWith('toc-'))));
+        d.plainSel && setPlainSel(d.plainSel);
         d.skipTypes && setSkipTypes(Object.fromEntries(
           Object.entries(d.skipTypes).map(([k, v]) => [k, v === true ? 'off' : v]).filter(([, v]) => v))); // 舊草稿 true＝不寫
         d.exWd && setExWd(d.exWd);
@@ -426,10 +424,8 @@ export default function WizardView({ lists, reload, goTasks }) {
     tocs.forEach(r => { chapTitle[`toc-${r.id}`] = r.title; });
     Object.values(mergedBySub).forEach(list => {
       const sid = list[0].subject_id; // 保留原始型別（Object 的 key 會變字串，導致比對失敗、沒顏色）
-      // 純題目只認手動輸入的範圍；課本章節（toc-）就算被誤標也照常排
-      const isPlain = it => anyFlag(it, plainSel) && !String((it._members?.[0]) ?? it.key).startsWith('toc-');
-      const normal = list.filter(it => !isPlain(it));
-      const plains = list.filter(isPlain);
+      const normal = list.filter(it => !anyFlag(it, plainSel));
+      const plains = list.filter(it => anyFlag(it, plainSel));
       groupsFor(sid).forEach((g, gi) => {
         const w = fixWin(winOf(sid, gi));
         const gNode = g ? g.filter(t => !CH_TYPES.includes(t)) : null;   // 跟著節/主題的題型
@@ -865,14 +861,16 @@ export default function WizardView({ lists, reload, goTasks }) {
 
               {(() => {
                 // 一顆搞定：點題型在「要排 → 先完成 → 壓軸 → 不寫」間切換；不寫就沒有先完成/壓軸的問題
+                // 顏色是同一組藍的漸層：先完成(最早)天空藍 → 要排湛藍 → 壓軸深海藍 →（純題目紺青最深）
                 const pill = (key, label) => {
                   const m = skipTypes[key];
                   const next = m === undefined ? 'first' : m === 'first' ? 'final' : m === 'final' ? 'off' : undefined;
                   const st = m === 'off' ? { textDecoration: 'line-through', opacity: .55 }
                     : m === 'first' ? { background: '#8AC4DE', color: '#fff' }
-                    : m === 'final' ? { background: '#005B98', color: '#fff' } : {};
+                    : m === 'final' ? { background: '#005B98', color: '#fff' }
+                    : { background: '#0086CC', color: '#fff' };
                   return (
-                    <label key={key} className={'tag-pill' + (!m ? ' on' : '')} style={{ cursor: 'pointer', ...st }}
+                    <label key={key} className="tag-pill" style={{ cursor: 'pointer', ...st }}
                       onClick={() => setSkipTypes(s => { const n = { ...s }; if (next) n[key] = next; else delete n[key]; return n; })}>
                       {label}{m === 'first' ? '・先完成' : m === 'final' ? '・壓軸' : m === 'off' ? '・不寫' : ''}
                     </label>
@@ -887,8 +885,9 @@ export default function WizardView({ lists, reload, goTasks }) {
                   <label className={'tag-pill' + (finals[it.key] ? ' on' : '')} style={{ cursor: 'pointer' }}
                     onClick={() => { setFinals(f => ({ ...f, [it.key]: !f[it.key] })); setFirstsSel(f => ({ ...f, [it.key]: false })); }}>壓軸</label>
                 </>;
-                const plainPill = it => !String(it.key).startsWith('toc-') && (
-                  <label className={'tag-pill' + (plainSel[it.key] ? ' on' : '')} style={{ cursor: 'pointer' }}
+                // 每個單元都有「純題目」可標（課本目錄裡也會有模考、練功坊這種）；紺青＝漸層最深，壓軸最後
+                const plainPill = it => (
+                  <label className="tag-pill" style={{ cursor: 'pointer', ...(plainSel[it.key] ? { background: '#192F60', color: '#fff' } : {}) }}
                     onClick={() => {
                       const on = !plainSel[it.key];
                       setPlainSel(f => ({ ...f, [it.key]: on }));
@@ -943,7 +942,7 @@ export default function WizardView({ lists, reload, goTasks }) {
                 if (!blocks.length) return null;
                 return <>
                   <b style={{ display: 'block', marginTop: 16 }}>各單元設定</b>
-                  <div className="muted">點題型切換：<span className="tag-pill on" style={{ padding: '1px 8px' }}>要排</span> → <span className="tag-pill" style={{ background: '#8AC4DE', color: '#fff', padding: '1px 8px' }}>先完成</span> → <span className="tag-pill" style={{ background: '#005B98', color: '#fff', padding: '1px 8px' }}>壓軸</span> → <span className="tag-pill" style={{ textDecoration: 'line-through', opacity: .55, padding: '1px 8px' }}>不寫</span>；純題目＝模考類，不套題型</div>
+                  <div className="muted">點題型切換（越深越後面）：<span className="tag-pill" style={{ background: '#8AC4DE', color: '#fff', padding: '1px 8px' }}>先完成</span> <span className="tag-pill" style={{ background: '#0086CC', color: '#fff', padding: '1px 8px' }}>要排</span> <span className="tag-pill" style={{ background: '#005B98', color: '#fff', padding: '1px 8px' }}>壓軸</span> <span className="tag-pill" style={{ background: '#192F60', color: '#fff', padding: '1px 8px' }}>純題目</span> <span className="tag-pill" style={{ textDecoration: 'line-through', opacity: .55, padding: '1px 8px' }}>不寫</span></div>
                   {blocks}
                 </>;
               })()}
