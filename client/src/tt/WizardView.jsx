@@ -860,24 +860,43 @@ export default function WizardView({ lists, reload, goTasks }) {
                 );
                 const chapTitle = {};
                 tocs.forEach(r => { chapTitle[`toc-${r.id}`] = r.title; });
-                // 一科一區（不管勾選順序）：科目標籤 → 小節列（照課本順序） → 章列
+                // 先完成/壓軸/純題目 pills（跟題型勾選同一列）
+                const ffPills = it => <>
+                  <label className={'tag-pill' + (firstsSel[it.key] ? ' on' : '')} style={{ cursor: 'pointer' }}
+                    onClick={() => { setFirstsSel(f => ({ ...f, [it.key]: !f[it.key] })); setFinals(f => ({ ...f, [it.key]: false })); }}>先完成</label>
+                  <label className={'tag-pill' + (finals[it.key] ? ' on' : '')} style={{ cursor: 'pointer' }}
+                    onClick={() => { setFinals(f => ({ ...f, [it.key]: !f[it.key] })); setFirstsSel(f => ({ ...f, [it.key]: false })); }}>壓軸</label>
+                  {/* 純題目只給手動輸入的範圍（如模考），課本章節不會出現 */}
+                  {!String(it.key).startsWith('toc-') && (
+                    <label className={'tag-pill' + (plainSel[it.key] ? ' on' : '')} style={{ cursor: 'pointer' }}
+                      onClick={() => {
+                        const on = !plainSel[it.key];
+                        setPlainSel(f => ({ ...f, [it.key]: on }));
+                        if (on) { setFinals(f => ({ ...f, [it.key]: true })); setFirstsSel(f => ({ ...f, [it.key]: false })); }
+                      }}>純題目</label>
+                  )}
+                </>;
+                // 一科一區（不管勾選順序）：科目標籤 → 單元列（照課本順序） → 每章一份列
                 const blocks = sids.map(sid => {
                   const l = lists.find(x => x.id === sid);
                   if (!l) return null;
                   const ord = {}; allNodes(l).forEach((n, i) => { ord[n.key] = i; });
-                  const subjItems = items.filter(it => it.subject_id === sid && !plainSel[it.key])
+                  const subjItems = items.filter(it => it.subject_id === sid)
                     .sort((a, b) => (ord[String(a.key).split('+')[0]] ?? 9999) - (ord[String(b.key).split('+')[0]] ?? 9999));
                   const nodeGs = groupsFor(sid).map((g, gi) => [g ? g.filter(t => !CH_TYPES.includes(t)) : [], gi]).filter(([gn]) => gn.length);
                   const chapGs = groupsFor(sid).map((g, gi) => [g ? g.filter(t => CH_TYPES.includes(t)) : [], gi]).filter(([gc]) => gc.length);
-                  const unitRows = nodeGs.length ? subjItems.map(it => (
+                  const unitRows = subjItems.map(it => (
                     <div key={'sk' + it.key} style={{ marginTop: 8 }}>
                       <div>{it.title}</div>
-                      <div className="row" style={{ marginLeft: 12, marginTop: 3 }}>{nodeGs.map(([gn, gi]) => pill(`${it.key}|${gi}`, gn.join('+')))}</div>
+                      <div className="row" style={{ marginLeft: 12, marginTop: 3 }}>
+                        {!plainSel[it.key] && nodeGs.map(([gn, gi]) => pill(`${it.key}|${gi}`, gn.join('+')))}
+                        {ffPills(it)}
+                      </div>
                     </div>
-                  )) : [];
+                  ));
                   const seenCh = new Set();
                   const chapRows = [];
-                  if (chapGs.length) subjItems.forEach(it => {
+                  if (chapGs.length) subjItems.filter(it => !plainSel[it.key]).forEach(it => {
                     const base = String(it.key).split('+')[0].split('.')[0];
                     const chKey = base.startsWith('toc-') ? base : String(it.key);
                     if (seenCh.has(chKey)) return;
@@ -901,46 +920,11 @@ export default function WizardView({ lists, reload, goTasks }) {
                 }).filter(Boolean);
                 if (!blocks.length) return null;
                 return <>
-                  <b style={{ display: 'block', marginTop: 16 }}>寫完的題型點掉（藍色＝要排）</b>
-                  <div className="muted">範例、例題跟著小節；單元練習、歷屆試題每章一份</div>
+                  <b style={{ display: 'block', marginTop: 16 }}>各單元設定</b>
+                  <div className="muted">題型藍色＝要排，寫完的點掉；先完成＝最先排；壓軸＝全部讀完才排；純題目＝模考類，不套題型</div>
                   {blocks}
                 </>;
               })()}
-
-              <b style={{ display: 'block', marginTop: 16 }}>有沒有章節需要「先完成」或「壓軸」？</b>
-              <div className="muted">先完成＝最先排；壓軸＝其他全部讀完才排（如：學測模擬試題、115 學測試題）</div>
-              {sids.map(sid => {
-                const l = lists.find(x => x.id === sid);
-                if (!l) return null;
-                const ord = {}; allNodes(l).forEach((n, i) => { ord[n.key] = i; });
-                const subjItems = items.filter(it => it.subject_id === sid)
-                  .sort((a, b) => (ord[String(a.key).split('+')[0]] ?? 9999) - (ord[String(b.key).split('+')[0]] ?? 9999));
-                return (
-                  <div key={'ff' + sid} style={{ marginTop: 12, paddingLeft: 10, borderLeft: `3px solid ${l.color}` }}>
-                    <span className="tag" style={{ background: l.color, color: '#fff', padding: '2px 10px', borderRadius: 999, fontSize: 12 }}>{l.name}</span>
-                    {subjItems.map(it => (
-                      <div key={it.key} style={{ marginTop: 8 }}>
-                        <div>{it.title}</div>
-                        <div className="row" style={{ marginLeft: 12, marginTop: 3 }}>
-                          <label className={'tag-pill' + (firstsSel[it.key] ? ' on' : '')} style={{ cursor: 'pointer' }}
-                            onClick={() => { setFirstsSel(f => ({ ...f, [it.key]: !f[it.key] })); setFinals(f => ({ ...f, [it.key]: false })); }}>先完成</label>
-                          <label className={'tag-pill' + (finals[it.key] ? ' on' : '')} style={{ cursor: 'pointer' }}
-                            onClick={() => { setFinals(f => ({ ...f, [it.key]: !f[it.key] })); setFirstsSel(f => ({ ...f, [it.key]: false })); }}>壓軸</label>
-                          {/* 章節（課本目錄勾的）不會是純題目；純題目只給手動輸入的範圍（如模考） */}
-                          {!String(it.key).startsWith('toc-') && (
-                            <label className={'tag-pill' + (plainSel[it.key] ? ' on' : '')} style={{ cursor: 'pointer' }}
-                              onClick={() => {
-                                const on = !plainSel[it.key];
-                                setPlainSel(f => ({ ...f, [it.key]: on }));
-                                if (on) { setFinals(f => ({ ...f, [it.key]: true })); setFirstsSel(f => ({ ...f, [it.key]: false })); }
-                              }}>純題目</label>
-                          )}
-                        </div>
-                      </div>
-                    ))}
-                  </div>
-                );
-              })}
 
               <div className="row" style={{ marginTop: 16 }}>
                 <button className="btn ghost" onClick={() => setStep(1)}>上一步</button>
