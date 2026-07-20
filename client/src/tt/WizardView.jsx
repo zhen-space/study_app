@@ -51,6 +51,7 @@ export default function WizardView({ lists, reload, goTasks }) {
   const [finals, setFinals] = useState({});           // 壓軸項目
   const [firstsSel, setFirstsSel] = useState({});     // 要先完成的項目
   const [plainSel, setPlainSel] = useState({});       // 純題目：不套題型、照順序（如模考）
+  const [skipTypes, setSkipTypes] = useState({});     // 「key|組序」＝true → 這單元的這組題型已寫完，不排
   const [exWd, setExWd] = useState([]);               // 不排的星期 0-6
   const [exDates, setExDates] = useState([]);         // 不排的日期
   const [exDateInput, setExDateInput] = useState(today());
@@ -102,6 +103,7 @@ export default function WizardView({ lists, reload, goTasks }) {
         d.finals && setFinals(d.finals);
         d.firstsSel && setFirstsSel(d.firstsSel);
         d.plainSel && setPlainSel(d.plainSel);
+        d.skipTypes && setSkipTypes(d.skipTypes);
         d.exWd && setExWd(d.exWd);
         d.exDates && setExDates(d.exDates);
         d.levelMin && setLevelMin(d.levelMin);
@@ -124,12 +126,12 @@ export default function WizardView({ lists, reload, goTasks }) {
     if (!draftLoaded.current) return;
     try {
       localStorage.setItem('wizardDraft', JSON.stringify({
-        items, subjSpread, typeRef, typesBy, combineBy, typeGroupBy, finals, firstsSel, plainSel,
+        items, subjSpread, typeRef, typesBy, combineBy, typeGroupBy, finals, firstsSel, plainSel, skipTypes,
         exWd, exDates, levelMin, busyHours, timed, limitPerDay, perDay, pace, groupSize,
         bySubject, byGroup, dGlobal, dMap, step,
       }));
     } catch {}
-  }, [items, subjSpread, typeRef, typesBy, combineBy, typeGroupBy, finals, firstsSel, plainSel,
+  }, [items, subjSpread, typeRef, typesBy, combineBy, typeGroupBy, finals, firstsSel, plainSel, skipTypes,
     exWd, exDates, levelMin, busyHours, timed, limitPerDay, perDay, pace, groupSize,
     bySubject, byGroup, dGlobal, dMap, step]);
 
@@ -414,7 +416,10 @@ export default function WizardView({ lists, reload, goTasks }) {
         const w = fixWin(winOf(sid, gi));
         const gNode = g ? g.filter(t => !CH_TYPES.includes(t)) : null;   // 跟著節/主題的題型
         const gChap = g ? g.filter(t => CH_TYPES.includes(t)) : [];      // 以章為單位的題型
-        if (!g || gNode.length) normal.forEach(it => expanded2.push({
+        // 這單元的這組題型被標「已寫完」→ 跳過（合併組要全部成員都寫完才跳）
+        const skipped = it => g && (it._members || [it.key]).every(k => skipTypes[`${k}|${gi}`]);
+        const active = normal.filter(it => !skipped(it));
+        if (!g || gNode.length) active.forEach(it => expanded2.push({
           subject_id: sid,
           // 標題含章名稱：勾的是節/主題時，前面加上所屬章（如「3 大氣｜主題1 …」）
           title: (() => {
@@ -430,7 +435,7 @@ export default function WizardView({ lists, reload, goTasks }) {
         }));
         if (gChap.length) {
           const seen = new Set();
-          normal.forEach(it => {
+          active.forEach(it => {
             // 找出這個項目所屬的章：key 形如 toc-12.0.2 → 章＝toc-12
             const base = String((it._members?.[0]) ?? it.key).split('+')[0].split('.')[0];
             const chKey = base.startsWith('toc-') ? base : String(it.key);
@@ -826,6 +831,19 @@ export default function WizardView({ lists, reload, goTasks }) {
                   </div>
                 );
               })}
+
+              <b style={{ display: 'block', marginTop: 16 }}>每個單元要排哪些題型？（藍色＝要排，寫完的點掉）</b>
+              <div className="muted">例：某單元「範例+例題」已經寫完 → 點掉它，還是會排「單元練習+歷屆試題」</div>
+              {items.filter(it => !plainSel[it.key] && groupsFor(it.subject_id).some(g => g)).map(it => (
+                <div className="row" key={'sk' + it.key} style={{ marginTop: 6 }}>
+                  <span style={{ color: it.color }}>■</span>
+                  <span style={{ flex: 1 }}>{it.name}｜{it.title}</span>
+                  {groupsFor(it.subject_id).map((g, gi) => g && (
+                    <label key={gi} className={'tag-pill' + (!skipTypes[`${it.key}|${gi}`] ? ' on' : '')} style={{ cursor: 'pointer', textDecoration: skipTypes[`${it.key}|${gi}`] ? 'line-through' : 'none' }}
+                      onClick={() => setSkipTypes(s => ({ ...s, [`${it.key}|${gi}`]: !s[`${it.key}|${gi}`] }))}>{gLabel(g)}</label>
+                  ))}
+                </div>
+              ))}
 
               <b style={{ display: 'block', marginTop: 16 }}>有沒有章節需要「先完成」或「壓軸」？</b>
               <div className="muted">先完成＝最先排；壓軸＝其他全部讀完才排（如：學測模擬試題、115 學測試題）</div>
