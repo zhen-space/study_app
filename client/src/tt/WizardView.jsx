@@ -104,7 +104,9 @@ export default function WizardView({ lists, reload, goTasks }) {
         d.typeGroupBy && setTypeGroupBy(d.typeGroupBy);
         d.finals && setFinals(d.finals);
         d.firstsSel && setFirstsSel(d.firstsSel);
-        d.plainSel && setPlainSel(d.plainSel);
+        // 課本章節不可能是純題目：舊草稿誤標的一律清掉（否則該單元會沒有任何選項）
+        d.plainSel && setPlainSel(Object.fromEntries(
+          Object.entries(d.plainSel).filter(([k, v]) => v && !String(k).startsWith('toc-'))));
         d.skipTypes && setSkipTypes(Object.fromEntries(
           Object.entries(d.skipTypes).map(([k, v]) => [k, v === true ? 'off' : v]).filter(([, v]) => v))); // 舊草稿 true＝不寫
         d.exWd && setExWd(d.exWd);
@@ -424,8 +426,10 @@ export default function WizardView({ lists, reload, goTasks }) {
     tocs.forEach(r => { chapTitle[`toc-${r.id}`] = r.title; });
     Object.values(mergedBySub).forEach(list => {
       const sid = list[0].subject_id; // 保留原始型別（Object 的 key 會變字串，導致比對失敗、沒顏色）
-      const normal = list.filter(it => !anyFlag(it, plainSel));
-      const plains = list.filter(it => anyFlag(it, plainSel));
+      // 純題目只認手動輸入的範圍；課本章節（toc-）就算被誤標也照常排
+      const isPlain = it => anyFlag(it, plainSel) && !String((it._members?.[0]) ?? it.key).startsWith('toc-');
+      const normal = list.filter(it => !isPlain(it));
+      const plains = list.filter(isPlain);
       groupsFor(sid).forEach((g, gi) => {
         const w = fixWin(winOf(sid, gi));
         const gNode = g ? g.filter(t => !CH_TYPES.includes(t)) : null;   // 跟著節/主題的題型
@@ -900,18 +904,21 @@ export default function WizardView({ lists, reload, goTasks }) {
                     .sort((a, b) => (ord[String(a.key).split('+')[0]] ?? 9999) - (ord[String(b.key).split('+')[0]] ?? 9999));
                   const nodeGs = groupsFor(sid).map((g, gi) => [g ? g.filter(t => !CH_TYPES.includes(t)) : [], gi]).filter(([gn]) => gn.length);
                   const chapGs = groupsFor(sid).map((g, gi) => [g ? g.filter(t => CH_TYPES.includes(t)) : [], gi]).filter(([gc]) => gc.length);
-                  const unitRows = subjItems.map(it => (
-                    <div key={'sk' + it.key} style={{ marginTop: 8 }}>
-                      <div>{it.title}</div>
-                      <div className="row" style={{ marginLeft: 12, marginTop: 3 }}>
-                        {!plainSel[it.key] && (nodeGs.length ? nodeGs.map(([gn, gi]) => pill(`${it.key}|${gi}`, gn.join('+'))) : ffPills(it))}
-                        {plainPill(it)}
+                  const unitRows = subjItems.map(it => {
+                    const isPlain = plainSel[it.key] && !String(it.key).startsWith('toc-');
+                    return (
+                      <div key={'sk' + it.key} style={{ marginTop: 8 }}>
+                        <div>{it.title}</div>
+                        <div className="row" style={{ marginLeft: 12, marginTop: 3 }}>
+                          {!isPlain && (nodeGs.length ? nodeGs.map(([gn, gi]) => pill(`${it.key}|${gi}`, gn.join('+'))) : ffPills(it))}
+                          {plainPill(it)}
+                        </div>
                       </div>
-                    </div>
-                  ));
+                    );
+                  });
                   const seenCh = new Set();
                   const chapRows = [];
-                  if (chapGs.length) subjItems.filter(it => !plainSel[it.key]).forEach(it => {
+                  if (chapGs.length) subjItems.filter(it => !(plainSel[it.key] && !String(it.key).startsWith('toc-'))).forEach(it => {
                     const base = String(it.key).split('+')[0].split('.')[0];
                     const chKey = base.startsWith('toc-') ? base : String(it.key);
                     if (seenCh.has(chKey)) return;
