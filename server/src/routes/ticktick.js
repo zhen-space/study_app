@@ -6,7 +6,7 @@ const router = Router();
 router.use(requireAuth);
 
 // tags/subtasks 一定回傳陣列（曾有存成字串的髒資料，前端 flatMap 會拆成單一字母）
-const asArr = s => { try { const v = JSON.parse(s); return Array.isArray(v) ? v : []; } catch { return []; } };
+const asArr = s => { if (Array.isArray(s)) return s; try { const v = JSON.parse(s); return Array.isArray(v) ? v : []; } catch { return []; } };
 // 過濾掉舊 bug 產生的碎片標籤（純 1–2 個英文小寫字母，如 ek、ne、l）
 const cleanTags = arr => arr.filter(x => typeof x === 'string' && x.trim() && !/^[a-zA-Z]{1,2}$/.test(x.trim()));
 const parseTask = t => ({ ...t, tags: cleanTags(asArr(t.tags)), subtasks: asArr(t.subtasks) });
@@ -257,7 +257,8 @@ router.delete('/trash', async (req, res) => {
 });
 // 清掉上一次讀書計劃建立的待辦（已完成的保留當紀錄），建立新排程前呼叫
 router.delete('/plan-tasks', async (req, res) => {
-  const r = await q.run(`DELETE FROM tasks WHERE user_id=? AND completed=0 AND tags LIKE '%讀書計劃%'`, [req.userId]);
+  // 標籤比對＋標題含全形「｜」（排程精靈專用的分隔符）：涵蓋先前標籤遺失 bug 建立的舊排程
+  const r = await q.run(`DELETE FROM tasks WHERE user_id=? AND completed=0 AND (tags LIKE '%讀書計劃%' OR title LIKE '%｜%')`, [req.userId]);
   res.json({ removed: r.rowsAffected ?? 0 });
 });
 

@@ -24,21 +24,6 @@ export default function VocabCard({ goVocab }) {
   }, []);
 
   const cur = items.filter(x => x.date === today());
-  const Section = ({ kind }) => {
-    const list = cur.filter(x => x.kind === kind);
-    if (!list.length) return null;
-    return (
-      <>
-        <div className="muted" style={{ margin: '8px 0 2px', fontSize: 12 }}>{kind}（{list.length}）</div>
-        {list.map(x => (
-          <div key={x.id} className="vocab-row">
-            <span className="vocab-en">{x.english}</span>
-            <span className="vocab-zh">{x.chinese}</span>
-          </div>
-        ))}
-      </>
-    );
-  };
 
   return (
     <div className="tgroup" style={{ marginTop: 24, borderTop: '2px dashed var(--border)', paddingTop: 12 }}>
@@ -48,7 +33,13 @@ export default function VocabCard({ goVocab }) {
       </div>
       {busy && <div className="muted" style={{ margin: '4px 0' }}>AI 正在讀取單字…（可離開，回來會繼續）</div>}
       {cur.length
-        ? <><Section kind="單字" /><Section kind="片語" /></>
+        ? cur.map(x => (
+          <div key={x.id} className="vocab-row">
+            <span className="vocab-en" style={x.color ? { color: x.color } : {}}>{x.english}</span>
+            {x.kind === '片語' && <span className="chip" style={{ fontSize: 10 }}>片語</span>}
+            <span className="vocab-zh">{x.chinese}</span>
+          </div>
+        ))
         : !busy && <div className="muted" style={{ margin: '6px 0' }}>今天沒有要背的單字——到「單字本」拍照匯入，或整本分配每天的份量</div>}
     </div>
   );

@@ -160,6 +160,7 @@ export async function initSchema() {
   try { await client.execute("ALTER TABLE habits ADD COLUMN category TEXT DEFAULT ''"); } catch {}
   try { await client.execute("ALTER TABLE tasks ADD COLUMN deleted INTEGER DEFAULT 0"); } catch {}
   try { await client.execute("ALTER TABLE lists ADD COLUMN icon TEXT DEFAULT 'book'"); } catch {}
+  try { await client.execute("ALTER TABLE vocab_items ADD COLUMN color TEXT DEFAULT ''"); } catch {}
   // 一次性清理：舊 bug 產生的碎片標籤（純 1–2 個英文字母，如 ek、ne、l）
   try {
     const rs = await client.execute('SELECT id, tags FROM tasks');

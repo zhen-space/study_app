@@ -29,9 +29,10 @@ export default function VocabView() {
 
   function report(r, mode, over) {
     if (!r) return;
-    if (!r.added) alert('AI 沒有找到單字');
-    else if (mode === 'spread') alert(`已匯入 ${r.added} 個，從今天起每天 ${perDay} 個、共 ${r.days} 天${over ? '（一次最多 12 份，超過的沒讀）' : ''}`);
-    else alert(`已加入今天 ${r.added} 個單字`);
+    const dup = r.skipped ? `（略過已存在的 ${r.skipped} 個）` : '';
+    if (!r.added) alert(r.skipped ? `這些單字都已經在單字本裡了${dup}` : 'AI 沒有找到單字');
+    else if (mode === 'spread') alert(`已匯入 ${r.added} 個${dup}，從今天起每天 ${perDay} 個、共 ${r.days} 天${over ? '（一次最多 12 份，超過的沒讀）' : ''}`);
+    else alert(`已加入今天 ${r.added} 個單字${dup}`);
   }
   async function doImport(e, mode) {
     const list = e.target.files;
@@ -63,6 +64,42 @@ export default function VocabView() {
   const setN = v => { const n = Math.max(1, Math.min(200, +v || 1)); setPerDay(n); try { localStorage.setItem('vocabPerDay', String(n)); } catch {} };
   const toggleDay = d => setOpenDays(s => { const n = new Set(s); n.has(d) ? n.delete(d) : n.add(d); return n; });
   const label = d => `${+d.slice(5, 7)}/${+d.slice(8)}${d === today() ? '（今天）' : ''}`;
+
+  // 編輯單字（英文、中文、單字/片語、顏色）
+  const [editId, setEditId] = useState(null);
+  const VOCAB_COLORS = ['', '#0086CC', '#8AC4DE', '#005B98', '#192F60', '#CB1B45', '#E98B2A', '#00896C', '#66327C'];
+  const updLocal = (id, patch) => setItems(list => list.map(x => x.id === id ? { ...x, ...patch } : x));
+  const sendPatch = (id, patch) => api(`/import/vocab/${id}`, { method: 'PATCH', body: patch }).catch(() => {});
+  const patchWord = (id, patch) => { updLocal(id, patch); sendPatch(id, patch); };
+  const WordRow = x => (
+    <div key={x.id}>
+      <div className="vocab-row" style={{ cursor: 'pointer' }} onClick={() => setEditId(editId === x.id ? null : x.id)}>
+        <span className="vocab-en" style={x.color ? { color: x.color } : {}}>{x.english}</span>
+        {x.kind === '片語' && <span className="chip" style={{ fontSize: 10 }}>片語</span>}
+        <span className="vocab-zh">{x.chinese}</span>
+        <button className="icon-btn" style={{ padding: 2 }} onClick={e => { e.stopPropagation(); del(x.id); }}>✕</button>
+      </div>
+      {editId === x.id && (
+        <div style={{ padding: '6px 2px 10px', borderBottom: '1px solid var(--border)' }} onClick={e => e.stopPropagation()}>
+          <div className="row">
+            <input value={x.english} style={{ flex: 1, fontWeight: 600 }}
+              onChange={e => updLocal(x.id, { english: e.target.value })} onBlur={e => sendPatch(x.id, { english: e.target.value })} />
+            <input value={x.chinese} placeholder="中文" style={{ flex: 1 }}
+              onChange={e => updLocal(x.id, { chinese: e.target.value })} onBlur={e => sendPatch(x.id, { chinese: e.target.value })} />
+            <button className="btn sm ghost" onClick={() => patchWord(x.id, { kind: x.kind === '片語' ? '單字' : '片語' })}>{x.kind}</button>
+          </div>
+          <div className="swatches" style={{ marginTop: 6 }}>
+            {VOCAB_COLORS.map(c => (
+              <span key={c || 'none'} className={'swatch' + ((x.color || '') === c ? ' on' : '')}
+                style={c ? { background: c } : { background: '#fff', border: '1px solid var(--border)' }}
+                title={c ? '' : '預設'} onClick={() => patchWord(x.id, { color: c })} />
+            ))}
+            <button className="btn sm" style={{ marginLeft: 'auto' }} onClick={() => setEditId(null)}>完成</button>
+          </div>
+        </div>
+      )}
+    </div>
+  );
 
   return (
     <div className="main">
@@ -98,22 +135,7 @@ export default function VocabView() {
                 <button className="icon-btn" style={{ marginLeft: 'auto' }} title="刪除這一天全部"
                   onClick={e => { e.stopPropagation(); delDay(d); }}>✕</button>
               </div>
-              {open && ['單字', '片語'].map(kind => {
-                const ks = list.filter(x => x.kind === kind);
-                if (!ks.length) return null;
-                return (
-                  <div key={kind}>
-                    <div className="muted" style={{ margin: '6px 0 2px', fontSize: 12 }}>{kind}（{ks.length}）</div>
-                    {ks.map(x => (
-                      <div key={x.id} className="vocab-row">
-                        <span className="vocab-en">{x.english}</span>
-                        <span className="vocab-zh">{x.chinese}</span>
-                        <button className="icon-btn" style={{ padding: 2 }} onClick={() => del(x.id)}>✕</button>
-                      </div>
-                    ))}
-                  </div>
-                );
-              })}
+              {open && list.map(WordRow)}
             </div>
           );
         })}

@@ -365,6 +365,13 @@ router.delete('/vocab/:id', async (req, res) => {
   await q.run('DELETE FROM vocab_items WHERE id=? AND user_id=?', [req.params.id, req.userId]);
   res.json({ ok: true });
 });
+// 編輯單字：英文、中文、分類、顏色
+router.patch('/vocab/:id', async (req, res) => {
+  const { english, chinese, kind, color } = req.body;
+  await q.run('UPDATE vocab_items SET english=COALESCE(?,english), chinese=COALESCE(?,chinese), kind=COALESCE(?,kind), color=COALESCE(?,color) WHERE id=? AND user_id=?',
+    [english ?? null, chinese ?? null, kind ?? null, color ?? null, req.params.id, req.userId]);
+  res.json({ ok: true });
+});
 // POST /api/import/vocab
 //   { files:[{filename,mime,data}] | filename,mime,data, mode:'today'|'spread', perDay }
 //   today＝全部算今天的單字；spread＝整本分配，從今天起每天 perDay 個
@@ -404,8 +411,9 @@ router.post('/vocab', async (req, res) => {
     }
     const words = parseStructured(response, 'words');
     const todayStr = new Date(Date.now() + 8 * 3600e3).toISOString().slice(0, 10); // 台灣時區的今天
-    // 去重（同一批裡同一個字只留一次）
-    const seen = new Set();
+    // 去重：同一批裡重複的、以及「已經在單字本裡」的都只留一次（同一張圖重複匯入不會加兩次）
+    const existing = await q.all('SELECT english FROM vocab_items WHERE user_id=?', [req.userId]);
+    const seen = new Set(existing.map(r => r.english.trim().toLowerCase()));
     const clean = words.filter(w => {
       const k = (w.english || '').trim().toLowerCase();
       if (!k || seen.has(k)) return false;
@@ -426,7 +434,7 @@ router.post('/vocab', async (req, res) => {
         [req.userId, dateOf(i), w.english.trim(), (w.chinese || '').trim(), w.kind === '片語' ? '片語' : '單字'],
       ]));
     }
-    res.json({ added: clean.length, days: mode === 'spread' ? Math.ceil(clean.length / perDay) : 1 });
+    res.json({ added: clean.length, skipped: words.length - clean.length, days: mode === 'spread' ? Math.ceil(clean.length / perDay) : 1 });
   } catch (err) {
     console.error('vocab parse error:', err.message);
     res.status(500).json({ error: aiError(err) });
