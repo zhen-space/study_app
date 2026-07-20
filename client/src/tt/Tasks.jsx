@@ -233,7 +233,7 @@ function AddSheet({ view, lists, onDone, onClose }) {
   );
 }
 
-export default function Tasks({ view, tasks, lists, filters, habits = [], reload, title }) {
+export default function Tasks({ view, tasks, lists, filters, habits = [], reload, title, goVocab }) {
   const [selId, setSelId] = useState(null);
   const [quick, setQuick] = useState('');
   const [showAdd, setShowAdd] = useState(false);
@@ -391,7 +391,7 @@ export default function Tasks({ view, tasks, lists, filters, habits = [], reload
             })}
           {shown.length === 0 && <div className="muted" style={{ marginTop: 30, textAlign: 'center' }}>沒有任務</div>}
 
-          {view.type === 'today' && <VocabCard />}
+          {view.type === 'today' && <VocabCard goVocab={goVocab} />}
 
           {view.type === 'today' && habits.length > 0 && (
             <div className="tgroup" style={{ marginTop: 24, borderTop: '2px dashed var(--border)', paddingTop: 12 }}>
