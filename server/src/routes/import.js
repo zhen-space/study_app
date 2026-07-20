@@ -334,44 +334,69 @@ router.delete('/vocab/:id', async (req, res) => {
   await q.run('DELETE FROM vocab_items WHERE id=? AND user_id=?', [req.params.id, req.userId]);
   res.json({ ok: true });
 });
-// POST /api/import/vocab { filename, mime, data } → AI 讀單字照片，存到今天
+// POST /api/import/vocab
+//   { files:[{filename,mime,data}] | filename,mime,data, mode:'today'|'spread', perDay }
+//   today＝全部算今天的單字；spread＝整本分配，從今天起每天 perDay 個
 router.post('/vocab', async (req, res) => {
   if (!process.env.ANTHROPIC_API_KEY) {
     return res.status(500).json({ error: '伺服器尚未設定 AI 金鑰（ANTHROPIC_API_KEY）' });
   }
-  const { filename = '', mime = '', data } = req.body;
-  if (!data) return res.status(400).json({ error: '沒有收到檔案' });
-  let block;
-  try { block = await toContentBlock(filename, mime, data); }
-  catch (e) { return res.status(400).json({ error: e.message }); }
+  const files = req.body.files?.length
+    ? req.body.files
+    : (req.body.data ? [{ filename: req.body.filename || '', mime: req.body.mime || '', data: req.body.data }] : []);
+  if (!files.length) return res.status(400).json({ error: '沒有收到檔案' });
+  if (files.length > 12) return res.status(400).json({ error: '一次最多 12 張照片/檔案' });
+  let blocks;
+  try {
+    blocks = [];
+    for (let i = 0; i < files.length; i++) {
+      if (files.length > 1) blocks.push({ type: 'text', text: `【第 ${i + 1} 份／共 ${files.length} 份】` });
+      blocks.push(await toContentBlock(files[i].filename, files[i].mime, files[i].data));
+    }
+  } catch (e) { return res.status(400).json({ error: e.message }); }
   try {
     const client = new Anthropic();
     const response = await createFast(client, {
       model: 'claude-opus-4-8',
-      max_tokens: 8000,
+      max_tokens: 16000,
       system: `你是背單字助手。從照片/檔案擷取所有要背的英文單字與片語：
 - english 照原文抄寫（含大小寫），不要自己改拼字；看不清楚的字寧可略過。
 - chinese：照片上有中文意思就照抄；沒有才給最常用的簡短中文意思。
 - kind：單一個字＝「單字」；兩個字以上的慣用組合（如 give up、in front of）＝「片語」。
-- 忽略例句、音標、頁碼；同一個字出現多次只輸出一次。找不到任何單字就回傳空陣列。`,
+- 忽略例句、音標、頁碼；同一個字出現多次只輸出一次。找不到任何單字就回傳空陣列。
+- 多份檔案時視為同一批，依順序全部擷取、重疊處不重複。單字照原文出現的順序輸出。`,
       output_config: { format: { type: 'json_schema', schema: VOCAB_SCHEMA } },
-      messages: [{ role: 'user', content: [block, { type: 'text', text: '請擷取這份檔案中所有要背的英文單字與片語。' }] }],
+      messages: [{ role: 'user', content: [...blocks, { type: 'text', text: '請擷取這些檔案中所有要背的英文單字與片語。' }] }],
     });
     if (response.stop_reason === 'refusal') {
       return res.status(400).json({ error: 'AI 無法處理這份檔案，請換一張試試' });
     }
     const text = response.content.find(b => b.type === 'text')?.text || '{"words":[]}';
     const { words } = JSON.parse(text);
-    const dateStr = new Date(Date.now() + 8 * 3600e3).toISOString().slice(0, 10); // 台灣時區的今天
-    const clean = words.filter(w => (w.english || '').trim());
+    const todayStr = new Date(Date.now() + 8 * 3600e3).toISOString().slice(0, 10); // 台灣時區的今天
+    // 去重（同一批裡同一個字只留一次）
+    const seen = new Set();
+    const clean = words.filter(w => {
+      const k = (w.english || '').trim().toLowerCase();
+      if (!k || seen.has(k)) return false;
+      seen.add(k);
+      return true;
+    });
+    // spread＝從今天起一天 perDay 個；today＝全部今天
+    const mode = req.body.mode === 'spread' ? 'spread' : 'today';
+    const perDay = Math.max(1, Math.min(200, +req.body.perDay || 10));
+    const dateOf = i => {
+      if (mode !== 'spread') return todayStr;
+      const d = new Date(new Date(todayStr + 'T00:00:00').getTime() + Math.floor(i / perDay) * 864e5);
+      return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+    };
     if (clean.length) {
-      await q.batch(clean.map(w => [
+      await q.batch(clean.map((w, i) => [
         'INSERT INTO vocab_items (user_id, date, english, chinese, kind) VALUES (?,?,?,?,?)',
-        [req.userId, dateStr, w.english.trim(), (w.chinese || '').trim(), w.kind === '片語' ? '片語' : '單字'],
+        [req.userId, dateOf(i), w.english.trim(), (w.chinese || '').trim(), w.kind === '片語' ? '片語' : '單字'],
       ]));
     }
-    const items = await q.all('SELECT * FROM vocab_items WHERE user_id=? AND date=? ORDER BY id', [req.userId, dateStr]);
-    res.json({ items, added: clean.length });
+    res.json({ added: clean.length, days: mode === 'spread' ? Math.ceil(clean.length / perDay) : 1 });
   } catch (err) {
     console.error('vocab parse error:', err.message);
     res.status(500).json({ error: aiError(err) });
