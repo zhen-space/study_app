@@ -136,9 +136,47 @@ function nextDate(dateStr, rule) {
   if (rule && rule.startsWith('{')) {
     let cfg;
     try { cfg = JSON.parse(rule); } catch { return null; }
+    // 艾賓浩斯記憶曲線：完成後 1、2、4、7、15、30、60 天複習
+    if (cfg.type === 'ebbinghaus') {
+      const gaps = [1, 2, 4, 7, 15, 30, 60];
+      d.setDate(d.getDate() + gaps[Math.min(cfg.step || 0, gaps.length - 1)]);
+      return iso(d);
+    }
     const every = Math.max(1, cfg.every || 1);
     if (cfg.unit === 'day') { d.setDate(d.getDate() + every); return iso(d); }
-    if (cfg.unit === 'month') { d.setMonth(d.getMonth() + every); return iso(d); }
+    if (cfg.unit === 'month') {
+      // 每月「指定日期」（可多選；-1＝該月最後一天）
+      if (cfg.monthDays?.length) {
+        for (let i = 1; i <= 800; i++) {
+          const c = new Date(d); c.setDate(d.getDate() + i);
+          const mdiff = (c.getFullYear() - d.getFullYear()) * 12 + (c.getMonth() - d.getMonth());
+          if (mdiff % every) continue;
+          const last = new Date(c.getFullYear(), c.getMonth() + 1, 0).getDate();
+          if (cfg.monthDays.map(x => x === -1 ? last : x).includes(c.getDate())) return iso(c);
+        }
+        return null;
+      }
+      // 每月「第 N 個星期 X」（nth=-1＝最後一個）
+      if (cfg.monthWeek) {
+        const { nth, day } = cfg.monthWeek;
+        for (let m = 1; m <= 36; m++) {
+          if (m % every) continue;
+          const y = d.getFullYear(), mo = d.getMonth() + m;
+          let c;
+          if (nth === -1) {
+            c = new Date(y, mo + 1, 0);
+            while (c.getDay() !== day) c.setDate(c.getDate() - 1);
+          } else {
+            const first = new Date(y, mo, 1);
+            c = new Date(y, mo, 1 + ((day - first.getDay() + 7) % 7) + (nth - 1) * 7);
+            if (c.getMonth() !== ((mo % 12) + 12) % 12) continue; // 該月沒有第 N 個
+          }
+          if (c > d) return iso(c);
+        }
+        return null;
+      }
+      d.setMonth(d.getMonth() + every); return iso(d);
+    }
     if (cfg.unit === 'year') { d.setFullYear(d.getFullYear() + every); return iso(d); }
     // week：每 N 週的指定星期（以起始日的當週為第 0 週）
     const days = cfg.days?.length ? cfg.days : [d.getDay()];
@@ -181,11 +219,27 @@ router.patch('/tasks/:id', async (req, res) => {
       f.recurring, f.miss_policy, f.completed, f.completed_at, f.order_index, f.deleted, t.id]);
 
   if (b.completed && !t.completed && t.recurring && t.due_date) {
-    const nd = nextDate(t.due_date, t.recurring);
-    if (nd) await q.run(`INSERT INTO tasks (user_id,list_id,title,notes,due_date,due_time,priority,tags,subtasks,recurring)
-      VALUES (?,?,?,?,?,?,?,?,?,?)`,
+    let cfg = null;
+    try { cfg = t.recurring.startsWith('{') ? JSON.parse(t.recurring) : null; } catch {}
+    // 完成後起算（fromDone）：下一次從「今天」推；否則從原到期日推
+    const todayTW = new Date(Date.now() + 8 * 3600e3).toISOString().slice(0, 10);
+    const base = cfg?.fromDone ? todayTW : t.due_date;
+    let nd = nextDate(base, t.recurring);
+    let nextRule = t.recurring;
+    if (cfg) {
+      const c2 = { ...cfg };
+      if (cfg.type === 'ebbinghaus') c2.step = (cfg.step || 0) + 1;          // 記憶曲線往下一階
+      if (cfg.end?.count != null) {
+        if (cfg.end.count <= 1) nd = null;                                   // 次數用完，結束
+        else c2.end = { ...cfg.end, count: cfg.end.count - 1 };
+      }
+      if (cfg.end?.date && nd && nd > cfg.end.date) nd = null;               // 超過結束日期
+      nextRule = JSON.stringify(c2);
+    }
+    if (nd) await q.run(`INSERT INTO tasks (user_id,list_id,title,notes,due_date,due_time,priority,tags,subtasks,recurring,miss_policy)
+      VALUES (?,?,?,?,?,?,?,?,?,?,?)`,
       [req.userId, t.list_id, t.title, t.notes, nd, t.due_time, t.priority, t.tags,
-        JSON.stringify(JSON.parse(t.subtasks).map(s => ({ ...s, done: false }))), t.recurring]);
+        JSON.stringify(JSON.parse(t.subtasks).map(s => ({ ...s, done: false }))), nextRule, t.miss_policy || 'keep']);
   }
   let earned = 0;
   if (b.completed && !t.completed) earned = await award(req.userId, 'task', t.id, 10);

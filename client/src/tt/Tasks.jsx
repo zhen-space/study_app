@@ -13,19 +13,44 @@ export function repeatLabel(r, dueDate) {
   if (r === 'weekdays') return '週一至週五';
   try {
     const c = JSON.parse(r);
-    const u = { day: '天', week: '週', month: '個月', year: '年' }[c.unit] || c.unit;
-    let s = `每${c.every > 1 ? ` ${c.every} ` : ''}${u}`;
-    if (c.unit === 'week' && c.days?.length) s += `（${c.days.map(d => '週' + WDC[d]).join('、')}）`;
+    let s;
+    if (c.type === 'ebbinghaus') {
+      s = `記憶曲線（1/2/4/7/15/30 天複習，第 ${(c.step || 0) + 1} 階）`;
+    } else {
+      const u = { day: '天', week: '週', month: '個月', year: '年' }[c.unit] || c.unit;
+      s = `每${c.every > 1 ? ` ${c.every} ` : ''}${u}`;
+      if (c.unit === 'week' && c.days?.length) s += `（${c.days.map(d => '週' + WDC[d]).join('、')}）`;
+      if (c.unit === 'month' && c.monthDays?.length) s += `（${c.monthDays.map(d => d === -1 ? '最後一天' : d + ' 號').join('、')}）`;
+      if (c.unit === 'month' && c.monthWeek) s += `（${c.monthWeek.nth === -1 ? '最後一個' : `第 ${c.monthWeek.nth} 個`}週${WDC[c.monthWeek.day]}）`;
+    }
+    if (c.fromDone) s += '・完成後起算';
+    if (c.end?.count != null) s += `・再重複 ${c.end.count} 次`;
+    if (c.end?.date) s += `・到 ${+c.end.date.slice(5, 7)}/${+c.end.date.slice(8)} 為止`;
     return s;
   } catch { return r; }
 }
 
-// 詳細重複設定（仿 TickTick：無/每天/每週/每月/每年/平日/自訂每N天週月年+選星期）
+// 詳細重複設定（完整 TickTick 式）：每天/週/月/年/平日/記憶曲線/自訂；
+// 月可「按日期多選＋最後一天」或「第 N 個星期 X」；可設結束條件與完成後起算
 function RepeatPicker({ value, dueDate, missPolicy, onChange }) {
   const isCustom = value?.startsWith('{');
   const cfg = isCustom ? JSON.parse(value) : { every: 1, unit: 'week', days: [] };
+  const isEbb = cfg.type === 'ebbinghaus';
   const setCustom = patch => onChange(JSON.stringify({ ...cfg, ...patch }), missPolicy);
-  const mode = isCustom ? 'custom' : (value || '');
+  const mode = isEbb ? 'ebbinghaus' : isCustom ? 'custom' : (value || '');
+  // 簡單規則 → JSON（要加結束條件/完成後起算時自動轉換，行為不變）
+  const toCfg = v => v === 'daily' ? { every: 1, unit: 'day' }
+    : v === 'weekly' ? { every: 1, unit: 'week', days: dueDate ? [new Date(dueDate + 'T00:00:00').getDay()] : [] }
+    : v === 'monthly' ? { every: 1, unit: 'month' }
+    : v === 'yearly' ? { every: 1, unit: 'year' }
+    : v === 'weekdays' ? { every: 1, unit: 'week', days: [1, 2, 3, 4, 5] }
+    : { every: 1, unit: 'week', days: [] };
+  const withCfg = patch => {
+    const base = isCustom ? cfg : toCfg(mode);
+    onChange(JSON.stringify({ ...base, ...patch }), missPolicy);
+  };
+  const endMode = cfg.end?.count != null ? 'count' : cfg.end?.date ? 'date' : '';
+  const monthMode = cfg.monthWeek ? 'week' : 'date';
 
   return (
     <div style={{ border: '1px solid var(--border)', borderRadius: 8, padding: 10 }}>
@@ -33,7 +58,9 @@ function RepeatPicker({ value, dueDate, missPolicy, onChange }) {
         <label>重複</label>
         <select value={mode} onChange={e => {
           const v = e.target.value;
-          onChange(v === 'custom' ? JSON.stringify({ every: 1, unit: 'week', days: dueDate ? [new Date(dueDate + 'T00:00:00').getDay()] : [] }) : (v || null), missPolicy);
+          if (v === 'custom') onChange(JSON.stringify({ every: 1, unit: 'week', days: dueDate ? [new Date(dueDate + 'T00:00:00').getDay()] : [] }), missPolicy);
+          else if (v === 'ebbinghaus') onChange(JSON.stringify({ type: 'ebbinghaus', step: 0, fromDone: true }), missPolicy);
+          else onChange(v || null, missPolicy);
         }}>
           <option value="">不重複</option>
           <option value="daily">每天</option>
@@ -41,17 +68,18 @@ function RepeatPicker({ value, dueDate, missPolicy, onChange }) {
           <option value="monthly">每月{dueDate ? `（${+dueDate.slice(8)}日）` : ''}</option>
           <option value="yearly">每年{dueDate ? `（${+dueDate.slice(5, 7)}/${+dueDate.slice(8)}）` : ''}</option>
           <option value="weekdays">每個平日（週一至週五）</option>
+          <option value="ebbinghaus">艾賓浩斯記憶曲線（1/2/4/7/15/30 天）</option>
           <option value="custom">自訂…</option>
         </select>
       </div>
 
-      {isCustom && (
+      {isCustom && !isEbb && (
         <div style={{ marginTop: 8 }}>
           <div className="drow">
             <label>每</label>
             <input type="number" min="1" max="99" value={cfg.every} style={{ width: 58 }}
               onChange={e => setCustom({ every: Math.max(1, +e.target.value || 1) })} />
-            <select value={cfg.unit} onChange={e => setCustom({ unit: e.target.value })}>
+            <select value={cfg.unit} onChange={e => setCustom({ unit: e.target.value, monthDays: undefined, monthWeek: undefined, days: undefined })}>
               <option value="day">天</option><option value="week">週</option>
               <option value="month">個月</option><option value="year">年</option>
             </select>
@@ -66,18 +94,71 @@ function RepeatPicker({ value, dueDate, missPolicy, onChange }) {
               ))}
             </div>
           )}
-          <div className="muted" style={{ marginTop: 4 }}>{repeatLabel(value, dueDate)}</div>
+          {cfg.unit === 'month' && (
+            <div style={{ marginTop: 6 }}>
+              <div className="drow">
+                <label style={{ display: 'inline-flex', gap: 4 }}><input type="radio" checked={monthMode === 'date'} onChange={() => setCustom({ monthWeek: undefined })} /> 按日期</label>
+                <label style={{ display: 'inline-flex', gap: 4 }}><input type="radio" checked={monthMode === 'week'} onChange={() => setCustom({ monthDays: undefined, monthWeek: { nth: 1, day: dueDate ? new Date(dueDate + 'T00:00:00').getDay() : 1 } })} /> 按星期</label>
+              </div>
+              {monthMode === 'date' && (
+                <div className="drow" style={{ marginTop: 4, flexWrap: 'wrap', gap: 4 }}>
+                  {[...Array(31)].map((_, i) => (
+                    <span key={i} className={'tag-pill' + (cfg.monthDays?.includes(i + 1) ? ' on' : '')} style={{ cursor: 'pointer', padding: '2px 7px', fontSize: 12 }}
+                      onClick={() => setCustom({ monthDays: cfg.monthDays?.includes(i + 1) ? cfg.monthDays.filter(x => x !== i + 1) : [...(cfg.monthDays || []), i + 1] })}>{i + 1}</span>
+                  ))}
+                  <span className={'tag-pill' + (cfg.monthDays?.includes(-1) ? ' on' : '')} style={{ cursor: 'pointer', padding: '2px 7px', fontSize: 12 }}
+                    onClick={() => setCustom({ monthDays: cfg.monthDays?.includes(-1) ? cfg.monthDays.filter(x => x !== -1) : [...(cfg.monthDays || []), -1] })}>最後一天</span>
+                </div>
+              )}
+              {monthMode === 'week' && (
+                <div className="drow" style={{ marginTop: 4 }}>
+                  <select value={cfg.monthWeek?.nth ?? 1} onChange={e => setCustom({ monthWeek: { ...cfg.monthWeek, nth: +e.target.value } })}>
+                    {[1, 2, 3, 4].map(n => <option key={n} value={n}>第 {n} 個</option>)}
+                    <option value={-1}>最後一個</option>
+                  </select>
+                  <select value={cfg.monthWeek?.day ?? 1} onChange={e => setCustom({ monthWeek: { ...cfg.monthWeek, day: +e.target.value } })}>
+                    {[1, 2, 3, 4, 5, 6, 0].map(d => <option key={d} value={d}>週{WDC[d]}</option>)}
+                  </select>
+                </div>
+              )}
+            </div>
+          )}
         </div>
       )}
+      {isEbb && <div className="muted" style={{ marginTop: 6 }}>完成後 1、2、4、7、15、30、60 天各複習一次（每完成一次進下一階）</div>}
 
       {mode && (
-        <div className="drow" style={{ marginTop: 8 }}>
-          <label style={{ width: 'auto' }}>沒做到時</label>
-          <select value={missPolicy || 'keep'} onChange={e => onChange(value, e.target.value)}>
-            <option value="keep">保留在那一天，直到做完</option>
-            <option value="drop">當天沒做就跳過，自動移到下一次</option>
-          </select>
-        </div>
+        <>
+          <div className="drow" style={{ marginTop: 8 }}>
+            <label style={{ width: 'auto' }}>結束</label>
+            <select value={endMode} onChange={e => {
+              const v = e.target.value;
+              withCfg({ end: v === 'count' ? { count: 10 } : v === 'date' ? { date: dueDate || '' } : undefined });
+            }}>
+              <option value="">永不結束</option>
+              <option value="count">重複 N 次後</option>
+              <option value="date">到某天為止</option>
+            </select>
+            {endMode === 'count' && <input type="number" min="1" max="999" value={cfg.end.count} style={{ width: 62 }}
+              onChange={e => withCfg({ end: { count: Math.max(1, +e.target.value || 1) } })} />}
+            {endMode === 'date' && <input type="date" value={cfg.end.date || ''}
+              onChange={e => withCfg({ end: { date: e.target.value } })} />}
+          </div>
+          {!isEbb && (
+            <label className="drow" style={{ marginTop: 6, cursor: 'pointer' }}>
+              <input type="checkbox" checked={!!cfg.fromDone} onChange={e => withCfg({ fromDone: e.target.checked || undefined })} />
+              <span>完成後才起算下一次（按完成日推，不是按到期日）</span>
+            </label>
+          )}
+          <div className="muted" style={{ marginTop: 6 }}>{repeatLabel(isCustom ? value : value, dueDate)}</div>
+          <div className="drow" style={{ marginTop: 8 }}>
+            <label style={{ width: 'auto' }}>沒做到時</label>
+            <select value={missPolicy || 'keep'} onChange={e => onChange(value, e.target.value)}>
+              <option value="keep">保留在那一天，直到做完</option>
+              <option value="drop">當天沒做就跳過，自動移到下一次</option>
+            </select>
+          </div>
+        </>
       )}
     </div>
   );
