@@ -331,7 +331,10 @@ router.post('/shop/buy', async (req, res) => {
   if (pet.owned.includes(item.id)) return res.status(400).json({ error: '已經擁有了' });
   if (u.coins < item.price) return res.status(400).json({ error: '金幣不足' });
   pet.owned.push(item.id);
-  await q.run('UPDATE users SET coins=coins-?, pet=? WHERE id=?', [item.price, JSON.stringify(pet), req.userId]);
+  // 原子扣款：餘額夠才扣（連點兩下同時送兩個請求也不會扣成負的）
+  const r2 = await q.run('UPDATE users SET coins=coins-?, pet=? WHERE id=? AND coins>=?',
+    [item.price, JSON.stringify(pet), req.userId, item.price]);
+  if (!r2.changes) return res.status(400).json({ error: '金幣不足' });
   res.json({ ok: true });
 });
 

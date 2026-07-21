@@ -74,8 +74,9 @@ export default function VocabView() {
   const WordRow = x => (
     <div key={x.id}>
       <div className="vocab-row" style={{ cursor: 'pointer' }} onClick={() => setEditId(editId === x.id ? null : x.id)}>
-        <span className="vocab-en" style={x.color ? { color: x.color } : {}}>{x.english}</span>
-        {x.kind === '片語' && <span className="chip" style={{ fontSize: 10 }}>片語</span>}
+        <span className="vocab-en" style={x.color ? { color: x.color } : {}}>
+          {x.english}{x.kind === '片語' && <span className="chip" style={{ fontSize: 10, marginLeft: 4 }}>片語</span>}
+        </span>
         <span className="vocab-zh">{x.chinese}</span>
         <button className="icon-btn" style={{ padding: 2 }} onClick={e => { e.stopPropagation(); del(x.id); }}>✕</button>
       </div>

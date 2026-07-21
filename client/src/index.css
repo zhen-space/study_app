@@ -254,11 +254,12 @@ select { -webkit-appearance: none; appearance: none; padding-right: 26px;
 .icon-btn { color: var(--muted); padding: 6px; border-radius: 8px; transition: background .12s; }
 .icon-btn:hover { background: var(--fill); }
 
-/* 首頁單字區 */
-.vocab-row { display: flex; align-items: baseline; gap: 10px; padding: 6px 2px; border-bottom: 1px solid var(--border); }
+/* 單字列：中英分兩欄對齊；中文太長水平換行（不會被擠成直排） */
+.vocab-row { display: grid; grid-template-columns: minmax(96px, 42%) 1fr auto; gap: 8px; align-items: baseline; padding: 6px 2px; border-bottom: 1px solid var(--border); }
 .vocab-row:last-child { border-bottom: none; }
-.vocab-en { font-weight: 600; min-width: 40%; }
-.vocab-zh { color: var(--muted); flex: 1; }
+.vocab-en { font-weight: 600; overflow-wrap: anywhere; }
+.vocab-zh { color: var(--muted); overflow-wrap: anywhere; white-space: normal; min-width: 0; }
+.vocab-sub { margin-left: 14px; border-left: 2px solid var(--border); padding-left: 8px; }
 
 /* 底部復原提示 */
 .toast {

@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useRef, useState } from 'react';
 import { api } from '../api';
 import { today, addDays } from './helpers';
 
@@ -22,6 +22,22 @@ export default function MatrixView({ tasks, reload }) {
     await api(`/tasks/${t.id}`, { method: 'PATCH', body: { completed: true } });
     reload();
   };
+  // 拖曳到別格＝改任務屬性：重要格→優先級升到門檻/降到門檻以下；緊急格→到期改今天/改到範圍外
+  const dragT = useRef(null);
+  const QUAD_FLAGS = [[true, true], [true, false], [false, true], [false, false]]; // [重要, 緊急]
+  async function dropTo(qi) {
+    const t = dragT.current;
+    dragT.current = null;
+    if (!t) return;
+    const [wantImp, wantUrg] = QUAD_FLAGS[qi];
+    const body = {};
+    if (wantImp !== important(t)) body.priority = wantImp ? rule.pri : Math.max(0, rule.pri - 1);
+    if (wantUrg && !urgent(t)) body.due_date = today();
+    if (!wantUrg && urgent(t)) body.due_date = addDays(today(), rule.days); // 移到「緊急」範圍外的第一天
+    if (!Object.keys(body).length) return;
+    await api(`/tasks/${t.id}`, { method: 'PATCH', body });
+    reload();
+  }
   return (
     <div className="main">
       <div className="main-head">
@@ -44,10 +60,12 @@ export default function MatrixView({ tasks, reload }) {
             <div style={{ position: 'absolute', left: '50%', top: 0, bottom: 0, width: 2, background: 'var(--muted)', opacity: .5, zIndex: 1 }} />
             <div style={{ position: 'absolute', top: '50%', left: 0, right: 0, height: 2, background: 'var(--muted)', opacity: .5, zIndex: 1 }} />
             {quads.map(([name, color, list], i) => (
-              <div className="quad" key={name} style={{ border: 'none', borderRadius: 0, order: [1, 0, 3, 2][i] }}>
+              <div className="quad" key={name} style={{ border: 'none', borderRadius: 0, order: [1, 0, 3, 2][i] }}
+                onDragOver={e => e.preventDefault()} onDrop={() => dropTo(i)}>
                 <h4 style={{ color }}>{name}（{list.length}）</h4>
                 {list.map(t => (
-                  <div key={t.id} className="trow">
+                  <div key={t.id} className="trow" draggable
+                    onDragStart={() => { dragT.current = t; }}>
                     <input type="checkbox" onChange={() => toggle(t)} />
                     <span className="title">{t.title}</span>
                     {t.due_date && <span className="muted">{t.due_date.slice(5)}</span>}
