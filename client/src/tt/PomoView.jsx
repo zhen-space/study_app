@@ -2,36 +2,55 @@ import { useEffect, useRef, useState } from 'react';
 import { api } from '../api';
 
 export default function PomoView({ tasks }) {
-  const [mins, setMins] = useState(25);
-  const [left, setLeft] = useState(25 * 60);
-  const [running, setRunning] = useState(false);
-  const [taskId, setTaskId] = useState('');
+  // 用「絕對結束時間」倒數並存在手機上：鎖螢幕、切出去、甚至關掉 App 再開，
+  // 時間照樣走（原本每秒減一的算法，iOS 一鎖屏就凍結＝根本不能用）
+  const saved = (() => { try { return JSON.parse(localStorage.getItem('pomoRun') || 'null'); } catch { return null; } })();
+  const [mins, setMins] = useState(saved?.mins || 25);
+  const [endAt, setEndAt] = useState(saved && saved.endAt > Date.now() ? saved.endAt : null); // 進行中的結束時間戳
+  const [left, setLeft] = useState(saved && saved.endAt > Date.now() ? Math.round((saved.endAt - Date.now()) / 1000) : (saved?.mins || 25) * 60);
+  const [taskId, setTaskId] = useState(saved?.taskId || '');
   const [log, setLog] = useState([]);
-  const timer = useRef();
+  const running = endAt != null;
+  const doneRef = useRef(false);
 
   const loadLog = () => api('/pomo').then(setLog);
   useEffect(() => { loadLog(); }, []);
 
   useEffect(() => {
     if (!running) return;
-    timer.current = setInterval(() => setLeft(l => l - 1), 1000);
-    return () => clearInterval(timer.current);
-  }, [running]);
+    const tick = () => setLeft(Math.max(0, Math.round((endAt - Date.now()) / 1000)));
+    tick();
+    const t = setInterval(tick, 500);
+    // 從背景切回來立刻校正
+    const onVis = () => { if (!document.hidden) tick(); };
+    document.addEventListener('visibilitychange', onVis);
+    return () => { clearInterval(t); document.removeEventListener('visibilitychange', onVis); };
+  }, [endAt]);
 
   useEffect(() => {
-    if (left <= 0 && running) {
-      setRunning(false);
+    if (left <= 0 && running && !doneRef.current) {
+      doneRef.current = true;
+      setEndAt(null);
+      try { localStorage.removeItem('pomoRun'); } catch {}
       api('/pomo', { method: 'POST', body: { task_id: taskId ? +taskId : null, minutes: mins } }).then(loadLog);
       try { new Notification('番茄鐘完成！', { body: '休息一下吧 🍅' }); } catch {}
       alert('🍅 番茄鐘完成！休息一下吧');
       setLeft(mins * 60);
+      doneRef.current = false;
     }
   }, [left, running]);
 
   const fmt = s => `${String(Math.floor(s / 60)).padStart(2, '0')}:${String(s % 60).padStart(2, '0')}`;
   const start = () => {
     if (Notification?.permission === 'default') Notification.requestPermission();
-    setRunning(true);
+    const end = Date.now() + mins * 60 * 1000;
+    setEndAt(end);
+    try { localStorage.setItem('pomoRun', JSON.stringify({ endAt: end, mins, taskId })); } catch {}
+  };
+  const giveUp = () => {
+    setEndAt(null);
+    setLeft(mins * 60);
+    try { localStorage.removeItem('pomoRun'); } catch {}
   };
 
   // 白噪音（WebAudio 直接產生，離線可用）：white=均勻沙沙、rain=低通像下雨、brown=深沉海浪
@@ -78,7 +97,7 @@ export default function PomoView({ tasks }) {
           </div>
           {!running
             ? <button className="btn" style={{ padding: '12px 40px', fontSize: 16 }} onClick={start}>開始專注</button>
-            : <button className="btn" style={{ background: 'var(--red)', padding: '12px 40px', fontSize: 16 }} onClick={() => { setRunning(false); setLeft(mins * 60); }}>放棄</button>}
+            : <button className="btn" style={{ background: 'var(--red)', padding: '12px 40px', fontSize: 16 }} onClick={giveUp}>放棄</button>}
           <div style={{ width: '100%', maxWidth: 440 }}>
             <div className="row" style={{ marginTop: 4 }}>
               <span className="muted" style={{ flexShrink: 0 }}>綁定任務</span>

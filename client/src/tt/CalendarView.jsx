@@ -137,14 +137,18 @@ export default function CalendarView({ tasks, reload }) {
     if (first && first > today()) setAnchor(first);
     alert(`已加入 ${chosen.length} 筆行程${first && first > today() ? `（已跳到 ${first.slice(5).replace('-', '/')} 那週）` : ''}`);
   }
-  // 某天有哪些既定行程（含每週重複）
+  // 某天有哪些既定行程（含每週重複）；紀念日另外算，不當行程
   const eventsOn = d => {
     const dow = new Date(d + 'T00:00:00').getDay();
-    return events.filter(e => e.recurring === 'weekly'
+    return events.filter(e => e.kind !== 'anniv' && (e.recurring === 'weekly'
       ? new Date(e.date + 'T00:00:00').getDay() === dow && e.date <= d
-      : e.date === d)
+      : e.date === d))
       .sort((a, b) => a.start_time.localeCompare(b.start_time));
   };
+  // 紀念日／生日（像 Apple/Google 日曆的全天標記）：每年重複比月日
+  const annivOn = d => events.filter(e => e.kind === 'anniv'
+    && (e.recurring === 'yearly' ? e.date.slice(5) === d.slice(5) && e.date <= d : e.date === d));
+  const annivYears = (e, d) => e.recurring === 'yearly' ? +d.slice(0, 4) - +e.date.slice(0, 4) : 0;
 
   // 點行程 → 開編輯（名稱、時間、顏色、刪除）；預設白底黑字
   const [editEv, setEditEv] = useState(null);
@@ -228,6 +232,14 @@ export default function CalendarView({ tasks, reload }) {
   // 手動新增行程
   const [addMenu, setAddMenu] = useState(false);
   const [addForm, setAddForm] = useState(null);
+  // 紀念日／生日（全天標記，不是行程）
+  const [annivForm, setAnnivForm] = useState(null);
+  async function submitAnniv() {
+    if (!annivForm.title.trim()) { alert('請輸入名稱'); return; }
+    await api('/events', { method: 'POST', body: { ...annivForm, title: annivForm.title.trim(), kind: 'anniv', recurring: annivForm.recurring || null } });
+    setAnnivForm(null);
+    loadEvents();
+  }
   function openAdd(date = anchor) {
     setAddMenu(false);
     setAddForm({ title: '', date, start_time: '08:00', end_time: '09:00', location: '', color: '', recurring: '' });
@@ -326,6 +338,12 @@ export default function CalendarView({ tasks, reload }) {
         {days.map(d => (
           <div key={d} style={{ textAlign: 'center', padding: 4, fontSize: 12, fontWeight: d === today() ? 700 : 400, color: d === today() ? 'var(--primary)' : 'var(--muted)' }}>
             {`${+d.slice(5, 7)}/${+d.slice(8)}`}<br />週{WD[(new Date(d + 'T00:00:00').getDay() + 6) % 7]}
+            {annivOn(d).map(a => (
+              <div key={'a' + a.id} onClick={ev => { ev.stopPropagation(); setEditEv({ ...a }); }}
+                style={{ fontSize: 10, color: a.color || 'var(--primary)', cursor: 'pointer', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                🎉{a.title}{annivYears(a, d) > 0 ? ` ${annivYears(a, d)}週年` : ''}
+              </div>
+            ))}
           </div>
         ))}
         {/* 時間刻度 */}
@@ -429,6 +447,10 @@ export default function CalendarView({ tasks, reload }) {
             <div key={c.ds} className={'cal-cell' + (c.dim ? ' dim' : '') + (c.ds === today() ? ' today' : '')}
               onClick={() => { setAnchor(c.ds); setView('day'); }} style={{ cursor: 'pointer' }}>
               <span className="dnum">{c.day}</span>
+              {annivOn(c.ds).map(a => (
+                <div key={'a' + a.id} style={{ fontSize: 9, color: a.color || 'var(--primary)', overflow: 'hidden', whiteSpace: 'nowrap', textOverflow: 'ellipsis' }}
+                  onClick={ev => { ev.stopPropagation(); setEditEv({ ...a }); }}>🎉{a.title}</div>
+              ))}
               {eventsOn(c.ds).slice(0, 2).map(e => (
                 <div key={'e' + e.id} className="cal-ev" title={e.title}
                   style={e.color ? { background: e.color, color: textOn(e.color) } : { background: '#fff', color: '#111', border: '1px solid var(--border)' }}
@@ -478,6 +500,7 @@ export default function CalendarView({ tasks, reload }) {
               <div style={{ position: 'fixed', inset: 0, zIndex: 20 }} onClick={() => setAddMenu(false)} />
               <div className="add-menu">
                 <div onClick={() => openAdd()}><Icon name="pencil" size={15} /> 手動新增行程</div>
+                <div onClick={() => { setAddMenu(false); setAnnivForm({ title: '', date: anchor, recurring: 'yearly', color: '' }); }}>🎉 紀念日／生日</div>
                 <label style={{ cursor: 'pointer' }}>
                   <Icon name="calendar" size={15} /> {aiBusy ? 'AI 解析中…' : '匯入課表照片'}
                   <input type="file" accept="image/*,.pdf,.ics" style={{ display: 'none' }} onChange={e => { setAddMenu(false); importFile(e); }} disabled={aiBusy} />
@@ -558,6 +581,29 @@ export default function CalendarView({ tasks, reload }) {
               <button className="btn sm" style={{ marginLeft: 'auto' }} onClick={saveEvent}>儲存</button>
             </div>
             <ColorPicker value={editEv.color} onPick={c => setEditEv(v => ({ ...v, color: c }))} />
+          </div>
+        </div>
+      )}
+
+      {/* 紀念日／生日 */}
+      {annivForm && (
+        <div className="cal-modal-back" onClick={() => setAnnivForm(null)}>
+          <div className="tile cal-modal" onClick={e => e.stopPropagation()}>
+            <b>🎉 紀念日／生日</b>
+            <input value={annivForm.title} placeholder="名稱（如：媽媽生日、交往紀念日）" autoFocus
+              onChange={e => setAnnivForm(v => ({ ...v, title: e.target.value }))} style={{ width: '100%', marginTop: 8 }} />
+            <div className="row" style={{ marginTop: 8 }}>
+              <span className="muted">日期</span>
+              <input type="date" value={annivForm.date} onChange={e => setAnnivForm(v => ({ ...v, date: e.target.value }))} />
+            </div>
+            <label className="row" style={{ marginTop: 8 }}>
+              <input type="checkbox" checked={annivForm.recurring === 'yearly'} onChange={e => setAnnivForm(v => ({ ...v, recurring: e.target.checked ? 'yearly' : '' }))} />
+              <span>每年重複（會顯示第幾週年）</span>
+            </label>
+            <div className="row" style={{ marginTop: 12 }}>
+              <button className="btn sm ghost" onClick={() => setAnnivForm(null)}>取消</button>
+              <button className="btn sm" style={{ marginLeft: 'auto' }} onClick={submitAnniv}>新增</button>
+            </div>
           </div>
         </div>
       )}

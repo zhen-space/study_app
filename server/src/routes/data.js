@@ -30,10 +30,11 @@ router.get('/events', async (req, res) => {
   res.json(await q.all('SELECT * FROM fixed_events WHERE user_id=? ORDER BY date, start_time', [req.userId]));
 });
 router.post('/events', async (req, res) => {
-  const { title, date, start_time, end_time, recurring, location, color } = req.body;
-  if (!title || !date || !start_time || !end_time) return res.status(400).json({ error: '欄位不完整' });
-  const r = await q.run('INSERT INTO fixed_events (user_id,title,date,start_time,end_time,recurring,location,color) VALUES (?,?,?,?,?,?,?,?)',
-    [req.userId, title, date, start_time, end_time, recurring || null, location || '', color || '']);
+  const { title, date, start_time, end_time, recurring, location, color, kind } = req.body;
+  // 紀念日（kind='anniv'）沒有時間；一般行程才要時間
+  if (!title || !date || (kind !== 'anniv' && (!start_time || !end_time))) return res.status(400).json({ error: '欄位不完整' });
+  const r = await q.run('INSERT INTO fixed_events (user_id,title,date,start_time,end_time,recurring,location,color,kind) VALUES (?,?,?,?,?,?,?,?,?)',
+    [req.userId, title, date, start_time || '00:00', end_time || '00:00', recurring || null, location || '', color || '', kind || '']);
   res.json({ id: r.lastInsertRowid });
 });
 // 改行程（顏色、標題等）；recurring 行程改色會套用到同名同時段的所有筆

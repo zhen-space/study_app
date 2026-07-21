@@ -32,6 +32,29 @@ export const savePending = p => { try { localStorage.setItem('vocabPending', JSO
 export const getPending = () => { try { const s = localStorage.getItem('vocabPending'); return s ? JSON.parse(s) : null; } catch { return null; } };
 export const clearPending = () => { try { localStorage.removeItem('vocabPending'); } catch {} };
 
+// ---- 遺忘曲線：決定「學過的單字哪天要再出現」 ----
+// none＝不複習｜ebb＝艾賓浩斯 1/2/4/7/15/30 天｜tds＝今天學、明天再看、週日總複習｜custom＝自訂天數
+export const getCurve = () => ({
+  mode: localStorage.getItem('vocabCurve') || 'none',
+  days: (localStorage.getItem('vocabCurveDays') || '1,3,7').split(',').map(x => +x.trim()).filter(x => x > 0),
+});
+export const setCurve = (mode, days) => {
+  try {
+    localStorage.setItem('vocabCurve', mode);
+    if (days != null) localStorage.setItem('vocabCurveDays', days);
+  } catch {}
+};
+const dayDiff = (a, b) => Math.round((new Date(b + 'T00:00:00') - new Date(a + 'T00:00:00')) / 864e5);
+// learnDate 學的日子；dateStr 要判斷的日子（通常是今天）
+export function reviewDue(learnDate, dateStr, curve = getCurve()) {
+  const n = dayDiff(learnDate, dateStr);
+  if (n <= 0) return false;
+  if (curve.mode === 'ebb') return [1, 2, 4, 7, 15, 30].includes(n);
+  if (curve.mode === 'tds') return n === 1 || (new Date(dateStr + 'T00:00:00').getDay() === 0 && n <= 6);
+  if (curve.mode === 'custom') return curve.days.includes(n);
+  return false;
+}
+
 let running = false; // 首頁卡片與單字本可能同時掛載，確保同一批只送一次
 export const importing = () => running;
 export async function runImport(payload) {

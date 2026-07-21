@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 import { api } from '../api';
 import { today } from './helpers';
-import { filesToPayload, savePending, runImport, resumePending, importing } from './vocabImport';
+import { filesToPayload, savePending, runImport, resumePending, importing, getCurve, setCurve } from './vocabImport';
 
 // 單字本：匯入與整理都在這裡（像排程精靈一樣獨立一頁）；首頁只顯示當日單字表
 export default function VocabView() {
@@ -10,6 +10,8 @@ export default function VocabView() {
   });
   const [busy, setBusy] = useState(false);
   const [perDay, setPerDay] = useState(() => +(localStorage.getItem('vocabPerDay') || 10));
+  const [curveMode, setCurveMode] = useState(() => getCurve().mode);
+  const [curveDays, setCurveDays] = useState(() => localStorage.getItem('vocabCurveDays') || '1,3,7');
   const [openDays, setOpenDays] = useState(() => new Set([today()]));
   const load = () => api('/import/vocab').then(list => {
     setItems(list);
@@ -123,6 +125,32 @@ export default function VocabView() {
             <span className="muted">個</span>
           </div>
           {busy && <div className="muted" style={{ marginTop: 8 }}>AI 讀取中，可先去做別的事…</div>}
+          {/* 遺忘曲線：學過的單字按曲線在首頁「今日複習」再出現 */}
+          {(() => {
+            const cv = getCurve();
+            return (
+              <div style={{ marginTop: 12, borderTop: '1px solid var(--border)', paddingTop: 10 }}>
+                <div className="row">
+                  <span className="muted">遺忘曲線</span>
+                  <select value={curveMode} onChange={e => { setCurveMode(e.target.value); setCurve(e.target.value); }}>
+                    <option value="none">無（只出現一次）</option>
+                    <option value="ebb">艾賓浩斯（1/2/4/7/15/30 天後複習）</option>
+                    <option value="tds">今天・明天・星期天</option>
+                    <option value="custom">自創…</option>
+                  </select>
+                </div>
+                {curveMode === 'custom' && (
+                  <div className="row" style={{ marginTop: 6 }}>
+                    <span className="muted">學完第</span>
+                    <input value={curveDays} placeholder="1,3,7" style={{ width: 110 }}
+                      onChange={e => { setCurveDays(e.target.value); setCurve('custom', e.target.value); }} />
+                    <span className="muted">天再出現（逗號分隔）</span>
+                  </div>
+                )}
+                {curveMode !== 'none' && <div className="muted" style={{ marginTop: 4, fontSize: 12 }}>輪到複習的單字會出現在首頁的「🔁 今日複習」</div>}
+              </div>
+            );
+          })()}
         </div>
 
         {dates.map(d => {

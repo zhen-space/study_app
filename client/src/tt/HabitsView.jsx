@@ -10,7 +10,7 @@ export default function HabitsView({ habits, reload }) {
   const [missPolicy, setMissPolicy] = useState('drop');
   const [category, setCategory] = useState('');
 
-  const week = [...Array(7)].map((_, i) => addDays(today(), -i)); // 今天開始，往前推
+  const week = [...Array(7)].map((_, i) => addDays(today(), i - 3)); // 今天置中：左邊前三天、右邊後三天
   const cats = [...new Set(habits.map(h => h.category).filter(Boolean))];
 
   const streak = h => {
@@ -49,8 +49,12 @@ export default function HabitsView({ habits, reload }) {
       <div className="week-dots">
         {week.map(d => (
           <div key={d} className={'wdot' + (h.checkins.includes(d) ? ' on' : '')}
-            style={h.checkins.includes(d) ? { background: h.color } : {}}
-            title={d} onClick={() => check(h, d)}>
+            style={{
+              ...(h.checkins.includes(d) ? { background: h.color } : {}),
+              ...(d === today() ? { outline: '2px solid var(--primary)', outlineOffset: 1 } : {}),
+              ...(d > today() ? { opacity: .45 } : {}),
+            }}
+            title={d} onClick={() => d <= today() && check(h, d)}>
             {d === today() ? '今' : +d.slice(8)}
           </div>
         ))}

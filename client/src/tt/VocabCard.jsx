@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 import { api } from '../api';
 import { today } from './helpers';
-import { resumePending, importing } from './vocabImport';
+import { resumePending, importing, reviewDue } from './vocabImport';
 
 // 首頁單字區：只顯示「今天要背的單字表」；匯入與整理在「單字本」頁
 export default function VocabCard({ goVocab }) {
@@ -69,6 +69,21 @@ export default function VocabCard({ goVocab }) {
           {loose.map(p => Row(p))}
         </>
         : !busy && <div className="muted" style={{ margin: '6px 0' }}>今天沒有要背的單字——到「單字本」拍照匯入，或整本分配每天的份量</div>}
+      {/* 遺忘曲線：今天輪到要複習的舊單字（在單字本裡設定曲線） */}
+      {(() => {
+        const review = items.filter(x => reviewDue(x.date, today()));
+        if (!review.length) return null;
+        return <>
+          <div className="muted" style={{ margin: '10px 0 2px', fontSize: 12 }}>🔁 今日複習（{review.length}）</div>
+          {review.map(x => (
+            <div key={'r' + x.id} className="vocab-row">
+              <span className="vocab-en" style={x.color ? { color: x.color } : {}}>{x.english}</span>
+              <span className="vocab-zh">{x.chinese}</span>
+              <span className="muted" style={{ fontSize: 10 }}>{+x.date.slice(5, 7)}/{+x.date.slice(8)} 學</span>
+            </div>
+          ))}
+        </>;
+      })()}
     </div>
   );
 }

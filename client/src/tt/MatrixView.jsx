@@ -24,6 +24,7 @@ export default function MatrixView({ tasks, reload }) {
   };
   // 拖曳到別格＝改任務屬性：重要格→優先級升到門檻/降到門檻以下；緊急格→到期改今天/改到範圍外
   const dragT = useRef(null);
+  const touchFrom = useRef(null);
   const QUAD_FLAGS = [[true, true], [true, false], [false, true], [false, false]]; // [重要, 緊急]
   async function dropTo(qi) {
     const t = dragT.current;
@@ -60,12 +61,28 @@ export default function MatrixView({ tasks, reload }) {
             <div style={{ position: 'absolute', left: '50%', top: 0, bottom: 0, width: 2, background: 'var(--muted)', opacity: .5, zIndex: 1 }} />
             <div style={{ position: 'absolute', top: '50%', left: 0, right: 0, height: 2, background: 'var(--muted)', opacity: .5, zIndex: 1 }} />
             {quads.map(([name, color, list], i) => (
-              <div className="quad" key={name} style={{ border: 'none', borderRadius: 0, order: [1, 0, 3, 2][i] }}
+              <div className="quad" key={name} data-qi={i} style={{ border: 'none', borderRadius: 0, order: [1, 0, 3, 2][i] }}
                 onDragOver={e => e.preventDefault()} onDrop={() => dropTo(i)}>
                 <h4 style={{ color }}>{name}（{list.length}）</h4>
                 {list.map(t => (
                   <div key={t.id} className="trow" draggable
-                    onDragStart={() => { dragT.current = t; }}>
+                    onDragStart={() => { dragT.current = t; }}
+                    // 手機：直接用手指拖到別格（iOS 不支援 HTML5 拖曳）
+                    onTouchStart={e => { dragT.current = t; touchFrom.current = [e.touches[0].clientX, e.touches[0].clientY]; }}
+                    onTouchMove={e => {
+                      const [x0, y0] = touchFrom.current || [0, 0];
+                      const t0 = e.touches[0];
+                      if (Math.hypot(t0.clientX - x0, t0.clientY - y0) > 24) e.preventDefault(); // 拖起來就不捲動
+                    }}
+                    onTouchEnd={e => {
+                      const [x0, y0] = touchFrom.current || [0, 0];
+                      const t0 = e.changedTouches[0];
+                      if (Math.hypot(t0.clientX - x0, t0.clientY - y0) < 30) { dragT.current = null; return; } // 只是點一下
+                      const q = document.elementFromPoint(t0.clientX, t0.clientY)?.closest('[data-qi]');
+                      if (q) dropTo(+q.dataset.qi);
+                      else dragT.current = null;
+                    }}
+                    style={{ touchAction: 'none' }}>
                     <input type="checkbox" onChange={() => toggle(t)} />
                     <span className="title">{t.title}</span>
                     {t.due_date && <span className="muted">{t.due_date.slice(5)}</span>}

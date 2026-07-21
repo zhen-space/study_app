@@ -163,6 +163,7 @@ export async function initSchema() {
   try { await client.execute("ALTER TABLE vocab_items ADD COLUMN color TEXT DEFAULT ''"); } catch {}
   try { await client.execute("ALTER TABLE toc_items ADD COLUMN book TEXT DEFAULT ''"); } catch {}
   try { await client.execute("ALTER TABLE toc_items ADD COLUMN publisher TEXT DEFAULT ''"); } catch {}
+  try { await client.execute("ALTER TABLE fixed_events ADD COLUMN kind TEXT DEFAULT ''"); } catch {}
   // 舊 bug（重複扣款）造成的負金幣歸零
   try { await client.execute('UPDATE users SET coins=0 WHERE coins<0'); } catch {}
   // 一次性清理：舊 bug 產生的碎片標籤（純 1–2 個英文字母，如 ek、ne、l）
