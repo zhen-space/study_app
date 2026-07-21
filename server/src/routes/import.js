@@ -70,20 +70,21 @@ async function createSmart(client, params) {
   }
 }
 // 結構化輸出的 JSON 安全解析：被 max_tokens 截斷或格式錯誤時給明確訊息
-function parseStructured(response, key) {
+function parseStructuredObj(response) {
   if (response.stop_reason === 'max_tokens') {
     const e = new Error('內容太多一次讀不完，請分幾次匯入（一次少幾張照片）');
     e.friendly = true;
     throw e;
   }
   const text = response.content.find(b => b.type === 'text')?.text || '{}';
-  try { return JSON.parse(text)[key] || []; }
+  try { return JSON.parse(text); }
   catch {
     const e = new Error('AI 回傳格式異常，請再試一次');
     e.friendly = true;
     throw e;
   }
 }
+const parseStructured = (response, key) => parseStructuredObj(response)[key] || [];
 
 function aiError(err) {
   if (err.friendly) return err.message;
@@ -223,6 +224,8 @@ const mid = {
 const TOC_SCHEMA = {
   type: 'object',
   properties: {
+    book: { type: ['string', 'null'], description: '課本書名（封面或目錄頁看得到就照抄，看不到就 null）' },
+    publisher: { type: ['string', 'null'], description: '出版社（如 翰林、南一、康軒、龍騰、三民；看不到就 null）' },
     chapters: {
       type: 'array',
       items: {
@@ -236,7 +239,7 @@ const TOC_SCHEMA = {
       },
     },
   },
-  required: ['chapters'], additionalProperties: false,
+  required: ['book', 'publisher', 'chapters'], additionalProperties: false,
 };
 
 // GET /api/import/toc → 全部章節庫（依科目分組用 list_id）
@@ -246,6 +249,13 @@ router.get('/toc', async (req, res) => {
 });
 router.delete('/toc/:id', async (req, res) => {
   await q.run('DELETE FROM toc_items WHERE id=? AND user_id=?', [req.params.id, req.userId]);
+  res.json({ ok: true });
+});
+// 整本刪掉（同科目同書名的所有章）
+router.delete('/toc-book', async (req, res) => {
+  const { list_id, book = '' } = req.query;
+  if (!list_id) return res.status(400).json({ error: '缺少科目' });
+  await q.run('DELETE FROM toc_items WHERE user_id=? AND list_id=? AND book=?', [req.userId, +list_id, book]);
   res.json({ ok: true });
 });
 
@@ -293,6 +303,9 @@ router.post('/toc', async (req, res) => {
 - 「主題N」一定要放進它所屬那個「節」的 children 裡，絕對不可以和「壹貳參」並列成為章的直接子項。
 - level 要標對：大數字=「章」、壹貳參=「節」、主題N=「主題」。千萬不要把每一項都標成「節」。
 
+【書名與出版社】
+- 照片上看得到書名（封面、書眉、目錄頁大標）就照抄填 book；看得到出版社（翰林/南一/康軒/龍騰/三民…）就填 publisher；看不到就 null，不要猜。
+
 【其他】
 - title 保留原始編號與名稱；level 只能用：章、節、主題、課、單元、小節、重點。
 - 沒有下一層就給空的 children 陣列；國文英文以「課」為單位、通常沒有子項。
@@ -311,25 +324,38 @@ router.post('/toc', async (req, res) => {
     if (response.stop_reason === 'refusal') {
       return res.status(400).json({ error: 'AI 無法處理這份檔案，請換一張更清楚的照片' });
     }
-    const chapters = parseStructured(response, 'chapters');
+    const obj = parseStructuredObj(response);
+    const chapters = obj.chapters || [];
     if (!chapters.length) return res.status(400).json({ error: 'AI 沒有讀到章節，請拍更清楚的目錄照片' });
+    let book = (obj.book || '').trim();
+    let publisher = (obj.publisher || '').trim();
 
     let base = 0;
     if (replace !== false) {
-      await q.run('DELETE FROM toc_items WHERE user_id=? AND list_id=?', [req.userId, list_id]);
+      // 重新掃描：讀得出書名就只換同一本，讀不出就整科重來（跟舊行為一致）
+      if (book) await q.run('DELETE FROM toc_items WHERE user_id=? AND list_id=? AND (book=? OR book=\'\')', [req.userId, list_id, book]);
+      else await q.run('DELETE FROM toc_items WHERE user_id=? AND list_id=?', [req.userId, list_id]);
+      const mx = await q.get('SELECT MAX(order_index) AS m FROM toc_items WHERE user_id=? AND list_id=?', [req.userId, list_id]);
+      base = (mx?.m ?? -1) + 1;
     } else {
       const mx = await q.get('SELECT MAX(order_index) AS m FROM toc_items WHERE user_id=? AND list_id=?', [req.userId, list_id]);
       base = (mx?.m ?? -1) + 1;
+      // 追加照片通常是同一本的後幾頁：這批讀不到書名就沿用最近一本的
+      if (!book) {
+        const last = await q.get('SELECT book, publisher FROM toc_items WHERE user_id=? AND list_id=? ORDER BY order_index DESC LIMIT 1', [req.userId, list_id]);
+        book = last?.book || '';
+        publisher = publisher || last?.publisher || '';
+      }
     }
     const items = [];
     for (let i = 0; i < chapters.length; i++) {
       const c = chapters[i];
       const kids = c.children || [];
-      const r = await q.run('INSERT INTO toc_items (user_id, list_id, title, level, sections, order_index) VALUES (?,?,?,?,?,?)',
-        [req.userId, list_id, c.title, c.level || '章', JSON.stringify(kids), base + i]);
-      items.push({ id: r.lastInsertRowid, list_id, title: c.title, level: c.level || '章', sections: kids, order_index: base + i });
+      const r = await q.run('INSERT INTO toc_items (user_id, list_id, title, level, sections, order_index, book, publisher) VALUES (?,?,?,?,?,?,?,?)',
+        [req.userId, list_id, c.title, c.level || '章', JSON.stringify(kids), base + i, book, publisher]);
+      items.push({ id: r.lastInsertRowid, list_id, title: c.title, level: c.level || '章', sections: kids, order_index: base + i, book, publisher });
     }
-    res.json({ items });
+    res.json({ items, book, publisher });
   } catch (err) {
     console.error('toc parse error:', err.message);
     res.status(500).json({ error: aiError(err) });

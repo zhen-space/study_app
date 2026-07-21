@@ -702,6 +702,19 @@ export default function WizardView({ lists, reload, goTasks }) {
               const rows = tocs.filter(t => t.list_id === l.id);
               const nodes = rows.map(chapterNode);
               const allSel = nodes.length > 0 && nodes.every(n => findItem(n.key));
+              // 以「書」分組：書名當大標、向下展開出現章；可整本刪除
+              const bookGroups = (() => {
+                const m = new Map();
+                rows.forEach(r => { const k = r.book || ''; if (!m.has(k)) m.set(k, []); m.get(k).push(r); });
+                return [...m.entries()];
+              })();
+              const delBook = async (bk, rws) => {
+                const ids = new Set(rws.map(r => `toc-${r.id}`));
+                // 這本書底下已勾選的項目一併移除
+                setItems(a => a.filter(x => !(x.subject_id === l.id && ids.has(String(x.key).split('+')[0].split('.')[0]))));
+                await api(`/import/toc-book?list_id=${l.id}&book=${encodeURIComponent(bk)}`, { method: 'DELETE' });
+                setTocs(await api('/import/toc'));
+              };
 
               const renderNode = (n) => {
                 const it = findItem(n.key);
@@ -758,7 +771,18 @@ export default function WizardView({ lists, reload, goTasks }) {
                   )}
                   {rows.length > 0 && <div className="muted" style={{ marginTop: 4 }}>點名稱展開更小單位，可勾章／節／主題任一層（勾小的會取代大的）。改時數會問要不要固定整個層級。目錄不完整可用「追加照片」補後面幾頁</div>}
                   {tocMsg[l.id] && <div className="muted" style={{ marginTop: 4 }}>{tocMsg[l.id]}</div>}
-                  {nodes.map(renderNode)}
+                  {bookGroups.map(([bk, rws]) => (
+                    <details key={bk || '_none'} open={bookGroups.length === 1} style={{ marginTop: 8 }}>
+                      <summary style={{ cursor: 'pointer', fontWeight: 700, fontSize: 15, display: 'flex', alignItems: 'center', gap: 6 }}>
+                        <span style={{ flex: 1 }}>📘 {bk || '未命名課本'}
+                          {rws[0]?.publisher ? <span className="muted" style={{ fontWeight: 400, fontSize: 12 }}>（{rws[0].publisher}）</span> : null}
+                          <span className="muted" style={{ fontWeight: 400, fontSize: 12 }}> {rws.length} 章</span>
+                        </span>
+                        <button className="icon-btn" title="整本刪除" onClick={e => { e.preventDefault(); e.stopPropagation(); delBook(bk, rws); }}>✕</button>
+                      </summary>
+                      {rws.map(chapterNode).map(renderNode)}
+                    </details>
+                  ))}
                   <div className="row" style={{ marginTop: 8 }}>
                     <input placeholder="或手動輸入範圍（如：講義 p.20-35）" value={rangeInput[l.id] || ''} onChange={e => setRangeInput(r => ({ ...r, [l.id]: e.target.value }))} style={{ flex: 1, fontSize: 14 }} />
                     <button className="btn sm ghost" onClick={() => addRange(l)}>＋</button>
