@@ -12,6 +12,7 @@ export default function VocabView() {
   const [perDay, setPerDay] = useState(() => +(localStorage.getItem('vocabPerDay') || 10));
   const [curveMode, setCurveMode] = useState(() => getCurve().mode);
   const [curveDays, setCurveDays] = useState(() => localStorage.getItem('vocabCurveDays') || '1,3,7');
+  const [impDate, setImpDate] = useState(today()); // 匯入到哪一天（預設今天，可選昨天/明天…）
   const [openDays, setOpenDays] = useState(() => new Set([today()]));
   const load = () => api('/import/vocab').then(list => {
     setItems(list);
@@ -32,9 +33,10 @@ export default function VocabView() {
   function report(r, mode, over) {
     if (!r) return;
     const dup = r.skipped ? `（略過已存在的 ${r.skipped} 個）` : '';
+    const dLabel = impDate === today() ? '今天' : `${+impDate.slice(5, 7)}/${+impDate.slice(8)}`;
     if (!r.added) alert(r.skipped ? `這些單字都已經在單字本裡了${dup}` : 'AI 沒有找到單字');
-    else if (mode === 'spread') alert(`已匯入 ${r.added} 個${dup}，從今天起每天 ${perDay} 個、共 ${r.days} 天${over ? '（一次最多 12 份，超過的沒讀）' : ''}`);
-    else alert(`已加入今天 ${r.added} 個單字${dup}`);
+    else if (mode === 'spread') alert(`已匯入 ${r.added} 個${dup}，從${dLabel}起每天 ${perDay} 個、共 ${r.days} 天${over ? '（一次最多 12 份，超過的沒讀）' : ''}`);
+    else alert(`已加入${dLabel} ${r.added} 個單字${dup}`);
   }
   async function doImport(e, mode) {
     const list = e.target.files;
@@ -44,7 +46,7 @@ export default function VocabView() {
     try {
       const files = await filesToPayload(list); // 照片自動縮圖壓縮，不會爆大小限制
       e.target.value = '';
-      const payload = { files, mode, perDay };
+      const payload = { files, mode, perDay, date: impDate }; // 可指定匯到哪一天（昨天/明天…）
       savePending(payload); // 中途退出 App 也能回來繼續
       const r = await runImport(payload);
       report(r, mode, over);
@@ -111,13 +113,18 @@ export default function VocabView() {
         <div className="tile" style={{ margin: '8px 0' }}>
           <b>匯入單字</b>
           <div className="muted" style={{ margin: '2px 0 8px' }}>拍照或選檔案（可多張、最多 12 份），AI 自動整理成英文＋中文、分單字/片語</div>
+          <div className="row" style={{ marginBottom: 8 }}>
+            <span className="muted">匯到</span>
+            <input type="date" value={impDate} onChange={e => setImpDate(e.target.value)} />
+            {impDate !== today() && <button className="btn sm ghost" onClick={() => setImpDate(today())}>回今天</button>}
+          </div>
           <label className="btn sm" style={{ display: 'inline-block', cursor: 'pointer', opacity: busy ? .5 : 1 }}>
-            📅 當日單字（全部算今天）
+            📅 單日單字（全部算在上面那天）
             <input type="file" multiple accept="image/*,.pdf,.xlsx,.csv,.docx,.txt" style={{ display: 'none' }} disabled={busy} onChange={e => doImport(e, 'today')} />
           </label>
           <div className="row" style={{ marginTop: 10 }}>
             <label className="btn sm" style={{ cursor: 'pointer', opacity: busy ? .5 : 1 }}>
-              📚 整本分配（從今天起）
+              📚 整本分配（從那天起）
               <input type="file" multiple accept="image/*,.pdf,.xlsx,.csv,.docx,.txt" style={{ display: 'none' }} disabled={busy} onChange={e => doImport(e, 'spread')} />
             </label>
             <span className="muted">一天</span>

@@ -446,12 +446,14 @@ router.post('/vocab', async (req, res) => {
       seen.add(k);
       return true;
     });
-    // spread＝從今天起一天 perDay 個；today＝全部今天
+    // spread＝從基準日起一天 perDay 個；today＝全部算在基準日
+    // 基準日預設今天，也可以指定（昨天/明天等，個別匯入到那一天）
+    const baseDate = /^\d{4}-\d{2}-\d{2}$/.test(req.body.date || '') ? req.body.date : todayStr;
     const mode = req.body.mode === 'spread' ? 'spread' : 'today';
     const perDay = Math.max(1, Math.min(200, +req.body.perDay || 10));
     const dateOf = i => {
-      if (mode !== 'spread') return todayStr;
-      const d = new Date(new Date(todayStr + 'T00:00:00').getTime() + Math.floor(i / perDay) * 864e5);
+      if (mode !== 'spread') return baseDate;
+      const d = new Date(new Date(baseDate + 'T00:00:00').getTime() + Math.floor(i / perDay) * 864e5);
       return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
     };
     if (clean.length) {

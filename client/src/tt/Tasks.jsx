@@ -485,8 +485,6 @@ export default function Tasks({ view, tasks, lists, filters, habits = [], reload
             })}
           {shown.length === 0 && <div className="muted" style={{ marginTop: 30, textAlign: 'center' }}>沒有任務</div>}
 
-          {view.type === 'today' && <VocabCard goVocab={goVocab} />}
-
           {view.type === 'today' && habits.length > 0 && (
             <div className="tgroup" style={{ marginTop: 24, borderTop: '2px dashed var(--border)', paddingTop: 12 }}>
               <div className="glabel">🌱 今日習慣</div>
@@ -521,6 +519,8 @@ export default function Tasks({ view, tasks, lists, filters, habits = [], reload
               </form>
             </div>
           )}
+
+          {view.type === 'today' && <VocabCard goVocab={goVocab} />}
         </div>
         {view.type !== 'completed' && <button className="fab" onClick={() => setShowAdd(true)}>＋</button>}
       </div>
