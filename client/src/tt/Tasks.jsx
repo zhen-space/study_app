@@ -281,13 +281,17 @@ function AddSheet({ view, lists, onDone, onClose }) {
     due_date: view.type === 'today' ? td : '',
     priority: 0,
     list_id: view.type === 'list' ? view.id : '',
+    recurring: null,
+    miss_policy: 'keep',
   });
+  const [showRepeat, setShowRepeat] = useState(false);
   async function submit(e) {
     e.preventDefault();
     if (!f.title.trim()) return;
     const body = { title: f.title.trim(), priority: f.priority };
     if (f.due_date) body.due_date = f.due_date;
     if (f.list_id) body.list_id = +f.list_id;
+    if (f.recurring) { body.recurring = f.recurring; body.miss_policy = f.miss_policy; }
     if (view.type === 'tag') body.tags = [view.tag];
     await api('/tasks', { method: 'POST', body });
     onDone();
@@ -307,7 +311,16 @@ function AddSheet({ view, lists, onDone, onClose }) {
             <option value="">願望清單</option>
             {lists.map(l => <option key={l.id} value={l.id}>{l.name}</option>)}
           </select>
+          <button type="button" className={'tag-pill' + (f.recurring ? ' on' : '')} onClick={() => setShowRepeat(s => !s)}>
+            🔁 {f.recurring ? repeatLabel(f.recurring, f.due_date) : '重複'}
+          </button>
         </div>
+        {showRepeat && (
+          <div style={{ marginTop: 8 }}>
+            <RepeatPicker value={f.recurring} dueDate={f.due_date} missPolicy={f.miss_policy}
+              onChange={(r, mp) => setF({ ...f, recurring: r, miss_policy: mp || f.miss_policy })} />
+          </div>
+        )}
         <button className="btn">新增任務</button>
       </form>
     </div>
