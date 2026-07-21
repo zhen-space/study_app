@@ -16,7 +16,18 @@ export default function Auth() {
       const { token } = await api(`/auth/${mode}`, { method: 'POST', body: { email, password } });
       localStorage.setItem('token', token);
       nav('/');
-    } catch (e) { setErr(e.message); }
+    } catch (e) {
+      // 註冊時帳號已存在 → 直接用這組密碼試登入，對了就進去，不用手動切換
+      if (mode === 'register' && /已被註冊/.test(e.message)) {
+        try {
+          const { token } = await api('/auth/login', { method: 'POST', body: { email, password } });
+          localStorage.setItem('token', token);
+          nav('/');
+          return;
+        } catch { setErr('這個 Email 已註冊過，但密碼不對——請改用登入'); setMode('login'); return; }
+      }
+      setErr(e.message);
+    }
   }
 
   return (
