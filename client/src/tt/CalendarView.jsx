@@ -152,13 +152,18 @@ export default function CalendarView({ tasks, reload }) {
 
   // 點行程 → 開編輯（名稱、時間、顏色、刪除）；預設白底黑字
   const [editEv, setEditEv] = useState(null);
-  // 改起始時間 → 截止自動＝起始＋n 小時（n 可設定、會記住）
+  // 「＋n 小時」只在「按下選單」時把截止＝起始＋n（最多 12 小時）；n 會記住
   const [durH, setDurH] = useState(() => +(localStorage.getItem('evDurH') || 1));
   const pickDur = h => { setDurH(h); try { localStorage.setItem('evDurH', String(h)); } catch {} };
-  const addH = (t, h) => {
-    const m = Math.min(toMin(t) + Math.round(h * 60), 23 * 60 + 55);
-    return `${String(Math.floor(m / 60)).padStart(2, '0')}:${String(m % 60).padStart(2, '0')}`;
+  const hm = m => `${String(Math.floor(m / 60)).padStart(2, '0')}:${String(m % 60).padStart(2, '0')}`;
+  const addH = (t, h) => hm(Math.min(toMin(t) + Math.round(h * 60), 24 * 60 - 5));
+  // 改「起始時間」時：保留原本的時長，截止跟著平移（不理會 +n）
+  // 例：12:00–15:00（時長 3 小時）把起始改成 13:00 → 截止 16:00
+  const shiftStart = (v, newStart) => {
+    const dur = Math.max(5, toMin(v.end_time) - toMin(v.start_time));
+    return { ...v, start_time: newStart, end_time: hm(Math.min(toMin(newStart) + dur, 24 * 60 - 5)) };
   };
+  const DUR_OPTS = [0.5, 1, 1.5, 2, 2.5, 3, 4, 5, 6, 8, 10, 12];
   async function saveEvent() {
     const ev = editEv;
     if (!ev.title.trim()) { alert('請輸入行程名稱'); return; }
@@ -188,31 +193,58 @@ export default function CalendarView({ tasks, reload }) {
     } catch (err) { alert('儲存失敗：' + err.message); }
     loadEvents();
   }
-  // 拖曳行程：可移到別天、也可移到同天別的時段（以半小時為單位對齊）
-  // 觸控裝置（iPhone/iPad）不開 draggable：iOS 對 draggable 元素常吞掉點擊，
-  // 會變成「點行程沒反應、無法編輯/刪除」；手機改日期用編輯視窗的日期欄
+  // 拖曳行程：可移到任何一天、任何時段（對齊到最近的半小時）
+  // 桌機用 HTML5 拖曳；手機（iPhone/iPad）用觸控自製拖曳（見下方 touch handlers）
   const canDrag = !window.matchMedia('(pointer: coarse)').matches;
   const dragRef = useRef({ id: null, offY: 0 });
+  // 共用：把行程 e 移到 day 這一欄、欄內 y 座標（已扣掉抓取偏移）的位置
+  async function moveEventTo(e, day, yInCol) {
+    const dur = toMin(e.end_time) - toMin(e.start_time);
+    let startMin = Math.round((H0 * 60 + yInCol / ROW * 60) / 30) * 30;
+    startMin = Math.max(H0 * 60, Math.min(24 * 60 - dur, startMin));
+    const start = hm(startMin), end = hm(startMin + dur);
+    if (e.date === day && e.start_time.slice(0, 5) === start) return;
+    setEvents(list => list.map(x => x.id === e.id ? { ...x, date: day, start_time: start, end_time: end } : x)); // 畫面先動
+    try { await api(`/events/${e.id}`, { method: 'PATCH', body: { date: day, start_time: start, end_time: end } }); }
+    catch (err) { alert('移動失敗：' + err.message); }
+    loadEvents();
+  }
   async function dropEvent(dragEv, d) {
     dragEv.preventDefault();
     const id = dragEv.dataTransfer.getData('text/ev-id') || String(dragRef.current.id || '');
     if (!id) return;
     const e = events.find(x => String(x.id) === id);
     if (!e) return;
-    // 放開位置 →（扣掉抓取點在區塊內的高度）→ 對齊到最近的半小時
     const rect = dragEv.currentTarget.getBoundingClientRect();
     const y = dragEv.clientY - rect.top - (String(dragRef.current.id) === id ? dragRef.current.offY : 0);
-    const dur = toMin(e.end_time) - toMin(e.start_time);
-    let startMin = Math.round((H0 * 60 + y / ROW * 60) / 30) * 30;
-    startMin = Math.max(H0 * 60, Math.min(24 * 60 - dur, startMin));
-    const hm = m => `${String(Math.floor(m / 60)).padStart(2, '0')}:${String(m % 60).padStart(2, '0')}`;
-    const start = hm(startMin), end = hm(startMin + dur);
     dragRef.current = { id: null, offY: 0 };
-    if (e.date === d && e.start_time.slice(0, 5) === start) return;
-    setEvents(list => list.map(x => x.id === e.id ? { ...x, date: d, start_time: start, end_time: end } : x)); // 畫面先動
-    try { await api(`/events/${id}`, { method: 'PATCH', body: { date: d, start_time: start, end_time: end } }); }
-    catch (err) { alert('移動失敗：' + err.message); }
-    loadEvents();
+    await moveEventTo(e, d, y);
+  }
+  // 手機觸控拖曳：按住行程移動就拖（超過門檻才算拖，只是點一下＝開編輯）
+  const touchDrag = useRef(null);
+  function onEvTouchStart(ev, e) {
+    const rect = ev.currentTarget.getBoundingClientRect();
+    const t = ev.touches[0];
+    touchDrag.current = { id: e.id, offY: t.clientY - rect.top, x0: t.clientX, y0: t.clientY, moved: false, el: ev.currentTarget };
+  }
+  function onEvTouchMove(ev) {
+    const d = touchDrag.current; if (!d) return;
+    const t = ev.touches[0];
+    if (!d.moved && Math.hypot(t.clientX - d.x0, t.clientY - d.y0) > 12) d.moved = true;
+    if (d.moved) { ev.preventDefault(); if (d.el) d.el.style.opacity = '.55'; } // 拖起來就不捲動、給視覺回饋
+  }
+  async function onEvTouchEnd(ev) {
+    const d = touchDrag.current; touchDrag.current = null;
+    if (!d) return;
+    if (d.el) d.el.style.opacity = '';
+    if (!d.moved) return; // 只是點一下 → onClick 開編輯
+    const t = ev.changedTouches[0];
+    const col = document.elementFromPoint(t.clientX, t.clientY)?.closest('[data-day]');
+    if (!col) return;
+    const e = events.find(x => x.id === d.id);
+    if (!e) return;
+    const rect = col.getBoundingClientRect();
+    await moveEventTo(e, col.dataset.day, t.clientY - rect.top - d.offY);
   }
   async function deleteEvent(ev) {
     // 不用 window.confirm（iOS 加到主畫面的 App 可能直接吃掉，導致按了沒反應）
@@ -354,7 +386,7 @@ export default function CalendarView({ tasks, reload }) {
         </div>
         {/* 每一天一欄：格線 + 絕對定位的行程/任務區塊 */}
         {days.map(d => (
-          <div key={d} style={{ position: 'relative', height: totalH, borderLeft: '1px solid var(--border)', background: d === today() ? 'rgba(0,134,204,.05)' : undefined }}
+          <div key={d} data-day={d} style={{ position: 'relative', height: totalH, borderLeft: '1px solid var(--border)', background: d === today() ? 'rgba(0,134,204,.05)' : undefined }}
             onDragOver={ev => ev.preventDefault()} onDrop={ev => dropEvent(ev, d)}>
             {HOURS.map((h, i) => (
               <div key={h} style={{ position: 'absolute', top: i * ROW, left: 0, right: 0, height: ROW }}>
@@ -375,11 +407,13 @@ export default function CalendarView({ tasks, reload }) {
                     ev.dataTransfer.setData('text/ev-id', String(e.id));
                     ev.dataTransfer.effectAllowed = 'move';
                   }}
+                  onTouchStart={ev => onEvTouchStart(ev, e)} onTouchMove={onEvTouchMove} onTouchEnd={onEvTouchEnd}
                   style={{
                     position: 'absolute', top, height, left: 2, right: 2, zIndex: 2,
                     background: bg, color: textOn(e.color), border: `1px solid ${e.color || 'var(--border)'}`,
                     borderLeft: `3px solid ${e.color || '#c7c7cc'}`, borderRadius: 6, padding: '2px 5px',
                     fontSize: 11, lineHeight: 1.15, overflow: 'hidden', cursor: 'pointer', textAlign: 'center',
+                    touchAction: 'none', userSelect: 'none', WebkitUserSelect: 'none', WebkitTouchCallout: 'none',
                   }}>
                   <div style={{ fontWeight: 600 }}>{e.title}</div>
                   {e.location ? <div style={{ fontSize: 10, color: dark ? 'rgba(255,255,255,.75)' : '#8e8e93' }}>{e.location}</div> : null}
@@ -564,11 +598,11 @@ export default function CalendarView({ tasks, reload }) {
             <div className="row" style={{ marginTop: 8 }}>
               <span className="muted">時間</span>
               <input type="time" value={editEv.start_time?.slice(0, 5)}
-                onChange={e => setEditEv(v => ({ ...v, start_time: e.target.value, end_time: addH(e.target.value, durH) }))} />
+                onChange={e => setEditEv(v => shiftStart(v, e.target.value))} />
               <span>–</span>
               <input type="time" value={editEv.end_time?.slice(0, 5)} onChange={e => setEditEv(v => ({ ...v, end_time: e.target.value }))} />
               <select value={durH} onChange={e => { const h = +e.target.value; pickDur(h); setEditEv(v => ({ ...v, end_time: addH(v.start_time, h) })); }} style={{ fontSize: 12, padding: '4px 22px 4px 6px' }}>
-                {[0.5, 1, 1.5, 2, 2.5, 3].map(h => <option key={h} value={h}>＋{h}時</option>)}
+                {DUR_OPTS.map(h => <option key={h} value={h}>＋{h}時</option>)}
               </select>
             </div>
             <div className="row" style={{ marginTop: 8 }}>
@@ -622,11 +656,11 @@ export default function CalendarView({ tasks, reload }) {
             <div className="row" style={{ marginTop: 8 }}>
               <span className="muted">時間</span>
               <input type="time" value={addForm.start_time}
-                onChange={e => setAddForm(v => ({ ...v, start_time: e.target.value, end_time: addH(e.target.value, durH) }))} />
+                onChange={e => setAddForm(v => shiftStart(v, e.target.value))} />
               <span>–</span>
               <input type="time" value={addForm.end_time} onChange={e => setAddForm(v => ({ ...v, end_time: e.target.value }))} />
               <select value={durH} onChange={e => { const h = +e.target.value; pickDur(h); setAddForm(v => ({ ...v, end_time: addH(v.start_time, h) })); }} style={{ fontSize: 12, padding: '4px 22px 4px 6px' }}>
-                {[0.5, 1, 1.5, 2, 2.5, 3].map(h => <option key={h} value={h}>＋{h}時</option>)}
+                {DUR_OPTS.map(h => <option key={h} value={h}>＋{h}時</option>)}
               </select>
             </div>
             <div className="row" style={{ marginTop: 8 }}>
