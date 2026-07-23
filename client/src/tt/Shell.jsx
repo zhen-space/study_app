@@ -10,6 +10,7 @@ import StatsView from './StatsView';
 import PetView from './PetView';
 import WizardView from './WizardView';
 import VocabView from './VocabView';
+import MemoView from './MemoView';
 import Companion from './Companion';
 import Icon, { LIST_ICONS, LIST_COLORS } from './Icons';
 
@@ -47,7 +48,7 @@ export default function Shell({ onLogout }) {
         .catch(() => {});
     }
     const go = p.get('go'); // App 圖示快速選單（manifest shortcuts）
-    if (go && ['wizard', 'vocab', 'calendar', 'pomo', 'habits', 'pet', 'stats'].includes(go)) {
+    if (go && ['wizard', 'vocab', 'memo', 'calendar', 'pomo', 'habits', 'pet', 'stats'].includes(go)) {
       setViewRaw({ type: go });
       window.history.replaceState({}, '', window.location.pathname);
     }
@@ -139,7 +140,7 @@ export default function Shell({ onLogout }) {
     }
     reload();
   }
-  const pages = [['wizard', 'wizard', '排程精靈'], ['vocab', 'book', '單字本'], ['calendar', 'calendar', '日曆'], ['matrix', 'matrix', '矩陣'], ['habits', 'habit', '習慣'], ['pomo', 'pomo', '番茄鐘'], ['pet', 'paw', '寵物'], ['stats', 'stats', '統計']];
+  const pages = [['wizard', 'wizard', '排程精靈'], ['vocab', 'book', '單字本'], ['memo', 'note', '備忘錄'], ['calendar', 'calendar', '日曆'], ['matrix', 'matrix', '矩陣'], ['habits', 'habit', '習慣'], ['pomo', 'pomo', '番茄鐘'], ['pet', 'paw', '寵物'], ['stats', 'stats', '統計']];
 
   const is = v => JSON.stringify(view) === JSON.stringify(v);
   const titleOf = () => {
@@ -234,13 +235,14 @@ export default function Shell({ onLogout }) {
         : view.type === 'pet' ? <PetView />
         : view.type === 'wizard' ? <WizardView lists={lists} reload={reload} goTasks={() => setView({ type: 'today' })} />
         : view.type === 'vocab' ? <VocabView />
+        : view.type === 'memo' ? <MemoView />
         : <Tasks view={view} tasks={tasks} lists={lists} filters={filters} habits={habits} reload={reload} title={titleOf()} goVocab={() => setView({ type: 'vocab' })} />}
 
       {view.type !== 'pet' && petData && <Companion pet={petData.pet} tasks={tasks} />}
 
       <div className="bottom-nav">
         {[
-          [{ type: 'today' }, 'today', '任務', v => !['calendar', 'matrix', 'habits', 'pomo', 'stats', 'pet', 'wizard', 'vocab'].includes(v.type)],
+          [{ type: 'today' }, 'today', '任務', v => !['calendar', 'matrix', 'habits', 'pomo', 'stats', 'pet', 'wizard', 'vocab', 'memo'].includes(v.type)],
           [{ type: 'calendar' }, 'calendar', '日曆'],
           [{ type: 'habits' }, 'habit', '習慣'],
           [{ type: 'pomo' }, 'pomo', '番茄鐘'],

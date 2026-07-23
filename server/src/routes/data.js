@@ -85,4 +85,28 @@ router.post('/events/bulk', async (req, res) => {
   res.json({ added: events.length });
 });
 
+// ---- 備忘錄（分類記錄要做的事）----
+router.get('/memos', async (req, res) => {
+  res.json(await q.all('SELECT * FROM memos WHERE user_id=? ORDER BY order_index, id', [req.userId]));
+});
+router.post('/memos', async (req, res) => {
+  const { content, category, color } = req.body;
+  if (!content || !content.trim()) return res.status(400).json({ error: '請輸入內容' });
+  const mx = await q.get('SELECT MAX(order_index) AS m FROM memos WHERE user_id=?', [req.userId]);
+  const r = await q.run('INSERT INTO memos (user_id,category,content,color,order_index) VALUES (?,?,?,?,?)',
+    [req.userId, (category || '').trim(), content.trim(), color || '', (mx?.m ?? -1) + 1]);
+  res.json(await q.get('SELECT * FROM memos WHERE id=?', [r.lastInsertRowid]));
+});
+router.patch('/memos/:id', async (req, res) => {
+  const { content, category, color, done, order_index } = req.body;
+  await q.run(`UPDATE memos SET content=COALESCE(?,content), category=COALESCE(?,category),
+    color=COALESCE(?,color), done=COALESCE(?,done), order_index=COALESCE(?,order_index) WHERE id=? AND user_id=?`,
+    [content ?? null, category ?? null, color ?? null, done === undefined ? null : (done ? 1 : 0), order_index ?? null, req.params.id, req.userId]);
+  res.json({ ok: true });
+});
+router.delete('/memos/:id', async (req, res) => {
+  await q.run('DELETE FROM memos WHERE id=? AND user_id=?', [req.params.id, req.userId]);
+  res.json({ ok: true });
+});
+
 export default router;
