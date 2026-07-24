@@ -258,6 +258,14 @@ router.delete('/toc-book', async (req, res) => {
   await q.run('DELETE FROM toc_items WHERE user_id=? AND list_id=? AND book=?', [req.userId, +list_id, book]);
   res.json({ ok: true });
 });
+// 改書名／出版社（把同科目同書名的所有章一起改）
+router.patch('/toc-book', async (req, res) => {
+  const { list_id, book = '', newBook, publisher } = req.body;
+  if (!list_id) return res.status(400).json({ error: '缺少科目' });
+  await q.run('UPDATE toc_items SET book=COALESCE(?,book), publisher=COALESCE(?,publisher) WHERE user_id=? AND list_id=? AND book=?',
+    [newBook ?? null, publisher ?? null, req.userId, +list_id, book]);
+  res.json({ ok: true });
+});
 
 // POST /api/import/toc  { list_id, files:[{filename,mime,data}] | filename,mime,data, replace }
 // → AI 解讀目錄（可多張照片一起讀），存成該科章節庫

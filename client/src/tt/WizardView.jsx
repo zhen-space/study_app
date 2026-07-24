@@ -715,6 +715,13 @@ export default function WizardView({ lists, reload, goTasks }) {
                 await api(`/import/toc-book?list_id=${l.id}&book=${encodeURIComponent(bk)}`, { method: 'DELETE' });
                 setTocs(await api('/import/toc'));
               };
+              const renameBook = async (bk, rws) => {
+                const name = prompt('課本書名：', bk);
+                if (name === null) return;
+                const pub = prompt('出版社（可留空）：', rws[0]?.publisher || '');
+                await api('/import/toc-book', { method: 'PATCH', body: { list_id: l.id, book: bk, newBook: name.trim(), publisher: (pub || '').trim() } });
+                setTocs(await api('/import/toc'));
+              };
 
               const renderNode = (n) => {
                 const it = findItem(n.key);
@@ -774,10 +781,11 @@ export default function WizardView({ lists, reload, goTasks }) {
                   {bookGroups.map(([bk, rws]) => (
                     <details key={bk || '_none'} open={bookGroups.length === 1} style={{ marginTop: 8 }}>
                       <summary style={{ cursor: 'pointer', fontWeight: 700, fontSize: 15, display: 'flex', alignItems: 'center', gap: 6 }}>
-                        <span style={{ flex: 1 }}>📘 {bk || '未命名課本'}
+                        <span style={{ flex: 1 }} onClick={e => { e.preventDefault(); e.stopPropagation(); renameBook(bk, rws); }}>📘 {bk || '未命名課本'}
                           {rws[0]?.publisher ? <span className="muted" style={{ fontWeight: 400, fontSize: 12 }}>（{rws[0].publisher}）</span> : null}
                           <span className="muted" style={{ fontWeight: 400, fontSize: 12 }}> {rws.length} 章</span>
                         </span>
+                        <button className="btn sm ghost" title="改書名／出版社" onClick={e => { e.preventDefault(); e.stopPropagation(); renameBook(bk, rws); }}>改名</button>
                         <button className="icon-btn" title="整本刪除" onClick={e => { e.preventDefault(); e.stopPropagation(); delBook(bk, rws); }}>✕</button>
                       </summary>
                       {rws.map(chapterNode).map(renderNode)}
