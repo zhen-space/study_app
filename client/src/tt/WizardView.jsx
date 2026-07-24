@@ -715,11 +715,10 @@ export default function WizardView({ lists, reload, goTasks }) {
                 await api(`/import/toc-book?list_id=${l.id}&book=${encodeURIComponent(bk)}`, { method: 'DELETE' });
                 setTocs(await api('/import/toc'));
               };
-              const renameBook = async (bk, rws) => {
-                const name = prompt('課本書名：', bk);
-                if (name === null) return;
-                const pub = prompt('出版社（可留空）：', rws[0]?.publisher || '');
-                await api('/import/toc-book', { method: 'PATCH', body: { list_id: l.id, book: bk, newBook: name.trim(), publisher: (pub || '').trim() } });
+              // 就地改書名／出版社：畫面先更新，離開欄位才送出（書名是分組鍵，改完重載）
+              const saveBook = async (bk, patch) => {
+                setTocs(ts => ts.map(t => t.list_id === l.id && (t.book || '') === bk ? { ...t, ...patch } : t));
+                await api('/import/toc-book', { method: 'PATCH', body: { list_id: l.id, book: bk, ...patch } });
                 setTocs(await api('/import/toc'));
               };
 
@@ -780,12 +779,16 @@ export default function WizardView({ lists, reload, goTasks }) {
                   {tocMsg[l.id] && <div className="muted" style={{ marginTop: 4 }}>{tocMsg[l.id]}</div>}
                   {bookGroups.map(([bk, rws]) => (
                     <details key={bk || '_none'} open={bookGroups.length === 1} style={{ marginTop: 8 }}>
-                      <summary style={{ cursor: 'pointer', fontWeight: 700, fontSize: 15, display: 'flex', alignItems: 'center', gap: 6 }}>
-                        <span style={{ flex: 1 }} onClick={e => { e.preventDefault(); e.stopPropagation(); renameBook(bk, rws); }}>📘 {bk || '未命名課本'}
-                          {rws[0]?.publisher ? <span className="muted" style={{ fontWeight: 400, fontSize: 12 }}>（{rws[0].publisher}）</span> : null}
-                          <span className="muted" style={{ fontWeight: 400, fontSize: 12 }}> {rws.length} 章</span>
-                        </span>
-                        <button className="btn sm ghost" title="改書名／出版社" onClick={e => { e.preventDefault(); e.stopPropagation(); renameBook(bk, rws); }}>改名</button>
+                      <summary style={{ cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 6 }}>
+                        <span style={{ flexShrink: 0 }}>📘</span>
+                        {/* 點欄位直接改：書名一欄、出版社一欄，灰字提示、無冒號 */}
+                        <input defaultValue={bk} placeholder="書名" onClick={e => e.stopPropagation()}
+                          onBlur={e => { const v = e.target.value.trim(); if (v !== bk) saveBook(bk, { newBook: v }); }}
+                          style={{ fontWeight: 700, fontSize: 15, background: 'none', padding: '2px 4px', flex: '1 1 45%', minWidth: 0 }} />
+                        <input defaultValue={rws[0]?.publisher || ''} placeholder="出版社" onClick={e => e.stopPropagation()}
+                          onBlur={e => { const v = e.target.value.trim(); if (v !== (rws[0]?.publisher || '')) saveBook(bk, { publisher: v }); }}
+                          style={{ fontSize: 13, color: 'var(--muted)', background: 'none', padding: '2px 4px', flex: '1 1 30%', minWidth: 0 }} />
+                        <span className="muted" style={{ fontSize: 12, flexShrink: 0 }}>{rws.length} 章</span>
                         <button className="icon-btn" title="整本刪除" onClick={e => { e.preventDefault(); e.stopPropagation(); delBook(bk, rws); }}>✕</button>
                       </summary>
                       {rws.map(chapterNode).map(renderNode)}
