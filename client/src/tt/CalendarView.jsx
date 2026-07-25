@@ -137,18 +137,33 @@ export default function CalendarView({ tasks, reload }) {
     if (first && first > today()) setAnchor(first);
     alert(`已加入 ${chosen.length} 筆行程${first && first > today() ? `（已跳到 ${first.slice(5).replace('-', '/')} 那週）` : ''}`);
   }
-  // 某天有哪些既定行程（含每週重複）；紀念日另外算，不當行程
+  // 某天有哪些既定行程（含每週重複）；重要日子（全天標記）另外算，不當行程
   const eventsOn = d => {
     const dow = new Date(d + 'T00:00:00').getDay();
-    return events.filter(e => e.kind !== 'anniv' && (e.recurring === 'weekly'
+    return events.filter(e => !e.kind && (e.recurring === 'weekly'
       ? new Date(e.date + 'T00:00:00').getDay() === dow && e.date <= d
       : e.date === d))
       .sort((a, b) => a.start_time.localeCompare(b.start_time));
   };
-  // 紀念日／生日（像 Apple/Google 日曆的全天標記）：每年重複比月日
-  const annivOn = d => events.filter(e => e.kind === 'anniv'
+  // 重要日子（像 Apple/Google 日曆的全天標記）：紀念日/生日、期限、考試、其他
+  const MARKS = [
+    ['anniv', '🎉', '紀念日／生日'],
+    ['due', '⏰', '期限／截止'],
+    ['exam', '📝', '考試'],
+    ['day', '📌', '其他重要日子'],
+  ];
+  const markIcon = k => (MARKS.find(m => m[0] === k) || MARKS[3])[1];
+  const marksOn = d => events.filter(e => e.kind
     && (e.recurring === 'yearly' ? e.date.slice(5) === d.slice(5) && e.date <= d : e.date === d));
   const annivYears = (e, d) => e.recurring === 'yearly' ? +d.slice(0, 4) - +e.date.slice(0, 4) : 0;
+  // 期限倒數：今天＝當天，未來＝還有 N 天
+  const daysLeft = d => Math.round((new Date(d + 'T00:00:00') - new Date(today() + 'T00:00:00')) / 864e5);
+  const markLabel = (e, d) => {
+    if (e.recurring === 'yearly') { const y = annivYears(e, d); return y > 0 ? ` ${y}週年` : ''; }
+    if (e.kind === 'anniv') return '';
+    const n = daysLeft(e.date);
+    return n === 0 ? '（今天）' : n > 0 ? `（剩 ${n} 天）` : '';
+  };
 
   // 點行程 → 開編輯（名稱、時間、顏色、刪除）；預設白底黑字
   const [editEv, setEditEv] = useState(null);
@@ -175,7 +190,9 @@ export default function CalendarView({ tasks, reload }) {
     if (colorChanged && sameName.length) {
       applySameName = window.confirm(`要把所有「${orig.title}」的行程都改成同一個顏色嗎？（共 ${sameName.length + 1} 筆）\n\n確定＝全部一起變　取消＝只改這一筆`);
     }
-    const patch = { title: ev.title.trim(), location: ev.location || '', color: ev.color || '', date: ev.date, start_time: ev.start_time, end_time: ev.end_time };
+    const patch = ev.kind
+      ? { title: ev.title.trim(), color: ev.color || '', date: ev.date, kind: ev.kind, recurring: ev.recurring || '' } // 重要日子：沒有時間地點
+      : { title: ev.title.trim(), location: ev.location || '', color: ev.color || '', date: ev.date, start_time: ev.start_time, end_time: ev.end_time };
     // 畫面立刻更新，API 在背景送（不用等）
     setEditEv(null);
     setEvents(list => list.map(x => {
@@ -186,7 +203,7 @@ export default function CalendarView({ tasks, reload }) {
       return x;
     }));
     try {
-      await api(`/events/${ev.id}`, { method: 'PATCH', body: { ...patch, applyAll: !!ev.recurring } });
+      await api(`/events/${ev.id}`, { method: 'PATCH', body: { ...patch, applyAll: !ev.kind && !!ev.recurring } });
       if (applySameName) {
         await Promise.all(sameName.map(x => api(`/events/${x.id}`, { method: 'PATCH', body: { color: ev.color || '' } })));
       }
@@ -268,7 +285,7 @@ export default function CalendarView({ tasks, reload }) {
   const [annivForm, setAnnivForm] = useState(null);
   async function submitAnniv() {
     if (!annivForm.title.trim()) { alert('請輸入名稱'); return; }
-    await api('/events', { method: 'POST', body: { ...annivForm, title: annivForm.title.trim(), kind: 'anniv', recurring: annivForm.recurring || null } });
+    await api('/events', { method: 'POST', body: { ...annivForm, title: annivForm.title.trim(), kind: annivForm.kind || 'day', recurring: annivForm.recurring || null } });
     setAnnivForm(null);
     loadEvents();
   }
@@ -305,13 +322,20 @@ export default function CalendarView({ tasks, reload }) {
     const byDate = {};
     upcoming.forEach(t => (byDate[t.due_date] = byDate[t.due_date] || []).push(t));
     const dates = new Set(Object.keys(byDate));
-    for (let i = 0; i <= 60; i++) { const d = addDays(today(), i); if (eventsOn(d).length) dates.add(d); }
+    for (let i = 0; i <= 60; i++) { const d = addDays(today(), i); if (eventsOn(d).length || marksOn(d).length) dates.add(d); }
     const sorted = [...dates].sort();
     return (
       <div>
         {sorted.map(d => (
           <div key={d} className="tgroup">
             <div className="glabel">{`${+d.slice(5, 7)}/${+d.slice(8)}`} 週{WD[(new Date(d + 'T00:00:00').getDay() + 6) % 7]}{d === today() ? '（今天）' : ''}</div>
+            {marksOn(d).map(a => (
+              <div key={'a' + a.id} className="trow" style={{ cursor: 'pointer' }} onClick={() => setEditEv({ ...a })}>
+                <span>{markIcon(a.kind)}</span>
+                <span className="title" style={a.color ? { color: a.color } : {}}>{a.title}</span>
+                <span className="muted">{markLabel(a, d)}</span>
+              </div>
+            ))}
             {eventsOn(d).map(e => (
               <div key={'e' + e.id} className="trow" style={{ cursor: 'pointer' }} onClick={() => setEditEv({ ...e })}>
                 <span className="cal-ev-dot" style={{ background: e.color || '#c7c7cc' }} />
@@ -370,10 +394,10 @@ export default function CalendarView({ tasks, reload }) {
         {days.map(d => (
           <div key={d} style={{ textAlign: 'center', padding: 4, fontSize: 12, fontWeight: d === today() ? 700 : 400, color: d === today() ? 'var(--primary)' : 'var(--muted)' }}>
             {`${+d.slice(5, 7)}/${+d.slice(8)}`}<br />週{WD[(new Date(d + 'T00:00:00').getDay() + 6) % 7]}
-            {annivOn(d).map(a => (
-              <div key={'a' + a.id} onClick={ev => { ev.stopPropagation(); setEditEv({ ...a }); }}
+            {marksOn(d).map(a => (
+              <div key={'a' + a.id} onClick={ev => { ev.stopPropagation(); setEditEv({ ...a }); }} title={a.title}
                 style={{ fontSize: 10, color: a.color || 'var(--primary)', cursor: 'pointer', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                🎉{a.title}{annivYears(a, d) > 0 ? ` ${annivYears(a, d)}週年` : ''}
+                {markIcon(a.kind)}{a.title}{markLabel(a, d)}
               </div>
             ))}
           </div>
@@ -481,9 +505,9 @@ export default function CalendarView({ tasks, reload }) {
             <div key={c.ds} className={'cal-cell' + (c.dim ? ' dim' : '') + (c.ds === today() ? ' today' : '')}
               onClick={() => { setAnchor(c.ds); setView('day'); }} style={{ cursor: 'pointer' }}>
               <span className="dnum">{c.day}</span>
-              {annivOn(c.ds).map(a => (
+              {marksOn(c.ds).map(a => (
                 <div key={'a' + a.id} style={{ fontSize: 9, color: a.color || 'var(--primary)', overflow: 'hidden', whiteSpace: 'nowrap', textOverflow: 'ellipsis' }}
-                  onClick={ev => { ev.stopPropagation(); setEditEv({ ...a }); }}>🎉{a.title}</div>
+                  onClick={ev => { ev.stopPropagation(); setEditEv({ ...a }); }}>{markIcon(a.kind)}{a.title}</div>
               ))}
               {eventsOn(c.ds).slice(0, 2).map(e => (
                 <div key={'e' + e.id} className="cal-ev" title={e.title}
@@ -534,7 +558,7 @@ export default function CalendarView({ tasks, reload }) {
               <div style={{ position: 'fixed', inset: 0, zIndex: 20 }} onClick={() => setAddMenu(false)} />
               <div className="add-menu">
                 <div onClick={() => openAdd()}><Icon name="pencil" size={15} /> 手動新增行程</div>
-                <div onClick={() => { setAddMenu(false); setAnnivForm({ title: '', date: anchor, recurring: 'yearly', color: '' }); }}>🎉 紀念日／生日</div>
+                <div onClick={() => { setAddMenu(false); setAnnivForm({ title: '', date: anchor, kind: 'due', recurring: '', color: '' }); }}>📌 重要日子（期限／考試／紀念日）</div>
                 <label style={{ cursor: 'pointer' }}>
                   <Icon name="calendar" size={15} /> {aiBusy ? 'AI 解析中…' : '匯入課表照片'}
                   <input type="file" accept="image/*,.pdf,.ics" style={{ display: 'none' }} onChange={e => { setAddMenu(false); importFile(e); }} disabled={aiBusy} />
@@ -595,21 +619,39 @@ export default function CalendarView({ tasks, reload }) {
               <span className="muted">日期</span>
               <input type="date" value={editEv.date || ''} onChange={e => setEditEv(v => ({ ...v, date: e.target.value }))} />
             </div>
-            <div className="row" style={{ marginTop: 8 }}>
-              <span className="muted">時間</span>
-              <input type="time" value={editEv.start_time?.slice(0, 5)}
-                onChange={e => setEditEv(v => shiftStart(v, e.target.value))} />
-              <span>–</span>
-              <input type="time" value={editEv.end_time?.slice(0, 5)} onChange={e => setEditEv(v => ({ ...v, end_time: e.target.value }))} />
-              <select value={durH} onChange={e => { const h = +e.target.value; pickDur(h); setEditEv(v => ({ ...v, end_time: addH(v.start_time, h) })); }} style={{ fontSize: 12, padding: '4px 22px 4px 6px' }}>
-                {DUR_OPTS.map(h => <option key={h} value={h}>＋{h}時</option>)}
-              </select>
-            </div>
-            <div className="row" style={{ marginTop: 8 }}>
-              <span className="muted">地點</span>
-              <input value={editEv.location || ''} placeholder="（選填）" onChange={e => setEditEv(v => ({ ...v, location: e.target.value }))} style={{ flex: 1 }} />
-            </div>
-            {editEv.recurring && <div className="muted" style={{ marginTop: 6 }}>每週重複・改動會套用到每一週</div>}
+            {/* 重要日子（全天標記）沒有時間、地點；一般行程才有 */}
+            {editEv.kind ? (
+              <>
+                <div className="row" style={{ marginTop: 8 }}>
+                  {MARKS.map(([k, ic, name]) => (
+                    <span key={k} className={'tag-pill' + (editEv.kind === k ? ' on' : '')} style={{ cursor: 'pointer' }}
+                      onClick={() => setEditEv(v => ({ ...v, kind: k }))}>{ic} {name}</span>
+                  ))}
+                </div>
+                <label className="row" style={{ marginTop: 8 }}>
+                  <input type="checkbox" checked={editEv.recurring === 'yearly'} onChange={e => setEditEv(v => ({ ...v, recurring: e.target.checked ? 'yearly' : null }))} />
+                  <span>每年重複</span>
+                </label>
+              </>
+            ) : (
+              <>
+                <div className="row" style={{ marginTop: 8 }}>
+                  <span className="muted">時間</span>
+                  <input type="time" value={editEv.start_time?.slice(0, 5)}
+                    onChange={e => setEditEv(v => shiftStart(v, e.target.value))} />
+                  <span>–</span>
+                  <input type="time" value={editEv.end_time?.slice(0, 5)} onChange={e => setEditEv(v => ({ ...v, end_time: e.target.value }))} />
+                  <select value={durH} onChange={e => { const h = +e.target.value; pickDur(h); setEditEv(v => ({ ...v, end_time: addH(v.start_time, h) })); }} style={{ fontSize: 12, padding: '4px 22px 4px 6px' }}>
+                    {DUR_OPTS.map(h => <option key={h} value={h}>＋{h}時</option>)}
+                  </select>
+                </div>
+                <div className="row" style={{ marginTop: 8 }}>
+                  <span className="muted">地點</span>
+                  <input value={editEv.location || ''} placeholder="（選填）" onChange={e => setEditEv(v => ({ ...v, location: e.target.value }))} style={{ flex: 1 }} />
+                </div>
+                {editEv.recurring && <div className="muted" style={{ marginTop: 6 }}>每週重複・改動會套用到每一週</div>}
+              </>
+            )}
             <div className="row" style={{ marginTop: 12 }}>
               <button className="btn sm ghost" style={{ color: 'var(--red)' }} onClick={() => deleteEvent(editEv)}>刪除</button>
               <button className="btn sm" style={{ marginLeft: 'auto' }} onClick={saveEvent}>儲存</button>
@@ -623,17 +665,26 @@ export default function CalendarView({ tasks, reload }) {
       {annivForm && (
         <div className="cal-modal-back" onClick={() => setAnnivForm(null)}>
           <div className="tile cal-modal" onClick={e => e.stopPropagation()}>
-            <b>🎉 紀念日／生日</b>
-            <input value={annivForm.title} placeholder="名稱（如：媽媽生日、交往紀念日）" autoFocus
+            <b>📌 重要日子</b>
+            <div className="muted" style={{ marginTop: 2 }}>全天標記，不佔行事曆時段</div>
+            <div className="row" style={{ marginTop: 8 }}>
+              {MARKS.map(([k, ic, name]) => (
+                <span key={k} className={'tag-pill' + (annivForm.kind === k ? ' on' : '')} style={{ cursor: 'pointer' }}
+                  onClick={() => setAnnivForm(v => ({ ...v, kind: k, recurring: k === 'anniv' ? 'yearly' : '' }))}>{ic} {name}</span>
+              ))}
+            </div>
+            <input value={annivForm.title} placeholder={annivForm.kind === 'anniv' ? '名稱（如：媽媽生日）' : annivForm.kind === 'exam' ? '名稱（如：第三次段考）' : '名稱（如：物理報告最後期限）'} autoFocus
               onChange={e => setAnnivForm(v => ({ ...v, title: e.target.value }))} style={{ width: '100%', marginTop: 8 }} />
             <div className="row" style={{ marginTop: 8 }}>
               <span className="muted">日期</span>
               <input type="date" value={annivForm.date} onChange={e => setAnnivForm(v => ({ ...v, date: e.target.value }))} />
+              {annivForm.date >= today() && <span className="muted">{daysLeft(annivForm.date) === 0 ? '就是今天' : `還有 ${daysLeft(annivForm.date)} 天`}</span>}
             </div>
             <label className="row" style={{ marginTop: 8 }}>
               <input type="checkbox" checked={annivForm.recurring === 'yearly'} onChange={e => setAnnivForm(v => ({ ...v, recurring: e.target.checked ? 'yearly' : '' }))} />
               <span>每年重複（會顯示第幾週年）</span>
             </label>
+            <ColorPicker value={annivForm.color} onPick={c => setAnnivForm(v => ({ ...v, color: c }))} />
             <div className="row" style={{ marginTop: 12 }}>
               <button className="btn sm ghost" onClick={() => setAnnivForm(null)}>取消</button>
               <button className="btn sm" style={{ marginLeft: 'auto' }} onClick={submitAnniv}>新增</button>

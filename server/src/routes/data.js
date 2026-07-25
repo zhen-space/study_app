@@ -31,8 +31,8 @@ router.get('/events', async (req, res) => {
 });
 router.post('/events', async (req, res) => {
   const { title, date, start_time, end_time, recurring, location, color, kind } = req.body;
-  // 紀念日（kind='anniv'）沒有時間；一般行程才要時間
-  if (!title || !date || (kind !== 'anniv' && (!start_time || !end_time))) return res.status(400).json({ error: '欄位不完整' });
+  // 重要日子（kind 有值＝全天標記）沒有時間；一般行程才要時間
+  if (!title || !date || (!kind && (!start_time || !end_time))) return res.status(400).json({ error: '欄位不完整' });
   const r = await q.run('INSERT INTO fixed_events (user_id,title,date,start_time,end_time,recurring,location,color,kind) VALUES (?,?,?,?,?,?,?,?,?)',
     [req.userId, title, date, start_time || '00:00', end_time || '00:00', recurring || null, location || '', color || '', kind || '']);
   res.json({ id: r.lastInsertRowid });
@@ -41,7 +41,12 @@ router.post('/events', async (req, res) => {
 router.patch('/events/:id', async (req, res) => {
   const ev = await q.get('SELECT * FROM fixed_events WHERE id=? AND user_id=?', [req.params.id, req.userId]);
   if (!ev) return res.status(404).json({ error: 'not found' });
-  const { color, title, location, start_time, end_time, date } = req.body;
+  const { color, title, location, start_time, end_time, date, kind, recurring } = req.body;
+  // 重要日子（全天標記）：可改類型與每年重複
+  if (kind !== undefined || recurring !== undefined) {
+    await q.run('UPDATE fixed_events SET kind=COALESCE(?,kind), recurring=? WHERE id=? AND user_id=?',
+      [kind ?? null, recurring || null, req.params.id, req.userId]);
+  }
   if (req.body.applyAll) {
     // 每週重複：套用到同名同時段的每一筆（用「原本」的時段比對）
     await q.run('UPDATE fixed_events SET color=COALESCE(?,color), title=COALESCE(?,title), location=COALESCE(?,location), start_time=COALESCE(?,start_time), end_time=COALESCE(?,end_time) WHERE user_id=? AND title=? AND start_time=? AND end_time=?',
