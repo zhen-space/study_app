@@ -56,6 +56,12 @@ export default function CalendarView({ tasks, reload }) {
   const [events, setEvents] = useState(() => {
     try { return JSON.parse(localStorage.getItem('evCache') || '[]'); } catch { return []; }
   });
+  // 現在時間（分鐘）：每分鐘更新一次，用來畫「現在」的藍線
+  const [nowMin, setNowMin] = useState(() => new Date().getHours() * 60 + new Date().getMinutes());
+  useEffect(() => {
+    const t = setInterval(() => setNowMin(new Date().getHours() * 60 + new Date().getMinutes()), 30000);
+    return () => clearInterval(t);
+  }, []);
   const loadEvents = () => api('/events').then(list => {
     setEvents(list);
     try { localStorage.setItem('evCache', JSON.stringify(list)); } catch {}
@@ -214,11 +220,35 @@ export default function CalendarView({ tasks, reload }) {
   // 桌機用 HTML5 拖曳；手機（iPhone/iPad）用觸控自製拖曳（見下方 touch handlers）
   const canDrag = !window.matchMedia('(pointer: coarse)').matches;
   const dragRef = useRef({ id: null, offY: 0 });
-  // 共用：把行程 e 移到 day 這一欄、欄內 y 座標（已扣掉抓取偏移）的位置
-  async function moveEventTo(e, day, yInCol) {
+  // 拖曳時的即時預覽（會落在哪一天、哪個時段）：半小時為一格吸附。
+  // 直接操作 DOM，不用 React state——拖曳中重繪會讓 Chromium 取消 drop，也比較順
+  const lastPrev = useRef(null);
+  const snap30 = y => Math.round((H0 * 60 + y / ROW * 60) / 30) * 30;
+  const clearPreview = () => {
+    document.querySelectorAll('.drag-prev').forEach(el => { el.style.display = 'none'; });
+    lastPrev.current = null;
+  };
+  function updatePreview(clientX, clientY, e, offY) {
+    const col = document.elementFromPoint(clientX, clientY)?.closest('[data-day]');
+    if (!col) return null;
     const dur = toMin(e.end_time) - toMin(e.start_time);
-    let startMin = Math.round((H0 * 60 + yInCol / ROW * 60) / 30) * 30;
+    const rect = col.getBoundingClientRect();
+    let startMin = snap30(clientY - rect.top - offY);
     startMin = Math.max(H0 * 60, Math.min(24 * 60 - dur, startMin));
+    document.querySelectorAll('.drag-prev').forEach(el => { if (el.parentElement !== col) el.style.display = 'none'; });
+    const el = col.querySelector('.drag-prev');
+    if (el) {
+      el.style.display = 'flex';
+      el.style.top = `${yOf(startMin)}px`;
+      el.style.height = `${Math.max(20, dur / 60 * ROW)}px`;
+      el.textContent = `${hm(startMin)}–${hm(startMin + dur)}`;
+    }
+    lastPrev.current = { id: e.id, day: col.dataset.day, startMin, dur };
+    return lastPrev.current;
+  }
+  // 共用：把行程 e 移到 day 這一欄、欄內 y 座標（已扣掉抓取偏移）的位置
+  async function moveEventTo(e, day, startMin) {
+    const dur = toMin(e.end_time) - toMin(e.start_time);
     const start = hm(startMin), end = hm(startMin + dur);
     if (e.date === day && e.start_time.slice(0, 5) === start) return;
     setEvents(list => list.map(x => x.id === e.id ? { ...x, date: day, start_time: start, end_time: end } : x)); // 畫面先動
@@ -232,10 +262,25 @@ export default function CalendarView({ tasks, reload }) {
     if (!id) return;
     const e = events.find(x => String(x.id) === id);
     if (!e) return;
-    const rect = dragEv.currentTarget.getBoundingClientRect();
-    const y = dragEv.clientY - rect.top - (String(dragRef.current.id) === id ? dragRef.current.offY : 0);
+    // 就放在預覽框的位置（所見即所得）；沒有預覽才用放開的座標推算
+    const prev = lastPrev.current;
+    let day = d, startMin;
+    if (prev && prev.id === e.id) { day = prev.day; startMin = prev.startMin; }
+    else {
+      const rect = dragEv.currentTarget.getBoundingClientRect();
+      const offY = String(dragRef.current.id) === id ? dragRef.current.offY : 0;
+      const dur = toMin(e.end_time) - toMin(e.start_time);
+      startMin = Math.max(H0 * 60, Math.min(24 * 60 - dur, snap30(dragEv.clientY - rect.top - offY)));
+    }
     dragRef.current = { id: null, offY: 0 };
-    await moveEventTo(e, d, y);
+    clearPreview();
+    await moveEventTo(e, day, startMin);
+  }
+  // 桌機拖曳經過欄位時也顯示預覽
+  function onColDragOver(ev, d) {
+    ev.preventDefault();
+    const e = events.find(x => x.id === dragRef.current.id);
+    if (e) updatePreview(ev.clientX, ev.clientY, e, dragRef.current.offY);
   }
   // 手機觸控拖曳：按住行程移動就拖（超過門檻才算拖，只是點一下＝開編輯）
   const touchDrag = useRef(null);
@@ -248,20 +293,22 @@ export default function CalendarView({ tasks, reload }) {
     const d = touchDrag.current; if (!d) return;
     const t = ev.touches[0];
     if (!d.moved && Math.hypot(t.clientX - d.x0, t.clientY - d.y0) > 12) d.moved = true;
-    if (d.moved) { ev.preventDefault(); if (d.el) d.el.style.opacity = '.55'; } // 拖起來就不捲動、給視覺回饋
+    if (!d.moved) return;
+    ev.preventDefault();                       // 拖起來就不捲動
+    if (d.el) d.el.style.opacity = '.35';      // 原位置變淡，預覽框顯示目的地
+    const e = events.find(x => x.id === d.id);
+    if (e) updatePreview(t.clientX, t.clientY, e, d.offY);
   }
   async function onEvTouchEnd(ev) {
     const d = touchDrag.current; touchDrag.current = null;
+    const prev = lastPrev.current;
+    clearPreview();
     if (!d) return;
     if (d.el) d.el.style.opacity = '';
     if (!d.moved) return; // 只是點一下 → onClick 開編輯
-    const t = ev.changedTouches[0];
-    const col = document.elementFromPoint(t.clientX, t.clientY)?.closest('[data-day]');
-    if (!col) return;
     const e = events.find(x => x.id === d.id);
-    if (!e) return;
-    const rect = col.getBoundingClientRect();
-    await moveEventTo(e, col.dataset.day, t.clientY - rect.top - d.offY);
+    if (!e || !prev || prev.id !== e.id) return;
+    await moveEventTo(e, prev.day, prev.startMin); // 就放在預覽框的位置
   }
   async function deleteEvent(ev) {
     // 不用 window.confirm（iOS 加到主畫面的 App 可能直接吃掉，導致按了沒反應）
@@ -332,7 +379,7 @@ export default function CalendarView({ tasks, reload }) {
             {marksOn(d).map(a => (
               <div key={'a' + a.id} className="trow" style={{ cursor: 'pointer' }} onClick={() => setEditEv({ ...a })}>
                 <span>{markIcon(a.kind)}</span>
-                <span className="title" style={a.color ? { color: a.color } : {}}>{a.title}</span>
+                <span className="title">{a.title}</span>
                 <span className="muted">{markLabel(a, d)}</span>
               </div>
             ))}
@@ -396,7 +443,7 @@ export default function CalendarView({ tasks, reload }) {
             {`${+d.slice(5, 7)}/${+d.slice(8)}`}<br />週{WD[(new Date(d + 'T00:00:00').getDay() + 6) % 7]}
             {marksOn(d).map(a => (
               <div key={'a' + a.id} onClick={ev => { ev.stopPropagation(); setEditEv({ ...a }); }} title={a.title}
-                style={{ fontSize: 10, color: a.color || 'var(--primary)', cursor: 'pointer', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                style={{ fontSize: 10, color: 'var(--text)', fontWeight: 400, cursor: 'pointer', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
                 {markIcon(a.kind)}{a.title}{markLabel(a, d)}
               </div>
             ))}
@@ -411,7 +458,7 @@ export default function CalendarView({ tasks, reload }) {
         {/* 每一天一欄：格線 + 絕對定位的行程/任務區塊 */}
         {days.map(d => (
           <div key={d} data-day={d} style={{ position: 'relative', height: totalH, borderLeft: '1px solid var(--border)', background: d === today() ? 'rgba(0,134,204,.05)' : undefined }}
-            onDragOver={ev => ev.preventDefault()} onDrop={ev => dropEvent(ev, d)}>
+            onDragOver={ev => onColDragOver(ev, d)} onDrop={ev => dropEvent(ev, d)}>
             {HOURS.map((h, i) => (
               <div key={h} style={{ position: 'absolute', top: i * ROW, left: 0, right: 0, height: ROW }}>
                 <div onClick={() => openAdd(d)} title="點一下新增行程" style={{ position: 'absolute', top: 0, left: 0, right: 0, height: ROW / 2, borderTop: '1px solid var(--border)', cursor: 'pointer' }} />
@@ -444,6 +491,18 @@ export default function CalendarView({ tasks, reload }) {
                 </div>
               );
             })}
+            {/* 拖曳預覽：清楚看到會落在哪一天、哪個時段（半小時一格）。拖曳時直接改樣式 */}
+            <div className="drag-prev" style={{
+              display: 'none', position: 'absolute', top: 0, height: 20, left: 2, right: 2, zIndex: 6, pointerEvents: 'none',
+              border: '2px dashed var(--primary)', borderRadius: 6, background: 'rgba(0,134,204,.14)',
+              alignItems: 'center', justifyContent: 'center', fontSize: 11, fontWeight: 700, color: 'var(--primary)',
+            }} />
+            {/* 現在時間線（只畫在今天那一欄） */}
+            {d === today() && nowMin >= H0 * 60 && nowMin <= 24 * 60 && (
+              <div style={{ position: 'absolute', top: yOf(nowMin), left: 0, right: 0, height: 2, background: '#005B98', zIndex: 7, pointerEvents: 'none' }}>
+                <span style={{ position: 'absolute', left: 0, top: -4, width: 9, height: 9, borderRadius: '50%', background: '#005B98' }} />
+              </div>
+            )}
             {/* 有時間的任務 */}
             {tasks.filter(t => t.due_date === d && t.due_time).map(t => {
               const top = yOf(toMin(t.due_time));
@@ -506,7 +565,7 @@ export default function CalendarView({ tasks, reload }) {
               onClick={() => { setAnchor(c.ds); setView('day'); }} style={{ cursor: 'pointer' }}>
               <span className="dnum">{c.day}</span>
               {marksOn(c.ds).map(a => (
-                <div key={'a' + a.id} style={{ fontSize: 9, color: a.color || 'var(--primary)', overflow: 'hidden', whiteSpace: 'nowrap', textOverflow: 'ellipsis' }}
+                <div key={'a' + a.id} style={{ fontSize: 9, color: 'var(--text)', overflow: 'hidden', whiteSpace: 'nowrap', textOverflow: 'ellipsis' }}
                   onClick={ev => { ev.stopPropagation(); setEditEv({ ...a }); }}>{markIcon(a.kind)}{a.title}</div>
               ))}
               {eventsOn(c.ds).slice(0, 2).map(e => (
@@ -656,12 +715,13 @@ export default function CalendarView({ tasks, reload }) {
               <button className="btn sm ghost" style={{ color: 'var(--red)' }} onClick={() => deleteEvent(editEv)}>刪除</button>
               <button className="btn sm" style={{ marginLeft: 'auto' }} onClick={saveEvent}>儲存</button>
             </div>
-            <ColorPicker value={editEv.color} onPick={c => setEditEv(v => ({ ...v, color: c }))} />
+            {/* 重要日子只是日期下的文字標記，不用顏色 */}
+            {!editEv.kind && <ColorPicker value={editEv.color} onPick={c => setEditEv(v => ({ ...v, color: c }))} />}
           </div>
         </div>
       )}
 
-      {/* 紀念日／生日 */}
+      {/* 重要日子 */}
       {annivForm && (
         <div className="cal-modal-back" onClick={() => setAnnivForm(null)}>
           <div className="tile cal-modal" onClick={e => e.stopPropagation()}>
@@ -684,7 +744,6 @@ export default function CalendarView({ tasks, reload }) {
               <input type="checkbox" checked={annivForm.recurring === 'yearly'} onChange={e => setAnnivForm(v => ({ ...v, recurring: e.target.checked ? 'yearly' : '' }))} />
               <span>每年重複（會顯示第幾週年）</span>
             </label>
-            <ColorPicker value={annivForm.color} onPick={c => setAnnivForm(v => ({ ...v, color: c }))} />
             <div className="row" style={{ marginTop: 12 }}>
               <button className="btn sm ghost" onClick={() => setAnnivForm(null)}>取消</button>
               <button className="btn sm" style={{ marginLeft: 'auto' }} onClick={submitAnniv}>新增</button>
