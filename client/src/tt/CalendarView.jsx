@@ -9,6 +9,7 @@ const WD = ['一', '二', '三', '四', '五', '六', '日'];
 const HOURS = Array.from({ length: 18 }, (_, i) => i + 6); // 06:00–23:00
 const ROW = 44;
 const H0 = 6;                                       // 時間軸起點小時
+const NOW_LINE = '#8AC4DE';                         // 現在時間線：淺天空藍，襯在行程後面
 const toMin = t => +t.slice(0, 2) * 60 + +t.slice(3, 5);
 const yOf = m => (m - H0 * 60) / 60 * ROW;          // 分鐘 → 垂直位置
 // 依背景色自動選黑/白字，確保看得清楚
@@ -449,11 +450,17 @@ export default function CalendarView({ tasks, reload }) {
             ))}
           </div>
         ))}
-        {/* 時間刻度 */}
+        {/* 時間刻度（現在時間線也延伸到這裡，並標出目前時刻） */}
         <div style={{ position: 'relative', height: totalH }}>
           {HOURS.map((h, i) => (
             <div key={h} style={{ position: 'absolute', top: i * ROW - 6, right: 4, fontSize: 11, color: 'var(--muted)' }}>{String(h).padStart(2, '0')}:00</div>
           ))}
+          {days.includes(today()) && nowMin >= H0 * 60 && nowMin <= 24 * 60 && (
+            <>
+              <div style={{ position: 'absolute', top: yOf(nowMin), left: 0, right: 0, height: 2, background: NOW_LINE, zIndex: 1 }} />
+              <div style={{ position: 'absolute', top: yOf(nowMin) - 7, right: 4, fontSize: 10, fontWeight: 700, color: NOW_LINE, background: 'var(--bg)', padding: '0 2px', zIndex: 2 }}>{hm(nowMin)}</div>
+            </>
+          )}
         </div>
         {/* 每一天一欄：格線 + 絕對定位的行程/任務區塊 */}
         {days.map(d => (
@@ -497,10 +504,10 @@ export default function CalendarView({ tasks, reload }) {
               border: '2px dashed var(--primary)', borderRadius: 6, background: 'rgba(0,134,204,.14)',
               alignItems: 'center', justifyContent: 'center', fontSize: 11, fontWeight: 700, color: 'var(--primary)',
             }} />
-            {/* 現在時間線（只畫在今天那一欄） */}
+            {/* 現在時間線：淺色、在行程後面（zIndex 1 < 行程的 2） */}
             {d === today() && nowMin >= H0 * 60 && nowMin <= 24 * 60 && (
-              <div style={{ position: 'absolute', top: yOf(nowMin), left: 0, right: 0, height: 2, background: '#005B98', zIndex: 7, pointerEvents: 'none' }}>
-                <span style={{ position: 'absolute', left: 0, top: -4, width: 9, height: 9, borderRadius: '50%', background: '#005B98' }} />
+              <div style={{ position: 'absolute', top: yOf(nowMin), left: 0, right: 0, height: 2, background: NOW_LINE, zIndex: 1, pointerEvents: 'none' }}>
+                <span style={{ position: 'absolute', left: 0, top: -3, width: 8, height: 8, borderRadius: '50%', background: NOW_LINE }} />
               </div>
             )}
             {/* 有時間的任務 */}
