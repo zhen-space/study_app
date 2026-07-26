@@ -390,13 +390,21 @@ export default function CalendarView({ tasks, reload }) {
     setAnnivForm(null);
     loadEvents();
   }
-  function openAdd(date = anchor) {
+  // 點格子新增：預設就是點到的那個時段（像 Apple 日曆）
+  function openAdd(date = anchor, startMin = null) {
     setAddMenu(false);
-    setAddForm({ title: '', date, start_time: '08:00', end_time: '09:00', location: '', color: '', recurring: '' });
+    const s = startMin == null ? 8 * 60 : startMin;
+    setAddForm({ title: '', date, start_time: hm(s), end_time: hm(Math.min(s + durH * 60, 24 * 60 - 5)), location: '', color: '', recurring: '', allDay: false });
   }
   async function submitAdd() {
     if (!addForm.title.trim()) { alert('請輸入行程名稱'); return; }
-    await api('/events', { method: 'POST', body: { ...addForm, title: addForm.title.trim(), recurring: addForm.recurring || null } });
+    const { allDay, ...f } = addForm;
+    await api('/events', {
+      method: 'POST',
+      body: allDay
+        ? { title: f.title.trim(), date: f.date, kind: 'day', recurring: null }   // 全天＝日期下的標記
+        : { ...f, title: f.title.trim(), recurring: f.recurring || null },
+    });
     setAddForm(null);
     loadEvents();
   }
@@ -522,9 +530,9 @@ export default function CalendarView({ tasks, reload }) {
             {HOURS.map((h, i) => (
               <div key={h} style={{ position: 'absolute', top: i * ROW, left: 0, right: 0, height: ROW }}>
                 {/* 有剪貼簿內容時點格子＝貼上，否則＝新增 */}
-                <div onClick={() => clip ? pasteAt(d, h * 60) : openAdd(d)} title={clip ? '點一下貼上' : '點一下新增行程'}
+                <div onClick={() => clip ? pasteAt(d, h * 60) : openAdd(d, h * 60)} title={clip ? '點一下貼上' : '點一下新增行程'}
                   style={{ position: 'absolute', top: 0, left: 0, right: 0, height: ROW / 2, borderTop: '1px solid var(--border)', cursor: 'pointer' }} />
-                <div onClick={() => clip ? pasteAt(d, h * 60 + 30) : openAdd(d)}
+                <div onClick={() => clip ? pasteAt(d, h * 60 + 30) : openAdd(d, h * 60 + 30)}
                   style={{ position: 'absolute', top: ROW / 2, left: 0, right: 0, height: ROW / 2, borderTop: '1px dashed rgba(120,120,128,.18)', cursor: 'pointer' }} />
               </div>
             ))}
@@ -757,55 +765,72 @@ export default function CalendarView({ tasks, reload }) {
         </>
       )}
 
-      {/* 編輯行程：名稱、時間、顏色、刪除 */}
+      {/* 編輯行程：同樣是 Apple 日曆式版面 */}
       {editEv && (
         <div className="cal-modal-back" onClick={() => setEditEv(null)}>
-          <div className="tile cal-modal" onClick={e => e.stopPropagation()}>
-            <input className="title" value={editEv.title} placeholder="行程名稱"
-              onChange={e => setEditEv(v => ({ ...v, title: e.target.value }))} style={{ fontSize: 17, fontWeight: 700, width: '100%' }} />
-            <div className="row" style={{ marginTop: 8 }}>
-              <span className="muted">日期</span>
-              <input type="date" value={editEv.date || ''} onChange={e => setEditEv(v => ({ ...v, date: e.target.value }))} />
+          <div className="ev-sheet" onClick={e => e.stopPropagation()}>
+            <div className="ev-nav">
+              <button onClick={() => setEditEv(null)}>取消</button>
+              <b>{editEv.kind ? '編輯重要日子' : '編輯行程'}</b>
+              <button className="done" onClick={saveEvent}>完成</button>
             </div>
-            {/* 重要日子（全天標記）沒有時間、地點；一般行程才有 */}
-            {editEv.kind ? (
-              <>
-                <div className="row" style={{ marginTop: 8 }}>
+
+            <div className="ev-group">
+              <div className="ev-row ev-title">
+                <input value={editEv.title} placeholder="標題" onChange={e => setEditEv(v => ({ ...v, title: e.target.value }))} />
+              </div>
+              {!editEv.kind && (
+                <div className="ev-row">
+                  <input value={editEv.location || ''} placeholder="地點" onChange={e => setEditEv(v => ({ ...v, location: e.target.value }))} />
+                </div>
+              )}
+            </div>
+
+            <div className="ev-group">
+              {editEv.kind && (
+                <div className="ev-row" style={{ flexWrap: 'wrap' }}>
                   {MARKS.map(([k, ic, name]) => (
                     <span key={k} className={'tag-pill' + (editEv.kind === k ? ' on' : '')} style={{ cursor: 'pointer' }}
                       onClick={() => setEditEv(v => ({ ...v, kind: k }))}>{ic} {name}</span>
                   ))}
                 </div>
-                <label className="row" style={{ marginTop: 8 }}>
-                  <input type="checkbox" checked={editEv.recurring === 'yearly'} onChange={e => setEditEv(v => ({ ...v, recurring: e.target.checked ? 'yearly' : null }))} />
-                  <span>每年重複</span>
-                </label>
-              </>
-            ) : (
-              <>
-                <div className="row" style={{ marginTop: 8 }}>
-                  <span className="muted">時間</span>
-                  <input type="time" value={editEv.start_time?.slice(0, 5)}
-                    onChange={e => setEditEv(v => shiftStart(v, e.target.value))} />
-                  <span>–</span>
+              )}
+              <div className="ev-row">
+                <span className="lb grow">{editEv.kind ? '日期' : '開始'}</span>
+                <input type="date" value={editEv.date || ''} onChange={e => setEditEv(v => ({ ...v, date: e.target.value }))} />
+                {!editEv.kind && <input type="time" value={editEv.start_time?.slice(0, 5)} onChange={e => setEditEv(v => shiftStart(v, e.target.value))} />}
+              </div>
+              {!editEv.kind && (
+                <div className="ev-row">
+                  <span className="lb grow">結束</span>
                   <input type="time" value={editEv.end_time?.slice(0, 5)} onChange={e => setEditEv(v => ({ ...v, end_time: e.target.value }))} />
-                  <select value={durH} onChange={e => { const h = +e.target.value; pickDur(h); setEditEv(v => ({ ...v, end_time: addH(v.start_time, h) })); }} style={{ fontSize: 12, padding: '4px 22px 4px 6px' }}>
+                  <select value={durH} title="快速設定時長"
+                    onChange={e => { const h = +e.target.value; pickDur(h); setEditEv(v => ({ ...v, end_time: addH(v.start_time, h) })); }}>
                     {DUR_OPTS.map(h => <option key={h} value={h}>＋{h}時</option>)}
                   </select>
                 </div>
-                <div className="row" style={{ marginTop: 8 }}>
-                  <span className="muted">地點</span>
-                  <input value={editEv.location || ''} placeholder="（選填）" onChange={e => setEditEv(v => ({ ...v, location: e.target.value }))} style={{ flex: 1 }} />
-                </div>
-                {editEv.recurring && <div className="muted" style={{ marginTop: 6 }}>每週重複・改動會套用到每一週</div>}
-              </>
-            )}
-            <div className="row" style={{ marginTop: 12 }}>
-              <button className="btn sm ghost" style={{ color: 'var(--red)' }} onClick={() => deleteEvent(editEv)}>刪除</button>
-              <button className="btn sm" style={{ marginLeft: 'auto' }} onClick={saveEvent}>儲存</button>
+              )}
+              <div className="ev-row">
+                <span className="lb grow">重複</span>
+                {editEv.kind
+                  ? <select value={editEv.recurring || ''} onChange={e => setEditEv(v => ({ ...v, recurring: e.target.value || null }))}>
+                      <option value="">永不</option><option value="yearly">每年</option>
+                    </select>
+                  : <span className="muted">{editEv.recurring === 'weekly' ? '每週・改動套用到每一週' : '永不'}</span>}
+              </div>
             </div>
-            {/* 重要日子只是日期下的文字標記，不用顏色 */}
-            {!editEv.kind && <ColorPicker value={editEv.color} onPick={c => setEditEv(v => ({ ...v, color: c }))} />}
+
+            {!editEv.kind && (
+              <div className="ev-group" style={{ padding: '4px 14px 10px' }}>
+                <ColorPicker value={editEv.color} onPick={c => setEditEv(v => ({ ...v, color: c }))} />
+              </div>
+            )}
+
+            <div className="ev-group">
+              <div className="ev-row" style={{ justifyContent: 'center', color: 'var(--red)', cursor: 'pointer' }} onClick={() => deleteEvent(editEv)}>
+                刪除行程
+              </div>
+            </div>
           </div>
         </div>
       )}
@@ -841,40 +866,60 @@ export default function CalendarView({ tasks, reload }) {
         </div>
       )}
 
-      {/* 手動新增行程 */}
+      {/* 新增行程：Apple 日曆式（底部彈出＋分組列表） */}
       {addForm && (
         <div className="cal-modal-back" onClick={() => setAddForm(null)}>
-          <div className="tile cal-modal" onClick={e => e.stopPropagation()}>
-            <b>新增行程</b>
-            <input value={addForm.title} placeholder="行程名稱（如：數學課、補習）" autoFocus
-              onChange={e => setAddForm(v => ({ ...v, title: e.target.value }))} style={{ width: '100%', marginTop: 8 }} />
-            <div className="row" style={{ marginTop: 8 }}>
-              <span className="muted">日期</span>
-              <input type="date" value={addForm.date} onChange={e => setAddForm(v => ({ ...v, date: e.target.value }))} />
+          <div className="ev-sheet" onClick={e => e.stopPropagation()}>
+            <div className="ev-nav">
+              <button onClick={() => setAddForm(null)}>取消</button>
+              <b>新增行程</b>
+              <button className="done" disabled={!addForm.title.trim()} onClick={submitAdd}>加入</button>
             </div>
-            <div className="row" style={{ marginTop: 8 }}>
-              <span className="muted">時間</span>
-              <input type="time" value={addForm.start_time}
-                onChange={e => setAddForm(v => shiftStart(v, e.target.value))} />
-              <span>–</span>
-              <input type="time" value={addForm.end_time} onChange={e => setAddForm(v => ({ ...v, end_time: e.target.value }))} />
-              <select value={durH} onChange={e => { const h = +e.target.value; pickDur(h); setAddForm(v => ({ ...v, end_time: addH(v.start_time, h) })); }} style={{ fontSize: 12, padding: '4px 22px 4px 6px' }}>
-                {DUR_OPTS.map(h => <option key={h} value={h}>＋{h}時</option>)}
-              </select>
+
+            <div className="ev-group">
+              <div className="ev-row ev-title">
+                <input value={addForm.title} placeholder="標題" autoFocus
+                  onChange={e => setAddForm(v => ({ ...v, title: e.target.value }))} />
+              </div>
+              <div className="ev-row">
+                <input value={addForm.location} placeholder="地點" onChange={e => setAddForm(v => ({ ...v, location: e.target.value }))} />
+              </div>
             </div>
-            <div className="row" style={{ marginTop: 8 }}>
-              <span className="muted">地點</span>
-              <input value={addForm.location} placeholder="（選填）" onChange={e => setAddForm(v => ({ ...v, location: e.target.value }))} style={{ flex: 1 }} />
+
+            <div className="ev-group">
+              <div className="ev-row">
+                <span className="lb grow">全天</span>
+                <span className={'ios-sw' + (addForm.allDay ? ' on' : '')} onClick={() => setAddForm(v => ({ ...v, allDay: !v.allDay }))}><i /></span>
+              </div>
+              <div className="ev-row">
+                <span className="lb grow">開始</span>
+                <input type="date" value={addForm.date} onChange={e => setAddForm(v => ({ ...v, date: e.target.value }))} />
+                {!addForm.allDay && <input type="time" value={addForm.start_time} onChange={e => setAddForm(v => shiftStart(v, e.target.value))} />}
+              </div>
+              {!addForm.allDay && (
+                <div className="ev-row">
+                  <span className="lb grow">結束</span>
+                  <input type="time" value={addForm.end_time} onChange={e => setAddForm(v => ({ ...v, end_time: e.target.value }))} />
+                  <select value={durH} title="快速設定時長"
+                    onChange={e => { const h = +e.target.value; pickDur(h); setAddForm(v => ({ ...v, end_time: addH(v.start_time, h) })); }}>
+                    {DUR_OPTS.map(h => <option key={h} value={h}>＋{h}時</option>)}
+                  </select>
+                </div>
+              )}
+              <div className="ev-row">
+                <span className="lb grow">重複</span>
+                <select value={addForm.recurring || ''} onChange={e => setAddForm(v => ({ ...v, recurring: e.target.value }))}>
+                  <option value="">永不</option>
+                  <option value="weekly">每週（固定課表）</option>
+                </select>
+              </div>
             </div>
-            <label className="row" style={{ marginTop: 8 }}>
-              <input type="checkbox" checked={addForm.recurring === 'weekly'} onChange={e => setAddForm(v => ({ ...v, recurring: e.target.checked ? 'weekly' : '' }))} />
-              <span>每週重複（固定課表）</span>
-            </label>
-            <div className="row" style={{ marginTop: 12 }}>
-              <button className="btn sm ghost" onClick={() => setAddForm(null)}>取消</button>
-              <button className="btn sm" style={{ marginLeft: 'auto' }} onClick={submitAdd}>新增</button>
-            </div>
-            <ColorPicker value={addForm.color} onPick={c => setAddForm(v => ({ ...v, color: c }))} />
+
+            {!addForm.allDay && (
+              <div className="ev-group" style={{ padding: '4px 14px 10px' }}>
+                <ColorPicker value={addForm.color} onPick={c => setAddForm(v => ({ ...v, color: c }))} />
+              </div>
+            )}
           </div>
         </div>
       )}

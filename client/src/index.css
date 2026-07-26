@@ -135,7 +135,34 @@ select { -webkit-appearance: none; appearance: none; padding-right: 26px;
   box-shadow: var(--shadow); padding: 6px; min-width: 168px; }
 .add-menu > div, .add-menu > label { display: flex; align-items: center; gap: 8px; padding: 9px 10px; border-radius: 8px; cursor: pointer; font-size: 14px; }
 .add-menu > div:hover, .add-menu > label:hover { background: var(--fill); }
+/* Apple 日曆式新增/編輯行程：底部彈出 + iOS 分組列表 */
+.ev-sheet { width: 460px; max-width: 100%; max-height: 88vh; overflow-y: auto; -webkit-overflow-scrolling: touch; overscroll-behavior: contain;
+  background: var(--bg); border-radius: 20px; padding: 14px 16px calc(18px + env(safe-area-inset-bottom)); box-shadow: var(--shadow); }
+.ev-nav { display: flex; align-items: center; justify-content: space-between; padding: 2px 0 14px; position: sticky; top: 0; background: var(--bg); z-index: 2; }
+.ev-nav b { font-size: 16px; }
+.ev-nav button { color: var(--primary); font-size: 16px; padding: 4px; }
+.ev-nav button.done { font-weight: 700; }
+.ev-nav button:disabled { color: var(--muted); opacity: .5; }
+.ev-group { background: var(--card); border-radius: 12px; overflow: hidden; margin-bottom: 18px; }
+.ev-row { display: flex; align-items: center; gap: 10px; min-height: 46px; padding: 8px 14px; border-bottom: 1px solid var(--border); }
+.ev-row:last-child { border-bottom: none; }
+.ev-row > .lb { color: var(--text); flex-shrink: 0; min-width: 52px; }
+.ev-row input[type=text], .ev-row input:not([type]) { flex: 1; min-width: 0; background: none; padding: 6px 0; border-radius: 0; }
+.ev-row input[type=date], .ev-row input[type=time] { background: var(--fill); padding: 5px 8px; font-size: 15px; }
+.ev-row select { background: none; padding: 6px 22px 6px 0; text-align: right; color: var(--muted); }
+.ev-row .grow { flex: 1; }
+.ev-title input { font-size: 17px; font-weight: 600; }
+/* iOS 開關 */
+.ios-sw { width: 50px; height: 30px; border-radius: 15px; background: var(--fill-strong); position: relative; transition: background .18s; flex-shrink: 0; cursor: pointer; }
+.ios-sw.on { background: var(--green); }
+.ios-sw i { position: absolute; top: 2px; left: 2px; width: 26px; height: 26px; border-radius: 50%; background: #fff; box-shadow: 0 1px 3px rgba(0,0,0,.25); transition: transform .18s; }
+.ios-sw.on i { transform: translateX(20px); }
+
 .cal-modal-back { position: fixed; inset: 0; background: rgba(0,0,0,.35); z-index: 50; display: flex; align-items: center; justify-content: center; padding: 16px; }
+@media (max-width: 700px) {
+  .cal-modal-back { align-items: flex-end; padding: 0; }
+  .ev-sheet { border-radius: 20px 20px 0 0; max-height: 92vh; width: 100%; }
+}
 .cal-modal { width: 320px; max-width: 100%; max-height: 84vh; overflow-y: auto; -webkit-overflow-scrolling: touch; overscroll-behavior: contain; }
 /* 匯入預覽：一行式（日期 名稱 … 時間），無框，點擊即打字 */
 .imp-row { display: flex; gap: 6px; align-items: center; padding: 9px 2px; border-top: 1px solid var(--border); }
