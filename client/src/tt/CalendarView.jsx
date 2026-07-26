@@ -283,17 +283,50 @@ export default function CalendarView({ tasks, reload }) {
     const e = events.find(x => x.id === dragRef.current.id);
     if (e) updatePreview(ev.clientX, ev.clientY, e, dragRef.current.offY);
   }
+  // 長按（或桌機右鍵）行程 → 複製／刪除選單
+  const [evMenu, setEvMenu] = useState(null); // { ev, x, y }
+  const pressTimer = useRef(null);
+  const suppressClick = useRef(false);
+  async function duplicateEvent(e) {
+    setEvMenu(null);
+    // 複製成當天的單次行程（要每週重複可再開編輯調整）。
+    // 時間接在原行程後面，不然疊在同一位置會完全看不到；放不下就往前接
+    let start = e.start_time, end = e.end_time;
+    if (!e.kind) {
+      const dur = toMin(e.end_time) - toMin(e.start_time);
+      let s = toMin(e.end_time);
+      if (s + dur > 24 * 60 - 5) s = Math.max(H0 * 60, toMin(e.start_time) - dur);
+      start = hm(s); end = hm(Math.min(s + dur, 24 * 60 - 5));
+    }
+    await api('/events', {
+      method: 'POST',
+      body: { title: e.title, date: e.date, start_time: start, end_time: end, location: e.location || '', color: e.color || '', kind: e.kind || '', recurring: null },
+    });
+    loadEvents();
+  }
+
   // 手機觸控拖曳：按住行程移動就拖（超過門檻才算拖，只是點一下＝開編輯）
   const touchDrag = useRef(null);
   function onEvTouchStart(ev, e) {
     const rect = ev.currentTarget.getBoundingClientRect();
     const t = ev.touches[0];
-    touchDrag.current = { id: e.id, offY: t.clientY - rect.top, x0: t.clientX, y0: t.clientY, moved: false, el: ev.currentTarget };
+    touchDrag.current = { id: e.id, offY: t.clientY - rect.top, x0: t.clientX, y0: t.clientY, moved: false, el: ev.currentTarget, longPressed: false };
+    // 按住不動 0.5 秒 → 出選單（一移動就取消，改成拖曳）
+    clearTimeout(pressTimer.current);
+    pressTimer.current = setTimeout(() => {
+      const d = touchDrag.current;
+      if (!d || d.moved) return;
+      d.longPressed = true;
+      if (d.el) d.el.style.opacity = '';
+      clearPreview();
+      setEvMenu({ ev: e, x: t.clientX, y: t.clientY });
+    }, 500);
   }
   function onEvTouchMove(ev) {
     const d = touchDrag.current; if (!d) return;
+    if (d.longPressed) return;                 // 選單開著就不拖
     const t = ev.touches[0];
-    if (!d.moved && Math.hypot(t.clientX - d.x0, t.clientY - d.y0) > 12) d.moved = true;
+    if (!d.moved && Math.hypot(t.clientX - d.x0, t.clientY - d.y0) > 12) { d.moved = true; clearTimeout(pressTimer.current); }
     if (!d.moved) return;
     ev.preventDefault();                       // 拖起來就不捲動
     if (d.el) d.el.style.opacity = '.35';      // 原位置變淡，預覽框顯示目的地
@@ -303,9 +336,11 @@ export default function CalendarView({ tasks, reload }) {
   async function onEvTouchEnd(ev) {
     const d = touchDrag.current; touchDrag.current = null;
     const prev = lastPrev.current;
+    clearTimeout(pressTimer.current);
     clearPreview();
     if (!d) return;
     if (d.el) d.el.style.opacity = '';
+    if (d.longPressed) { suppressClick.current = true; return; } // 長按已開選單，別再觸發點擊
     if (!d.moved) return; // 只是點一下 → onClick 開編輯
     const e = events.find(x => x.id === d.id);
     if (!e || !prev || prev.id !== e.id) return;
@@ -479,7 +514,10 @@ export default function CalendarView({ tasks, reload }) {
               const bg = e.color || '#ffffff';
               const dark = textOn(e.color) === '#fff';
               return (
-                <div key={'e' + e.id} onClick={ev => { ev.stopPropagation(); setEditEv({ ...e }); }} title="點一下編輯，拖曳可移到別天/別的時段"
+                <div key={'e' + e.id}
+                  onClick={ev => { ev.stopPropagation(); if (suppressClick.current) { suppressClick.current = false; return; } setEditEv({ ...e }); }}
+                  onContextMenu={ev => { ev.preventDefault(); ev.stopPropagation(); setEvMenu({ ev: e, x: ev.clientX, y: ev.clientY }); }}
+                  title="點一下編輯，長按可複製/刪除，拖曳可移到別天/別的時段"
                   draggable={canDrag} onDragStart={ev => {
                     dragRef.current = { id: e.id, offY: ev.clientY - ev.currentTarget.getBoundingClientRect().top };
                     ev.dataTransfer.setData('text/ev-id', String(e.id));
@@ -674,6 +712,21 @@ export default function CalendarView({ tasks, reload }) {
         {view === 'week' && <><HourGrid days={weekDays} /><Undone /></>}
         {view === 'month' && <><MonthGrid /><Undone /></>}
       </div>
+
+      {/* 長按行程的選單：複製／刪除 */}
+      {evMenu && (
+        <>
+          <div style={{ position: 'fixed', inset: 0, zIndex: 60 }} onClick={() => setEvMenu(null)} onTouchStart={() => setEvMenu(null)} />
+          <div className="add-menu" style={{
+            position: 'fixed', zIndex: 61,
+            left: Math.min(evMenu.x, window.innerWidth - 150), top: Math.min(evMenu.y, window.innerHeight - 120),
+          }}>
+            <div style={{ fontWeight: 600, opacity: .7, fontSize: 12, cursor: 'default' }}>{evMenu.ev.title}</div>
+            <div onClick={() => duplicateEvent(evMenu.ev)}><Icon name="plus" size={15} /> 複製</div>
+            <div style={{ color: 'var(--red)' }} onClick={() => { const t = evMenu.ev; setEvMenu(null); deleteEvent(t); }}><Icon name="trash" size={15} /> 刪除</div>
+          </div>
+        </>
+      )}
 
       {/* 編輯行程：名稱、時間、顏色、刪除 */}
       {editEv && (
