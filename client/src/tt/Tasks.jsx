@@ -164,22 +164,48 @@ function RepeatPicker({ value, dueDate, missPolicy, onChange }) {
   );
 }
 
-function TaskRow({ t, lists, sel, onSel, onToggle, onDragStart, onDropOn }) {
+function TaskRow({ t, lists, sel, onSel, onToggle, onDragStart, onDropOn, onSwipeDelete }) {
   const list = lists.find(l => l.id === t.list_id);
   const overdue = t.due_date && t.due_date < today() && !t.completed;
+  // 右滑刪除：滑超過 90px 放開就刪（可用底部的「復原」救回）
+  const sw = useRef(null);
+  const [dx, setDx] = useState(0);
+  const rowRef = useRef(null);
+  const start = e => { if (!onSwipeDelete) return; const p = e.touches[0]; sw.current = { x: p.clientX, y: p.clientY, on: false }; };
+  const move = e => {
+    const s = sw.current; if (!s) return;
+    const p = e.touches[0];
+    const ax = p.clientX - s.x, ay = p.clientY - s.y;
+    if (!s.on) { if (Math.abs(ax) > 12 && Math.abs(ax) > Math.abs(ay) * 1.5) s.on = true; else if (Math.abs(ay) > 12) { sw.current = null; return; } }
+    if (s.on) { e.preventDefault(); setDx(Math.max(0, ax)); }   // 只往右滑
+  };
+  const end = () => {
+    const s = sw.current; sw.current = null;
+    if (s?.on && dx > 90) { setDx(0); onSwipeDelete(t); return; }
+    setDx(0);
+  };
   return (
-    <div className={'trow' + (t.completed ? ' done' : '') + (sel ? ' sel' : '')} onClick={() => onSel(t)}
-      draggable={!!onDragStart}
-      onDragStart={onDragStart ? () => onDragStart(t) : undefined}
-      onDragOver={onDropOn ? e => e.preventDefault() : undefined}
-      onDrop={onDropOn ? () => onDropOn(t) : undefined}>
-      <input type="checkbox" checked={!!t.completed} onClick={e => e.stopPropagation()} onChange={() => onToggle(t)} />
-      {t.priority > 0 && <span className={PRI[t.priority][1]}>⚑</span>}
-      <span className="title">{t.title}</span>
-      {t.subtasks.length > 0 && <span className="chip">{t.subtasks.filter(s => s.done).length}/{t.subtasks.length}</span>}
-      {t.tags.map(tag => <span key={tag} className="chip">#{tag}</span>)}
-      {t.due_date && <span className="muted" style={overdue ? { color: 'var(--red)' } : {}}>{t.due_date.slice(5)}{t.due_time ? ' ' + t.due_time : ''}</span>}
-      {list && <span className="dot" style={{ background: list.color }} title={list.name} />}
+    <div style={{ position: 'relative', overflow: 'hidden' }}>
+      {dx > 0 && (
+        <div style={{ position: 'absolute', inset: 0, display: 'flex', alignItems: 'center', paddingLeft: 14, borderRadius: 10, background: dx > 90 ? 'var(--red)' : 'var(--fill-strong)', color: dx > 90 ? '#fff' : 'var(--muted)', fontSize: 13, fontWeight: 600 }}>
+          🗑 {dx > 90 ? '放開就刪除' : '再滑一點'}
+        </div>
+      )}
+      <div ref={rowRef} className={'trow' + (t.completed ? ' done' : '') + (sel ? ' sel' : '')} onClick={() => { if (dx < 6) onSel(t); }}
+        draggable={!!onDragStart}
+        onDragStart={onDragStart ? () => onDragStart(t) : undefined}
+        onDragOver={onDropOn ? e => e.preventDefault() : undefined}
+        onDrop={onDropOn ? () => onDropOn(t) : undefined}
+        onTouchStart={start} onTouchMove={move} onTouchEnd={end} onTouchCancel={end}
+        style={{ transform: dx ? `translateX(${dx}px)` : undefined, transition: dx ? 'none' : 'transform .18s', position: 'relative', background: 'var(--card)' }}>
+        <input type="checkbox" checked={!!t.completed} onClick={e => e.stopPropagation()} onChange={() => onToggle(t)} />
+        {t.priority > 0 && <span className={PRI[t.priority][1]}>⚑</span>}
+        <span className="title">{t.title}</span>
+        {t.subtasks.length > 0 && <span className="chip">{t.subtasks.filter(s => s.done).length}/{t.subtasks.length}</span>}
+        {t.tags.map(tag => <span key={tag} className="chip">#{tag}</span>)}
+        {t.due_date && <span className="muted" style={overdue ? { color: 'var(--red)' } : {}}>{t.due_date.slice(5)}{t.due_time ? ' ' + t.due_time : ''}</span>}
+        {list && <span className="dot" style={{ background: list.color }} title={list.name} />}
+      </div>
     </div>
   );
 }
@@ -479,7 +505,8 @@ export default function Tasks({ view, tasks, lists, filters, habits = [], reload
                   <div className="glabel">{label}</div>
                   {sorted.map(t => <TaskRow key={t.id} t={t} lists={lists} sel={t.id === selId} onSel={x => setSelId(x.id)} onToggle={toggle}
                     onDragStart={canDrag ? setDragT : undefined}
-                    onDropOn={canDrag ? x => dropOn(x, sorted) : undefined} />)}
+                    onDropOn={canDrag ? x => dropOn(x, sorted) : undefined}
+                    onSwipeDelete={del} />)}
                 </div>
               );
             })}
@@ -512,7 +539,7 @@ export default function Tasks({ view, tasks, lists, filters, habits = [], reload
           {view.type === 'today' && (
             <div className="tgroup" style={{ marginTop: 24, borderTop: '2px dashed var(--border)', paddingTop: 12 }}>
               <div className="glabel">💭 願望清單（想做、要記得的事）</div>
-              {wishes.map(t => <TaskRow key={t.id} t={t} lists={lists} sel={t.id === selId} onSel={x => setSelId(x.id)} onToggle={toggle} />)}
+              {wishes.map(t => <TaskRow key={t.id} t={t} lists={lists} sel={t.id === selId} onSel={x => setSelId(x.id)} onToggle={toggle} onSwipeDelete={del} />)}
               <form onSubmit={addWish} style={{ marginTop: 6 }}>
                 <input placeholder="＋ 記一件想做的事…" value={wish} onChange={e => setWish(e.target.value)}
                   style={{ width: '100%', background: 'var(--bg)', border: '1px dashed var(--border)' }} />

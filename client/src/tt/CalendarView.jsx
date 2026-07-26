@@ -287,10 +287,28 @@ export default function CalendarView({ tasks, reload }) {
   const [evMenu, setEvMenu] = useState(null); // { ev, x, y }
   const pressTimer = useRef(null);
   const suppressClick = useRef(false);
+  // 剪貼簿：複製／剪下後，點日曆空格貼上（跟電腦一樣）
+  const [clip, setClip] = useState(null); // { ev, mode: 'copy' | 'cut' }
+  async function pasteAt(day, startMin) {
+    if (!clip) return;
+    const e = clip.ev;
+    const dur = Math.max(5, toMin(e.end_time) - toMin(e.start_time));
+    const s = Math.max(H0 * 60, Math.min(24 * 60 - 5 - dur, startMin));
+    setClip(null);
+    if (clip.mode === 'cut') {                       // 剪下＝搬過去
+      setEvents(list => list.map(x => x.id === e.id ? { ...x, date: day, start_time: hm(s), end_time: hm(s + dur) } : x));
+      await api(`/events/${e.id}`, { method: 'PATCH', body: { date: day, start_time: hm(s), end_time: hm(s + dur) } }).catch(err => alert('貼上失敗：' + err.message));
+    } else {                                          // 複製＝新增一筆
+      await api('/events', {
+        method: 'POST',
+        body: { title: e.title, date: day, start_time: hm(s), end_time: hm(s + dur), location: e.location || '', color: e.color || '', recurring: null },
+      }).catch(err => alert('貼上失敗：' + err.message));
+    }
+    loadEvents();
+  }
+  // 複製一份接在原行程後面（不用貼上，直接產生）
   async function duplicateEvent(e) {
     setEvMenu(null);
-    // 複製成當天的單次行程（要每週重複可再開編輯調整）。
-    // 時間接在原行程後面，不然疊在同一位置會完全看不到；放不下就往前接
     let start = e.start_time, end = e.end_time;
     if (!e.kind) {
       const dur = toMin(e.end_time) - toMin(e.start_time);
@@ -503,8 +521,11 @@ export default function CalendarView({ tasks, reload }) {
             onDragOver={ev => onColDragOver(ev, d)} onDrop={ev => dropEvent(ev, d)}>
             {HOURS.map((h, i) => (
               <div key={h} style={{ position: 'absolute', top: i * ROW, left: 0, right: 0, height: ROW }}>
-                <div onClick={() => openAdd(d)} title="點一下新增行程" style={{ position: 'absolute', top: 0, left: 0, right: 0, height: ROW / 2, borderTop: '1px solid var(--border)', cursor: 'pointer' }} />
-                <div onClick={() => openAdd(d)} style={{ position: 'absolute', top: ROW / 2, left: 0, right: 0, height: ROW / 2, borderTop: '1px dashed rgba(120,120,128,.18)', cursor: 'pointer' }} />
+                {/* 有剪貼簿內容時點格子＝貼上，否則＝新增 */}
+                <div onClick={() => clip ? pasteAt(d, h * 60) : openAdd(d)} title={clip ? '點一下貼上' : '點一下新增行程'}
+                  style={{ position: 'absolute', top: 0, left: 0, right: 0, height: ROW / 2, borderTop: '1px solid var(--border)', cursor: 'pointer' }} />
+                <div onClick={() => clip ? pasteAt(d, h * 60 + 30) : openAdd(d)}
+                  style={{ position: 'absolute', top: ROW / 2, left: 0, right: 0, height: ROW / 2, borderTop: '1px dashed rgba(120,120,128,.18)', cursor: 'pointer' }} />
               </div>
             ))}
             {/* 既定行程：白底黑字，可點擊編輯、可拖曳到別天，高度＝時長 */}
@@ -704,7 +725,13 @@ export default function CalendarView({ tasks, reload }) {
             </div>
           </div>
         )}
-        {['day', '3day', 'week'].includes(view) && <div className="muted" style={{ margin: '6px 0' }}>點空格可直接新增該時段的行程</div>}
+        {clip
+          ? <div className="row" style={{ margin: '6px 0', padding: '6px 10px', borderRadius: 10, background: 'var(--primary-soft)', color: 'var(--primary)', fontSize: 13 }}>
+              <b>{clip.mode === 'cut' ? '✂️ 已剪下' : '📋 已複製'}「{clip.ev.title}」</b>
+              <span>點日曆上要放的時段就貼上</span>
+              <button className="btn sm ghost" style={{ marginLeft: 'auto' }} onClick={() => setClip(null)}>取消</button>
+            </div>
+          : ['day', '3day', 'week'].includes(view) && <div className="muted" style={{ margin: '6px 0' }}>點空格可直接新增行程・長按行程可複製/剪下/刪除</div>}
         {view === 'list' && <ListView />}
         {view === 'year' && <YearView />}
         {view === 'day' && <><HourGrid days={[anchor]} /><Undone /></>}
@@ -722,7 +749,9 @@ export default function CalendarView({ tasks, reload }) {
             left: Math.min(evMenu.x, window.innerWidth - 150), top: Math.min(evMenu.y, window.innerHeight - 120),
           }}>
             <div style={{ fontWeight: 600, opacity: .7, fontSize: 12, cursor: 'default' }}>{evMenu.ev.title}</div>
-            <div onClick={() => duplicateEvent(evMenu.ev)}><Icon name="plus" size={15} /> 複製</div>
+            <div onClick={() => { setClip({ ev: evMenu.ev, mode: 'copy' }); setEvMenu(null); }}>📋 複製</div>
+            {!evMenu.ev.kind && <div onClick={() => { setClip({ ev: evMenu.ev, mode: 'cut' }); setEvMenu(null); }}>✂️ 剪下</div>}
+            <div onClick={() => duplicateEvent(evMenu.ev)}><Icon name="plus" size={15} /> 複製一份到後面</div>
             <div style={{ color: 'var(--red)' }} onClick={() => { const t = evMenu.ev; setEvMenu(null); deleteEvent(t); }}><Icon name="trash" size={15} /> 刪除</div>
           </div>
         </>
