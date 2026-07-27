@@ -348,8 +348,19 @@ router.post('/toc', async (req, res) => {
     } else {
       const mx = await q.get('SELECT MAX(order_index) AS m FROM toc_items WHERE user_id=? AND list_id=?', [req.userId, list_id]);
       base = (mx?.m ?? -1) + 1;
-      // 追加照片通常是同一本的後幾頁：這批讀不到書名就沿用最近一本的
-      if (!book) {
+      if (req.body.book != null) {
+        // 補「某一本」的後幾頁：一律掛在那一本底下
+        book = req.body.book;
+        const same = await q.get('SELECT publisher FROM toc_items WHERE user_id=? AND list_id=? AND book=? LIMIT 1', [req.userId, list_id, book]);
+        publisher = publisher || same?.publisher || '';
+      } else if (req.body.forceNew) {
+        // 加一本新的書：絕不併進上一本；讀不到書名就自動編號
+        if (!book) {
+          const n = await q.get('SELECT COUNT(DISTINCT book) AS c FROM toc_items WHERE user_id=? AND list_id=?', [req.userId, list_id]);
+          book = `課本 ${(n?.c || 0) + 1}`;
+        }
+      } else if (!book) {
+        // 沒指定也沒強制新書：沿用最近一本（舊行為）
         const last = await q.get('SELECT book, publisher FROM toc_items WHERE user_id=? AND list_id=? ORDER BY order_index DESC LIMIT 1', [req.userId, list_id]);
         book = last?.book || '';
         publisher = publisher || last?.publisher || '';

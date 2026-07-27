@@ -290,18 +290,24 @@ export default function WizardView({ lists, reload, goTasks }) {
     reload();
   }
   // append=true 表示追加（不清掉既有章節，接在後面）
-  async function uploadTOC(l, e, append = false) {
+  // mode: 'replace'＝重拍整科｜'newbook'＝加一本新的書（不會併進上一本）｜{ book }＝補某一本的後幾頁
+  async function uploadTOC(l, e, mode = 'replace') {
     const fileList = [...e.target.files];
     if (!fileList.length) return;
     if (fileList.length > 12) { setTocMsg(m => ({ ...m, [l.id]: '一次最多 12 張照片' })); e.target.value = ''; return; }
+    const replace = mode === 'replace';
+    const targetBook = typeof mode === 'object' ? mode.book : null;
     setTocBusy(l.id);
     setTocMsg(m => ({ ...m, [l.id]: `🤖 AI 解讀 ${fileList.length} 張目錄中，約 30 秒～1 分鐘…` }));
     try {
       const files = [];
       for (const f of fileList) files.push({ filename: f.name, mime: f.type, data: await fileToB64(f) });
-      await api('/import/toc', { method: 'POST', body: { list_id: l.id, files, replace: !append } });
+      await api('/import/toc', {
+        method: 'POST',
+        body: { list_id: l.id, files, replace, forceNew: mode === 'newbook', book: targetBook },
+      });
       setTocs(await api('/import/toc'));
-      if (!append) setItems(a => a.filter(x => x.subject_id !== l.id || !String(x.key).startsWith('toc-')));
+      if (replace) setItems(a => a.filter(x => x.subject_id !== l.id || !String(x.key).startsWith('toc-')));
       setTocMsg(m => ({ ...m, [l.id]: '' }));
     } catch (err2) { setTocMsg(m => ({ ...m, [l.id]: err2.message })); }
     setTocBusy(null);
@@ -423,6 +429,14 @@ export default function WizardView({ lists, reload, goTasks }) {
     merged.forEach(it => { (mergedBySub[it.subject_id] = mergedBySub[it.subject_id] || []).push(it); });
     const chapTitle = {};
     tocs.forEach(r => { chapTitle[`toc-${r.id}`] = r.title; });
+    // 同一科有多本課本時，任務標題前面加書名，才知道是哪一本
+    const bookByToc = {};
+    tocs.forEach(r => { bookByToc[`toc-${r.id}`] = r.book || ''; });
+    const bookPrefix = (sid, key) => {
+      if (new Set(tocs.filter(t => t.list_id === sid).map(t => t.book || '')).size < 2) return '';
+      const b = bookByToc[String(key).split('+')[0].split('.')[0]];
+      return b ? `${b}｜` : '';
+    };
     Object.values(mergedBySub).forEach(list => {
       const sid = list[0].subject_id; // 保留原始型別（Object 的 key 會變字串，導致比對失敗、沒顏色）
       const normal = list.filter(it => !anyFlag(it, plainSel));
@@ -444,7 +458,7 @@ export default function WizardView({ lists, reload, goTasks }) {
           title: (() => {
             const base = String((it._members?.[0]) ?? it.key).split('+')[0].split('.')[0];
             const ch = base.startsWith('toc-') && base !== String(it.key).split('+')[0] ? chapTitle[base] : '';
-            return (ch ? `${ch}｜` : '') + it.title + (gNode?.length ? `｜${gNode.join('+')}` : '');
+            return bookPrefix(sid, it.key) + (ch ? `${ch}｜` : '') + it.title + (gNode?.length ? `｜${gNode.join('+')}` : '');
           })(),
           minutes: it.minutes,
           start: w.start, end: w.end,
@@ -464,7 +478,7 @@ export default function WizardView({ lists, reload, goTasks }) {
             if (chMode === 'off') return; // 這章的練習/歷屆標「不寫」
             expanded2.push({
               subject_id: sid,
-              title: `${chapTitle[chKey] || it.title}｜${gChap.join('+')}`,
+              title: `${bookPrefix(sid, chKey)}${chapTitle[chKey] || it.title}｜${gChap.join('+')}`,
               minutes: minutesFor('章', 0),
               start: w.start, end: w.end,
               final: chMode === 'final',
@@ -758,13 +772,13 @@ export default function WizardView({ lists, reload, goTasks }) {
                     <input type="color" value={l.color} title="改科目顏色" style={{ width: 28, height: 24, padding: 0, border: 'none', background: 'none' }}
                       onChange={e => setSubjectColor(l, e.target.value)} />
                     <label className="btn sm ghost" style={{ opacity: tocBusy === l.id ? .5 : 1 }}>
-                      📷 {rows.length ? '重拍目錄' : '拍課本目錄（可多張）'}
-                      <input type="file" multiple disabled={tocBusy !== null} accept="image/*,.pdf" style={{ display: 'none' }} onChange={e => uploadTOC(l, e)} />
+                      📷 {rows.length ? '重拍（整科重來）' : '拍課本目錄（可多張）'}
+                      <input type="file" multiple disabled={tocBusy !== null} accept="image/*,.pdf" style={{ display: 'none' }} onChange={e => uploadTOC(l, e, 'replace')} />
                     </label>
                     {rows.length > 0 && (
                       <label className="btn sm ghost" style={{ opacity: tocBusy === l.id ? .5 : 1 }}>
-                        ➕ 加一本／補頁
-                        <input type="file" multiple disabled={tocBusy !== null} accept="image/*,.pdf" style={{ display: 'none' }} onChange={e => uploadTOC(l, e, true)} />
+                        ➕ 加一本新書
+                        <input type="file" multiple disabled={tocBusy !== null} accept="image/*,.pdf" style={{ display: 'none' }} onChange={e => uploadTOC(l, e, 'newbook')} />
                       </label>
                     )}
                   </div>
@@ -777,10 +791,10 @@ export default function WizardView({ lists, reload, goTasks }) {
                       <button className="btn sm ghost" onClick={() => setItems(a => a.filter(x => !(x.subject_id === l.id && String(x.key).startsWith('toc-'))))}>清除</button>
                     </div>
                   )}
-                  {rows.length > 0 && <div className="muted" style={{ marginTop: 4 }}>點書名展開章節，可勾章／節／主題任一層（勾小的會取代大的）。同一科要放第二本課本、或補目錄後面幾頁，都用「加一本／補頁」；書名按 ✎ 可改</div>}
+                  {rows.length > 0 && <div className="muted" style={{ marginTop: 4 }}>點書名展開章節，可勾章／節／主題任一層（勾小的會取代大的）。同一科第二本課本用「加一本新書」；某本目錄沒拍完，用那本右邊的「＋頁」補；書名按 ✎ 可改</div>}
                   {tocMsg[l.id] && <div className="muted" style={{ marginTop: 4 }}>{tocMsg[l.id]}</div>}
                   {bookGroups.map(([bk, rws]) => (
-                    <details key={bk || '_none'} open={bookGroups.length === 1} style={{ marginTop: 6 }}>
+                    <details key={bk || '_none'} style={{ marginTop: 6 }}>
                       {/* 預設一行純文字（不佔格子）；按 ✎ 才變成可編輯欄位 */}
                       <summary style={{ cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 6, padding: '2px 0' }}>
                         {editBook === `${l.id}|${bk}` ? (
@@ -801,6 +815,12 @@ export default function WizardView({ lists, reload, goTasks }) {
                               📘 <b>{bk || '未命名課本'}</b>
                               <span className="muted" style={{ fontSize: 12 }}>{rws[0]?.publisher ? `・${rws[0].publisher}` : ''}・{rws.length} 章</span>
                             </span>
+                            {/* 補「這一本」的後幾頁：掛在該書底下，不會跟別本混在一起 */}
+                            <label className="icon-btn" title={`補「${bk || '這本'}」的後幾頁`} style={{ padding: 2, cursor: 'pointer', opacity: tocBusy === l.id ? .4 : 1 }}
+                              onClick={e => e.stopPropagation()}>＋頁
+                              <input type="file" multiple disabled={tocBusy !== null} accept="image/*,.pdf" style={{ display: 'none' }}
+                                onChange={e => uploadTOC(l, e, { book: bk })} />
+                            </label>
                             <button className="icon-btn" title="改書名／出版社" style={{ padding: 2 }}
                               onClick={e => { e.preventDefault(); e.stopPropagation(); setEditBook(`${l.id}|${bk}`); }}>✎</button>
                             <button className="icon-btn" title="整本刪除" style={{ padding: 2 }}
@@ -915,6 +935,11 @@ export default function WizardView({ lists, reload, goTasks }) {
               {(() => {
                 const chapTitle = {};
                 tocs.forEach(r => { chapTitle[`toc-${r.id}`] = r.title; });
+                // 這個單元屬於哪一本書：同一科有多本課本時要標出來，才不會搞混
+                const bookByToc = {};
+                tocs.forEach(r => { bookByToc[`toc-${r.id}`] = r.book || ''; });
+                const bookOf = key => bookByToc[String(key).split('+')[0].split('.')[0]] || '';
+                const isMultiBook = sid => new Set(tocs.filter(t => t.list_id === sid).map(t => t.book || '')).size > 1;
                 // 純題目獨立一顆（五段全擠一顆要點太多次）：
                 // 沒標＝灰色；點了循環 壓軸(預設・紺青) → 先完成 → 照常 → 取消回到題型
                 const plainCycle = it => {
@@ -967,9 +992,13 @@ export default function WizardView({ lists, reload, goTasks }) {
                     .sort((a, b) => (ord[String(a.key).split('+')[0]] ?? 9999) - (ord[String(b.key).split('+')[0]] ?? 9999));
                   const nodeGs = groupsFor(sid).map((g, gi) => [g ? g.filter(t => !CH_TYPES.includes(t)) : [], gi]).filter(([gn]) => gn.length);
                   const chapGs = groupsFor(sid).map((g, gi) => [g ? g.filter(t => CH_TYPES.includes(t)) : [], gi]).filter(([gc]) => gc.length);
+                  const showBook = isMultiBook(sid);   // 這科有兩本以上才標書名
                   const unitRows = subjItems.map(it => (
                     <div key={'sk' + it.key} style={{ marginTop: 8 }}>
-                      <div>{it.title}</div>
+                      <div>
+                        {showBook && bookOf(it.key) && <span className="chip" style={{ marginRight: 6 }}>📘{bookOf(it.key)}</span>}
+                        {it.title}
+                      </div>
                       <div className="row" style={{ marginLeft: 12, marginTop: 3 }}>
                         {!plainSel[it.key] && (nodeGs.length ? nodeGs.map(([gn, gi]) => pill(`${it.key}|${gi}`, gn.join('+'))) : ffPills(it))}
                         {plainCycle(it)}
@@ -985,7 +1014,10 @@ export default function WizardView({ lists, reload, goTasks }) {
                     seenCh.add(chKey);
                     chapRows.push(
                       <div key={'ch' + chKey} style={{ marginTop: 8 }}>
-                        <div>{chapTitle[chKey] || it.title}</div>
+                        <div>
+                          {showBook && bookOf(chKey) && <span className="chip" style={{ marginRight: 6 }}>📘{bookOf(chKey)}</span>}
+                          {chapTitle[chKey] || it.title}
+                        </div>
                         <div className="row" style={{ marginLeft: 12, marginTop: 3 }}>{chapGs.map(([gc, gi]) => pill(`ch:${chKey}|${gi}`, gc.join('+')))}</div>
                       </div>
                     );

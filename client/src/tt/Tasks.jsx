@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import { api } from '../api';
 import { matchView, groupTasks, defaultSort, PRI, today, addDays } from './helpers';
 import VocabCard from './VocabCard';
+import MemoCard from './MemoCard';
 
 const WDC = '日一二三四五六';
 export function repeatLabel(r, dueDate) {
@@ -353,7 +354,7 @@ function AddSheet({ view, lists, onDone, onClose }) {
   );
 }
 
-export default function Tasks({ view, tasks, lists, filters, habits = [], reload, title, goVocab }) {
+export default function Tasks({ view, tasks, lists, filters, habits = [], reload, title, goVocab, goMemo }) {
   const [selId, setSelId] = useState(null);
   const [quick, setQuick] = useState('');
   const [showAdd, setShowAdd] = useState(false);
@@ -488,6 +489,7 @@ export default function Tasks({ view, tasks, lists, filters, habits = [], reload
           </form>
         )}
         <div className="main-body">
+          {view.type === 'today' && <MemoCard goMemo={goMemo} />}
           {view.type === 'trash'
             ? shown.map(t => (
               <div key={t.id} className="trow" style={{ cursor: 'default' }}>
