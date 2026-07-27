@@ -146,6 +146,12 @@ CREATE TABLE IF NOT EXISTS memos (
   order_index INTEGER DEFAULT 0,
   created_at TEXT DEFAULT CURRENT_TIMESTAMP
 );
+CREATE TABLE IF NOT EXISTS memo_categories (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  user_id INTEGER NOT NULL,
+  name TEXT NOT NULL,
+  order_index INTEGER DEFAULT 0
+);
 CREATE TABLE IF NOT EXISTS list_shares (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   list_id INTEGER NOT NULL,
@@ -174,6 +180,9 @@ export async function initSchema() {
   try { await client.execute("ALTER TABLE toc_items ADD COLUMN book TEXT DEFAULT ''"); } catch {}
   try { await client.execute("ALTER TABLE toc_items ADD COLUMN publisher TEXT DEFAULT ''"); } catch {}
   try { await client.execute("ALTER TABLE fixed_events ADD COLUMN kind TEXT DEFAULT ''"); } catch {}
+  try { await client.execute("ALTER TABLE memos ADD COLUMN due_date TEXT DEFAULT ''"); } catch {}
+  // 舊資料的分類補進「記住的分類」清單，之後直接用選的
+  try { await client.execute("INSERT INTO memo_categories (user_id,name,order_index) SELECT DISTINCT user_id,category,0 FROM memos WHERE category<>'' AND category IS NOT NULL AND NOT EXISTS (SELECT 1 FROM memo_categories c WHERE c.user_id=memos.user_id AND c.name=memos.category)"); } catch {}
   // 舊 bug（重複扣款）造成的負金幣歸零
   try { await client.execute('UPDATE users SET coins=0 WHERE coins<0'); } catch {}
   // 一次性清理：舊 bug 產生的碎片標籤（純 1–2 個英文字母，如 ek、ne、l）

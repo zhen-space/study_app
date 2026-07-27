@@ -104,6 +104,8 @@ select { -webkit-appearance: none; appearance: none; padding-right: 26px;
 .trow .title { flex: 1; }
 .trow.done .title { text-decoration: line-through; color: var(--muted); }
 .chip { font-size: 11px; padding: 2px 8px; border-radius: 999px; background: var(--fill); color: var(--muted); }
+.chip.on { background: var(--primary); color: #fff; }
+.row .chip { cursor: pointer; user-select: none; -webkit-user-select: none; }
 .p1 { color: var(--blue); } .p2 { color: var(--orange); } .p3 { color: var(--red); }
 
 /* detail panel */

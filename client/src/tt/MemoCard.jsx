@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import { api } from '../api';
+import { dateLabel, isOverdue } from './MemoView';
 
 // 首頁最上面的備忘錄：未完成的隨手記，可勾掉；管理在「備忘錄」頁
 export default function MemoCard({ goMemo }) {
@@ -26,9 +27,10 @@ export default function MemoCard({ goMemo }) {
     setQuick('');
   }
 
-  // 依分類分組（未分類放最後）
+  // 依分類分組（未分類放最後）；每組內：過期→今天→有日期的照日期→沒日期的
   const cats = [...new Set(undone.map(m => m.category).filter(Boolean))].sort();
   const groups = [...cats, ...(undone.some(m => !m.category) ? [''] : [])];
+  const byDue = (a, b) => (a.due_date ? 0 : 1) - (b.due_date ? 0 : 1) || (a.due_date || '').localeCompare(b.due_date || '');
 
   return (
     <div className="tgroup" style={{ marginBottom: 18, paddingBottom: 12, borderBottom: '2px dashed var(--border)' }}>
@@ -39,10 +41,15 @@ export default function MemoCard({ goMemo }) {
       {groups.map(cat => (
         <div key={cat || '__none'}>
           {cats.length > 0 && <div className="muted" style={{ margin: '6px 0 2px', fontSize: 12 }}>{cat || '未分類'}</div>}
-          {undone.filter(m => (m.category || '') === cat).map(m => (
+          {undone.filter(m => (m.category || '') === cat).sort(byDue).map(m => (
             <div key={m.id} className="trow" style={{ borderLeft: `3px solid ${m.color || 'transparent'}`, paddingLeft: m.color ? 8 : 0 }}>
               <input type="checkbox" checked={false} onChange={() => done(m)} />
               <span className="title">{m.content}</span>
+              {m.due_date && (
+                <span style={{ fontSize: 12, marginLeft: 6, whiteSpace: 'nowrap', color: isOverdue(m.due_date) ? 'var(--red)' : 'var(--muted)' }}>
+                  {dateLabel(m.due_date)}
+                </span>
+              )}
             </div>
           ))}
         </div>

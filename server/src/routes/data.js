@@ -91,22 +91,60 @@ router.post('/events/bulk', async (req, res) => {
 });
 
 // ---- 備忘錄（分類記錄要做的事）----
+// 分類會被「記住」（memo_categories），就算該分類目前沒有備忘也留著，之後直接用選的
+const rememberCat = async (userId, name) => {
+  const c = (name || '').trim();
+  if (!c) return;
+  const has = await q.get('SELECT id FROM memo_categories WHERE user_id=? AND name=?', [userId, c]);
+  if (has) return;
+  const mx = await q.get('SELECT MAX(order_index) AS m FROM memo_categories WHERE user_id=?', [userId]);
+  await q.run('INSERT INTO memo_categories (user_id,name,order_index) VALUES (?,?,?)', [userId, c, (mx?.m ?? -1) + 1]);
+};
+router.get('/memo-cats', async (req, res) => {
+  res.json(await q.all('SELECT * FROM memo_categories WHERE user_id=? ORDER BY order_index, id', [req.userId]));
+});
+router.post('/memo-cats', async (req, res) => {
+  const name = (req.body.name || '').trim();
+  if (!name) return res.status(400).json({ error: '請輸入分類名稱' });
+  await rememberCat(req.userId, name);
+  res.json(await q.get('SELECT * FROM memo_categories WHERE user_id=? AND name=?', [req.userId, name]));
+});
+router.patch('/memo-cats/:id', async (req, res) => {
+  const name = (req.body.name || '').trim();
+  if (!name) return res.status(400).json({ error: '請輸入分類名稱' });
+  const old = await q.get('SELECT * FROM memo_categories WHERE id=? AND user_id=?', [req.params.id, req.userId]);
+  if (!old) return res.status(404).json({ error: '找不到分類' });
+  await q.run('UPDATE memo_categories SET name=? WHERE id=? AND user_id=?', [name, req.params.id, req.userId]);
+  await q.run('UPDATE memos SET category=? WHERE category=? AND user_id=?', [name, old.name, req.userId]);  // 底下的備忘一起改
+  res.json({ ok: true });
+});
+router.delete('/memo-cats/:id', async (req, res) => {
+  const old = await q.get('SELECT * FROM memo_categories WHERE id=? AND user_id=?', [req.params.id, req.userId]);
+  if (old) await q.run('UPDATE memos SET category=? WHERE category=? AND user_id=?', ['', old.name, req.userId]); // 備忘不刪，改成未分類
+  await q.run('DELETE FROM memo_categories WHERE id=? AND user_id=?', [req.params.id, req.userId]);
+  res.json({ ok: true });
+});
+
 router.get('/memos', async (req, res) => {
   res.json(await q.all('SELECT * FROM memos WHERE user_id=? ORDER BY order_index, id', [req.userId]));
 });
 router.post('/memos', async (req, res) => {
-  const { content, category, color } = req.body;
+  const { content, category, color, due_date } = req.body;
   if (!content || !content.trim()) return res.status(400).json({ error: '請輸入內容' });
   const mx = await q.get('SELECT MAX(order_index) AS m FROM memos WHERE user_id=?', [req.userId]);
-  const r = await q.run('INSERT INTO memos (user_id,category,content,color,order_index) VALUES (?,?,?,?,?)',
-    [req.userId, (category || '').trim(), content.trim(), color || '', (mx?.m ?? -1) + 1]);
+  const r = await q.run('INSERT INTO memos (user_id,category,content,color,due_date,order_index) VALUES (?,?,?,?,?,?)',
+    [req.userId, (category || '').trim(), content.trim(), color || '', due_date || '', (mx?.m ?? -1) + 1]);
+  await rememberCat(req.userId, category);
   res.json(await q.get('SELECT * FROM memos WHERE id=?', [r.lastInsertRowid]));
 });
 router.patch('/memos/:id', async (req, res) => {
-  const { content, category, color, done, order_index } = req.body;
+  const { content, category, color, done, order_index, due_date } = req.body;
   await q.run(`UPDATE memos SET content=COALESCE(?,content), category=COALESCE(?,category),
-    color=COALESCE(?,color), done=COALESCE(?,done), order_index=COALESCE(?,order_index) WHERE id=? AND user_id=?`,
-    [content ?? null, category ?? null, color ?? null, done === undefined ? null : (done ? 1 : 0), order_index ?? null, req.params.id, req.userId]);
+    color=COALESCE(?,color), done=COALESCE(?,done), order_index=COALESCE(?,order_index),
+    due_date=COALESCE(?,due_date) WHERE id=? AND user_id=?`,
+    [content ?? null, category ?? null, color ?? null, done === undefined ? null : (done ? 1 : 0),
+     order_index ?? null, due_date ?? null, req.params.id, req.userId]);
+  if (category) await rememberCat(req.userId, category);
   res.json({ ok: true });
 });
 router.delete('/memos/:id', async (req, res) => {
