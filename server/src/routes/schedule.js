@@ -308,8 +308,24 @@ router.post('/preview', async (req, res) => {
           if (!b.dates.has(days[i].date)) continue;
           if (fits(days[i], w) && exclusiveOk(days[i].date, w) && put(days[i], w)) { done = true; ci = w.onePerDay ? i + 1 : i; }
         }
-        // 一天一課排不完時放寬：寧可一天兩課也不要排不進去（可與已排的最後一天同日，不繞到更前面）
-        // 最後手段連「壓軸獨佔那天」也放寬，總比整項排不進去好
+        // 排不下時「分層退讓」：先放寬「壓軸獨佔整天」——寧可跟同科習題同一天，
+        // 也絕不讓兩場模考擠在同一天（那才是最糟的）。
+        // 壓軸從「最後一天往前找」，才不會退讓後反而跑到最前面。
+        const noTwoFinals = i => !(w.final && blocks.some(x => x.date === days[i].date && x.subject_id === w.subject_id && x._fin));
+        if (!done && w.final) for (let i = days.length - 1; i >= 0 && !done; i--) {
+          if (!b.dates.has(days[i].date) || !noTwoFinals(i)) continue;
+          if (fits(days[i], w) && put(days[i], w)) done = true;
+        }
+        if (!done && !w.final) for (let i = Math.max(0, base - 1); i < days.length && !done; i++) {
+          if (!b.dates.has(days[i].date)) continue;
+          if (fits(days[i], w) && put(days[i], w)) done = true;
+        }
+        // 壓軸還是排不下：不限原範圍，從最後一天往前找「該科還沒有壓軸」的日子
+        if (!done && w.final) for (let i = days.length - 1; i >= 0 && !done; i--) {
+          if (!noTwoFinals(i)) continue;
+          if (fits(days[i], w) && put(days[i], w)) done = true;
+        }
+        // 真的沒地方了才完全放寬，總比整項排不進去好
         if (!done) for (let i = Math.max(0, base - 1); i < days.length && !done; i++) {
           if (!b.dates.has(days[i].date)) continue;
           if (fits(days[i], w) && put(days[i], w)) done = true;
@@ -346,6 +362,14 @@ router.post('/preview', async (req, res) => {
   });
 
   // ===== 產出前自我檢查 =====
+  // 搬移時也要守「模考那天該科只有它」：目標日不能已有該科的壓軸，
+  // 壓軸自己也只能搬到該科完全沒排的日子
+  const canPlaceOn = (b, date) => {
+    const same = blocks.filter(x => x !== b && x.date === date && x.subject_id === b.subject_id);
+    if (!same.length) return true;
+    if (b._fin) return false;
+    return !same.some(x => x._fin);
+  };
   // 1) 平衡每日量（不計時模式）：超量日的項目搬到未滿日。
   //    可搬條件：目標日在該項目的日期範圍內、且介於同桶前後項的日期之間（順序不破）。
   if (!timed && blocks.length && days.length > 1) {
@@ -374,6 +398,7 @@ router.post('/preview', async (req, res) => {
         const prevOther = others.filter(x => x.date < b.date).reduce((a, x) => (!a || x.date > a) ? x.date : a, null);
         // 只能搬到同桶前後項「之間」（不含同日，維持等距），且從離原日最近的開始挑，不會整串往前擠
         const cands = days.filter(d => d.date !== b.date
+          && canPlaceOn(b, d.date)                                 // 模考那天該科只有它
           && cnt[d.date] < cap && cnt[d.date] <= cnt[b.date] - 2   // 未達上限且搬了有實質改善
           && sCnt(d.date, b.subject_id) < sCnt(b.date, b.subject_id) // 這科在目標日要比原日少，不能越搬越擠
           && d.date >= b._ws && d.date <= b._we
@@ -403,6 +428,7 @@ router.post('/preview', async (req, res) => {
         const nextOther = others.filter(x => x.date > b.date).reduce((a, x) => (!a || x.date < a) ? x.date : a, null);
         const prevOther = others.filter(x => x.date < b.date).reduce((a, x) => (!a || x.date > a) ? x.date : a, null);
         const cands = days.filter(d => d.date !== b.date
+          && canPlaceOn(b, d.date)                                // 模考那天該科只有它
           && sCnt(d.date, b.subject_id) === 0                     // 目標日完全沒這科
           && cnt[d.date] <= cap
           && d.date >= b._ws && d.date <= b._we                   // 不可超出使用者設定的範圍
@@ -473,14 +499,6 @@ router.post('/preview', async (req, res) => {
       if (!changed) break;
     }
   }
-  // 搬移時也要守「模考那天該科只有它」：目標日不能已有該科的壓軸，
-  // 壓軸自己也只能搬到該科完全沒排的日子
-  const canPlaceOn = (b, date) => {
-    const same = blocks.filter(x => x !== b && x.date === date && x.subject_id === b.subject_id);
-    if (!same.length) return true;
-    if (b._fin) return false;
-    return !same.some(x => x._fin);
-  };
   // 3) 全域負載平衡：把「很擠的日子」的項目搬到「很空的日子」，讓每天的量接近。
   //    關鍵手法：搬完後把同一桶的日期重新排序、照原順序配回去 → 課本順序自動維持，
   //    所以不需要「只能在前後鄰居之間移動」那種綁手綁腳的限制，才拉得動整串。
