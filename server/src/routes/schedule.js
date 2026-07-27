@@ -139,7 +139,7 @@ router.post('/preview', async (req, res) => {
   function put(day, w) {
     if (!timed) {
       if (!day.slots.length) return false;
-      blocks.push({ subject_id: w.subject_id, title: w.title, date: day.date, _bk: w._bk, _ws: w.start, _we: w.end, _fin: !!w.final });
+      blocks.push({ subject_id: w.subject_id, title: w.title, date: day.date, _bk: w._bk, _ws: w.start, _we: w.end, _fin: !!w.final, _one: !!w.onePerDay });
       day.count++; day.load++; day.subs.add(w.subject_id);
       return true;
     }
@@ -228,21 +228,18 @@ router.post('/preview', async (req, res) => {
       const sumC = counts.reduce((a, c) => a + c, 0) || 1;
       const avail = new Set(winArr.flat()).size;                 // 這科所有階段可用的總天數
       const sumMin = minNeed.reduce((a, c) => a + c, 0) || 1;
-      // 天數不夠時的權重：取「項數」和「最少天數」的折衷。
-      // 只看最少天數 → 一天一課的練習佔走整個尾端，範例被壓成一天五、六節；
-      // 只看項數 → 練習被壓得太兇，尾端反而變空。
-      const wMix = counts.map((c, i) => (c + minNeed[i]) / 2);
-      const sumW = wMix.reduce((a, c) => a + c, 0) || 1;
-      const alloc = sumMin >= avail
-        ? wMix.map(w => Math.max(1, Math.round(avail * w / sumW)))
-        // 天數夠：先給最少天數，多的只分給「能加速的階段」（範例+例題）。
-        // 一天一課的練習給再多天也還是一天一課，多給只會讓尾端變空。
-        : (() => {
-          const slack = avail - sumMin;
-          const soak = arr.map((b, i) => b.list[0].onePerDay ? 0 : counts[i]);
-          const sumS = soak.reduce((a, c) => a + c, 0);
-          return minNeed.map((m, i) => m + Math.round(slack * (sumS ? soak[i] / sumS : counts[i] / sumC)));
-        })();
+      // 練習／歷屆試題是「一天一課」的剛性階段：它要幾天就先給幾天（使用者的公式），
+      // 剩下的天數才照項數比例分給能加速的階段（範例+例題）。
+      // 多的天數也不能給剛性階段——它一天就是一課，給再多天只會讓尾端空掉。
+      const rigid = arr.map(b => !!b.list[0].onePerDay);
+      const rigidNeed = rigid.reduce((a, r, i) => a + (r ? minNeed[i] : 0), 0);
+      const flexN = rigid.filter(r => !r).length;
+      const flexW = counts.map((c, i) => rigid[i] ? 0 : c);
+      const sumF = flexW.reduce((a, c) => a + c, 0);
+      const alloc = (avail - rigidNeed >= flexN && flexN)
+        ? (() => { const rest = avail - rigidNeed; return counts.map((c, i) => rigid[i] ? minNeed[i] : Math.max(1, Math.round(rest * flexW[i] / (sumF || 1)))); })()
+        // 真的連「一天一課」都排不下（範圍太短）才一起等比例壓縮
+        : counts.map(c => Math.max(1, Math.round(avail * c / sumC)));
       // 收尾修正：總和超過可用天數就從最大的扣，不足就補給最後一個階段（排到範圍尾端）
       let over = alloc.reduce((a, c) => a + c, 0) - avail;
       while (over > 0) { const i = alloc.indexOf(Math.max(...alloc)); if (alloc[i] <= 1) break; alloc[i]--; over--; }
@@ -395,6 +392,8 @@ router.post('/preview', async (req, res) => {
     const same = blocks.filter(x => x !== b && x.date === date && x.subject_id === b.subject_id);
     if (!same.length) return true;
     if (b._fin) return false;
+    // 練習／歷屆試題一天一課：目標日已經有這科的純題目就不能再疊上去
+    if (b._one && same.some(x => x._one)) return false;
     return !same.some(x => x._fin);
   };
   // 1) 平衡每日量（不計時模式）：超量日的項目搬到未滿日。
@@ -532,7 +531,6 @@ router.post('/preview', async (req, res) => {
   if (!timed && blocks.length && days.length > 1) {
     const idxOf = {}; days.forEach((d, i) => { idxOf[d.date] = i; });
     const cap = Math.ceil(blocks.length / days.length);          // 每日目標上限
-    const floorCap = Math.floor(blocks.length / days.length);
     const maxNormal = {}, minFinal = {};
     blocks.forEach(b => {
       if (!b._fin && (!maxNormal[b.subject_id] || b.date > maxNormal[b.subject_id])) maxNormal[b.subject_id] = b.date;
@@ -543,16 +541,23 @@ router.post('/preview', async (req, res) => {
       const sCnt = (date, sid) => blocks.reduce((a, x) => a + (x.date === date && x.subject_id === sid ? 1 : 0), 0);
       // 從「最空的日子」開始，把量多的日子的項目拉過來（雙向平衡；
       // 只看超載日的話，第一天只有 2 項這種情況永遠補不到）
-      const light = days.filter(d => cnt[d.date] < floorCap && d.slots.length)
+      // 目標拉到 cap（無條件進位的每日均量），不是只補到 floorCap——
+      // 只補到 floorCap 的話，「6,6,6,5,5,5」這種還差一項的日子永遠補不滿，
+      // 前面就會一直維持 7 項
+      const light = days.filter(d => cnt[d.date] < cap && d.slots.length)
         .sort((a, b) => cnt[a.date] - cnt[b.date]);
       if (!light.length) break;
       let moved = false;
       for (const E of light) {
-        while (cnt[E.date] < floorCap) {
+        while (cnt[E.date] < cap) {
           // 可以搬到 E 的候選項目：所在日子比 E 多至少 2 項，且不違反範圍與階段順序
           const cand = blocks.filter(b => cnt[b.date] > cnt[E.date] + 1
             && E.date >= b._ws && E.date <= b._we
-            && sCnt(E.date, b.subject_id) < sCnt(b.date, b.subject_id)
+            // 目標日這科不能比來源日多。允許「一樣多」很關鍵：
+            // 有一科被前段塞滿（範例壓縮）時，其他天天一課的科目要能往後段挪，
+            // 才填得平尾端那幾天，不然總量就會前面 7、8 項後面 3、4 項
+            && (b._one ? sCnt(E.date, b.subject_id) === 0
+                       : sCnt(E.date, b.subject_id) <= sCnt(b.date, b.subject_id))
             && canPlaceOn(b, E.date)
             && (b._fin ? (!maxNormal[b.subject_id] || E.date > maxNormal[b.subject_id])
                        : (!minFinal[b.subject_id] || E.date < minFinal[b.subject_id]))
@@ -632,6 +637,34 @@ router.post('/preview', async (req, res) => {
       mates.forEach((m, i) => { m.date = ds[i]; });
     }
   }
+  // 6) 獨佔規則的最後保險：模考／壓軸那天，同一科只能有它。
+  //    前面各種搬移＋同桶重排有可能把別的項目挪進模考那天，這裡最後再清一次：
+  //    把同日同科的非壓軸項目搬到最近一個「沒有該科壓軸」的日子（一樣不出範圍、不亂順序）。
+  if (!timed && blocks.length && days.length > 1) {
+    const idxOf = {}; days.forEach((d, i) => { idxOf[d.date] = i; });
+    const cap = Math.ceil(blocks.length / days.length) + 1;
+    const finKey = new Set(blocks.filter(b => b._fin).map(b => `${b.date}|${b.subject_id}`));
+    if (finKey.size) {
+      const cnt = {}; days.forEach(d => { cnt[d.date] = 0; }); blocks.forEach(b => cnt[b.date]++);
+      const sCnt = (date, sid) => blocks.reduce((a, x) => a + (x.date === date && x.subject_id === sid ? 1 : 0), 0);
+      for (const b of blocks) {
+        if (b._fin || !finKey.has(`${b.date}|${b.subject_id}`)) continue;
+        const mates = blocks.filter(x => x._bk === b._bk);
+        const pick = loose => days.filter(d => d.date !== b.date && d.slots.length
+          && d.date >= b._ws && d.date <= b._we
+          && !finKey.has(`${d.date}|${b.subject_id}`)                 // 目標日沒有該科壓軸
+          && (loose || !(b._one && sCnt(d.date, b.subject_id) > 0))   // 一天一課的先試不疊
+          && cnt[d.date] <= cap)
+          .sort((x, y) => Math.abs(idxOf[x.date] - idxOf[b.date]) - Math.abs(idxOf[y.date] - idxOf[b.date]))[0];
+        // 找不到完全不疊的日子時退讓：寧可某天多一份練習，也不要佔用模考當天
+        const target = pick(false) || pick(true);
+        if (!target) continue;
+        cnt[b.date]--; cnt[target.date]++; b.date = target.date;
+        const ds = mates.map(m => m.date).sort();                     // 重排維持課本／場次順序
+        mates.forEach((m, i) => { m.date = ds[i]; });
+      }
+    }
+  }
   // 修補後還剩的空窗＝使用者自訂日期範圍造成（不能擅自違反），僅回報說明
   const checkWarnings = calcGaps().reduce((acc, g) => {
     const ex = acc.find(x => x.subject_id === g.sid);
@@ -655,14 +688,35 @@ router.post('/preview', async (req, res) => {
     });
     subjSpan.push(...m.values());
   }
+  // 範圍太短的提醒：某科一天要排 3 項以上時，算出「照一天一課／一天兩節的節奏
+  // 至少需要幾天」，讓使用者自己決定要不要把結束日往後延
+  const tight = [];
+  {
+    const m = new Map();
+    blocks.forEach(b => {
+      const s = m.get(b.subject_id) || { subject_id: b.subject_id, one: 0, flex: 0, days: new Set(), perDay: {} };
+      if (b._one) s.one++; else s.flex++;
+      s.days.add(b.date);
+      s.perDay[b.date] = (s.perDay[b.date] || 0) + 1;
+      m.set(b.subject_id, s);
+    });
+    for (const s of m.values()) {
+      const mx = Math.max(...Object.values(s.perDay));
+      const need = s.one + Math.ceil(s.flex / 2);
+      if (mx >= 3 && need > s.days.size) {
+        tight.push({ subject_id: s.subject_id, maxPerDay: mx, needDays: need, haveDays: s.days.size });
+      }
+    }
+  }
   const check = {
+    tight,
     dailyMin: cs.length ? Math.min(...cs) : 0,
     dailyMax: cs.length ? Math.max(...cs) : 0,
     warnings: checkWarnings,
     subjects: subjSpan,
   };
 
-  blocks.forEach(b => { delete b._bk; delete b._ws; delete b._we; });
+  blocks.forEach(b => { delete b._bk; delete b._ws; delete b._we; delete b._one; });
   blocks.sort((a, b) => a.date === b.date ? (a.start_time || '').localeCompare(b.start_time || '') : a.date.localeCompare(b.date));
   res.json({
     blocks, check, unplaced: failed.length > 0,

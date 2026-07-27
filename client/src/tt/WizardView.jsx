@@ -1203,6 +1203,13 @@ export default function WizardView({ lists, reload, goTasks }) {
                     ).join('・')}
                   </div>
                 )}
+                {(preview.check.tight || []).map((t, i) => (
+                  <div key={'t' + i} style={{ marginTop: 4, color: 'var(--orange, #C46A22)' }}>
+                    ⚠️ {lists.find(l => l.id === t.subject_id)?.name || '有一科'}的日期範圍太短：只有 {t.haveDays} 天，
+                    最擠的一天要排 {t.maxPerDay} 項。要一天一課的話大約需要 {t.needDays} 天，
+                    建議把結束日往後延 {t.needDays - t.haveDays} 天，或這次先少選一些單元。
+                  </div>
+                ))}
                 {(preview.check.warnings || []).map((w, i) => (
                   <div key={i} className="muted" style={{ marginTop: 4 }}>
                     ℹ️ {lists.find(l => l.id === w.subject_id)?.name || '有一科'}中間有 {w.maxGap} 天不會出現——這是你設定的日期範圍造成的（如例題和練習的範圍中間有空檔），有需要可調整範圍
