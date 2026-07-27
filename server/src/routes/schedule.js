@@ -193,7 +193,7 @@ router.post('/preview', async (req, res) => {
         if (!D.length) D = days;
       }
       b.dates = new Set(D.map(d => d.date));
-      b.rate = (b.list.length / D.length) * (front ? 1 / 0.6 : 1);
+      b.rate = b.list.length / D.length;
       // 起手先給半格：不然「項目少的科目」要等 1/速率 天才第一次出現，
       // 造成前幾天科目很少、後面很擠。半格＝把整串往前挪半個間隔，頭尾才對稱。
       b.err = Math.min(0.5, b.rate / 2);
@@ -234,9 +234,33 @@ router.post('/preview', async (req, res) => {
         if (!ds.length) ds = winArr[i].filter(j => j > prevEndIdx);
         if (!ds.length) ds = winArr[i];
         if (!ds.length) continue;
+        // 早點完成：這一階段壓縮到約 6 成天數，下一階段就從壓縮後的結尾接著開始，
+        // 中間才不會留下一大段完全沒有這科的空白
+        if (front) {
+          const need = b.list[0].onePerDay ? b.list.length : Math.ceil(b.list.length / 2);
+          const keep = Math.max(need, Math.ceil(ds.length * 0.6), 1);
+          if (keep < ds.length) ds = ds.slice(0, keep);
+        }
         b.dates = new Set(ds.map(j => days[j].date));
-        b.rate = (b.list.length / ds.length) * (front ? 1 / 0.6 : 1);
+        b.rate = b.list.length / ds.length;
+        b.err = Math.min(0.5, b.rate / 2);
+        b._fronted = true;
         prevEndIdx = ds[ds.length - 1];
+      }
+    }
+    // 「早點完成」：不是把速率調快（那會變成一天塞 3 課、然後空好幾天），
+    // 而是把可用天數縮短到約 6 成——同樣平均鋪，只是整體提早做完。
+    if (front) {
+      for (const b of buckets) {
+        if (b._fronted) continue;                                  // 多階段的已在上面處理
+        const ds = [...b.dates].sort();
+        if (ds.length < 2) continue;
+        const need = b.list[0].onePerDay ? b.list.length : Math.ceil(b.list.length / 2);
+        const keep = Math.max(need, Math.ceil(ds.length * 0.6), 1);
+        if (keep >= ds.length) continue;
+        b.dates = new Set(ds.slice(0, keep));
+        b.rate = b.list.length / keep;
+        b.err = Math.min(0.5, b.rate / 2);
       }
     }
     // 主輪：逐天、各桶按速率領量 → 各科每天交錯出現，順序保持。
@@ -484,6 +508,49 @@ router.post('/preview', async (req, res) => {
           mates.forEach((m, i) => { m.date = ds[i]; });                       // → 課本順序自動維持
           moved = true;
         }
+      }
+      if (!moved) break;
+    }
+  }
+  // 4) 各科自己也要平均：同一天塞 2、3 課、隔幾天又完全沒有 → 把多的那課搬到
+  //    該科「當天沒有」的日子（限自己的日期範圍與階段順序內）。搬完一樣重排同桶日期，
+  //    所以課本順序不會亂。這是「各科平均」的最後一道保險。
+  if (!timed && blocks.length && days.length > 1) {
+    const idxOf = {}; days.forEach((d, i) => { idxOf[d.date] = i; });
+    const cap = Math.ceil(blocks.length / days.length);
+    const maxNormal = {}, minFinal = {};
+    blocks.forEach(b => {
+      if (!b._fin && (!maxNormal[b.subject_id] || b.date > maxNormal[b.subject_id])) maxNormal[b.subject_id] = b.date;
+      if (b._fin && (!minFinal[b.subject_id] || b.date < minFinal[b.subject_id])) minFinal[b.subject_id] = b.date;
+    });
+    for (let pass = 0; pass < 10; pass++) {
+      const cnt = {}; days.forEach(d => { cnt[d.date] = 0; }); blocks.forEach(b => cnt[b.date]++);
+      const sCnt = (date, sid) => blocks.reduce((a, x) => a + (x.date === date && x.subject_id === sid ? 1 : 0), 0);
+      let moved = false;
+      // 同一天有 2 課以上的科目，從最擠的開始處理
+      const crowded = blocks.filter(b => sCnt(b.date, b.subject_id) >= 2)
+        .sort((a, b) => sCnt(b.date, b.subject_id) - sCnt(a.date, a.subject_id));
+      for (const b of crowded) {
+        if (sCnt(b.date, b.subject_id) < 2) continue;
+        const others = blocks.filter(x => x.subject_id === b.subject_id && x._bk !== b._bk);
+        const nextOther = others.filter(x => x.date > b.date).reduce((a, x) => (!a || x.date < a) ? x.date : a, null);
+        const prevOther = others.filter(x => x.date < b.date).reduce((a, x) => (!a || x.date > a) ? x.date : a, null);
+        const target = days.filter(E => E.date !== b.date
+          && sCnt(E.date, b.subject_id) === 0                       // 該科當天完全沒有
+          && cnt[E.date] < cnt[b.date]                              // 也不能把別天弄更擠
+          && cnt[E.date] <= cap
+          && E.date >= b._ws && E.date <= b._we                     // 不可超出使用者範圍
+          && (!nextOther || E.date < nextOther) && (!prevOther || E.date > prevOther)
+          && (b._fin ? (!maxNormal[b.subject_id] || E.date > maxNormal[b.subject_id])
+                     : (!minFinal[b.subject_id] || E.date < minFinal[b.subject_id]))
+          && E.slots.length)
+          .sort((x, y) => Math.abs(idxOf[x.date] - idxOf[b.date]) - Math.abs(idxOf[y.date] - idxOf[b.date]))[0];
+        if (!target) continue;
+        const mates = blocks.filter(x => x._bk === b._bk);
+        cnt[b.date]--; cnt[target.date]++; b.date = target.date;
+        const ds = mates.map(m => m.date).sort();
+        mates.forEach((m, i) => { m.date = ds[i]; });               // 重排 → 課本順序維持
+        moved = true;
       }
       if (!moved) break;
     }
