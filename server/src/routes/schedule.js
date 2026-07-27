@@ -325,13 +325,26 @@ router.post('/preview', async (req, res) => {
           if (!noTwoFinals(i)) continue;
           if (fits(days[i], w) && put(days[i], w)) done = true;
         }
-        // 真的沒地方了才完全放寬，總比整項排不進去好
-        if (!done) for (let i = Math.max(0, base - 1); i < days.length && !done; i++) {
-          if (!b.dates.has(days[i].date)) continue;
-          if (fits(days[i], w) && put(days[i], w)) done = true;
+        // 真的沒地方了就完全放寬（不再限桶內日期、不限每日量）——寧可某天多一項，
+        // 也絕不讓項目「排不進去」。壓軸從後往前找，一般項目從前往後找。
+        if (!done) {
+          const order = w.final ? days.map((_, i) => days.length - 1 - i) : days.map((_, i) => i);
+          for (const i of order) {
+            if (done) break;
+            if (fits(days[i], w) && put(days[i], w)) done = true;
+          }
         }
         if (!done) failed.push(`${w.title}〔${w.start}～${w.end}〕`); // 附上範圍，方便看出是哪段日期塞不下
       }
+    }
+    // 同一桶（同科同階段）內：日期排序後照「原本的順序」配回去。
+    // 補位/退讓時可能從後往前找日子，會讓模考2 跑到模考1 前面——這裡統一校正，
+    // 保證第1次、第2次、第3次模考的先後正確（日期集合不變，其他規則不受影響）。
+    for (const b of buckets) {
+      const mates = blocks.filter(x => x._bk === b._bk);
+      if (mates.length < 2) continue;
+      const ds = mates.map(m => m.date).sort();
+      mates.forEach((m, i) => { m.date = ds[i]; });
     }
   }
 
@@ -591,6 +604,18 @@ router.post('/preview', async (req, res) => {
         moved = true;
       }
       if (!moved) break;
+    }
+  }
+  // 5) 最終順序校正：所有搬移都跑完後，把每一桶（同科同階段）的日期由小到大
+  //    重新配給「原本順序」的項目。這樣不管中間怎麼搬，第1次→第2次→第3次模考、
+  //    課本章節的先後一定正確（只是換日期對應，不影響每日量與其他規則）。
+  {
+    const byBk = new Map();
+    blocks.forEach(b => { if (b._bk) { if (!byBk.has(b._bk)) byBk.set(b._bk, []); byBk.get(b._bk).push(b); } });
+    for (const mates of byBk.values()) {
+      if (mates.length < 2) continue;
+      const ds = mates.map(m => m.date).sort();
+      mates.forEach((m, i) => { m.date = ds[i]; });
     }
   }
   // 修補後還剩的空窗＝使用者自訂日期範圍造成（不能擅自違反），僅回報說明
