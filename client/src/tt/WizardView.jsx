@@ -120,8 +120,14 @@ export default function WizardView({ lists, reload, goTasks }) {
         d.groupSize && setGroupSize(d.groupSize);
         d.bySubject != null && setBySubject(d.bySubject);
         d.byGroup != null && setByGroup(d.byGroup);
-        d.dGlobal && d.dGlobal.end >= today() && setDGlobal(d.dGlobal); // 過期的整體範圍不還原
-        d.dMap && setDMap(d.dMap);
+        // 整體範圍：過期的不還原；開始日一律不早於今天（過去的日期沒意義）
+        if (d.dGlobal && d.dGlobal.end >= today()) {
+          setDGlobal({ start: d.dGlobal.start < today() ? today() : d.dGlobal.start, end: d.dGlobal.end });
+        }
+        // 各科/各題型的額外設定：過期的（結束日已過）就丟掉，改回跟著整體範圍
+        if (d.dMap) {
+          setDMap(Object.fromEntries(Object.entries(d.dMap).filter(([, v]) => !v?.end || v.end >= today())));
+        }
         d.step != null && setStep(Math.min(d.step, 3)); // 確認頁需重新產生預覽，最多回到日期步
       }
     } catch {}
@@ -172,10 +178,13 @@ export default function WizardView({ lists, reload, goTasks }) {
   };
   const gLabel = g => g ? g.join('+') : '';
 
-  const winOf = (sid, gi) => {
-    const k = `${bySubject ? sid : 'all'}|${byGroup ? gi : 'all'}`;
-    return dMap[k] || dGlobal;
+  // 各科／各題型的日期：只有「使用者自己動過的那一欄」才記在 dMap，
+  // 其他一律跟著整體範圍走（改整體範圍時會自動跟著變）
+  const mergeWin = k => {
+    const o = dMap[k] || {};
+    return { start: o.start || dGlobal.start, end: o.end || dGlobal.end };
   };
+  const winOf = (sid, gi) => mergeWin(`${bySubject ? sid : 'all'}|${byGroup ? gi : 'all'}`);
 
   /* ---------- 檔案 ---------- */
   const fileToB64 = async file => {
@@ -493,7 +502,7 @@ export default function WizardView({ lists, reload, goTasks }) {
       });
       // 純題目（模考、學測實驗必考重點等）：不套題型、照順序、一律壓軸排最後。
       // 日期用科目整體範圍（沒設就用全域），不能被某個題型組的前段範圍框住
-      const pw = fixWin(dMap[`${bySubject ? sid : 'all'}|all`] || dGlobal);
+      const pw = fixWin(mergeWin(`${bySubject ? sid : 'all'}|all`));
       plains.forEach(it => expanded2.push({
         subject_id: sid,
         title: it.title,
@@ -546,13 +555,22 @@ export default function WizardView({ lists, reload, goTasks }) {
 
   const steps = ['行程與作息', '科目與範圍', '題型與偏好', '日期安排', '確認'];
   const dateInput = (k, label) => {
-    const v = dMap[k] || dGlobal;
+    const o = dMap[k] || {};
+    const v = mergeWin(k);
+    const custom = !!(o.start || o.end);            // 有自己設過才算「額外設定」
+    const setOne = (field, val) => setDMap(m => ({ ...m, [k]: { ...(m[k] || {}), [field]: val } }));
     return (
       <div className="row" key={k} style={{ marginTop: 6, marginLeft: 10 }}>
         <span className="muted" style={{ minWidth: 90 }}>{label}</span>
-        <input type="date" value={v.start} onChange={e => setDMap(m => ({ ...m, [k]: { ...v, start: e.target.value } }))} />
+        <input type="date" value={v.start} onChange={e => setOne('start', e.target.value)}
+          style={o.start ? { boxShadow: 'inset 0 0 0 2px var(--primary)' } : undefined} />
         <span>–</span>
-        <input type="date" value={v.end} onChange={e => setDMap(m => ({ ...m, [k]: { ...v, end: e.target.value } }))} />
+        <input type="date" value={v.end} onChange={e => setOne('end', e.target.value)}
+          style={o.end ? { boxShadow: 'inset 0 0 0 2px var(--primary)' } : undefined} />
+        {custom
+          ? <button className="btn sm ghost" title="改回跟著整體範圍"
+              onClick={() => setDMap(m => { const n = { ...m }; delete n[k]; return n; })}>跟整體</button>
+          : <span className="muted" style={{ fontSize: 12 }}>跟著整體</span>}
       </div>
     );
   };
@@ -1100,7 +1118,9 @@ export default function WizardView({ lists, reload, goTasks }) {
               <input type="date" value={dGlobal.start} onChange={e => setDGlobal(d => ({ ...d, start: e.target.value }))} />
               <span>–</span>
               <input type="date" value={dGlobal.end} onChange={e => setDGlobal(d => ({ ...d, end: e.target.value }))} />
+              {dGlobal.start !== today() && <button className="btn sm ghost" onClick={() => setDGlobal(d => ({ ...d, start: today() }))}>從今天</button>}
             </div>
+            <div className="muted" style={{ marginTop: 4 }}>開始日預設是今天（可改）。底下各科／各題型的日期預設都跟著整體範圍，改過的才會固定住（可按「跟整體」還原）</div>
 
             <b style={{ display: 'block', marginTop: 14 }}>怎麼分配到這些日子？</b>
             <div style={{ marginTop: 6 }}>
