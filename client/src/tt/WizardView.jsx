@@ -164,7 +164,8 @@ export default function WizardView({ lists, reload, goTasks }) {
     return Object.values(m);
   };
   const groupsFor = sid => {
-    const ref = (typeRef[sid] && typeRef[sid] !== 'self') ? typeRef[sid] : sid;
+    const r = typeRef[sid];
+    const ref = (r && r !== 'self' && lists.some(l => String(l.id) === String(r))) ? r : sid;
     // 沒動過的科目用預設兩組（範例+例題／單元練習+歷屆）；清空過的（[]）尊重使用者
     return calcGroups(typesBy[ref] ?? DEF_TYPES, combineBy[ref] ?? DEF_COMBINE, typeGroupBy[ref] ?? DEF_TG);
   };
@@ -859,7 +860,8 @@ export default function WizardView({ lists, reload, goTasks }) {
         {/* ============ 2 題型與偏好 ============ */}
         {step === 2 && (() => {
           const sids = [...new Set(items.map(i => i.subject_id))];
-          const sname = sid => lists.find(l => l.id === sid)?.name || '';
+          // 用字串比對：下拉選單回傳的是字串，科目 id 是數字，直接 === 會找不到名字
+          const sname = sid => lists.find(l => String(l.id) === String(sid))?.name || '';
           const TypePanel = ({ ts, cb, tg, onTs, onCb, onTg }) => (
             <div>
               <div className="row" style={{ marginTop: 6 }}>
@@ -908,19 +910,20 @@ export default function WizardView({ lists, reload, goTasks }) {
 
               <b style={{ display: 'block', marginTop: 16 }}>教材題型（範例/例題/單元練習/歷屆試題）</b>
               <div className="muted" style={{ marginTop: 2 }}>已幫你預設好：範例+例題一組、單元練習+歷屆試題一組（練習/歷屆以「章」為單位，每章一份）。不用改就能直接下一步；想調整再展開各科設定</div>
-              {sids.map((sid, idx) => {
-                const ref = typeRef[sid] && typeRef[sid] !== 'self' ? typeRef[sid] : null;
+              {sids.map(sid => {
+                // 指到已不存在的科目就當作「自己設定」，否則會卡在「使用「」的設定」改不掉
+                const raw = typeRef[sid];
+                const ref = raw && raw !== 'self' && sids.some(s2 => String(s2) === String(raw)) ? raw : null;
                 return (
                   <div key={sid} style={{ marginTop: 10, borderLeft: `3px solid ${lists.find(l => l.id === sid)?.color}`, paddingLeft: 8 }}>
                     <div className="row">
                       <b>{sname(sid)}</b>
-                      {idx > 0 && (
-                        <select value={typeRef[sid] || 'self'} onChange={e => setTypeRef(s => ({ ...s, [sid]: e.target.value }))}>
-                          <option value="self">自己設定</option>
-                          {sids.filter(s2 => s2 !== sid && (typeRef[s2] || 'self') === 'self').map(s2 =>
-                            <option key={s2} value={s2}>跟「{sname(s2)}」一樣</option>)}
-                        </select>
-                      )}
+                      {/* 每一科都要能選（第一科也是），不然設錯了救不回來 */}
+                      <select value={ref == null ? 'self' : String(ref)} onChange={e => setTypeRef(s => ({ ...s, [sid]: e.target.value }))}>
+                        <option value="self">自己設定</option>
+                        {sids.filter(s2 => String(s2) !== String(sid) && !(typeRef[s2] && typeRef[s2] !== 'self')).map(s2 =>
+                          <option key={s2} value={String(s2)}>跟「{sname(s2)}」一樣</option>)}
+                      </select>
                     </div>
                     {ref
                       ? <div className="muted" style={{ marginTop: 4 }}>＝ 使用「{sname(ref)}」的題型設定</div>

@@ -194,7 +194,9 @@ router.post('/preview', async (req, res) => {
       }
       b.dates = new Set(D.map(d => d.date));
       b.rate = (b.list.length / D.length) * (front ? 1 / 0.6 : 1);
-      b.err = 0;
+      // 起手先給半格：不然「項目少的科目」要等 1/速率 天才第一次出現，
+      // 造成前幾天科目很少、後面很擠。半格＝把整串往前挪半個間隔，頭尾才對稱。
+      b.err = Math.min(0.5, b.rate / 2);
     }
     // 同科的階段（桶）必須「接續」：先做完全部範例+例題，練習/歷屆才開始。
     // 而且由「後往前」保留天數——練習（一天一課）需要 n 天就先保留尾端 n 天，
@@ -435,6 +437,55 @@ router.post('/preview', async (req, res) => {
         }
       }
       if (!changed) break;
+    }
+  }
+  // 3) 全域負載平衡：把「很擠的日子」的項目搬到「很空的日子」，讓每天的量接近。
+  //    關鍵手法：搬完後把同一桶的日期重新排序、照原順序配回去 → 課本順序自動維持，
+  //    所以不需要「只能在前後鄰居之間移動」那種綁手綁腳的限制，才拉得動整串。
+  if (!timed && blocks.length && days.length > 1) {
+    const idxOf = {}; days.forEach((d, i) => { idxOf[d.date] = i; });
+    const cap = Math.ceil(blocks.length / days.length);          // 每日目標上限
+    const floorCap = Math.floor(blocks.length / days.length);
+    const maxNormal = {}, minFinal = {};
+    blocks.forEach(b => {
+      if (!b._fin && (!maxNormal[b.subject_id] || b.date > maxNormal[b.subject_id])) maxNormal[b.subject_id] = b.date;
+      if (b._fin && (!minFinal[b.subject_id] || b.date < minFinal[b.subject_id])) minFinal[b.subject_id] = b.date;
+    });
+    for (let pass = 0; pass < 12; pass++) {
+      const cnt = {}; days.forEach(d => { cnt[d.date] = 0; }); blocks.forEach(b => cnt[b.date]++);
+      const sCnt = (date, sid) => blocks.reduce((a, x) => a + (x.date === date && x.subject_id === sid ? 1 : 0), 0);
+      // 從「最空的日子」開始，把量多的日子的項目拉過來（雙向平衡；
+      // 只看超載日的話，第一天只有 2 項這種情況永遠補不到）
+      const light = days.filter(d => cnt[d.date] < floorCap && d.slots.length)
+        .sort((a, b) => cnt[a.date] - cnt[b.date]);
+      if (!light.length) break;
+      let moved = false;
+      for (const E of light) {
+        while (cnt[E.date] < floorCap) {
+          // 可以搬到 E 的候選項目：所在日子比 E 多至少 2 項，且不違反範圍與階段順序
+          const cand = blocks.filter(b => cnt[b.date] > cnt[E.date] + 1
+            && E.date >= b._ws && E.date <= b._we
+            && sCnt(E.date, b.subject_id) < sCnt(b.date, b.subject_id)
+            && (b._fin ? (!maxNormal[b.subject_id] || E.date > maxNormal[b.subject_id])
+                       : (!minFinal[b.subject_id] || E.date < minFinal[b.subject_id]))
+            && (() => {
+              const others = blocks.filter(x => x.subject_id === b.subject_id && x._bk !== b._bk);
+              const nextOther = others.filter(x => x.date > b.date).reduce((a, x) => (!a || x.date < a) ? x.date : a, null);
+              const prevOther = others.filter(x => x.date < b.date).reduce((a, x) => (!a || x.date > a) ? x.date : a, null);
+              return (!nextOther || E.date < nextOther) && (!prevOther || E.date > prevOther);
+            })())
+            .sort((x, y) => cnt[y.date] - cnt[x.date]                         // 先搬最擠那天的
+              || Math.abs(idxOf[x.date] - idxOf[E.date]) - Math.abs(idxOf[y.date] - idxOf[E.date]));
+          const b = cand[0];
+          if (!b) break;
+          const mates = blocks.filter(x => x._bk === b._bk);                  // 同桶＝同科同階段
+          cnt[b.date]--; cnt[E.date]++; b.date = E.date;
+          const ds = mates.map(m => m.date).sort();                           // 重新照日期順序配給同桶項目
+          mates.forEach((m, i) => { m.date = ds[i]; });                       // → 課本順序自動維持
+          moved = true;
+        }
+      }
+      if (!moved) break;
     }
   }
   // 修補後還剩的空窗＝使用者自訂日期範圍造成（不能擅自違反），僅回報說明
