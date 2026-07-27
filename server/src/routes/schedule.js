@@ -161,6 +161,7 @@ router.post('/preview', async (req, res) => {
     const same = blocks.filter(b => b.date === date && b.subject_id === w.subject_id);
     if (!same.length) return true;
     if (w.final) return false;                       // 壓軸要獨佔那天
+    if (w.onePerDay && same.some(b => b._one)) return false;   // 純題目一天一份
     return !same.some(b => b._fin);                  // 那天已有壓軸，別的就別再進來
   };
   const eligible = (w, minDate, maxDate) => {
@@ -236,6 +237,35 @@ router.post('/preview', async (req, res) => {
       const flexN = rigid.filter(r => !r).length;
       const flexW = counts.map((c, i) => rigid[i] ? 0 : c);
       const sumF = flexW.reduce((a, c) => a + c, 0);
+      // 純題目很多的時候（例如地科 13 章、26 份單元練習+歷屆），「一天一課」會把
+      // 尾端 26 天整個吃掉、一天只放 1 項，害 42 個節全擠進剩下的 8 天（一天 5、6 節）。
+      // 這種情況改用「重疊」：純題目照樣一天一課排在後段，範例+例題則鋪滿整個範圍，
+      // 於是後段是「1 份純題目＋1～2 個節」，整科每天的量才會一致。
+      const seqFlexDays = avail - rigidNeed;
+      const avgPerDay = sumC / avail;
+      const overlap = flexN > 0 && sumF > 0
+        && (seqFlexDays <= 0 || sumF / seqFlexDays > Math.max(2, avgPerDay * 1.5));
+      if (overlap) {
+        for (let i = 0; i < arr.length; i++) {
+          const b = arr[i];
+          let w = winArr[i];
+          if (!w.length) continue;
+          if (front) {                                             // 早點完成：整段壓到約 6 成
+            const keep = Math.max(minNeed[i], Math.ceil(w.length * 0.6), 1);
+            if (keep < w.length) w = w.slice(0, keep);
+          }
+          // 純題目佔尾端（剛好一天一課）；範例+例題用整個範圍
+          const ds = rigid[i] ? w.slice(Math.max(0, w.length - counts[i])) : w;
+          // 純題目不可以被後面的搬移拉到自己的區段之前（不然會變成「先寫單元練習
+          // 才讀那一章的節」）：把起始日收緊成這一段的第一天，各 pass 都會遵守
+          if (rigid[i] && ds.length) { const st = days[ds[0]].date; b.list.forEach(w2 => { if (w2.start < st) w2.start = st; }); }
+          b.dates = new Set(ds.map(j => days[j].date));
+          b.rate = b.list.length / ds.length;
+          b.err = Math.min(0.5, b.rate / 2);
+          b._fronted = true;
+        }
+        continue;
+      }
       const alloc = (avail - rigidNeed >= flexN && flexN)
         ? (() => { const rest = avail - rigidNeed; return counts.map((c, i) => rigid[i] ? minNeed[i] : Math.max(1, Math.round(rest * flexW[i] / (sumF || 1)))); })()
         // 真的連「一天一課」都排不下（範圍太短）才一起等比例壓縮
@@ -329,6 +359,13 @@ router.post('/preview', async (req, res) => {
         }
         if (!done && !w.final) for (let i = Math.max(0, base - 1); i < days.length && !done; i++) {
           if (!b.dates.has(days[i].date)) continue;
+          if (w.onePerDay && !exclusiveOk(days[i].date, w)) continue;   // 純題目仍維持一天一份
+          if (fits(days[i], w) && put(days[i], w)) done = true;
+        }
+        // 純題目補位：不限桶內日期，但還是不跟同科的另一份純題目同日
+        if (!done && !w.final && w.onePerDay) for (let i = 0; i < days.length && !done; i++) {
+          if (days[i].date < w.start || days[i].date > w.end) continue;   // 不可跑到自己的區段之前
+          if (!exclusiveOk(days[i].date, w)) continue;
           if (fits(days[i], w) && put(days[i], w)) done = true;
         }
         // 壓軸還是排不下：不限原範圍，從最後一天往前找「該科還沒有壓軸」的日子
@@ -702,8 +739,10 @@ router.post('/preview', async (req, res) => {
     });
     for (const s of m.values()) {
       const mx = Math.max(...Object.values(s.perDay));
-      const need = s.one + Math.ceil(s.flex / 2);
-      if (mx >= 3 && need > s.days.size) {
+      const avg = (s.one + s.flex) / (s.days.size || 1);
+      // 以「一天約 3 項」為可接受的節奏推估需要的天數；純題目一天一份是下限
+      const need = Math.max(s.one, Math.ceil((s.one + s.flex) / 3));
+      if (mx >= 5 && mx > avg * 2 && need > s.days.size) {
         tight.push({ subject_id: s.subject_id, maxPerDay: mx, needDays: need, haveDays: s.days.size });
       }
     }
