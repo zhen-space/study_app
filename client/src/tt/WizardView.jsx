@@ -1001,53 +1001,68 @@ export default function WizardView({ lists, reload, goTasks }) {
                   <label className={'tag-pill' + (finals[it.key] ? ' on' : '')} style={{ cursor: 'pointer' }}
                     onClick={() => { setFinals(f => ({ ...f, [it.key]: !f[it.key] })); setFirstsSel(f => ({ ...f, [it.key]: false })); }}>壓軸</label>
                 </>;
-                // 一科一區（不管勾選順序）：科目標籤 → 單元列（照課本順序） → 每章一份列
+                // 三層收合：科目 → 書名 → 單元（都點一下展開）
                 const blocks = sids.map(sid => {
                   const l = lists.find(x => x.id === sid);
                   if (!l) return null;
                   const ord = {}; allNodes(l).forEach((n, i) => { ord[n.key] = i; });
                   const subjItems = items.filter(it => it.subject_id === sid)
                     .sort((a, b) => (ord[String(a.key).split('+')[0]] ?? 9999) - (ord[String(b.key).split('+')[0]] ?? 9999));
+                  if (!subjItems.length) return null;
                   const nodeGs = groupsFor(sid).map((g, gi) => [g ? g.filter(t => !CH_TYPES.includes(t)) : [], gi]).filter(([gn]) => gn.length);
                   const chapGs = groupsFor(sid).map((g, gi) => [g ? g.filter(t => CH_TYPES.includes(t)) : [], gi]).filter(([gc]) => gc.length);
-                  const showBook = isMultiBook(sid);   // 這科有兩本以上才標書名
-                  const unitRows = subjItems.map(it => (
-                    <div key={'sk' + it.key} style={{ marginTop: 8 }}>
-                      <div>
-                        {showBook && bookOf(it.key) && <span className="chip" style={{ marginRight: 6 }}>📘{bookOf(it.key)}</span>}
-                        {it.title}
-                      </div>
-                      <div className="row" style={{ marginLeft: 12, marginTop: 3 }}>
-                        {!plainSel[it.key] && (nodeGs.length ? nodeGs.map(([gn, gi]) => pill(`${it.key}|${gi}`, gn.join('+'))) : ffPills(it))}
-                        {plainCycle(it)}
-                      </div>
-                    </div>
-                  ));
-                  const seenCh = new Set();
-                  const chapRows = [];
-                  if (chapGs.length) subjItems.filter(it => !plainSel[it.key]).forEach(it => {
-                    const base = String(it.key).split('+')[0].split('.')[0];
-                    const chKey = base.startsWith('toc-') ? base : String(it.key);
-                    if (seenCh.has(chKey)) return;
-                    seenCh.add(chKey);
-                    chapRows.push(
-                      <div key={'ch' + chKey} style={{ marginTop: 8 }}>
-                        <div>
-                          {showBook && bookOf(chKey) && <span className="chip" style={{ marginRight: 6 }}>📘{bookOf(chKey)}</span>}
-                          {chapTitle[chKey] || it.title}
+                  // 依書分組（手動輸入的範圍歸「手動範圍」）
+                  const byBook = new Map();
+                  subjItems.forEach(it => {
+                    const bk = String(it.key).startsWith('toc-') ? (bookOf(it.key) || '未命名課本') : '手動範圍';
+                    if (!byBook.has(bk)) byBook.set(bk, []);
+                    byBook.get(bk).push(it);
+                  });
+                  const bookBlocks = [...byBook.entries()].map(([bk, list]) => {
+                    const unitRows = list.map(it => (
+                      <div key={'sk' + it.key} style={{ marginTop: 8 }}>
+                        <div>{it.title}</div>
+                        <div className="row" style={{ marginLeft: 12, marginTop: 3 }}>
+                          {!plainSel[it.key] && (nodeGs.length ? nodeGs.map(([gn, gi]) => pill(`${it.key}|${gi}`, gn.join('+'))) : ffPills(it))}
+                          {plainCycle(it)}
                         </div>
-                        <div className="row" style={{ marginLeft: 12, marginTop: 3 }}>{chapGs.map(([gc, gi]) => pill(`ch:${chKey}|${gi}`, gc.join('+')))}</div>
                       </div>
+                    ));
+                    const seenCh = new Set();
+                    const chapRows = [];
+                    if (chapGs.length) list.filter(it => !plainSel[it.key]).forEach(it => {
+                      const base = String(it.key).split('+')[0].split('.')[0];
+                      const chKey = base.startsWith('toc-') ? base : String(it.key);
+                      if (seenCh.has(chKey)) return;
+                      seenCh.add(chKey);
+                      chapRows.push(
+                        <div key={'ch' + chKey} style={{ marginTop: 8 }}>
+                          <div>{chapTitle[chKey] || it.title}</div>
+                          <div className="row" style={{ marginLeft: 12, marginTop: 3 }}>{chapGs.map(([gc, gi]) => pill(`ch:${chKey}|${gi}`, gc.join('+')))}</div>
+                        </div>
+                      );
+                    });
+                    return (
+                      <details key={'bk' + sid + bk} style={{ marginTop: 6, marginLeft: 6 }}>
+                        <summary style={{ cursor: 'pointer', fontSize: 14 }}>
+                          📘 <b>{bk}</b> <span className="muted" style={{ fontSize: 12, fontWeight: 400 }}>{list.length} 個單元</span>
+                        </summary>
+                        <div style={{ marginLeft: 10 }}>
+                          {unitRows}
+                          {chapRows.length > 0 && <div className="muted" style={{ marginTop: 8, fontSize: 12 }}>每章一份：</div>}
+                          {chapRows}
+                        </div>
+                      </details>
                     );
                   });
-                  if (!unitRows.length && !chapRows.length) return null;
                   return (
-                    <div key={'skb' + sid} style={{ marginTop: 12, paddingLeft: 10, borderLeft: `3px solid ${l.color}` }}>
-                      <span className="tag" style={{ background: l.color, color: '#fff', padding: '2px 10px', borderRadius: 999, fontSize: 12 }}>{l.name}</span>
-                      {unitRows}
-                      {chapRows.length > 0 && <div className="muted" style={{ marginTop: 8, fontSize: 12 }}>每章一份：</div>}
-                      {chapRows}
-                    </div>
+                    <details key={'skb' + sid} style={{ marginTop: 8, paddingLeft: 10, borderLeft: `3px solid ${l.color}` }}>
+                      <summary style={{ cursor: 'pointer' }}>
+                        <span className="tag" style={{ background: l.color, color: '#fff', padding: '2px 10px', borderRadius: 999, fontSize: 12 }}>{l.name}</span>
+                        <span className="muted" style={{ fontSize: 12, marginLeft: 6 }}>{byBook.size > 1 ? `${byBook.size} 本・` : ''}{subjItems.length} 個單元</span>
+                      </summary>
+                      {bookBlocks}
+                    </details>
                   );
                 }).filter(Boolean);
                 if (!blocks.length) return null;
