@@ -43,7 +43,8 @@ export default function WizardView({ lists, reload, goTasks }) {
   const [rangeInput, setRangeInput] = useState({});
   const [tocs, setTocs] = useState([]);
   const [tocBusy, setTocBusy] = useState(null);
-  const [editBook, setEditBook] = useState(null);   // 正在改名的書：`${list_id}|${書名}`
+  const [editBook, setEditBook] = useState(null);   // 正在改名的書：`${list_id}|${第一章的id}`
+  const [bookDraft, setBookDraft] = useState(null); // 編輯中的書名/出版社（按「完成」才存）
   const [tocMsg, setTocMsg] = useState({});
   const [expanded, setExpanded] = useState({});
   const [subjSpread, setSubjSpread] = useState({});   // 每科：章節打散(spread)或照順序(order)
@@ -810,42 +811,52 @@ export default function WizardView({ lists, reload, goTasks }) {
                   {rows.length > 0 && <div className="muted" style={{ marginTop: 4 }}>點書名展開章節，可勾章／節／主題任一層（勾小的會取代大的）。同一科第二本課本用「加一本新書」；某本目錄沒拍完，用那本右邊的「＋頁」補；書名按 ✎ 可改</div>}
                   {tocMsg[l.id] && <div className="muted" style={{ marginTop: 4 }}>{tocMsg[l.id]}</div>}
                   {bookGroups.map(([bk, rws]) => (
-                    <details key={bk || '_none'} style={{ marginTop: 6 }}>
-                      {/* 預設一行純文字（不佔格子）；按 ✎ 才變成可編輯欄位 */}
-                      <summary style={{ cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 6, padding: '2px 0' }}>
-                        {editBook === `${l.id}|${bk}` ? (
-                          <>
-                            <input autoFocus defaultValue={bk} placeholder="書名" onClick={e => e.stopPropagation()}
-                              onKeyDown={e => e.key === 'Enter' && e.target.blur()}
-                              onBlur={e => { const v = e.target.value.trim(); if (v !== bk) saveBook(bk, { newBook: v }); else setEditBook(null); }}
-                              style={{ fontWeight: 600, fontSize: 14, flex: '1 1 50%', minWidth: 0, padding: '3px 6px' }} />
-                            <input defaultValue={rws[0]?.publisher || ''} placeholder="出版社" onClick={e => e.stopPropagation()}
-                              onKeyDown={e => e.key === 'Enter' && e.target.blur()}
-                              onBlur={e => { const v = e.target.value.trim(); if (v !== (rws[0]?.publisher || '')) saveBook(bk, { publisher: v }); else setEditBook(null); }}
-                              style={{ fontSize: 13, flex: '1 1 32%', minWidth: 0, padding: '3px 6px' }} />
-                            <button className="btn sm" onClick={e => { e.preventDefault(); e.stopPropagation(); setEditBook(null); }}>完成</button>
-                          </>
-                        ) : (
-                          <>
-                            <span style={{ flex: 1, fontSize: 14, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                              📘 <b>{bk || '未命名課本'}</b>
-                              <span className="muted" style={{ fontSize: 12 }}>{rws[0]?.publisher ? `・${rws[0].publisher}` : ''}・{rws.length} 章</span>
-                            </span>
-                            {/* 補「這一本」的後幾頁：掛在該書底下，不會跟別本混在一起 */}
-                            <label className="icon-btn" title={`補「${bk || '這本'}」的後幾頁`} style={{ padding: 2, cursor: 'pointer', opacity: tocBusy === l.id ? .4 : 1 }}
-                              onClick={e => e.stopPropagation()}>＋頁
-                              <input type="file" multiple disabled={tocBusy !== null} accept="image/*,.pdf" style={{ display: 'none' }}
-                                onChange={e => uploadTOC(l, e, { book: bk })} />
-                            </label>
-                            <button className="icon-btn" title="改書名／出版社" style={{ padding: 2 }}
-                              onClick={e => { e.preventDefault(); e.stopPropagation(); setEditBook(`${l.id}|${bk}`); }}>✎</button>
-                            <button className="icon-btn" title="整本刪除" style={{ padding: 2 }}
-                              onClick={e => { e.preventDefault(); e.stopPropagation(); delBook(bk, rws); }}>✕</button>
-                          </>
-                        )}
-                      </summary>
-                      {rws.map(chapterNode).map(renderNode)}
-                    </details>
+                    editBook === `${l.id}|${rws[0].id}` ? (
+                      // 編輯模式：獨立一行（不放在可收合標題裡，才不會一點就收合／跳掉焦點）
+                      // 打完按「完成」才存，中途切換欄位不會被打斷
+                      <div key={'edit' + rws[0].id} className="row" style={{ marginTop: 6, flexWrap: 'wrap' }}>
+                        <span>📘</span>
+                        <input autoFocus value={bookDraft?.book ?? ''} placeholder="書名"
+                          onChange={e => setBookDraft(d => ({ ...d, book: e.target.value }))}
+                          style={{ fontWeight: 600, fontSize: 14, flex: '1 1 45%', minWidth: 90, padding: '4px 8px' }} />
+                        <input value={bookDraft?.publisher ?? ''} placeholder="出版社"
+                          onChange={e => setBookDraft(d => ({ ...d, publisher: e.target.value }))}
+                          style={{ fontSize: 13, flex: '1 1 30%', minWidth: 80, padding: '4px 8px' }} />
+                        <button className="btn sm ghost" onClick={() => { setEditBook(null); setBookDraft(null); }}>取消</button>
+                        <button className="btn sm" onClick={() => {
+                          const patch = {};
+                          if ((bookDraft?.book || '').trim() !== bk) patch.newBook = (bookDraft?.book || '').trim();
+                          if ((bookDraft?.publisher || '').trim() !== (rws[0]?.publisher || '')) patch.publisher = (bookDraft?.publisher || '').trim();
+                          setEditBook(null); setBookDraft(null);
+                          if (Object.keys(patch).length) saveBook(bk, patch);
+                        }}>完成</button>
+                      </div>
+                    ) : (
+                      <details key={bk || '_none'} style={{ marginTop: 6 }}>
+                        {/* 平常是一行純文字（不佔格子）；按 ✎ 才切成上面的編輯模式 */}
+                        <summary style={{ cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 6, padding: '2px 0' }}>
+                          <span style={{ flex: 1, fontSize: 14, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                            📘 <b>{bk || '未命名課本'}</b>
+                            <span className="muted" style={{ fontSize: 12 }}>{rws[0]?.publisher ? `・${rws[0].publisher}` : ''}・{rws.length} 章</span>
+                          </span>
+                          {/* 補「這一本」的後幾頁：掛在該書底下，不會跟別本混在一起 */}
+                          <label className="icon-btn" title={`補「${bk || '這本'}」的後幾頁`} style={{ padding: 2, cursor: 'pointer', opacity: tocBusy === l.id ? .4 : 1 }}
+                            onClick={e => e.stopPropagation()}>＋頁
+                            <input type="file" multiple disabled={tocBusy !== null} accept="image/*,.pdf" style={{ display: 'none' }}
+                              onChange={e => uploadTOC(l, e, { book: bk })} />
+                          </label>
+                          <button className="icon-btn" title="改書名／出版社" style={{ padding: 2 }}
+                            onClick={e => {
+                              e.preventDefault(); e.stopPropagation();
+                              setBookDraft({ book: bk, publisher: rws[0]?.publisher || '' });
+                              setEditBook(`${l.id}|${rws[0].id}`);
+                            }}>✎</button>
+                          <button className="icon-btn" title="整本刪除" style={{ padding: 2 }}
+                            onClick={e => { e.preventDefault(); e.stopPropagation(); delBook(bk, rws); }}>✕</button>
+                        </summary>
+                        {rws.map(chapterNode).map(renderNode)}
+                      </details>
+                    )
                   ))}
                   <div className="row" style={{ marginTop: 8 }}>
                     <input placeholder="或手動輸入範圍（如：講義 p.20-35）" value={rangeInput[l.id] || ''} onChange={e => setRangeInput(r => ({ ...r, [l.id]: e.target.value }))} style={{ flex: 1, fontSize: 14 }} />
