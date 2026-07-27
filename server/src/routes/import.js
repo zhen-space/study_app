@@ -258,6 +258,38 @@ router.delete('/toc-book', async (req, res) => {
   await q.run('DELETE FROM toc_items WHERE user_id=? AND list_id=? AND book=?', [req.userId, +list_id, book]);
   res.json({ ok: true });
 });
+// 把「被 AI 塞進某章底下」的節/主題拉出來，獨立成自己的一章
+// body: { id: 章的 toc_id, path: [節index] 或 [節index, 主題index] }
+router.post('/toc-promote', async (req, res) => {
+  const { id, path = [] } = req.body;
+  const row = await q.get('SELECT * FROM toc_items WHERE id=? AND user_id=?', [id, req.userId]);
+  if (!row || !path.length) return res.status(404).json({ error: '找不到項目' });
+  let secs = [];
+  try { secs = JSON.parse(row.sections || '[]'); } catch {}
+  const norm = k => (typeof k === 'string' ? { title: k, level: '節', children: [] } : k);
+  secs = secs.map(norm);
+  let node;
+  if (path.length === 1) {
+    node = secs[path[0]];
+    secs.splice(path[0], 1);
+  } else {
+    const p = secs[path[0]];
+    if (!p) return res.status(400).json({ error: '找不到項目' });
+    const kids = (p.children || []).map(norm);
+    node = kids[path[1]];
+    kids.splice(path[1], 1);
+    p.children = kids;
+  }
+  if (!node) return res.status(400).json({ error: '找不到項目' });
+  await q.run('UPDATE toc_items SET sections=? WHERE id=?', [JSON.stringify(secs), row.id]);
+  // 插在原本那一章的後面（其餘往後移），順序才不會跑掉
+  await q.run('UPDATE toc_items SET order_index=order_index+1 WHERE user_id=? AND list_id=? AND order_index>?',
+    [req.userId, row.list_id, row.order_index]);
+  const r = await q.run('INSERT INTO toc_items (user_id,list_id,title,level,sections,order_index,book,publisher) VALUES (?,?,?,?,?,?,?,?)',
+    [req.userId, row.list_id, node.title, '章', JSON.stringify(node.children || []), row.order_index + 1, row.book || '', row.publisher || '']);
+  res.json({ id: r.lastInsertRowid });
+});
+
 // 改書名／出版社（把同科目同書名的所有章一起改）
 router.patch('/toc-book', async (req, res) => {
   const { list_id, book = '', newBook, publisher } = req.body;

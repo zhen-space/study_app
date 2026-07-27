@@ -739,6 +739,17 @@ export default function WizardView({ lists, reload, goTasks }) {
                 setTocs(await api('/import/toc'));
               };
 
+              // AI 把「本來就獨立」的單元塞進某章底下時，把它拉出來自成一章
+              const promote = async (key) => {
+                const parts = String(key).split('.');           // toc-12.0.2 → id=12, path=[0,2]
+                const tocId = +parts[0].replace('toc-', '');
+                const path = parts.slice(1).map(Number);
+                if (!path.length) return;
+                setItems(a => a.filter(x => !(String(x.key) === String(key) || String(x.key).startsWith(key + '.'))));
+                await api('/import/toc-promote', { method: 'POST', body: { id: tocId, path } });
+                setTocs(await api('/import/toc'));
+              };
+
               const renderNode = (n) => {
                 const it = findItem(n.key);
                 const hasKids = n.children && n.children.length > 0;
@@ -753,6 +764,10 @@ export default function WizardView({ lists, reload, goTasks }) {
                         {hasKids && <span className="muted"> {open ? '▾' : '▸'}</span>}
                         {n.depth > 0 && <span className="chip" style={{ marginLeft: 6 }}>{n.level}</span>}
                       </span>
+                      {n.depth > 0 && (
+                        <button className="icon-btn" style={{ padding: 2, fontSize: 12 }} title="這其實是獨立單元，不屬於這一章 → 拉出來自成一章"
+                          onClick={() => promote(n.key)}>⤴獨立</button>
+                      )}
                       {it && timed && <>
                         <input type="number" min="10" step="10" value={it.minutes} style={{ width: 66 }}
                           onChange={e => setItems(a => a.map(x => x.key === it.key ? { ...x, minutes: +e.target.value || 0 } : x))}
