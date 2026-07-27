@@ -221,24 +221,38 @@ router.post('/preview', async (req, res) => {
       const winArr = arr.map(b => [...b.dates].map(dt => dayIdx[dt]).sort((x, y) => x - y));
       // 各階段至少需要的天數：一天一課的＝項數；可加速的（範例+例題）＝項數÷2
       const minNeed = arr.map(b => b.list[0].onePerDay ? b.list.length : Math.ceil(b.list.length / 2));
-      // 由後往前：每階段最晚開始的索引（要讓後面的階段裝得下）
-      const latestStart = new Array(arr.length);
-      for (let i = arr.length - 1; i >= 0; i--) {
-        const w = winArr[i];
-        if (!w.length) { latestStart[i] = Infinity; continue; }
-        let ls = w[w.length - 1] - minNeed[i] + 1;
-        if (i < arr.length - 1 && latestStart[i + 1] !== Infinity) ls = Math.min(ls, latestStart[i + 1] - minNeed[i]);
-        latestStart[i] = ls;
-      }
-      // 前向切割：每階段只用「上一階段之後」的日子；且結束前要讓出下一階段的保留區
+      // 天數要「照工作量」分給各階段，不能照「最少天數」由後往前硬保留。
+      // 之前的做法會讓一天一課的練習佔走整個尾端，範例被壓到剩幾天，
+      // 變成一天五、六節擠在一起（前面 8 項、後面 3 項）。
+      const counts = arr.map(b => b.list.length);
+      const sumC = counts.reduce((a, c) => a + c, 0) || 1;
+      const avail = new Set(winArr.flat()).size;                 // 這科所有階段可用的總天數
+      const sumMin = minNeed.reduce((a, c) => a + c, 0) || 1;
+      // 天數不夠時的權重：取「項數」和「最少天數」的折衷。
+      // 只看最少天數 → 一天一課的練習佔走整個尾端，範例被壓成一天五、六節；
+      // 只看項數 → 練習被壓得太兇，尾端反而變空。
+      const wMix = counts.map((c, i) => (c + minNeed[i]) / 2);
+      const sumW = wMix.reduce((a, c) => a + c, 0) || 1;
+      const alloc = sumMin >= avail
+        ? wMix.map(w => Math.max(1, Math.round(avail * w / sumW)))
+        // 天數夠：先給最少天數，多的只分給「能加速的階段」（範例+例題）。
+        // 一天一課的練習給再多天也還是一天一課，多給只會讓尾端變空。
+        : (() => {
+          const slack = avail - sumMin;
+          const soak = arr.map((b, i) => b.list[0].onePerDay ? 0 : counts[i]);
+          const sumS = soak.reduce((a, c) => a + c, 0);
+          return minNeed.map((m, i) => m + Math.round(slack * (sumS ? soak[i] / sumS : counts[i] / sumC)));
+        })();
+      // 收尾修正：總和超過可用天數就從最大的扣，不足就補給最後一個階段（排到範圍尾端）
+      let over = alloc.reduce((a, c) => a + c, 0) - avail;
+      while (over > 0) { const i = alloc.indexOf(Math.max(...alloc)); if (alloc[i] <= 1) break; alloc[i]--; over--; }
+      if (over < 0) alloc[alloc.length - 1] -= over;
+      // 前向切割：每階段只用「上一階段之後」的日子，且只拿自己那份天數
       let prevEndIdx = -1;
       for (let i = 0; i < arr.length; i++) {
         const b = arr[i];
         let ds = winArr[i].filter(j => j > prevEndIdx);
-        if (i < arr.length - 1 && latestStart[i + 1] !== Infinity) {
-          const cut = ds.filter(j => j < latestStart[i + 1]);
-          if (cut.length) ds = cut;                              // 讓位（範例壓縮成一天兩課）
-        }
+        if (i < arr.length - 1 && alloc[i] < ds.length) ds = ds.slice(0, Math.max(1, alloc[i]));
         if (!ds.length) ds = winArr[i].filter(j => j > prevEndIdx);
         if (!ds.length) ds = winArr[i];
         if (!ds.length) continue;
