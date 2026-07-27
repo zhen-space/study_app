@@ -160,9 +160,10 @@ router.post('/preview', async (req, res) => {
   const exclusiveOk = (date, w) => {
     const same = blocks.filter(b => b.date === date && b.subject_id === w.subject_id);
     if (!same.length) return true;
-    if (w.final) return false;                       // 壓軸要獨佔那天
-    if (w.onePerDay && same.some(b => b._one)) return false;   // 純題目一天一份
-    return !same.some(b => b._fin);                  // 那天已有壓軸，別的就別再進來
+    // 壓軸、純題目（單元練習／歷屆試題）都要「獨佔那天的這一科」：
+    // 那天這科就只做這一份，不再混範例+例題，也不會有第二份純題目
+    if (w.final || w.onePerDay) return false;
+    return !same.some(b => b._fin || b._one);
   };
   const eligible = (w, minDate, maxDate) => {
     const base = days.filter(d => d.date >= w.start && d.date <= w.end
@@ -237,35 +238,8 @@ router.post('/preview', async (req, res) => {
       const flexN = rigid.filter(r => !r).length;
       const flexW = counts.map((c, i) => rigid[i] ? 0 : c);
       const sumF = flexW.reduce((a, c) => a + c, 0);
-      // 純題目很多的時候（例如地科 13 章、26 份單元練習+歷屆），「一天一課」會把
-      // 尾端 26 天整個吃掉、一天只放 1 項，害 42 個節全擠進剩下的 8 天（一天 5、6 節）。
-      // 這種情況改用「重疊」：純題目照樣一天一課排在後段，範例+例題則鋪滿整個範圍，
-      // 於是後段是「1 份純題目＋1～2 個節」，整科每天的量才會一致。
-      const seqFlexDays = avail - rigidNeed;
-      const avgPerDay = sumC / avail;
-      const overlap = flexN > 0 && sumF > 0
-        && (seqFlexDays <= 0 || sumF / seqFlexDays > Math.max(2, avgPerDay * 1.5));
-      if (overlap) {
-        for (let i = 0; i < arr.length; i++) {
-          const b = arr[i];
-          let w = winArr[i];
-          if (!w.length) continue;
-          if (front) {                                             // 早點完成：整段壓到約 6 成
-            const keep = Math.max(minNeed[i], Math.ceil(w.length * 0.6), 1);
-            if (keep < w.length) w = w.slice(0, keep);
-          }
-          // 純題目佔尾端（剛好一天一課）；範例+例題用整個範圍
-          const ds = rigid[i] ? w.slice(Math.max(0, w.length - counts[i])) : w;
-          // 純題目不可以被後面的搬移拉到自己的區段之前（不然會變成「先寫單元練習
-          // 才讀那一章的節」）：把起始日收緊成這一段的第一天，各 pass 都會遵守
-          if (rigid[i] && ds.length) { const st = days[ds[0]].date; b.list.forEach(w2 => { if (w2.start < st) w2.start = st; }); }
-          b.dates = new Set(ds.map(j => days[j].date));
-          b.rate = b.list.length / ds.length;
-          b.err = Math.min(0.5, b.rate / 2);
-          b._fronted = true;
-        }
-        continue;
-      }
+      // 純題目（單元練習／歷屆試題）要獨佔該科的一整天，所以它要幾份就要幾天，
+      // 剩下的天數才是範例+例題可用的天數——這就是使用者的公式。
       const alloc = (avail - rigidNeed >= flexN && flexN)
         ? (() => { const rest = avail - rigidNeed; return counts.map((c, i) => rigid[i] ? minNeed[i] : Math.max(1, Math.round(rest * flexW[i] / (sumF || 1)))); })()
         // 真的連「一天一課」都排不下（範圍太短）才一起等比例壓縮
@@ -428,10 +402,8 @@ router.post('/preview', async (req, res) => {
   const canPlaceOn = (b, date) => {
     const same = blocks.filter(x => x !== b && x.date === date && x.subject_id === b.subject_id);
     if (!same.length) return true;
-    if (b._fin) return false;
-    // 練習／歷屆試題一天一課：目標日已經有這科的純題目就不能再疊上去
-    if (b._one && same.some(x => x._one)) return false;
-    return !same.some(x => x._fin);
+    if (b._fin || b._one) return false;              // 壓軸／純題目獨佔該科的那一天
+    return !same.some(x => x._fin || x._one);
   };
   // 1) 平衡每日量（不計時模式）：超量日的項目搬到未滿日。
   //    可搬條件：目標日在該項目的日期範圍內、且介於同桶前後項的日期之間（順序不破）。
