@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { api } from '../api';
 import { dateLabel, isOverdue } from './MemoView';
 
@@ -7,7 +7,11 @@ export default function MemoCard({ goMemo }) {
   const [memos, setMemos] = useState(() => {
     try { return JSON.parse(localStorage.getItem('memoCache') || '[]'); } catch { return []; }
   });
-  const [quick, setQuick] = useState('');
+  // 打到一半的字存起來：切到別頁、關掉 app 再回來都還在
+  const [quick, setQuick] = useState(() => { try { return localStorage.getItem('memoDraft') || ''; } catch { return ''; } });
+  const [busy, setBusy] = useState(false);
+  const inputRef = useRef(null);
+  const setDraft = v => { setQuick(v); try { localStorage.setItem('memoDraft', v); } catch {} };
   const load = () => api('/memos').then(list => {
     setMemos(list);
     try { localStorage.setItem('memoCache', JSON.stringify(list)); } catch {}
@@ -19,12 +23,27 @@ export default function MemoCard({ goMemo }) {
     setMemos(list => list.map(x => x.id === m.id ? { ...x, done: 1 } : x));   // 立刻消失
     api(`/memos/${m.id}`, { method: 'PATCH', body: { done: true } }).catch(() => {});
   };
+  // 一次可以加很多項：貼上或打了換行就一行一件，分別建立
   async function add(e) {
-    e.preventDefault();
-    if (!quick.trim()) return;
-    const m = await api('/memos', { method: 'POST', body: { content: quick.trim() } });
-    setMemos(list => [...list, m]);
-    setQuick('');
+    e?.preventDefault?.();
+    const lines = quick.split('\n').map(x => x.trim()).filter(Boolean);
+    if (!lines.length || busy) return;
+    setBusy(true);
+    const added = [];
+    try {
+      for (const line of lines) added.push(await api('/memos', { method: 'POST', body: { content: line } }));
+    } catch {
+      // 送不出去（沒網路等）就把還沒建立的留在輸入框，不要默默弄丟
+      const left = lines.slice(added.length).join('\n');
+      setMemos(list => [...list, ...added]);
+      setDraft(left);
+      setBusy(false);
+      return;
+    }
+    setMemos(list => [...list, ...added]);
+    setDraft('');
+    setBusy(false);
+    inputRef.current?.focus();          // 保持游標，接著就能記下一件
   }
 
   // 依分類分組（未分類放最後）；每組內：過期→今天→有日期的照日期→沒日期的
@@ -54,9 +73,14 @@ export default function MemoCard({ goMemo }) {
           ))}
         </div>
       ))}
-      <form onSubmit={add} style={{ marginTop: 6 }}>
-        <input placeholder="＋ 隨手記一件事…" value={quick} onChange={e => setQuick(e.target.value)}
-          style={{ width: '100%', background: 'var(--bg)', border: '1px dashed var(--border)' }} />
+      <form onSubmit={add} className="row" style={{ marginTop: 6, gap: 6, alignItems: 'flex-start' }}>
+        {/* textarea 而非 input：貼上一串清單時換行才留得住，一行就是一件 */}
+        <textarea ref={inputRef} placeholder="＋ 隨手記…（一行一件）" value={quick}
+          rows={Math.min(4, quick.split('\n').length)} enterKeyHint="done"
+          onChange={e => setDraft(e.target.value)}
+          onKeyDown={e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); add(); } }}
+          style={{ flex: 1, minWidth: 0, resize: 'none', background: 'var(--bg)', border: '1px dashed var(--border)' }} />
+        {quick.trim() && <button className="btn sm" disabled={busy}>加入</button>}
       </form>
     </div>
   );
