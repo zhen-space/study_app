@@ -762,8 +762,17 @@ router.post('/preview', async (req, res) => {
       else { s.sec++; s.secDays.add(b.date); s.secPer[b.date] = (s.secPer[b.date] || 0) + 1; }
       m.set(b.subject_id, s);
     });
+    // 該科自己的可排日數（用它所有項目的最早開始～最晚截止算）
+    const availBySub = {};
+    for (const w of [...firstsQ, ...work, ...finals]) {
+      const v = availBySub[w.subject_id] || (availBySub[w.subject_id] = { s: w.start, e: w.end });
+      if (w.start < v.s) v.s = w.start;
+      if (w.end > v.e) v.e = w.end;
+    }
     for (const s of m.values()) {
       const per = Object.values(s.secPer);
+      const v = availBySub[s.subject_id];
+      const availDays = v ? days.filter(d => d.date >= v.s && d.date <= v.e).length : days.length;
       subjSpan.push({
         subject_id: s.subject_id, first: s.first, last: s.last, count: s.count,
         one: s.one, oneDays: s.oneDays.size,
@@ -771,6 +780,9 @@ router.post('/preview', async (req, res) => {
         secMin: per.length ? Math.min(...per) : 0,
         secMax: per.length ? Math.max(...per) : 0,
         totalDays: days.length,
+        availDays,
+        // 要讓「節」降到一天 2 個，這科總共需要幾天（純題目一天一份＋節一天兩個）
+        wantDays: s.one + Math.ceil(s.sec / 2),
       });
     }
   }

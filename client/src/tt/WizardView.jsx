@@ -1205,6 +1205,15 @@ export default function WizardView({ lists, reload, goTasks }) {
                     })}
                   </div>
                 )}
+                {/* 哪幾科把每天塞爆的：直接指出要延長哪一科、延到幾天 */}
+                {(preview.check.subjects || []).filter(s => s.secMax >= 3 && s.wantDays > s.availDays)
+                  .sort((a, b) => b.secMax - a.secMax || b.sec - a.sec).slice(0, 3).map(s => (
+                    <div key={'a' + s.subject_id} style={{ marginTop: 4, color: 'var(--orange, #C46A22)' }}>
+                      ⚠️ {lists.find(l => l.id === s.subject_id)?.name || '有一科'}一天要排 {s.secMin === s.secMax ? s.secMax : `${s.secMin}~${s.secMax}`} 個節：
+                      共 {s.sec} 個節，但扣掉 {s.one} 天的單元練習／歷屆後只剩 {s.secDays} 天。
+                      這科延長到 {s.wantDays} 天（目前 {s.availDays} 天，再加 {s.wantDays - s.availDays} 天）就會變成一天 2 個。
+                    </div>
+                  ))}
                 {(preview.check.tight || []).map((t, i) => (
                   <div key={'t' + i} style={{ marginTop: 4, color: 'var(--orange, #C46A22)' }}>
                     ⚠️ {lists.find(l => l.id === t.subject_id)?.name || '有一科'}的日期範圍太短：只有 {t.haveDays} 天，
