@@ -1193,9 +1193,15 @@ export default function WizardView({ lists, reload, goTasks }) {
                 </span>
                 {(preview.check.subjects || []).length > 0 && (
                   <div className="muted" style={{ marginTop: 4 }}>
-                    {preview.check.subjects.map(s =>
-                      `${lists.find(l => l.id === s.subject_id)?.name || '?'} ${s.first.slice(5).replace('-', '/')}–${s.last.slice(5).replace('-', '/')}（${s.count}項）`
-                    ).join('・')}
+                    {preview.check.subjects.map(s => {
+                      const nm = lists.find(l => l.id === s.subject_id)?.name || '?';
+                      const span = `${s.first.slice(5).replace('-', '/')}–${s.last.slice(5).replace('-', '/')}`;
+                      // 把公式攤開給你看：全部天數 －（單元練習/歷屆份數）＝ 節可用的天數
+                      const f = s.one > 0 && s.sec > 0
+                        ? `　${s.totalDays}天−${s.one}份練習/歷屆=${s.secDays}天排${s.sec}個節（一天${s.secMin === s.secMax ? s.secMax : `${s.secMin}~${s.secMax}`}個）`
+                        : '';
+                      return <div key={s.subject_id}>{nm} {span}（{s.count}項）{f}</div>;
+                    })}
                   </div>
                 )}
                 {(preview.check.tight || []).map((t, i) => (

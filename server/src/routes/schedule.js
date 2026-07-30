@@ -713,13 +713,29 @@ router.post('/preview', async (req, res) => {
   {
     const m = new Map();
     blocks.forEach(b => {
-      const s = m.get(b.subject_id) || { subject_id: b.subject_id, first: b.date, last: b.date, count: 0 };
+      const s = m.get(b.subject_id) || {
+        subject_id: b.subject_id, first: b.date, last: b.date, count: 0,
+        one: 0, sec: 0, oneDays: new Set(), secDays: new Set(), secPer: {},
+      };
       if (b.date < s.first) s.first = b.date;
       if (b.date > s.last) s.last = b.date;
       s.count++;
+      // 讓使用者看得到公式：可用天數 －（純題目份數）＝ 節可用的天數
+      if (b._one) { s.one++; s.oneDays.add(b.date); }
+      else { s.sec++; s.secDays.add(b.date); s.secPer[b.date] = (s.secPer[b.date] || 0) + 1; }
       m.set(b.subject_id, s);
     });
-    subjSpan.push(...m.values());
+    for (const s of m.values()) {
+      const per = Object.values(s.secPer);
+      subjSpan.push({
+        subject_id: s.subject_id, first: s.first, last: s.last, count: s.count,
+        one: s.one, oneDays: s.oneDays.size,
+        sec: s.sec, secDays: s.secDays.size,
+        secMin: per.length ? Math.min(...per) : 0,
+        secMax: per.length ? Math.max(...per) : 0,
+        totalDays: days.length,
+      });
+    }
   }
   // 範圍太短的提醒：某科一天要排 3 項以上時，算出「照一天一課／一天兩節的節奏
   // 至少需要幾天」，讓使用者自己決定要不要把結束日往後延
