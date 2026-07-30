@@ -160,10 +160,12 @@ router.post('/preview', async (req, res) => {
   const exclusiveOk = (date, w) => {
     const same = blocks.filter(b => b.date === date && b.subject_id === w.subject_id);
     if (!same.length) return true;
-    // 壓軸、純題目（單元練習／歷屆試題）都要「獨佔那天的這一科」：
-    // 那天這科就只做這一份，不再混範例+例題，也不會有第二份純題目
-    if (w.final || w.onePerDay) return false;
-    return !same.some(b => b._fin || b._one);
+    if (w.final) return false;                       // 模考／壓軸獨佔那天的這一科，一天就一場
+    if (same.some(b => b._fin)) return false;
+    // 純題目（單元練習／歷屆試題）那天，這一科就「只做純題目」——
+    // 幾份純題目放同一天沒關係，但不能跟範例+例題混在一起
+    if (w.onePerDay) return same.every(b => b._one);
+    return !same.some(b => b._one);
   };
   const eligible = (w, minDate, maxDate) => {
     const base = days.filter(d => d.date >= w.start && d.date <= w.end
@@ -230,20 +232,26 @@ router.post('/preview', async (req, res) => {
       const sumC = counts.reduce((a, c) => a + c, 0) || 1;
       const avail = new Set(winArr.flat()).size;                 // 這科所有階段可用的總天數
       const sumMin = minNeed.reduce((a, c) => a + c, 0) || 1;
-      // 練習／歷屆試題是「一天一課」的剛性階段：它要幾天就先給幾天（使用者的公式），
-      // 剩下的天數才照項數比例分給能加速的階段（範例+例題）。
-      // 多的天數也不能給剛性階段——它一天就是一課，給再多天只會讓尾端空掉。
       const rigid = arr.map(b => !!b.list[0].onePerDay);
-      const rigidNeed = rigid.reduce((a, r, i) => a + (r ? minNeed[i] : 0), 0);
-      const flexN = rigid.filter(r => !r).length;
-      const flexW = counts.map((c, i) => rigid[i] ? 0 : c);
-      const sumF = flexW.reduce((a, c) => a + c, 0);
-      // 純題目（單元練習／歷屆試題）要獨佔該科的一整天，所以它要幾份就要幾天，
-      // 剩下的天數才是範例+例題可用的天數——這就是使用者的公式。
-      const alloc = (avail - rigidNeed >= flexN && flexN)
-        ? (() => { const rest = avail - rigidNeed; return counts.map((c, i) => rigid[i] ? minNeed[i] : Math.max(1, Math.round(rest * flexW[i] / (sumF || 1)))); })()
-        // 真的連「一天一課」都排不下（範圍太短）才一起等比例壓縮
-        : counts.map(c => Math.max(1, Math.round(avail * c / sumC)));
+      // 天數怎麼分給各階段：目標是「讓最擠的那天盡量不擠」——
+      // 從每階段 1 天開始，每次把下一天給目前「每日量最高」的階段。
+      // 純題目（單元練習／歷屆）上限是「一天一份」，拿到再多天也用不完，
+      // 所以它封頂在份數，剩下的天數自動流給範例+例題。
+      // 這樣 42 節＋26 份純題目排 32 天會變成兩邊都約 2 項/天，
+      // 而不是「純題目佔走 26 天、42 節擠進剩下 6 天（一天 7 節）」。
+      const capDays = counts.map((c, i) => rigid[i] ? c : Infinity);
+      const alloc = counts.map((_, i) => Math.min(1, capDays[i]) || 1);
+      let left = avail - alloc.reduce((a, c) => a + c, 0);
+      while (left > 0) {
+        let k = -1, best = -1;
+        for (let i = 0; i < arr.length; i++) {
+          if (alloc[i] >= capDays[i]) continue;                  // 純題目已經一天一份了
+          const r = counts[i] / alloc[i];
+          if (r > best) { best = r; k = i; }
+        }
+        if (k < 0) break;                                        // 都到上限，剩下的天數這科用不到
+        alloc[k]++; left--;
+      }
       // 收尾修正：總和超過可用天數就從最大的扣，不足就補給最後一個階段（排到範圍尾端）
       let over = alloc.reduce((a, c) => a + c, 0) - avail;
       while (over > 0) { const i = alloc.indexOf(Math.max(...alloc)); if (alloc[i] <= 1) break; alloc[i]--; over--; }
@@ -406,8 +414,10 @@ router.post('/preview', async (req, res) => {
   const canPlaceOn = (b, date) => {
     const same = blocks.filter(x => x !== b && x.date === date && x.subject_id === b.subject_id);
     if (!same.length) return true;
-    if (b._fin || b._one) return false;              // 壓軸／純題目獨佔該科的那一天
-    return !same.some(x => x._fin || x._one);
+    if (b._fin) return false;                        // 模考獨佔該科的那一天
+    if (same.some(x => x._fin)) return false;
+    if (b._one) return same.every(x => x._one);      // 純題目只跟純題目同日
+    return !same.some(x => x._one);
   };
   // 1) 平衡每日量（不計時模式）：超量日的項目搬到未滿日。
   //    可搬條件：目標日在該項目的日期範圍內、且介於同桶前後項的日期之間（順序不破）。
@@ -717,12 +727,11 @@ router.post('/preview', async (req, res) => {
       const mx = Math.max(...Object.values(s.perDay));
       const total = s.one + s.flex;
       const avg = total / (s.days.size || 1);
-      // 純題目（單元練習／歷屆試題）要獨佔該科的一整天 → 份數就是最少需要的天數
-      const need = Math.max(s.one, Math.ceil(total / 3));
-      // 有純題目被迫跟別的擠同一天，就是天數真的不夠（這是最明確的訊號）
+      // 幾份純題目排同一天是可以的（使用者說「有幾天擠了 6 份沒關係」），
+      // 所以這裡只在「真的太擠」時提醒：以一天約 3 項為舒服的節奏推估天數
+      const need = Math.ceil(total / 3);
       const oneMax = Math.max(0, ...Object.values(s.onePer));
-      const oneSquashed = oneMax > 1 || Object.keys(s.onePer).some(d => s.perDay[d] > s.onePer[d] && s.onePer[d] > 0);
-      if (need > s.days.size && (oneSquashed || (mx >= 5 && mx > avg * 2))) {
+      if (need > s.days.size && mx >= 6 && mx >= avg * 1.5) {
         tight.push({ subject_id: s.subject_id, maxPerDay: mx, needDays: need, haveDays: s.days.size, oneCount: s.one, oneMax });
       }
     }
