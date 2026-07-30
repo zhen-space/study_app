@@ -63,6 +63,15 @@ router.post('/preview', async (req, res) => {
   const today = new Date(Date.now() + 8 * 3600e3).toISOString().slice(0, 10); // 台灣時區的今天
   const gStart = req.body.startDate || today, gEnd = req.body.endDate || today;
   for (const it of items) { it.start = it.start || gStart; it.end = it.end || gEnd; }
+  // 純題目（單元練習／歷屆試題）一天只排一份。項目可能來自不同路徑，
+  // 其中「使用者自己標純題目」那條不會帶 onePerDay 旗標 → 規則就會失效。
+  // 這裡照標題最後一段補上，不管前端怎麼送都守得住。
+  const ONE_TAIL = /(單元練習|歷屆試題|歷屆|試題|練習|題目)$/;
+  for (const it of items) {
+    if (it.onePerDay) continue;
+    const tail = String(it.title || '').split('｜').pop().trim();
+    if (ONE_TAIL.test(tail)) it.onePerDay = true;
+  }
 
   const minD = items.reduce((a, i) => i.start < a ? i.start : a, items[0].start);
   const maxD = items.reduce((a, i) => i.end > a ? i.end : a, items[0].end);

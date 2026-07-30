@@ -507,6 +507,7 @@ export default function WizardView({ lists, reload, goTasks }) {
         final: anyFlag(it, finals),
         first: anyFlag(it, firstsSel),
         spread: false,
+        onePerDay: true,   // 純題目本來就是整份題目，一天只排一份
       }));
     });
     try {
