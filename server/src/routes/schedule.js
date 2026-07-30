@@ -382,11 +382,15 @@ router.post('/preview', async (req, res) => {
         // 順序不用擔心：同桶的日期在下面會重新排序後照原順序配回去。
         if (!done) {
           const sc = (date, sid) => blocks.reduce((a, x) => a + (x.date === date && x.subject_id === sid ? 1 : 0), 0);
-          const pick = ownWindow => {
+          const pick = (ownWindow, keepExcl) => {
             const pool = days.map((d, i) => ({ d, i }))
               // 使用者設的截止日是硬規則：先只在這個項目自己的日期範圍內找，
               // 不然「生物排到 9/5」這種事就會發生（那幾天只有物理能用、剛好最空）
-              .filter(({ d }) => (!ownWindow || (d.date >= w.start && d.date <= w.end)) && fits(d, w));
+              .filter(({ d }) => (!ownWindow || (d.date >= w.start && d.date <= w.end))
+                // 也要守「純題目／模考獨佔該科那天」：少了這一關，只要有一份歷屆
+                // 走到最後補位，就會被塞到已經有歷屆的日子旁邊
+                && (!keepExcl || exclusiveOk(d.date, w))
+                && fits(d, w));
             pool.sort((A, C) =>
               sc(A.d.date, w.subject_id) - sc(C.d.date, w.subject_id)   // 先挑該科最少的那天
               || A.d.count - C.d.count                                  // 再挑總量最少的
@@ -394,7 +398,8 @@ router.post('/preview', async (req, res) => {
             for (const { d } of pool) { if (put(d, w)) return true; }
             return false;
           };
-          done = pick(true) || pick(false);      // 範圍內真的塞不下才放寬到全部日子
+          // 優先順序：範圍內且不破獨佔 → 範圍內（截止日是硬規則）→ 放寬範圍但不破獨佔 → 全放寬
+          done = pick(true, true) || pick(true, false) || pick(false, true) || pick(false, false);
         }
         if (!done) failed.push(`${w.title}〔${w.start}～${w.end}〕`); // 附上範圍，方便看出是哪段日期塞不下
       }
@@ -788,8 +793,10 @@ router.post('/preview', async (req, res) => {
       // 純題目獨佔該科一整天 → 份數就是最少需要的天數
       const need = Math.max(s.one, Math.ceil(total / 3));
       const oneMax = Math.max(0, ...Object.values(s.onePer));
-      // 純題目被迫兩份以上同日，就是天數真的不夠（最明確的訊號）
-      if (need > s.days.size && (oneMax > 1 || (mx >= 5 && mx > avg * 2))) {
+      // 只要有純題目被迫兩份同日，就一定是天數不夠——這是最明確的訊號，
+      // 不要再拿「該科總天數」去判斷（各題型組可以有自己的日期範圍，
+      // 用整科天數看的話會漏掉「歷屆組只有 17 天卻有 19 份」這種情況）
+      if (oneMax > 1 || (need > s.days.size && mx >= 5 && mx > avg * 2)) {
         tight.push({ subject_id: s.subject_id, maxPerDay: mx, needDays: need, haveDays: s.days.size, oneCount: s.one, oneMax });
       }
     }
