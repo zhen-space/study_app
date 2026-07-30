@@ -382,12 +382,19 @@ router.post('/preview', async (req, res) => {
         // 順序不用擔心：同桶的日期在下面會重新排序後照原順序配回去。
         if (!done) {
           const sc = (date, sid) => blocks.reduce((a, x) => a + (x.date === date && x.subject_id === sid ? 1 : 0), 0);
-          const pool = days.map((d, i) => ({ d, i })).filter(({ d }) => fits(d, w));
-          pool.sort((A, C) =>
-            sc(A.d.date, w.subject_id) - sc(C.d.date, w.subject_id)   // 先挑該科最少的那天
-            || A.d.count - C.d.count                                  // 再挑總量最少的
-            || (w.final ? C.i - A.i : A.i - C.i));                    // 壓軸偏後、一般偏前
-          for (const { d } of pool) { if (put(d, w)) { done = true; break; } }
+          const pick = ownWindow => {
+            const pool = days.map((d, i) => ({ d, i }))
+              // 使用者設的截止日是硬規則：先只在這個項目自己的日期範圍內找，
+              // 不然「生物排到 9/5」這種事就會發生（那幾天只有物理能用、剛好最空）
+              .filter(({ d }) => (!ownWindow || (d.date >= w.start && d.date <= w.end)) && fits(d, w));
+            pool.sort((A, C) =>
+              sc(A.d.date, w.subject_id) - sc(C.d.date, w.subject_id)   // 先挑該科最少的那天
+              || A.d.count - C.d.count                                  // 再挑總量最少的
+              || (w.final ? C.i - A.i : A.i - C.i));                    // 壓軸偏後、一般偏前
+            for (const { d } of pool) { if (put(d, w)) return true; }
+            return false;
+          };
+          done = pick(true) || pick(false);      // 範圍內真的塞不下才放寬到全部日子
         }
         if (!done) failed.push(`${w.title}〔${w.start}～${w.end}〕`); // 附上範圍，方便看出是哪段日期塞不下
       }
@@ -411,11 +418,27 @@ router.post('/preview', async (req, res) => {
   const finalsBySub = cntBy(finals);
   const normalsBySub = cntBy([...firstsQ, ...work]);
   const normalMaxBySub = {};
-  for (const sid of Object.keys(finalsBySub)) {
-    const F = finalsBySub[sid], W = normalsBySub[sid] || 0;
-    if (!W) continue;
-    const nF = Math.max(1, Math.min(F, Math.min(days.length - 1, Math.round(days.length * F / (F + W)))));
-    normalMaxBySub[sid] = days[days.length - nF - 1].date;
+  {
+    // 保留天數要用「該科自己的可排日」來算，不能用全部日子：
+    // 生物只到 8/30、但整體到 9/5 時，用全部日子算出來的保留區會落在 9/1 之後，
+    // 等於在生物的範圍內完全沒保留 → 模考只好硬塞進 8/30 之前，
+    // 把練習/歷屆擠成兩份同日。
+    const winBySub = {};
+    for (const w of [...firstsQ, ...work, ...finals]) {
+      const v = winBySub[w.subject_id] || (winBySub[w.subject_id] = { s: w.start, e: w.end });
+      if (w.start < v.s) v.s = w.start;
+      if (w.end > v.e) v.e = w.end;
+    }
+    for (const sid of Object.keys(finalsBySub)) {
+      const F = finalsBySub[sid], W = normalsBySub[sid] || 0;
+      if (!W) continue;
+      const v = winBySub[sid];
+      const own = days.filter(d => !v || (d.date >= v.s && d.date <= v.e));
+      if (own.length < 2) continue;
+      // 壓軸（模考等）每一場都要獨佔該科的一整天 → 有幾場就要保留幾天
+      const nF = Math.max(1, Math.min(F, own.length - 1));
+      normalMaxBySub[sid] = own[own.length - nF - 1].date;
+    }
   }
   const normalMaxFor = w => normalMaxBySub[w.subject_id] ?? null;
   distribute(firstsQ, null, normalMaxFor);   // 先完成的最先排
