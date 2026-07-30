@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { api } from '../api';
 import { today, addDays } from './helpers';
 import { parseICS } from './ics';
+import { fileToPayload } from './vocabImport';
 
 const LIST_COLORS = ['#0086CC', '#e03131', '#16a34a', '#f59f00', '#9333ea', '#0891b2'];
 const TYPE_OPTIONS = ['範例', '例題', '單元練習', '歷屆試題'];
@@ -187,12 +188,6 @@ export default function WizardView({ lists, reload, goTasks }) {
   const winOf = (sid, gi) => mergeWin(`${bySubject ? sid : 'all'}|${byGroup ? gi : 'all'}`);
 
   /* ---------- 檔案 ---------- */
-  const fileToB64 = async file => {
-    const bytes = new Uint8Array(await file.arrayBuffer());
-    let bin = '';
-    for (let i = 0; i < bytes.length; i += 8192) bin += String.fromCharCode(...bytes.subarray(i, i + 8192));
-    return btoa(bin);
-  };
 
   async function importAI(e) {
     const file = e.target.files[0];
@@ -203,7 +198,7 @@ export default function WizardView({ lists, reload, goTasks }) {
     try {
       const { events: parsed } = await api('/import/parse', {
         method: 'POST',
-        body: { filename: file.name, mime: file.type, data: await fileToB64(file) },
+        body: await fileToPayload(file),                              // 同上：轉正＋縮圖
       });
       if (!parsed.length) { setImportMsg('AI 沒有在檔案中找到行程'); }
       else {
@@ -312,7 +307,7 @@ export default function WizardView({ lists, reload, goTasks }) {
     setTocMsg(m => ({ ...m, [l.id]: `🤖 AI 解讀 ${fileList.length} 張目錄中，約 30 秒～1 分鐘…` }));
     try {
       const files = [];
-      for (const f of fileList) files.push({ filename: f.name, mime: f.type, data: await fileToB64(f) });
+      for (const f of fileList) files.push(await fileToPayload(f));   // 照片自動轉正＋縮圖，AI 才讀得到
       await api('/import/toc', {
         method: 'POST',
         body: { list_id: l.id, files, replace, forceNew: mode === 'newbook', book: targetBook },

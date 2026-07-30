@@ -2,18 +2,44 @@ import { api } from '../api';
 
 // 照片先在手機端縮圖壓縮（最長邊 2000px、JPEG 85%）：
 // 1) 不會爆伺服器/AI 的大小限制（iPhone 原圖一張就 4-5MB）2) 上傳與 AI 讀取都快很多
+// 手機直立拍的照片，畫素其實是橫的、靠 EXIF 方向旗標轉正。
+// createImageBitmap(file) 預設 imageOrientation:'none' 會把旗標丟掉 →
+// 送給 AI 的圖是躺著的，目錄自然讀不出來。用 <img> 解碼（瀏覽器會自動轉正），
+// 失敗才退回 createImageBitmap 並明確要求 from-image。
+async function decodeUpright(file) {
+  const url = URL.createObjectURL(file);
+  try {
+    const el = await new Promise((res, rej) => {
+      const im = new Image();
+      im.onload = () => res(im);
+      im.onerror = () => rej(new Error('decode failed'));
+      im.src = url;
+    });
+    if (el.decode) { try { await el.decode(); } catch {} }
+    return { img: el, w: el.naturalWidth || el.width, h: el.naturalHeight || el.height, free: () => URL.revokeObjectURL(url) };
+  } catch (e) {
+    URL.revokeObjectURL(url);
+    let bmp;
+    try { bmp = await createImageBitmap(file, { imageOrientation: 'from-image' }); }
+    catch { bmp = await createImageBitmap(file); }
+    return { img: bmp, w: bmp.width, h: bmp.height, free: () => bmp.close?.() };
+  }
+}
+
 export async function fileToPayload(file) {
   if ((file.type || '').startsWith('image/')) {
+    let d = null;
     try {
-      const img = await createImageBitmap(file);
-      const scale = Math.min(1, 2000 / Math.max(img.width, img.height));
+      d = await decodeUpright(file);
+      const scale = Math.min(1, 2000 / Math.max(d.w, d.h));
       const c = document.createElement('canvas');
-      c.width = Math.max(1, Math.round(img.width * scale));
-      c.height = Math.max(1, Math.round(img.height * scale));
-      c.getContext('2d').drawImage(img, 0, 0, c.width, c.height);
+      c.width = Math.max(1, Math.round(d.w * scale));
+      c.height = Math.max(1, Math.round(d.h * scale));
+      c.getContext('2d').drawImage(d.img, 0, 0, c.width, c.height);
       const dataUrl = c.toDataURL('image/jpeg', 0.85);
       return { filename: (file.name || 'photo').replace(/\.\w+$/, '') + '.jpg', mime: 'image/jpeg', data: dataUrl.split(',')[1] };
     } catch { /* 讀不了（如 HEIC 舊機型）就走原檔 */ }
+    finally { d?.free?.(); }
   }
   const bytes = new Uint8Array(await file.arrayBuffer());
   let bin = '';

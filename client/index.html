@@ -14,9 +14,38 @@
   </head>
   <body>
     <div id="root"></div>
+    <script>
+      // 白屏救援：程式沒跑起來（bundle 沒載到、快取壞了）時 ErrorBoundary 也救不了，
+      // 因為 React 根本沒執行。這裡直接看 8 秒後畫面是不是還是空的。
+      window.__booted = false;
+      setTimeout(function () {
+        var root = document.getElementById('root');
+        if (window.__booted || (root && root.childElementCount > 0)) return;
+        root.innerHTML =
+          '<div style="min-height:100vh;display:grid;place-items:center;padding:20px;font-family:-apple-system,system-ui,sans-serif">' +
+          '<div style="text-align:center;max-width:340px">' +
+          '<div style="font-size:40px">😵</div>' +
+          '<h3 style="margin:10px 0">程式沒載入成功</h3>' +
+          '<div style="color:#888;font-size:13px;margin-bottom:14px">通常是舊的離線快取壞了。按下面的按鈕清掉重載，資料都存在雲端不會不見。</div>' +
+          '<button id="fixbtn" style="font-size:15px;padding:10px 18px;border:0;border-radius:10px;background:#0086CC;color:#fff">清除快取並重新載入</button>' +
+          '<div style="color:#bbb;font-size:11px;margin-top:10px">版本 ' + (window.APP_VER || '?') + '</div>' +
+          '</div></div>';
+        document.getElementById('fixbtn').onclick = async function () {
+          this.textContent = '清除中…';
+          try { if (window.caches) for (const k of await caches.keys()) await caches.delete(k); } catch (e) {}
+          try {
+            if (navigator.serviceWorker) {
+              const rs = await navigator.serviceWorker.getRegistrations();
+              for (const r of rs) await r.unregister();
+            }
+          } catch (e) {}
+          location.replace('/?r=' + Date.now());   // 加參數繞過任何中間快取
+        };
+      }, 8000);
+    </script>
     <script type="module" src="/src/main.jsx"></script>
     <script>
-      window.APP_VER = '7.24.1';
+      window.APP_VER = '7.25.0';
       // 每次打開都檢查新版：SW 更新完成就自動重新載入一次，確保拿到最新程式
       if ('serviceWorker' in navigator) {
         navigator.serviceWorker.register('/sw.js').then(reg => {
