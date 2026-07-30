@@ -348,13 +348,17 @@ router.post('/preview', async (req, res) => {
           if (fits(days[i], w) && put(days[i], w)) done = true;
         }
         // 真的沒地方了就完全放寬（不再限桶內日期、不限每日量）——寧可某天多一項，
-        // 也絕不讓項目「排不進去」。壓軸從後往前找，一般項目從前往後找。
+        // 也絕不讓項目「排不進去」。但要挑「最不擠」的日子，不能從第一天開始硬塞：
+        // 不然 18 份單元練習會整疊堆在第一天（範圍太短時就會走到這一步）。
+        // 順序不用擔心：同桶的日期在下面會重新排序後照原順序配回去。
         if (!done) {
-          const order = w.final ? days.map((_, i) => days.length - 1 - i) : days.map((_, i) => i);
-          for (const i of order) {
-            if (done) break;
-            if (fits(days[i], w) && put(days[i], w)) done = true;
-          }
+          const sc = (date, sid) => blocks.reduce((a, x) => a + (x.date === date && x.subject_id === sid ? 1 : 0), 0);
+          const pool = days.map((d, i) => ({ d, i })).filter(({ d }) => fits(d, w));
+          pool.sort((A, C) =>
+            sc(A.d.date, w.subject_id) - sc(C.d.date, w.subject_id)   // 先挑該科最少的那天
+            || A.d.count - C.d.count                                  // 再挑總量最少的
+            || (w.final ? C.i - A.i : A.i - C.i));                    // 壓軸偏後、一般偏前
+          for (const { d } of pool) { if (put(d, w)) { done = true; break; } }
         }
         if (!done) failed.push(`${w.title}〔${w.start}～${w.end}〕`); // 附上範圍，方便看出是哪段日期塞不下
       }
@@ -703,19 +707,23 @@ router.post('/preview', async (req, res) => {
   {
     const m = new Map();
     blocks.forEach(b => {
-      const s = m.get(b.subject_id) || { subject_id: b.subject_id, one: 0, flex: 0, days: new Set(), perDay: {} };
-      if (b._one) s.one++; else s.flex++;
+      const s = m.get(b.subject_id) || { subject_id: b.subject_id, one: 0, flex: 0, days: new Set(), perDay: {}, onePer: {} };
+      if (b._one) { s.one++; s.onePer[b.date] = (s.onePer[b.date] || 0) + 1; } else s.flex++;
       s.days.add(b.date);
       s.perDay[b.date] = (s.perDay[b.date] || 0) + 1;
       m.set(b.subject_id, s);
     });
     for (const s of m.values()) {
       const mx = Math.max(...Object.values(s.perDay));
-      const avg = (s.one + s.flex) / (s.days.size || 1);
-      // 以「一天約 3 項」為可接受的節奏推估需要的天數；純題目一天一份是下限
-      const need = Math.max(s.one, Math.ceil((s.one + s.flex) / 3));
-      if (mx >= 5 && mx > avg * 2 && need > s.days.size) {
-        tight.push({ subject_id: s.subject_id, maxPerDay: mx, needDays: need, haveDays: s.days.size });
+      const total = s.one + s.flex;
+      const avg = total / (s.days.size || 1);
+      // 純題目（單元練習／歷屆試題）要獨佔該科的一整天 → 份數就是最少需要的天數
+      const need = Math.max(s.one, Math.ceil(total / 3));
+      // 有純題目被迫跟別的擠同一天，就是天數真的不夠（這是最明確的訊號）
+      const oneMax = Math.max(0, ...Object.values(s.onePer));
+      const oneSquashed = oneMax > 1 || Object.keys(s.onePer).some(d => s.perDay[d] > s.onePer[d] && s.onePer[d] > 0);
+      if (need > s.days.size && (oneSquashed || (mx >= 5 && mx > avg * 2))) {
+        tight.push({ subject_id: s.subject_id, maxPerDay: mx, needDays: need, haveDays: s.days.size, oneCount: s.one, oneMax });
       }
     }
   }
