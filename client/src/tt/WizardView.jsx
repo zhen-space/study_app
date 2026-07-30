@@ -1218,7 +1218,7 @@ export default function WizardView({ lists, reload, goTasks }) {
                   <div key={'t' + i} style={{ marginTop: 4, color: 'var(--orange, #C46A22)' }}>
                     ⚠️ {lists.find(l => l.id === t.subject_id)?.name || '有一科'}的日期範圍太短：只有 {t.haveDays} 天，
                     最擠的一天要排 {t.maxPerDay} 項。
-                    {t.oneMax > 1 && `單元練習／歷屆試題一天只排一份，這科有 ${t.oneCount} 份，但這些題型可用的天數不夠 ${t.oneCount} 天，只好有幾天擠了 ${t.oneMax} 份——請把「單元練習／歷屆試題」那一組的日期範圍拉長到至少 ${t.oneCount} 天。`}
+                    {t.oneMax > 2 && `單元練習／歷屆試題最多一天兩份，這科有 ${t.oneCount} 份、天數真的不夠，只好有幾天擠了 ${t.oneMax} 份——請把「單元練習／歷屆試題」那一組的日期範圍拉長到至少 ${Math.ceil(t.oneCount / 2)} 天。`}
                     大約需要 {t.needDays} 天，建議把結束日往後延 {t.needDays - t.haveDays} 天，或這次先少選一些單元／少選一本書。
                   </div>
                 ))}

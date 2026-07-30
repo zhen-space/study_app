@@ -96,6 +96,9 @@ router.post('/preview', async (req, res) => {
   days.forEach(d => { d.pos = d.slots[0]?.[0] ?? null; });
 
   const CHUNK = 90, BREAK = 10;
+  // 純題目（單元練習／歷屆試題）同一天同一科最多幾份：
+  // 理想是 1，範圍真的不夠時退讓到 2（使用者：「就一天兩單元吧」），不會有第 3 份
+  const ONE_CAP = 2;
   const mkChunks = list => {
     const out = [];
     for (const it of list) {
@@ -169,10 +172,12 @@ router.post('/preview', async (req, res) => {
   const exclusiveOk = (date, w) => {
     const same = blocks.filter(b => b.date === date && b.subject_id === w.subject_id);
     if (!same.length) return true;
-    // 模考／壓軸、純題目（單元練習／歷屆試題）都獨佔那天的這一科：
-    // 一天就一份，不混範例+例題，也不會有第二份純題目
-    if (w.final || w.onePerDay) return false;
-    return !same.some(b => b._fin || b._one);
+    if (w.final) return false;                       // 模考／壓軸獨佔那天的這一科，一天就一場
+    if (same.some(b => b._fin)) return false;
+    // 純題目（單元練習／歷屆試題）那天，這一科只做純題目、不混範例+例題。
+    // 盡量一天一份，真的排不下才允許兩份，絕不到第三份。
+    if (w.onePerDay) return same.every(b => b._one) && same.length < ONE_CAP;
+    return !same.some(b => b._one);
   };
   const eligible = (w, minDate, maxDate) => {
     const base = days.filter(d => d.date >= w.start && d.date <= w.end
@@ -248,30 +253,57 @@ router.post('/preview', async (req, res) => {
       if (!flexIdx.length) {
         alloc = counts.slice();                                  // 全部都是純題目
       } else if (avail - rigidNeed >= flexIdx.length) {
-        alloc = counts.map((c, i) => rigid[i] ? c : 1);
-        let left = avail - rigidNeed - flexIdx.length;
-        while (left > 0) {
-          let k = -1, best = -1;
-          for (const i of flexIdx) { const r = counts[i] / alloc[i]; if (r > best) { best = r; k = i; } }
-          if (k < 0) break;
-          alloc[k]++; left--;
+        // 純題目理想是一天一份；但如果這樣會讓「節」一天超過 SEC_OK 個，
+        // 就把純題目壓到一天兩份，省下來的天數全部給節
+        //（使用者：「如果真的排不下，就一天兩單元的單元練習/歷屆試題吧」）
+        const SEC_OK = 2;
+        const build = perDayOne => {
+          const a2 = counts.map((c, i) => rigid[i] ? Math.max(1, Math.ceil(c / perDayOne)) : 1);
+          let left = avail - a2.reduce((x, y) => x + y, 0);
+          while (left > 0) {                                 // 多的天數只給節（純題目給再多也用不完）
+            let k = -1, best = -1;
+            for (const i of flexIdx) { const r = counts[i] / a2[i]; if (r > best) { best = r; k = i; } }
+            if (k < 0) break;
+            a2[k]++; left--;
+          }
+          return a2;
+        };
+        const secWorst = a2 => Math.max(0, ...flexIdx.map(i => counts[i] / a2[i]));
+        alloc = build(1);
+        for (let k = 2; k <= ONE_CAP && secWorst(alloc) > SEC_OK; k++) {
+          const cand = build(k);
+          if (secWorst(cand) < secWorst(alloc)) alloc = cand;
         }
       } else {
-        // 連「一天一份」都排不下（範圍太短）：一起壓縮，同樣以「最擠的那天最小」為目標，
-        // 純題目封頂在份數（拿再多天也用不完）
+        // 連「一天一份」都排不下（範圍太短）。兩種分法各算一次，挑比較好的：
+        //   a) 尊重「純題目一天最多兩份」→ 純題目先拿 ceil(份數/2) 天
+        //   b) 純平衡（不設純題目上限）
+        // 用 (a) 的前提是「節」不會因此爆掉（超過一天 DAY_OK 個就寧可讓純題目多疊），
+        // 不然會出現「純題目一天兩份、但節一天 14 個」這種更糟的結果。
         const capDays = counts.map((c, i) => rigid[i] ? c : Infinity);
-        alloc = counts.map(() => 1);
-        let left = avail - arr.length;
-        while (left > 0) {
-          let k = -1, best = -1;
-          for (let i = 0; i < arr.length; i++) {
-            if (alloc[i] >= capDays[i]) continue;
-            const r = counts[i] / alloc[i];
-            if (r > best) { best = r; k = i; }
+        const greedy = floors => {
+          const a2 = floors.slice();
+          let left = avail - a2.reduce((a, c) => a + c, 0);
+          if (left < 0) {                                   // 連下限都放不下：等比例縮
+            const sum = a2.reduce((a, c) => a + c, 0) || 1;
+            return a2.map(v => Math.max(1, Math.round(avail * v / sum)));
           }
-          if (k < 0) break;
-          alloc[k]++; left--;
-        }
+          while (left > 0) {
+            let k = -1, best = -1;
+            for (let i = 0; i < arr.length; i++) {
+              if (a2[i] >= capDays[i]) continue;
+              const r = counts[i] / a2[i];
+              if (r > best) { best = r; k = i; }
+            }
+            if (k < 0) break;
+            a2[k]++; left--;
+          }
+          return a2;
+        };
+        const DAY_OK = 6;                                   // 一天最多約 6 項是使用者說過的舒適上限
+        const capped = greedy(counts.map((c, i) => rigid[i] ? Math.max(1, Math.ceil(c / ONE_CAP)) : 1));
+        const flexWorst = a2 => Math.max(0, ...arr.map((_, i) => rigid[i] ? 0 : counts[i] / a2[i]));
+        alloc = flexWorst(capped) <= DAY_OK ? capped : greedy(counts.map(() => 1));
       }
       // 收尾修正：總和超過可用天數就從最大的扣，不足就補給最後一個階段（排到範圍尾端）
       let over = alloc.reduce((a, c) => a + c, 0) - avail;
@@ -463,8 +495,10 @@ router.post('/preview', async (req, res) => {
   const canPlaceOn = (b, date) => {
     const same = blocks.filter(x => x !== b && x.date === date && x.subject_id === b.subject_id);
     if (!same.length) return true;
-    if (b._fin || b._one) return false;              // 模考／純題目獨佔該科的那一天
-    return !same.some(x => x._fin || x._one);
+    if (b._fin) return false;                        // 模考獨佔該科的那一天
+    if (same.some(x => x._fin)) return false;
+    if (b._one) return same.every(x => x._one) && same.length < ONE_CAP;
+    return !same.some(x => x._one);
   };
   // 1) 平衡每日量（不計時模式）：超量日的項目搬到未滿日。
   //    可搬條件：目標日在該項目的日期範圍內、且介於同桶前後項的日期之間（順序不破）。
@@ -808,7 +842,7 @@ router.post('/preview', async (req, res) => {
       // 只要有純題目被迫兩份同日，就一定是天數不夠——這是最明確的訊號，
       // 不要再拿「該科總天數」去判斷（各題型組可以有自己的日期範圍，
       // 用整科天數看的話會漏掉「歷屆組只有 17 天卻有 19 份」這種情況）
-      if (oneMax > 1 || (need > s.days.size && mx >= 5 && mx > avg * 2)) {
+      if (oneMax > ONE_CAP || (need > s.days.size && mx >= 5 && mx > avg * 2)) {
         tight.push({ subject_id: s.subject_id, maxPerDay: mx, needDays: need, haveDays: s.days.size, oneCount: s.one, oneMax });
       }
     }
