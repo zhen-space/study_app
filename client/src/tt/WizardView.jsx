@@ -798,25 +798,63 @@ export default function WizardView({ lists, reload, goTasks }) {
                 const parts = String(key).split('.');
                 return { tocId: +parts[0].replace('toc-', ''), path: parts.slice(1).map(Number) };
               };
+              // 只換掉那一章的 sections，不用重抓整份目錄（快很多）
+              const patchToc = (tocId, sections) => setTocs(a => a.map(r => r.id === tocId ? { ...r, sections } : r));
+              // 前端先算一次編號，畫面才能「按下去就出現」；伺服器仍是最終依據
+              const nextTitle = (list, t) => {
+                let maxN = 0, style = '';
+                for (const k of list) {
+                  const m = String(k.title || k).match(/^\s*(主題|單元|重點|第)?\s*(\d+)/);
+                  if (!m) continue;
+                  if (+m[2] > maxN) maxN = +m[2];
+                  if (!style && m[1]) style = m[1];
+                }
+                return /^\s*(主題|單元|重點|第)?\s*\d+/.test(t) ? t : `${style}${maxN + 1} ${t}`;
+              };
               const addNode = async (n) => {
-                const t = (addDraft[n.key] || '').trim();
-                if (!t) return;
+                const raw = (addDraft[n.key] || '').trim();
+                if (!raw) return;
+                const lines = raw.split('\n').map(x => x.trim()).filter(Boolean);
+                if (!lines.length) return;
                 const { tocId, path } = keyToRef(n.key);
                 const level = n.depth === 0 ? '節' : '主題';
-                // 一次可以加很多個：一行一個
-                for (const line of t.split('\n').map(x => x.trim()).filter(Boolean)) {
-                  await api('/import/toc-node', { method: 'POST', body: { id: tocId, path, title: line, level } }).catch(() => {});
-                }
+                // 1) 先在畫面上加好（樂觀更新），輸入框立刻清空
                 setAddDraft(d => ({ ...d, [n.key]: '' }));
                 setExpanded(x => ({ ...x, [n.key]: true }));
-                setTocs(await api('/import/toc'));
+                const row = tocs.find(r => r.id === tocId);
+                if (row) {
+                  const clone = JSON.parse(JSON.stringify(row.sections || []));
+                  let list = clone;
+                  for (const i of path) { list[i].children = list[i].children || []; list = list[i].children; }
+                  for (const t of lines) list.push({ title: nextTitle(list, t), level, children: [] });
+                  patchToc(tocId, clone);
+                }
+                // 2) 一次送出全部，回來再用伺服器版本校正
+                try {
+                  const r = await api('/import/toc-node', { method: 'POST', body: { id: tocId, path, titles: lines, level } });
+                  if (r?.sections) patchToc(tocId, r.sections);
+                } catch (e) {
+                  setTocs(await api('/import/toc'));                 // 失敗就抓回真實狀態
+                  setTocMsg(m => ({ ...m, [l.id]: e.message || '加入失敗' }));
+                }
               };
               const delNode = async (key) => {
                 const { tocId, path } = keyToRef(key);
                 if (!path.length) return;
                 setItems(a => a.filter(x => !(String(x.key) === String(key) || String(x.key).startsWith(key + '.'))));
-                await api(`/import/toc-node?id=${tocId}&path=${path.join(',')}`, { method: 'DELETE' }).catch(() => {});
-                setTocs(await api('/import/toc'));
+                // 一樣先讓畫面立刻反應
+                const row = tocs.find(r => r.id === tocId);
+                if (row) {
+                  const clone = JSON.parse(JSON.stringify(row.sections || []));
+                  let list = clone;
+                  for (const i of path.slice(0, -1)) { list[i].children = list[i].children || []; list = list[i].children; }
+                  list.splice(path[path.length - 1], 1);
+                  patchToc(tocId, clone);
+                }
+                try {
+                  const r = await api(`/import/toc-node?id=${tocId}&path=${path.join(',')}`, { method: 'DELETE' });
+                  if (r?.sections) patchToc(tocId, r.sections);
+                } catch { setTocs(await api('/import/toc')); }
               };
 
               const renderNode = (n) => {

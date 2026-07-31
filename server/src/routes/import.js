@@ -295,11 +295,13 @@ router.post('/toc-promote', async (req, res) => {
 const normNode = k => (typeof k === 'string' ? { title: k, level: '節', children: [] } : { ...k, children: (k.children || []).map(normNode) });
 const loadSecs = row => { try { return (JSON.parse(row.sections || '[]')).map(normNode); } catch { return []; } };
 router.post('/toc-node', async (req, res) => {
-  const { id, path = [], title, level } = req.body;
-  const t = String(title || '').trim();
-  if (!t) return res.status(400).json({ error: '請輸入名稱' });
+  const { id, path = [], title, titles, level } = req.body;
+  // 一次可以加很多個（titles），不用一行送一次請求
+  const list0 = (Array.isArray(titles) ? titles : [title]).map(x => String(x || '').trim()).filter(Boolean);
+  if (!list0.length) return res.status(400).json({ error: '請輸入名稱' });
   const row = await q.get('SELECT * FROM toc_items WHERE id=? AND user_id=?', [id, req.userId]);
   if (!row) return res.status(404).json({ error: '找不到章節' });
+  if (path.length >= 2) return res.status(400).json({ error: '最多三層（章→節→主題）' });
   const secs = loadSecs(row);
   let list = secs;
   for (const i of path) {                       // 往下走到要加的那一層
@@ -308,21 +310,21 @@ router.post('/toc-node', async (req, res) => {
     node.children = node.children || [];
     list = node.children;
   }
-  if (path.length >= 2) return res.status(400).json({ error: '最多三層（章→節→主題）' });
-  // 自動接續編號：AI 讀出來的節都有編號（「1 …」「主題21 …」），
-  // 自己加的也要有，而且格式要跟同一層現有的一致
-  let maxN = 0, style = '';
-  for (const k of list) {
-    const m = String(k.title || k).match(/^\s*(主題|單元|重點|第)?\s*(\d+)/);
-    if (!m) continue;
-    if (+m[2] > maxN) maxN = +m[2];
-    if (!style && m[1]) style = m[1];
+  for (const t of list0) {
+    // 自動接續編號：AI 讀出來的節都有編號（「1 …」「主題21 …」），
+    // 自己加的也要有，而且格式要跟同一層現有的一致
+    let maxN = 0, style = '';
+    for (const k of list) {
+      const m = String(k.title || k).match(/^\s*(主題|單元|重點|第)?\s*(\d+)/);
+      if (!m) continue;
+      if (+m[2] > maxN) maxN = +m[2];
+      if (!style && m[1]) style = m[1];
+    }
+    const numbered = /^\s*(主題|單元|重點|第)?\s*\d+/.test(t);
+    list.push({ title: numbered ? t : `${style}${maxN + 1} ${t}`, level: level || (path.length ? '主題' : '節'), children: [] });
   }
-  const numbered = /^\s*(主題|單元|重點|第)?\s*\d+/.test(t);
-  const title2 = numbered ? t : `${style}${maxN + 1} ${t}`;
-  list.push({ title: title2, level: level || (path.length ? '主題' : '節'), children: [] });
   await q.run('UPDATE toc_items SET sections=? WHERE id=?', [JSON.stringify(secs), row.id]);
-  res.json({ ok: true });
+  res.json({ ok: true, sections: secs });      // 回傳整份，前端直接換掉那一章就好，不用重抓全部
 });
 // 刪掉自己加錯的節／主題
 router.delete('/toc-node', async (req, res) => {
@@ -341,7 +343,7 @@ router.delete('/toc-node', async (req, res) => {
   if (!list[last]) return res.status(400).json({ error: '找不到項目' });
   list.splice(last, 1);
   await q.run('UPDATE toc_items SET sections=? WHERE id=?', [JSON.stringify(secs), row.id]);
-  res.json({ ok: true });
+  res.json({ ok: true, sections: secs });
 });
 
 // 選擇先排哪本書：照傳進來的書名順序重寫 order_index（每本書內的章順序不變）
