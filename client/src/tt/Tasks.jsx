@@ -219,7 +219,9 @@ export function Detail({ task, lists, onSave, onDelete, onClose }) {
   // 附件
   const [atts, setAtts] = useState([]);
   const loadAtts = () => api(`/tasks/${task.id}/attachments`).then(setAtts).catch(() => {});
-  useEffect(loadAtts, [task.id]);
+  // 一定要包成 { }：箭頭函式直接回傳 Promise 的話，React 會把那個 Promise 當成
+  // 清理函式，關掉任務時就會 destroy() → 「l is not a function」整頁掛掉
+  useEffect(() => { loadAtts(); }, [task.id]);
   async function addAtt(e) {
     const file = e.target.files[0];
     if (!file) return;
@@ -369,23 +371,26 @@ export default function Tasks({ view, tasks, lists, filters, habits = [], reload
 
   // 刪除/勾選立即從畫面消失，不等伺服器
   const [hidden, setHidden] = useState(new Set());
-  useEffect(() => { setHidden(new Set()); }, [tasks]);
-  const shown = tasks.filter(t => matchView(t, view, { filters }) && !hidden.has(t.id));
-  const sel = tasks.find(t => t.id === selId);
+  // 樂觀覆蓋：編輯後畫面立刻變，不用等「存檔→重抓」兩趟往返；重抓回來就清掉
+  const [over, setOver] = useState({});
+  useEffect(() => { setHidden(new Set()); setOver({}); }, [tasks]);
+  const tv = Object.keys(over).length ? tasks.map(t => over[t.id] ? { ...t, ...over[t.id] } : t) : tasks;
+  const shown = tv.filter(t => matchView(t, view, { filters }) && !hidden.has(t.id));
+  const sel = tv.find(t => t.id === selId);
 
   async function restore(t) {
     await api(`/tasks/${t.id}`, { method: 'PATCH', body: { deleted: false } });
-    reload();
+    reload('tasks');
   }
   async function hardDel(t) {
     if (!window.confirm(`永久刪除「${t.title}」？無法復原`)) return;
     await api(`/tasks/${t.id}?hard=1`, { method: 'DELETE' });
-    reload();
+    reload('tasks');
   }
   async function emptyTrash() {
     if (!window.confirm('清空垃圾桶？所有項目將永久刪除')) return;
     await api('/trash', { method: 'DELETE' });
-    reload();
+    reload('tasks');
   }
   // 拖曳排序（預設排序時才能拖）
   const [dragT, setDragT] = useState(null);
@@ -395,7 +400,7 @@ export default function Tasks({ view, tasks, lists, filters, habits = [], reload
     ids.splice(ids.indexOf(target.id), 0, dragT.id);
     setDragT(null);
     await api('/tasks/reorder', { method: 'POST', body: { ids } });
-    reload();
+    reload('tasks');
   }
 
   // 底部小提示（可復原，防誤按）
@@ -408,10 +413,10 @@ export default function Tasks({ view, tasks, lists, filters, habits = [], reload
   }
   async function toggle(t) {
     setHidden(h => new Set([...h, t.id]));   // 勾完成立即從當前列表消失
-    api(`/tasks/${t.id}`, { method: 'PATCH', body: { completed: !t.completed } }).then(reload).catch(reload);
+    api(`/tasks/${t.id}`, { method: 'PATCH', body: { completed: !t.completed } }).then(() => reload('tasks')).catch(() => reload('tasks'));
     if (!t.completed) showToast(`已完成「${t.title}」`, async () => {
       await api(`/tasks/${t.id}`, { method: 'PATCH', body: { completed: false } });
-      reload();
+      reload('tasks');
     });
   }
   async function quickAdd(e) {
@@ -423,7 +428,7 @@ export default function Tasks({ view, tasks, lists, filters, habits = [], reload
     if (view.type === 'tag') body.tags = [view.tag];
     await api('/tasks', { method: 'POST', body });
     setQuick('');
-    reload();
+    reload('tasks');
   }
   // 儲存去抖動：不再每敲一個字就打 API＋全量重載（造成又慢又容易出錯）
   const saveTimer = useRef(null);
@@ -436,6 +441,7 @@ export default function Tasks({ view, tasks, lists, filters, habits = [], reload
     return api(`/tasks/${id}`, { method: 'PATCH', body: { title, notes, due_date, due_time, priority, tags, subtasks, recurring, miss_policy, list_id } }).catch(() => {});
   }
   function save(t) {
+    setOver(o => ({ ...o, [t.id]: t }));   // 先讓畫面反映
     pendingSave.current = t;
     clearTimeout(saveTimer.current);
     saveTimer.current = setTimeout(flushSave, 400);
@@ -443,27 +449,27 @@ export default function Tasks({ view, tasks, lists, filters, habits = [], reload
   function closeDetail() {
     clearTimeout(saveTimer.current);
     setSelId(null);
-    flushSave().then(reload);   // 關閉時先送出未儲存的變更，再重新整理
+    flushSave().then(() => reload('tasks'));   // 關閉時先送出未儲存的變更，再重新整理
   }
   async function del(t) {
     setHidden(h => new Set([...h, t.id]));   // 立刻消失
     setSelId(null);
-    api(`/tasks/${t.id}`, { method: 'DELETE' }).then(reload).catch(reload);
+    api(`/tasks/${t.id}`, { method: 'DELETE' }).then(() => reload('tasks')).catch(() => reload('tasks'));
     showToast(`已刪除「${t.title}」`, async () => {
       await api(`/tasks/${t.id}`, { method: 'PATCH', body: { deleted: false } });
-      reload();
+      reload('tasks');
     });
   }
 
   // 願望清單：想做/要記得的事（無日期、無清單）
   const [wish, setWish] = useState('');
-  const wishes = tasks.filter(t => !t.list_id && !t.completed && !t.due_date && !t.deleted);
+  const wishes = tv.filter(t => !t.list_id && !t.completed && !t.due_date && !t.deleted);
   async function addWish(e) {
     e.preventDefault();
     if (!wish.trim()) return;
     await api('/tasks', { method: 'POST', body: { title: wish.trim() } });
     setWish('');
-    reload();
+    reload('tasks');
   }
 
   return (

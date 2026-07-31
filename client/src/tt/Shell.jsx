@@ -25,12 +25,15 @@ export default function Shell({ onLogout }) {
   const [habits, setHabits] = useState([]);
   const [petData, setPetData] = useState(null);
 
-  const reload = () => {
-    api('/tasks').then(setTasks);
-    api('/lists').then(setLists);
-    api('/filters').then(setFilters);
-    api('/habits').then(setHabits);
-    api('/pet').then(setPetData);
+  // 改一筆任務不需要把清單／篩選／習慣整包重抓——之前每個動作都打 5 支 API，
+  // 手機上就是每按一下等好幾百毫秒。scope='tasks' 只抓真正會變的（任務＋金幣）。
+  const reload = (scope) => {
+    api('/tasks').then(setTasks).catch(() => {});
+    api('/pet').then(setPetData).catch(() => {});     // 完成任務會加金幣
+    if (scope === 'tasks') return;
+    api('/lists').then(setLists).catch(() => {});
+    api('/filters').then(setFilters).catch(() => {});
+    api('/habits').then(setHabits).catch(() => {});
   };
   useEffect(reload, []);
   useEffect(() => { api('/pet').then(setPetData).catch(() => {}); }, [view.type]);
