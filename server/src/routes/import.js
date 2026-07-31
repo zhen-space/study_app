@@ -333,6 +333,24 @@ router.delete('/toc-node', async (req, res) => {
   res.json({ ok: true });
 });
 
+// 選擇先排哪本書：照傳進來的書名順序重寫 order_index（每本書內的章順序不變）
+// body: { list_id, books: ['新大滿貫', '週攻略', ...] }
+router.patch('/toc-book-order', async (req, res) => {
+  const { list_id, books } = req.body;
+  if (!list_id || !Array.isArray(books)) return res.status(400).json({ error: '參數不完整' });
+  const rows = await q.all('SELECT * FROM toc_items WHERE user_id=? AND list_id=? ORDER BY order_index, id', [req.userId, +list_id]);
+  const byBook = new Map();
+  for (const r of rows) { const k = r.book || ''; if (!byBook.has(k)) byBook.set(k, []); byBook.get(k).push(r); }
+  const order = [...books.map(b => b || ''), ...[...byBook.keys()].filter(k => !books.includes(k))]; // 沒列到的排後面
+  let i = 0;
+  const stmts = [];
+  for (const bk of order) {
+    for (const r of (byBook.get(bk) || [])) stmts.push(['UPDATE toc_items SET order_index=? WHERE id=?', [i++, r.id]]);
+  }
+  if (stmts.length) await q.batch(stmts);
+  res.json({ ok: true });
+});
+
 // 改書名／出版社（把同科目同書名的所有章一起改）
 router.patch('/toc-book', async (req, res) => {
   const { list_id, book = '', newBook, publisher } = req.body;

@@ -741,6 +741,15 @@ export default function WizardView({ lists, reload, goTasks }) {
                 rows.forEach(r => { const k = r.book || ''; if (!m.has(k)) m.set(k, []); m.get(k).push(r); });
                 return [...m.entries()];
               })();
+              // 選擇先排哪本書：往上／往下換順序（排程就照這個順序走）
+              const moveBook = async (bk, dir) => {
+                const names = bookGroups.map(([k]) => k);
+                const i = names.indexOf(bk), j = i + dir;
+                if (i < 0 || j < 0 || j >= names.length) return;
+                [names[i], names[j]] = [names[j], names[i]];
+                await api('/import/toc-book-order', { method: 'PATCH', body: { list_id: l.id, books: names } }).catch(() => {});
+                setTocs(await api('/import/toc'));
+              };
               const delBook = async (bk, rws) => {
                 const ids = new Set(rws.map(r => `toc-${r.id}`));
                 // 這本書底下已勾選的項目一併移除
@@ -871,7 +880,7 @@ export default function WizardView({ lists, reload, goTasks }) {
                       <button className="btn sm ghost" onClick={() => setItems(a => a.filter(x => !(x.subject_id === l.id && String(x.key).startsWith('toc-'))))}>清除</button>
                     </div>
                   )}
-                  {rows.length > 0 && <div className="muted" style={{ marginTop: 4 }}>點書名展開章節，可勾章／節／主題任一層（勾小的會取代大的）。同一科第二本課本用「加一本新書」；某本目錄沒拍完，用那本右邊的「＋頁」補；書名按 ✎ 可改。AI 讀漏的可以自己補：章右邊「＋節」、節右邊「＋主題」，打錯按 ✕ 刪掉</div>}
+                  {rows.length > 0 && <div className="muted" style={{ marginTop: 4 }}>點書名展開章節，可勾章／節／主題任一層（勾小的會取代大的）。同一科第二本課本用「加一本新書」；某本目錄沒拍完，用那本右邊的「＋頁」補；書名按 ✎ 可改。AI 讀漏的可以自己補：章右邊「＋節」、節右邊「＋主題」，打錯按 ✕ 刪掉。一科有多本書時，用書名右邊的 ↑↓ 決定先排哪一本</div>}
                   {tocMsg[l.id] && <div className="muted" style={{ marginTop: 4 }}>{tocMsg[l.id]}</div>}
                   {bookGroups.map(([bk, rws]) => (
                     editBook === `${l.id}|${rws[0].id}` ? (
@@ -902,6 +911,16 @@ export default function WizardView({ lists, reload, goTasks }) {
                             📘 <b>{bk || '未命名課本'}</b>
                             <span className="muted" style={{ fontSize: 12 }}>{rws[0]?.publisher ? `・${rws[0].publisher}` : ''}・{rws.length} 章</span>
                           </span>
+                          {/* 多本書時可以決定先排哪一本（順序徽章不放進會截斷的書名列） */}
+                          {bookGroups.length > 1 && <>
+                            <span className="chip" title="排的順序" style={{ whiteSpace: 'nowrap' }}>
+                              第{bookGroups.findIndex(([k]) => k === bk) + 1}本
+                            </span>
+                            <button className="icon-btn" title="早一點排這本" style={{ padding: 2, opacity: bookGroups[0][0] === bk ? .3 : 1 }}
+                              onClick={e => { e.preventDefault(); e.stopPropagation(); moveBook(bk, -1); }}>↑</button>
+                            <button className="icon-btn" title="晚一點排這本" style={{ padding: 2, opacity: bookGroups[bookGroups.length - 1][0] === bk ? .3 : 1 }}
+                              onClick={e => { e.preventDefault(); e.stopPropagation(); moveBook(bk, 1); }}>↓</button>
+                          </>}
                           {/* 補「這一本」的後幾頁：掛在該書底下，不會跟別本混在一起 */}
                           <label className="icon-btn" title={`補「${bk || '這本'}」的後幾頁`} style={{ padding: 2, cursor: 'pointer', opacity: tocBusy === l.id ? .4 : 1 }}
                             onClick={e => e.stopPropagation()}>＋頁
