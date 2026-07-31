@@ -48,6 +48,8 @@ export default function WizardView({ lists, reload, goTasks }) {
   const [bookDraft, setBookDraft] = useState(null); // 編輯中的書名/出版社（按「完成」才存）
   const [tocMsg, setTocMsg] = useState({});
   const [expanded, setExpanded] = useState({});
+  const [adding, setAdding] = useState({});      // 哪個節點正在「自己加節/主題」
+  const [addDraft, setAddDraft] = useState({});  // 打到一半的名稱
   const [subjSpread, setSubjSpread] = useState({});   // 每科：章節打散(spread)或照順序(order)
   const [typeRef, setTypeRef] = useState({});         // 每科題型：'self'或跟哪個 sid 相同
   const [typesBy, setTypesBy] = useState({});         // 分科題型 sid→types[]
@@ -765,6 +767,32 @@ export default function WizardView({ lists, reload, goTasks }) {
                 setTocs(await api('/import/toc'));
               };
 
+              // 自己在章底下加節、在節底下加主題（AI 讀漏或課本沒印的時候）
+              const keyToRef = key => {
+                const parts = String(key).split('.');
+                return { tocId: +parts[0].replace('toc-', ''), path: parts.slice(1).map(Number) };
+              };
+              const addNode = async (n) => {
+                const t = (addDraft[n.key] || '').trim();
+                if (!t) return;
+                const { tocId, path } = keyToRef(n.key);
+                const level = n.depth === 0 ? '節' : '主題';
+                // 一次可以加很多個：一行一個
+                for (const line of t.split('\n').map(x => x.trim()).filter(Boolean)) {
+                  await api('/import/toc-node', { method: 'POST', body: { id: tocId, path, title: line, level } }).catch(() => {});
+                }
+                setAddDraft(d => ({ ...d, [n.key]: '' }));
+                setExpanded(x => ({ ...x, [n.key]: true }));
+                setTocs(await api('/import/toc'));
+              };
+              const delNode = async (key) => {
+                const { tocId, path } = keyToRef(key);
+                if (!path.length) return;
+                setItems(a => a.filter(x => !(String(x.key) === String(key) || String(x.key).startsWith(key + '.'))));
+                await api(`/import/toc-node?id=${tocId}&path=${path.join(',')}`, { method: 'DELETE' }).catch(() => {});
+                setTocs(await api('/import/toc'));
+              };
+
               const renderNode = (n) => {
                 const it = findItem(n.key);
                 const hasKids = n.children && n.children.length > 0;
@@ -779,9 +807,19 @@ export default function WizardView({ lists, reload, goTasks }) {
                         {hasKids && <span className="muted"> {open ? '▾' : '▸'}</span>}
                         {n.depth > 0 && <span className="chip" style={{ marginLeft: 6 }}>{n.level}</span>}
                       </span>
+                      {n.depth < 2 && (
+                        <button className="icon-btn" style={{ padding: 2, fontSize: 12 }} title={n.depth === 0 ? '自己加一個節' : '自己加一個主題'}
+                          onClick={() => { setExpanded(x => ({ ...x, [n.key]: true })); setAdding(a => ({ ...a, [n.key]: !a[n.key] })); }}>
+                          ＋{n.depth === 0 ? '節' : '主題'}
+                        </button>
+                      )}
                       {n.depth > 0 && (
                         <button className="icon-btn" style={{ padding: 2, fontSize: 12 }} title="這其實是獨立單元，不屬於這一章 → 拉出來自成一章"
                           onClick={() => promote(n.key)}>⤴獨立</button>
+                      )}
+                      {n.depth > 0 && (
+                        <button className="icon-btn" style={{ padding: 2, fontSize: 12 }} title="刪掉這一個"
+                          onClick={() => delNode(n.key)}>✕</button>
                       )}
                       {it && timed && <>
                         <input type="number" min="10" step="10" value={it.minutes} style={{ width: 66 }}
@@ -790,6 +828,17 @@ export default function WizardView({ lists, reload, goTasks }) {
                         <span className="muted">分</span>
                       </>}
                     </div>
+                    {adding[n.key] && n.depth < 2 && (
+                      <div className="row" style={{ marginTop: 4, marginLeft: 20, gap: 6, alignItems: 'flex-start' }}>
+                        <textarea autoFocus rows={Math.min(4, (addDraft[n.key] || '').split('\n').length)}
+                          placeholder={n.depth === 0 ? '節名，一行一個' : '主題名，一行一個'}
+                          value={addDraft[n.key] || ''} style={{ flex: 1, minWidth: 0, resize: 'none' }}
+                          onChange={e => setAddDraft(d => ({ ...d, [n.key]: e.target.value }))}
+                          onKeyDown={e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); addNode(n); } }} />
+                        <button className="btn sm" onClick={() => addNode(n)}>加入</button>
+                        <button className="btn sm ghost" onClick={() => setAdding(a => ({ ...a, [n.key]: false }))}>取消</button>
+                      </div>
+                    )}
                     {open && hasKids && n.children.map((c, i) =>
                       renderNode({ key: `${n.key}.${i}`, title: c.title, level: c.level, children: c.children, depth: n.depth + 1 }))}
                   </div>
@@ -822,7 +871,7 @@ export default function WizardView({ lists, reload, goTasks }) {
                       <button className="btn sm ghost" onClick={() => setItems(a => a.filter(x => !(x.subject_id === l.id && String(x.key).startsWith('toc-'))))}>清除</button>
                     </div>
                   )}
-                  {rows.length > 0 && <div className="muted" style={{ marginTop: 4 }}>點書名展開章節，可勾章／節／主題任一層（勾小的會取代大的）。同一科第二本課本用「加一本新書」；某本目錄沒拍完，用那本右邊的「＋頁」補；書名按 ✎ 可改</div>}
+                  {rows.length > 0 && <div className="muted" style={{ marginTop: 4 }}>點書名展開章節，可勾章／節／主題任一層（勾小的會取代大的）。同一科第二本課本用「加一本新書」；某本目錄沒拍完，用那本右邊的「＋頁」補；書名按 ✎ 可改。AI 讀漏的可以自己補：章右邊「＋節」、節右邊「＋主題」，打錯按 ✕ 刪掉</div>}
                   {tocMsg[l.id] && <div className="muted" style={{ marginTop: 4 }}>{tocMsg[l.id]}</div>}
                   {bookGroups.map(([bk, rws]) => (
                     editBook === `${l.id}|${rws[0].id}` ? (

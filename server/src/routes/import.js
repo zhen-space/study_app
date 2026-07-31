@@ -290,6 +290,49 @@ router.post('/toc-promote', async (req, res) => {
   res.json({ id: r.lastInsertRowid });
 });
 
+// 自己在章底下加節／在節底下加主題（AI 讀漏或課本沒印出來時手動補）
+// body: { id: 章的 toc_id, path: []＝直接加在章底下｜[i]＝加在第 i 個節底下, title, level }
+const normNode = k => (typeof k === 'string' ? { title: k, level: '節', children: [] } : { ...k, children: (k.children || []).map(normNode) });
+const loadSecs = row => { try { return (JSON.parse(row.sections || '[]')).map(normNode); } catch { return []; } };
+router.post('/toc-node', async (req, res) => {
+  const { id, path = [], title, level } = req.body;
+  const t = String(title || '').trim();
+  if (!t) return res.status(400).json({ error: '請輸入名稱' });
+  const row = await q.get('SELECT * FROM toc_items WHERE id=? AND user_id=?', [id, req.userId]);
+  if (!row) return res.status(404).json({ error: '找不到章節' });
+  const secs = loadSecs(row);
+  let list = secs;
+  for (const i of path) {                       // 往下走到要加的那一層
+    const node = list[i];
+    if (!node) return res.status(400).json({ error: '找不到位置' });
+    node.children = node.children || [];
+    list = node.children;
+  }
+  if (path.length >= 2) return res.status(400).json({ error: '最多三層（章→節→主題）' });
+  list.push({ title: t, level: level || (path.length ? '主題' : '節'), children: [] });
+  await q.run('UPDATE toc_items SET sections=? WHERE id=?', [JSON.stringify(secs), row.id]);
+  res.json({ ok: true });
+});
+// 刪掉自己加錯的節／主題
+router.delete('/toc-node', async (req, res) => {
+  const id = +req.query.id;
+  const path = String(req.query.path || '').split(',').filter(x => x !== '').map(Number);
+  const row = await q.get('SELECT * FROM toc_items WHERE id=? AND user_id=?', [id, req.userId]);
+  if (!row || !path.length) return res.status(404).json({ error: '找不到項目' });
+  const secs = loadSecs(row);
+  let list = secs;
+  for (const i of path.slice(0, -1)) {
+    const node = list[i];
+    if (!node) return res.status(400).json({ error: '找不到位置' });
+    list = node.children = node.children || [];
+  }
+  const last = path[path.length - 1];
+  if (!list[last]) return res.status(400).json({ error: '找不到項目' });
+  list.splice(last, 1);
+  await q.run('UPDATE toc_items SET sections=? WHERE id=?', [JSON.stringify(secs), row.id]);
+  res.json({ ok: true });
+});
+
 // 改書名／出版社（把同科目同書名的所有章一起改）
 router.patch('/toc-book', async (req, res) => {
   const { list_id, book = '', newBook, publisher } = req.body;
