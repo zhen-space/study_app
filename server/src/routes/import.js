@@ -309,7 +309,18 @@ router.post('/toc-node', async (req, res) => {
     list = node.children;
   }
   if (path.length >= 2) return res.status(400).json({ error: '最多三層（章→節→主題）' });
-  list.push({ title: t, level: level || (path.length ? '主題' : '節'), children: [] });
+  // 自動接續編號：AI 讀出來的節都有編號（「1 …」「主題21 …」），
+  // 自己加的也要有，而且格式要跟同一層現有的一致
+  let maxN = 0, style = '';
+  for (const k of list) {
+    const m = String(k.title || k).match(/^\s*(主題|單元|重點|第)?\s*(\d+)/);
+    if (!m) continue;
+    if (+m[2] > maxN) maxN = +m[2];
+    if (!style && m[1]) style = m[1];
+  }
+  const numbered = /^\s*(主題|單元|重點|第)?\s*\d+/.test(t);
+  const title2 = numbered ? t : `${style}${maxN + 1} ${t}`;
+  list.push({ title: title2, level: level || (path.length ? '主題' : '節'), children: [] });
   await q.run('UPDATE toc_items SET sections=? WHERE id=?', [JSON.stringify(secs), row.id]);
   res.json({ ok: true });
 });
