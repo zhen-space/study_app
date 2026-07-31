@@ -32,6 +32,16 @@ function groupEvents(list) {
   });
 }
 
+// 說明文字一律收在「怎麼用？」裡，預設收合——展開才佔版面，畫面才不會被灰字淹沒
+function Help({ children }) {
+  return (
+    <details className="wz-help">
+      <summary>怎麼用？</summary>
+      <div>{children}</div>
+    </details>
+  );
+}
+
 export default function WizardView({ lists, reload, goTasks }) {
   const [step, setStep] = useState(0);
   const [events, setEvents] = useState([]);
@@ -729,7 +739,14 @@ export default function WizardView({ lists, reload, goTasks }) {
         {/* ============ 1 科目與範圍 ============ */}
         {step === 1 && (
           <div className="tile">
-            <p className="muted">每科先「拍課本目錄」建立章節，之後直接勾選（節可勾可不勾）。</p>
+            <Help>
+              每科先「拍課本目錄」建立章節，之後直接勾選。<br />
+              ・可勾章／節／主題任一層，勾小的會取代大的<br />
+              ・同一科第二本書用「加一本新書」；某本沒拍完用該書的「＋頁」補<br />
+              ・書名按 ✎ 改；整本按 ✕ 刪<br />
+              ・AI 讀漏的自己補：章的「＋節」、節的「＋主題」，打錯按 ✕<br />
+              ・多本書時用 ↑↓ 決定先排哪一本
+            </Help>
             <button className="btn sm ghost" style={{ marginTop: 8 }} onClick={addSubject}>＋新增科目</button>
             {lists.map(l => {
               const rows = tocs.filter(t => t.list_id === l.id);
@@ -861,26 +878,24 @@ export default function WizardView({ lists, reload, goTasks }) {
                     <input type="color" value={l.color} title="改科目顏色" style={{ width: 28, height: 24, padding: 0, border: 'none', background: 'none' }}
                       onChange={e => setSubjectColor(l, e.target.value)} />
                     <label className="btn sm ghost" style={{ opacity: tocBusy === l.id ? .5 : 1 }}>
-                      📷 {rows.length ? '重拍（整科重來）' : '拍課本目錄（可多張）'}
+                      📷 {rows.length ? '重拍' : '拍課本目錄'}
                       <input type="file" multiple disabled={tocBusy !== null} accept="image/*,.pdf" style={{ display: 'none' }} onChange={e => uploadTOC(l, e, 'replace')} />
                     </label>
                     {rows.length > 0 && (
                       <label className="btn sm ghost" style={{ opacity: tocBusy === l.id ? .5 : 1 }}>
-                        ➕ 加一本新書
+                        ➕ 加一本
                         <input type="file" multiple disabled={tocBusy !== null} accept="image/*,.pdf" style={{ display: 'none' }} onChange={e => uploadTOC(l, e, 'newbook')} />
                       </label>
                     )}
                   </div>
                   {rows.length > 0 && (
                     <div className="row" style={{ marginTop: 6, flexWrap: 'wrap' }}>
-                      <span className="muted">快速勾選：</span>
                       {subjectLevels(l).map(lv => (
                         <button key={lv} className="btn sm ghost" onClick={() => selectLevel(l, lv)}>全選{lv}</button>
                       ))}
                       <button className="btn sm ghost" onClick={() => setItems(a => a.filter(x => !(x.subject_id === l.id && String(x.key).startsWith('toc-'))))}>清除</button>
                     </div>
                   )}
-                  {rows.length > 0 && <div className="muted" style={{ marginTop: 4 }}>點書名展開章節，可勾章／節／主題任一層（勾小的會取代大的）。同一科第二本課本用「加一本新書」；某本目錄沒拍完，用那本右邊的「＋頁」補；書名按 ✎ 可改。AI 讀漏的可以自己補：章右邊「＋節」、節右邊「＋主題」，打錯按 ✕ 刪掉。一科有多本書時，用書名右邊的 ↑↓ 決定先排哪一本</div>}
                   {tocMsg[l.id] && <div className="muted" style={{ marginTop: 4 }}>{tocMsg[l.id]}</div>}
                   {bookGroups.map(([bk, rws]) => (
                     editBook === `${l.id}|${rws[0].id}` ? (
@@ -941,7 +956,7 @@ export default function WizardView({ lists, reload, goTasks }) {
                     )
                   ))}
                   <div className="row" style={{ marginTop: 8 }}>
-                    <input placeholder="或手動輸入範圍（如：講義 p.20-35）" value={rangeInput[l.id] || ''} onChange={e => setRangeInput(r => ({ ...r, [l.id]: e.target.value }))} style={{ flex: 1, fontSize: 14 }} />
+                    <input placeholder="手動輸入範圍（如 p.20-35）" value={rangeInput[l.id] || ''} onChange={e => setRangeInput(r => ({ ...r, [l.id]: e.target.value }))} style={{ flex: 1, fontSize: 14 }} />
                     <button className="btn sm ghost" onClick={() => addRange(l)}>＋</button>
                   </div>
                   {items.filter(it => it.subject_id === l.id && !String(it.key).startsWith('toc-')).map(it => (
@@ -980,9 +995,9 @@ export default function WizardView({ lists, reload, goTasks }) {
               </div>
               {ts.length > 1 && (
                 <div style={{ marginTop: 8 }}>
-                  <label style={{ display: 'block' }}><input type="radio" checked={cb === 'together'} onChange={() => onCb('together')} /> 一起寫（每章一個時段做完所有題型）</label>
-                  <label style={{ display: 'block' }}><input type="radio" checked={cb === 'separate'} onChange={() => onCb('separate')} /> 全部分開（每種題型自己一段）</label>
-                  <label style={{ display: 'block' }}><input type="radio" checked={cb === 'custom'} onChange={() => onCb('custom')} /> 自訂組合（如：範例+例題一組）</label>
+                  <label style={{ display: 'block' }}><input type="radio" checked={cb === 'together'} onChange={() => onCb('together')} /> 一起寫</label>
+                  <label style={{ display: 'block' }}><input type="radio" checked={cb === 'separate'} onChange={() => onCb('separate')} /> 全部分開</label>
+                  <label style={{ display: 'block' }}><input type="radio" checked={cb === 'custom'} onChange={() => onCb('custom')} /> 自訂組合</label>
                   {cb === 'custom' && ts.map(t => (
                     <div className="row" key={t} style={{ marginTop: 4, marginLeft: 10 }}>
                       <span style={{ minWidth: 70 }}>{t}</span>
@@ -1016,8 +1031,16 @@ export default function WizardView({ lists, reload, goTasks }) {
                 </div>
               ))}
 
-              <b style={{ display: 'block', marginTop: 16 }}>教材題型（範例/例題/單元練習/歷屆試題）</b>
-              <div className="muted" style={{ marginTop: 2 }}>已幫你預設好：範例+例題一組、單元練習+歷屆試題一組（練習/歷屆以「章」為單位，每章一份）。不用改就能直接下一步；想調整再展開各科設定</div>
+              <b style={{ display: 'block', marginTop: 16 }}>教材題型</b>
+              <Help>
+                已預設好：範例+例題一組、單元練習+歷屆試題一組（以「章」為單位，每章一份）。<br />
+                不用改就能直接下一步；想調整再展開各科設定。<br />
+                ・一起寫＝每章一個時段做完所有題型<br />
+                ・全部分開＝每種題型自己一段<br />
+                ・自訂組合＝自己決定哪幾種併一組（如範例+例題）<br />
+                ・各單元設定：點題型循環 要排 → 先完成 → 壓軸 → 不寫；<br />
+                　模考類點「純題目」那顆：壓軸 → 先完成 → 照常 → 取消
+              </Help>
               {sids.map(sid => {
                 // 指到已不存在的科目就當作「自己設定」，否則會卡在「使用「」的設定」改不掉
                 const raw = typeRef[sid];
@@ -1161,7 +1184,7 @@ export default function WizardView({ lists, reload, goTasks }) {
                 if (!blocks.length) return null;
                 return <>
                   <b style={{ display: 'block', marginTop: 16 }}>各單元設定</b>
-                  <div className="muted">點題型循環：<span className="tag-pill" style={{ background: '#0086CC', color: '#fff', padding: '1px 8px' }}>要排</span> → <span className="tag-pill" style={{ background: '#8AC4DE', color: '#fff', padding: '1px 8px' }}>先完成</span> → <span className="tag-pill" style={{ background: '#005B98', color: '#fff', padding: '1px 8px' }}>壓軸</span> → <span className="tag-pill" style={{ textDecoration: 'line-through', opacity: .55, padding: '1px 8px' }}>不寫</span>；模考類點「純題目」那顆：<span className="tag-pill" style={{ background: '#192F60', color: '#fff', padding: '1px 8px' }}>壓軸</span> → 先完成 → 照常 → 取消</div>
+                  <div className="muted" style={{ fontSize: 12 }}>點題型可循環切換狀態（說明看上面的 ⓘ）</div>
                   {blocks}
                 </>;
               })()}
@@ -1184,7 +1207,10 @@ export default function WizardView({ lists, reload, goTasks }) {
               <input type="date" value={dGlobal.end} onChange={e => setDGlobal(d => ({ ...d, end: e.target.value }))} />
               {dGlobal.start !== today() && <button className="btn sm ghost" onClick={() => setDGlobal(d => ({ ...d, start: today() }))}>從今天</button>}
             </div>
-            <div className="muted" style={{ marginTop: 4 }}>開始日預設是今天（可改）。底下各科／各題型的日期預設都跟著整體範圍，改過的才會固定住（可按「跟整體」還原）</div>
+            <Help>
+              開始日預設今天（可改）。<br />
+              底下各科／各題型都跟著整體範圍，改過的才會固定住（按「跟整體」還原）。
+            </Help>
 
             <b style={{ display: 'block', marginTop: 14 }}>怎麼分配到這些日子？</b>
             <div style={{ marginTop: 6 }}>

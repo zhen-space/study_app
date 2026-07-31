@@ -106,6 +106,13 @@ select { -webkit-appearance: none; appearance: none; padding-right: 26px;
 .chip { font-size: 11px; padding: 2px 8px; border-radius: 999px; background: var(--fill); color: var(--muted); }
 .chip.on { background: var(--primary); color: #fff; }
 .row .chip { cursor: pointer; user-select: none; -webkit-user-select: none; }
+/* 說明區塊：預設收合成一行小字，展開才顯示內容 */
+.wz-help { margin: 4px 0 2px; }
+.wz-help > summary { cursor: pointer; font-size: 12px; color: var(--muted); list-style: none; padding: 2px 0; }
+.wz-help > summary::-webkit-details-marker { display: none; }
+.wz-help > summary::before { content: 'ⓘ '; }
+.wz-help[open] > summary::before { content: 'ⓘ '; }
+.wz-help > div { font-size: 12px; color: var(--muted); line-height: 1.7; padding: 4px 0 2px 2px; }
 .p1 { color: var(--blue); } .p2 { color: var(--orange); } .p3 { color: var(--red); }
 
 /* detail panel */
