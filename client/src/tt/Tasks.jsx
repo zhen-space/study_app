@@ -360,7 +360,11 @@ export default function Tasks({ view, tasks, lists, filters, habits = [], reload
   const [selId, setSelId] = useState(null);
   const [quick, setQuick] = useState('');
   const [showAdd, setShowAdd] = useState(false);
-  const [sortBy, setSortBy] = useState('default'); // default | time | priority | title
+  // 排序方式記起來：下次開啟還是同一個（default | time | priority | title）
+  const [sortBy, setSortBy] = useState(() => {
+    try { return localStorage.getItem('taskSort') || 'default'; } catch { return 'default'; }
+  });
+  const pickSort = v => { setSortBy(v); try { localStorage.setItem('taskSort', v); } catch {} };
 
   const sortFns = {
     default: defaultSort, // 依時間，同一天依課序
@@ -478,7 +482,7 @@ export default function Tasks({ view, tasks, lists, filters, habits = [], reload
         <div className="main-head">
           <h2>{title}</h2><span className="muted">{shown.length} 項</span>
           {!['trash', 'completed'].includes(view.type) && shown.length > 1 && (
-            <select value={sortBy} onChange={e => setSortBy(e.target.value)} style={{ marginLeft: 'auto', fontSize: 13 }}>
+            <select value={sortBy} onChange={e => pickSort(e.target.value)} style={{ marginLeft: 'auto', fontSize: 13 }}>
               <option value="default">預設排序</option>
               <option value="time">依時間</option>
               <option value="priority">依優先級</option>
