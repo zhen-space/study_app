@@ -84,6 +84,8 @@ export default function WizardView({ lists, reload, goTasks }) {
   const [dGlobal, setDGlobal] = useState({ start: today(), end: addDays(today(), 6) });
   const [dMap, setDMap] = useState({});               // `${sid}|${gi}` → {start,end}
   const [preview, setPreview] = useState(null);
+  const [leftover, setLeftover] = useState([]);       // 上次排程還沒做完的
+  const [redoUndone, setRedoUndone] = useState(true); // 要不要一起重新安排
   const [err, setErr] = useState('');
   const [saving, setSaving] = useState(false);
   const [importMsg, setImportMsg] = useState('');
@@ -94,6 +96,7 @@ export default function WizardView({ lists, reload, goTasks }) {
   useEffect(() => {
     loadEv();
     api('/settings').then(s => { setSettings(s); setShift({ sleep_start: s.sleep_start, sleep_end: s.sleep_end }); });
+    api('/plan-tasks').then(setLeftover).catch(() => {});
     api('/import/toc').then(setTocs);
     // AI 解讀結果自動保存：離開頁面回來還在
     try { const saved = localStorage.getItem('wizardAiPreview'); if (saved) setAiPreview(JSON.parse(saved)); } catch {}
@@ -522,6 +525,18 @@ export default function WizardView({ lists, reload, goTasks }) {
         onePerDay: true,   // 純題目本來就是整份題目，一天只排一份
       }));
     });
+    // 上次沒做完的一起重排：標題原樣帶回去（伺服器會自己認出純題目），
+    // 已經在這次勾選裡的就不重複加
+    if (redoUndone && leftover.length) {
+      const have = new Set(expanded2.map(i => i.title));
+      const gw = fixWin(mergeWin('all|all'));
+      for (const t of leftover) {
+        if (!t.title || have.has(t.title)) continue;
+        have.add(t.title);
+        const w = bySubject ? fixWin(mergeWin(`${t.list_id}|all`)) : gw;
+        expanded2.push({ subject_id: t.list_id, title: t.title, minutes: 60, start: w.start, end: w.end, spread: false });
+      }
+    }
     try {
       const body = {
         items: expanded2, startDate: dGlobal.start, endDate: dGlobal.end,
@@ -543,8 +558,9 @@ export default function WizardView({ lists, reload, goTasks }) {
   async function confirm() {
     setSaving(true);
     try {
-      // 新排程取代舊排程：先清掉上一次建立、還沒完成的讀書計劃待辦（已完成的保留當紀錄）
-      try { await api('/plan-tasks', { method: 'DELETE' }); } catch {}
+      // 未做完的已經併進這次排程 → 清掉舊的那幾筆（已完成的保留當紀錄）；
+      // 使用者若選「維持原本日期」就不動它們
+      if (redoUndone) { try { await api('/plan-tasks', { method: 'DELETE' }); } catch {} }
       // 一個請求打包建立全部任務（逐筆等待太慢）
       await api('/tasks/bulk', {
         method: 'POST',
@@ -1249,6 +1265,18 @@ export default function WizardView({ lists, reload, goTasks }) {
               開始日預設今天（可改）。<br />
               底下各科／各題型都跟著整體範圍，改過的才會固定住（按「跟整體」還原）。
             </Help>
+
+            {leftover.length > 0 && (
+              <div className="tile" style={{ marginTop: 12, padding: '8px 12px', background: 'var(--fill)' }}>
+                <div style={{ marginBottom: 4 }}>上次還有 <b>{leftover.length}</b> 項沒做完</div>
+                <label style={{ display: 'block' }}>
+                  <input type="radio" checked={redoUndone} onChange={() => setRedoUndone(true)} /> 一起重新安排
+                </label>
+                <label style={{ display: 'block' }}>
+                  <input type="radio" checked={!redoUndone} onChange={() => setRedoUndone(false)} /> 維持原本日期不動
+                </label>
+              </div>
+            )}
 
             <b style={{ display: 'block', marginTop: 14 }}>怎麼分配到這些日子？</b>
             <div style={{ marginTop: 6 }}>

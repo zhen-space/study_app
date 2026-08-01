@@ -310,6 +310,15 @@ router.delete('/trash', async (req, res) => {
   res.json({ removed: r.rowsAffected ?? 0 });
 });
 // 清掉上一次讀書計劃建立的待辦（已完成的保留當紀錄），建立新排程前呼叫
+// 上一次排程還沒做完的（重新排程時問使用者要不要一起重排）
+router.get('/plan-tasks', async (req, res) => {
+  const rows = await q.all(
+    `SELECT id, title, list_id, due_date FROM tasks
+     WHERE user_id=? AND completed=0 AND COALESCE(deleted,0)=0
+       AND (tags LIKE '%讀書計劃%' OR title LIKE '%｜%')
+     ORDER BY due_date, id`, [req.userId]);
+  res.json(rows);
+});
 router.delete('/plan-tasks', async (req, res) => {
   // 標籤比對＋標題含全形「｜」（排程精靈專用的分隔符）：涵蓋先前標籤遺失 bug 建立的舊排程
   const r = await q.run(`DELETE FROM tasks WHERE user_id=? AND completed=0 AND (tags LIKE '%讀書計劃%' OR title LIKE '%｜%')`, [req.userId]);
