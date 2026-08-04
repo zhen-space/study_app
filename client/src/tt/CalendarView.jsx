@@ -51,7 +51,11 @@ function ColorPicker({ value, onPick }) {
 }
 
 export default function CalendarView({ tasks, reload }) {
-  const [view, setView] = useState('week'); // day | week | month
+  // 檢視方式記起來（跟任務排序一樣）：選了 3日／1日，下次開還是同一個
+  const [view, setViewRaw] = useState(() => {
+    try { return localStorage.getItem('calView') || 'week'; } catch { return 'week'; }
+  }); // list | year | month | week | 3day | day
+  const setView = v => { setViewRaw(v); try { localStorage.setItem('calView', v); } catch {} };
   const [anchor, setAnchor] = useState(today());
   // 匯入/新增的既定行程（課表、補習等）：先用上次的快取立即顯示，再背景更新（不用每次等 API）
   const [events, setEvents] = useState(() => {
@@ -497,16 +501,19 @@ export default function CalendarView({ tasks, reload }) {
   const HourGrid = ({ days }) => {
     const totalH = HOURS.length * ROW;
     return (
-      <div style={{ display: 'grid', gridTemplateColumns: `44px repeat(${days.length}, 1fr)`, borderTop: '1px solid var(--border)' }}>
+      <div style={{ display: 'grid', gridTemplateColumns: `44px repeat(${days.length}, minmax(0, 1fr))`, borderTop: '1px solid var(--border)' }}>
         {/* 表頭 */}
         <div />
         {days.map(d => (
-          <div key={d} style={{ textAlign: 'center', padding: 4, fontSize: 12, fontWeight: d === today() ? 700 : 400, color: d === today() ? 'var(--primary)' : 'var(--muted)' }}>
-            {`${+d.slice(5, 7)}/${+d.slice(8)}`}<br />週{WD[(new Date(d + 'T00:00:00').getDay() + 6) % 7]}
+          <div key={d} style={{ textAlign: 'center', padding: 4, fontSize: 12, minWidth: 0, overflow: 'hidden', fontWeight: d === today() ? 700 : 400, color: d === today() ? 'var(--primary)' : 'var(--muted)' }}>
+            <span style={{ whiteSpace: 'nowrap' }}>{`${+d.slice(5, 7)}/${+d.slice(8)}`}</span><br />
+            <span style={{ whiteSpace: 'nowrap' }}>週{WD[(new Date(d + 'T00:00:00').getDay() + 6) % 7]}</span>
+            {/* 重要日子放在該日最上面。欄位窄（週視圖）時只留圖示＋名稱，倒數留給 3日/日 */}
             {marksOn(d).map(a => (
-              <div key={'a' + a.id} onClick={ev => { ev.stopPropagation(); setEditEv({ ...a }); }} title={a.title}
-                style={{ fontSize: 10, color: 'var(--text)', fontWeight: 400, cursor: 'pointer', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                {markIcon(a.kind)}{a.title}{markLabel(a, d)}
+              <div key={'a' + a.id} onClick={ev => { ev.stopPropagation(); setEditEv({ ...a }); }}
+                title={`${a.title}${markLabel(a, d)}`}
+                style={{ fontSize: 10, color: 'var(--text)', fontWeight: 400, cursor: 'pointer', minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                {markIcon(a.kind)}{a.title}{days.length <= 3 ? markLabel(a, d) : ''}
               </div>
             ))}
           </div>
