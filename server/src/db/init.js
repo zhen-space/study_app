@@ -7,7 +7,8 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 // 有設定 Turso 就用雲端（永久保存）；否則用本機檔案（開發用）
 const client = process.env.TURSO_DATABASE_URL
   ? createClient({ url: process.env.TURSO_DATABASE_URL, authToken: process.env.TURSO_AUTH_TOKEN })
-  : createClient({ url: 'file:' + path.join(__dirname, '..', '..', 'data.sqlite') });
+  // DB_FILE 讓測試指到暫存檔，不會動到開發／正式資料庫
+  : createClient({ url: 'file:' + (process.env.DB_FILE || path.join(__dirname, '..', '..', 'data.sqlite')) });
 
 const toObj = (row, columns) => Object.fromEntries(columns.map((c, i) => [c, row[i]]));
 
