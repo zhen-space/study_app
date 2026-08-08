@@ -2,6 +2,8 @@
 
 學生讀書計劃網站：自動排程精靈、每日待辦、讀書統計。
 
+📖 **接手開發前請讀 [`docs/專案現況.md`](docs/專案現況.md)** — 專案脈絡、排程演算法的設計原因、踩過的坑。
+
 ## 啟動
 ```bash
 cd server && npm install && node src/index.js   # API :3001
