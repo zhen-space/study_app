@@ -19,6 +19,10 @@ node --test --test-name-pattern="截止日" "test/**/*.test.mjs"
 測試會自己開一台伺服器（隨機埠 ＋ 暫存 SQLite），不需要先啟動 server，
 也不會動到 `data.sqlite` 或雲端資料庫。改完 `src/routes/schedule.js` 請務必跑過。
 
+結果不受機器時區影響，`TZ=UTC`、`TZ=Asia/Taipei`、`TZ=America/New_York` 都應該是 26/26。
+日期運算請一律用 `src/util/date.js`（UTC 進、UTC 出），不要混用
+「本機時區解析 `new Date(ds + 'T00:00:00')` ＋ UTC 輸出 `toISOString()`」——這兩者在 UTC+N 會差一天。
+
 ## 功能
 - Email 註冊/登入（JWT）
 - 固定行程行事曆（單次/每週重複）＋睡眠、吃飯作息設定

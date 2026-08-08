@@ -124,7 +124,9 @@ router.post('/tasks', async (req, res) => {
 // 重複規則：daily/weekly/monthly/yearly/weekdays 或自訂 JSON {"every":2,"unit":"week","days":[1,3,5]}
 function nextDate(dateStr, rule) {
   const d = new Date(dateStr + 'T00:00:00');
-  const iso = x => x.toISOString().slice(0, 10);
+  // 這裡整段都用本機時區運算，輸出也要用本機的年月日；
+  // 用 toISOString() 會照 UTC 輸出，在 UTC+N 的機器上會整個少一天
+  const iso = x => `${x.getFullYear()}-${String(x.getMonth() + 1).padStart(2, '0')}-${String(x.getDate()).padStart(2, '0')}`;
   if (rule === 'daily') { d.setDate(d.getDate() + 1); return iso(d); }
   if (rule === 'weekly') { d.setDate(d.getDate() + 7); return iso(d); }
   if (rule === 'monthly') { d.setMonth(d.getMonth() + 1); return iso(d); }

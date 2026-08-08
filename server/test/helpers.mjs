@@ -9,10 +9,12 @@ const serverDir = path.join(path.dirname(fileURLToPath(import.meta.url)), '..');
 
 // 伺服器用「台灣時區的今天」當起點，早於今天的日期會被裁掉。
 // 測試一律用相對日期，才不會過幾天就開始壞掉。
+// 日期運算全部走 UTC（T00:00:00Z + setUTCDate），這樣不管跑測試的機器
+// TZ 設成什麼（Asia/Taipei、UTC、America/New_York）結果都一樣。
 export const today = () => new Date(Date.now() + 8 * 3600e3).toISOString().slice(0, 10);
 export const day = n => {
-  const d = new Date(today() + 'T00:00:00');
-  d.setDate(d.getDate() + n);
+  const d = new Date(today() + 'T00:00:00Z');
+  d.setUTCDate(d.getUTCDate() + n);
   return d.toISOString().slice(0, 10);
 };
 

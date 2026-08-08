@@ -1,6 +1,7 @@
 import { Router } from 'express';
 import { q } from '../db/init.js';
 import { requireAuth } from '../middleware/auth.js';
+import { addDays, dayOfWeek, todayTW } from '../util/date.js';
 
 const router = Router();
 router.use(requireAuth);
@@ -16,10 +17,10 @@ function freeSlotsForDay(dateStr, events, settings) {
   else busy.push([sleepStart, sleepEnd]);
   for (const [a, b] of settings.meal_windows) busy.push([toMin(a), toMin(b)]);
 
-  const dow = new Date(dateStr + 'T00:00:00').getDay();
+  const dow = dayOfWeek(dateStr);
   for (const e of events) {
     const applies = e.recurring === 'weekly'
-      ? new Date(e.date + 'T00:00:00').getDay() === dow && e.date <= dateStr
+      ? dayOfWeek(e.date) === dow && e.date <= dateStr
       : e.date === dateStr;
     if (applies) busy.push([toMin(e.start_time), toMin(e.end_time)]);
   }
@@ -46,11 +47,11 @@ function freeSlotsForDay(dateStr, events, settings) {
 // 每個項目可有自己的日期範圍；final=true 的項目（壓軸）會排在其他項目全部結束之後
 // 某天既定行程（含週期）的總分鐘數
 function busyMinutesForDay(dateStr, events) {
-  const dow = new Date(dateStr + 'T00:00:00').getDay();
+  const dow = dayOfWeek(dateStr);
   let m = 0;
   for (const e of events) {
     const applies = e.recurring === 'weekly'
-      ? new Date(e.date + 'T00:00:00').getDay() === dow && e.date <= dateStr
+      ? dayOfWeek(e.date) === dow && e.date <= dateStr
       : e.date === dateStr;
     if (applies) m += toMin(e.end_time) - toMin(e.start_time);
   }
@@ -60,7 +61,7 @@ function busyMinutesForDay(dateStr, events) {
 router.post('/preview', async (req, res) => {
   const { items, excludeWeekdays = [], excludeDates = [], skipIfBusyHours = 0, timed = true, perDay = 3, pace = 'even' } = req.body;
   if (!items?.length) return res.status(400).json({ error: '參數不完整' });
-  const today = new Date(Date.now() + 8 * 3600e3).toISOString().slice(0, 10); // 台灣時區的今天
+  const today = todayTW(); // 台灣時區的今天
   const gStart = req.body.startDate || today, gEnd = req.body.endDate || today;
   for (const it of items) { it.start = it.start || gStart; it.end = it.end || gEnd; }
   // 純題目（單元練習／歷屆試題）一天只排一份。項目可能來自不同路徑，
@@ -83,12 +84,10 @@ router.post('/preview', async (req, res) => {
   const events = await q.all('SELECT * FROM fixed_events WHERE user_id=?', [req.userId]);
 
   const days = [];
-  for (let d = new Date(minD + 'T00:00:00'); ; d.setDate(d.getDate() + 1)) {
-    const ds = d.toISOString().slice(0, 10);
-    if (ds > maxD) break;
+  for (let ds = minD; ds <= maxD; ds = addDays(ds, 1)) {
     if (ds < today) continue;
     if (excludeDates.includes(ds)) continue;                      // 指定不排的日期
-    if (excludeWeekdays.includes(d.getDay())) continue;           // 不排的星期
+    if (excludeWeekdays.includes(dayOfWeek(ds))) continue;        // 不排的星期
     if (skipIfBusyHours > 0 && busyMinutesForDay(ds, events) >= skipIfBusyHours * 60) continue; // 既定行程太滿
     days.push({ date: ds, slots: freeSlotsForDay(ds, events, settings), slotIdx: 0 });
   }

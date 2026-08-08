@@ -179,16 +179,18 @@ router.post('/parse', async (req, res) => {
 
     // day_of_week → 下一次出現的日期（供每週重複的起始日）
     const today = new Date();
+    // 本機時區的年月日；用 toISOString() 會照 UTC 輸出，在 UTC+N 的機器上會少一天
+    const iso = x => `${x.getFullYear()}-${String(x.getMonth() + 1).padStart(2, '0')}-${String(x.getDate()).padStart(2, '0')}`;
     const out = events.map(e => {
       let date = e.date;
       if (!date && e.day_of_week != null) {
         const d = new Date(today);
         d.setDate(d.getDate() + ((e.day_of_week - d.getDay() + 7) % 7));
-        date = d.toISOString().slice(0, 10);
+        date = iso(d);
       }
       return {
         title: e.title,
-        date: date || today.toISOString().slice(0, 10),
+        date: date || iso(today),
         start_time: e.start_time,
         end_time: e.end_time,
         recurring: e.recurring ? 'weekly' : null,
