@@ -313,12 +313,14 @@ router.delete('/trash', async (req, res) => {
 });
 // 清掉上一次讀書計劃建立的待辦（已完成的保留當紀錄），建立新排程前呼叫
 // 上一次排程還沒做完的（重新排程時問使用者要不要一起重排）
+// done=1：已經打勾完成的（排新計劃時用來排除，不然做完的下次又冒出來）
 router.get('/plan-tasks', async (req, res) => {
+  const done = req.query.done === '1' ? 1 : 0;
   const rows = await q.all(
     `SELECT id, title, list_id, due_date FROM tasks
-     WHERE user_id=? AND completed=0 AND COALESCE(deleted,0)=0
+     WHERE user_id=? AND completed=? AND COALESCE(deleted,0)=0
        AND (tags LIKE '%讀書計劃%' OR title LIKE '%｜%')
-     ORDER BY due_date, id`, [req.userId]);
+     ORDER BY due_date, id`, [req.userId, done]);
   res.json(rows);
 });
 router.delete('/plan-tasks', async (req, res) => {
