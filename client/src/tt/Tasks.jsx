@@ -376,13 +376,28 @@ export default function Tasks({ view, tasks, lists, filters, habits = [], reload
     default: defaultSort, // 依時間，同一天依課序
     priority: (a, b) => b.priority - a.priority || defaultSort(a, b),
     title: (a, b) => a.title.localeCompare(b.title, 'zh-Hant'),
-    // 依科目：先照科目順序分堆，同一科內照課名順序
+    // 依科目：每一組（已逾期／今天／某一天）裡面先照科目分堆，同一科內照課名順序
     subject: (a, b) =>
       ((subjOrd[String(a.list_id)] ?? 99) - (subjOrd[String(b.list_id)] ?? 99))
       || byLesson(a.title, b.title)
       || defaultSort(a, b),
+    // 照科目分堆：科目已經是分組標題了，組內只要照課名排
+    subjectGroup: (a, b) => byLesson(a.title, b.title) || defaultSort(a, b),
   };
   const applySort = list => sortFns[sortBy] ? [...list].sort(sortFns[sortBy]) : list;
+
+  // 「照科目分堆」用科目當分組標題，不看日期（日期還是顯示在每一列右邊）
+  const groupBySubject = list => {
+    const by = new Map();
+    for (const t of list) {
+      const k = String(t.list_id ?? '');
+      if (!by.has(k)) by.set(k, []);
+      by.get(k).push(t);
+    }
+    return [...by.entries()]
+      .sort((a, b) => (subjOrd[a[0]] ?? 99) - (subjOrd[b[0]] ?? 99))
+      .map(([k, l]) => [lists.find(x => String(x.id) === k)?.name || '未分科目', l]);
+  };
 
   // 刪除/勾選立即從畫面消失，不等伺服器
   const [hidden, setHidden] = useState(new Set());
@@ -497,6 +512,7 @@ export default function Tasks({ view, tasks, lists, filters, habits = [], reload
               <option value="default">預設排序</option>
               <option value="time">依時間</option>
               <option value="subject">依科目</option>
+              <option value="subjectGroup">照科目分堆</option>
               <option value="priority">依優先級</option>
               <option value="title">依標題</option>
             </select>
@@ -521,7 +537,7 @@ export default function Tasks({ view, tasks, lists, filters, habits = [], reload
                 <button className="icon-btn" title="永久刪除" onClick={() => hardDel(t)}>✕</button>
               </div>
             ))
-            : groupTasks(shown, view.type).map(([label, list]) => {
+            : (sortBy === 'subjectGroup' ? groupBySubject(shown) : groupTasks(shown, view.type)).map(([label, list]) => {
               const sorted = applySort(list);
               const canDrag = sortBy === 'default';
               return (
