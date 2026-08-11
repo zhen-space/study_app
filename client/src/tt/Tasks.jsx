@@ -366,18 +366,58 @@ export default function Tasks({ view, tasks, lists, filters, habits = [], reload
   });
   const pickSort = v => { setSortBy(v); try { localStorage.setItem('taskSort', v); } catch {} };
 
+  // 科目（＝清單）在側邊欄的順序，拿來當「依科目」的第一層排序
+  const subjOrd = {};
+  lists.forEach((l, i) => { subjOrd[String(l.id)] = i; });
+  // numeric：課名裡的數字要照數值比大小，不然「單元10」會排在「單元2」前面
+  const byLesson = new Intl.Collator('zh-Hant', { numeric: true }).compare;
+
   const sortFns = {
     default: defaultSort, // 依時間，同一天依課序
     priority: (a, b) => b.priority - a.priority || defaultSort(a, b),
     title: (a, b) => a.title.localeCompare(b.title, 'zh-Hant'),
+    // 依科目：每一組（已逾期／今天／某一天）裡面先照科目分堆，同一科內照課名順序
+    subject: (a, b) =>
+      ((subjOrd[String(a.list_id)] ?? 99) - (subjOrd[String(b.list_id)] ?? 99))
+      || byLesson(a.title, b.title)
+      || defaultSort(a, b),
+    // 照科目分堆：科目已經是分組標題了，組內只要照課名排
+    subjectGroup: (a, b) => byLesson(a.title, b.title) || defaultSort(a, b),
   };
   const applySort = list => sortFns[sortBy] ? [...list].sort(sortFns[sortBy]) : list;
+
+  // 「照科目分堆」用科目當分組標題，不看日期（日期還是顯示在每一列右邊）
+  const groupBySubject = list => {
+    const by = new Map();
+    for (const t of list) {
+      const k = String(t.list_id ?? '');
+      if (!by.has(k)) by.set(k, []);
+      by.get(k).push(t);
+    }
+    return [...by.entries()]
+      .sort((a, b) => (subjOrd[a[0]] ?? 99) - (subjOrd[b[0]] ?? 99))
+      .map(([k, l]) => [lists.find(x => String(x.id) === k)?.name || '未分科目', l]);
+  };
 
   // 刪除/勾選立即從畫面消失，不等伺服器
   const [hidden, setHidden] = useState(new Set());
   // 樂觀覆蓋：編輯後畫面立刻變，不用等「存檔→重抓」兩趟往返；重抓回來就清掉
   const [over, setOver] = useState({});
-  useEffect(() => { setHidden(new Set()); setOver({}); }, [tasks]);
+  // 重抓回來就清掉樂觀狀態——但 hidden 不能無條件清空：
+  // 勾完成之後可能先收到一份「還沒寫進去」的舊資料（別的地方也會觸發重載），
+  // 清掉的話那一列會冒出來、等下一份資料到了才又消失，看起來就是閃一下。
+  // 所以只放掉伺服器已經確認的：資料回來仍然符合目前視圖 = 還沒生效，繼續蓋著。
+  useEffect(() => {
+    setHidden(h => {
+      if (!h.size) return h;
+      const keep = [...h].filter(id => {
+        const t = tasks.find(x => x.id === id);
+        return t && matchView(t, view, { filters });
+      });
+      return keep.length === h.size ? h : new Set(keep);
+    });
+    setOver({});
+  }, [tasks]);
   const tv = Object.keys(over).length ? tasks.map(t => over[t.id] ? { ...t, ...over[t.id] } : t) : tasks;
   const shown = tv.filter(t => matchView(t, view, { filters }) && !hidden.has(t.id));
   const sel = tv.find(t => t.id === selId);
@@ -419,6 +459,8 @@ export default function Tasks({ view, tasks, lists, filters, habits = [], reload
     setHidden(h => new Set([...h, t.id]));   // 勾完成立即從當前列表消失
     api(`/tasks/${t.id}`, { method: 'PATCH', body: { completed: !t.completed } }).then(() => reload('tasks')).catch(() => reload('tasks'));
     if (!t.completed) showToast(`已完成「${t.title}」`, async () => {
+      // 復原：要主動取消遮蔽，不然它會一直被當成「等伺服器確認完成」而不顯示
+      setHidden(h => { const n = new Set(h); n.delete(t.id); return n; });
       await api(`/tasks/${t.id}`, { method: 'PATCH', body: { completed: false } });
       reload('tasks');
     });
@@ -460,6 +502,7 @@ export default function Tasks({ view, tasks, lists, filters, habits = [], reload
     setSelId(null);
     api(`/tasks/${t.id}`, { method: 'DELETE' }).then(() => reload('tasks')).catch(() => reload('tasks'));
     showToast(`已刪除「${t.title}」`, async () => {
+      setHidden(h => { const n = new Set(h); n.delete(t.id); return n; });   // 同上，復原要取消遮蔽
       await api(`/tasks/${t.id}`, { method: 'PATCH', body: { deleted: false } });
       reload('tasks');
     });
@@ -485,6 +528,8 @@ export default function Tasks({ view, tasks, lists, filters, habits = [], reload
             <select value={sortBy} onChange={e => pickSort(e.target.value)} style={{ marginLeft: 'auto', fontSize: 13 }}>
               <option value="default">預設排序</option>
               <option value="time">依時間</option>
+              <option value="subject">依科目</option>
+              <option value="subjectGroup">照科目分堆</option>
               <option value="priority">依優先級</option>
               <option value="title">依標題</option>
             </select>
@@ -509,7 +554,7 @@ export default function Tasks({ view, tasks, lists, filters, habits = [], reload
                 <button className="icon-btn" title="永久刪除" onClick={() => hardDel(t)}>✕</button>
               </div>
             ))
-            : groupTasks(shown, view.type).map(([label, list]) => {
+            : (sortBy === 'subjectGroup' ? groupBySubject(shown) : groupTasks(shown, view.type)).map(([label, list]) => {
               const sorted = applySort(list);
               const canDrag = sortBy === 'default';
               return (

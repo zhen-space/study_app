@@ -86,6 +86,8 @@ export default function WizardView({ lists, reload, goTasks }) {
   const [preview, setPreview] = useState(null);
   const [leftover, setLeftover] = useState([]);       // 上次排程還沒做完的
   const [redoUndone, setRedoUndone] = useState(true); // 要不要一起重新安排
+  const [doneItems, setDoneItems] = useState([]);     // 已經打勾完成的（預設不再排進去）
+  const [redoDone, setRedoDone] = useState(false);    // 想重讀一次時才勾
   const [err, setErr] = useState('');
   const [saving, setSaving] = useState(false);
   const [importMsg, setImportMsg] = useState('');
@@ -97,6 +99,7 @@ export default function WizardView({ lists, reload, goTasks }) {
     loadEv();
     api('/settings').then(s => { setSettings(s); setShift({ sleep_start: s.sleep_start, sleep_end: s.sleep_end }); });
     api('/plan-tasks').then(setLeftover).catch(() => {});
+    api('/plan-tasks?done=1').then(setDoneItems).catch(() => {});
     api('/import/toc').then(setTocs);
     // AI 解讀結果自動保存：離開頁面回來還在
     try { const saved = localStorage.getItem('wizardAiPreview'); if (saved) setAiPreview(JSON.parse(saved)); } catch {}
@@ -537,9 +540,17 @@ export default function WizardView({ lists, reload, goTasks }) {
         expanded2.push({ subject_id: t.list_id, title: t.title, minutes: 60, start: w.start, end: w.end, spread: false });
       }
     }
+    // 已經打勾完成的不要再排一次（想重讀才勾「已完成的也重排」）。
+    // 同一科＋同一個標題才算同一件事，不同科目撞名不會誤刪。
+    let items = expanded2;
+    if (!redoDone && doneItems.length) {
+      const done = new Set(doneItems.map(t => `${t.list_id}|${t.title}`));
+      items = expanded2.filter(i => !done.has(`${i.subject_id}|${i.title}`));
+    }
+    if (!items.length) { setErr('這次沒有要排的項目——選的範圍可能都已經完成了'); return; }
     try {
       const body = {
-        items: expanded2, startDate: dGlobal.start, endDate: dGlobal.end,
+        items, startDate: dGlobal.start, endDate: dGlobal.end,
         excludeWeekdays: exWd, excludeDates: exDates, skipIfBusyHours: busyHours,
         timed, perDay: (timed || limitPerDay) ? perDay : 0, pace,
       };
@@ -1274,6 +1285,15 @@ export default function WizardView({ lists, reload, goTasks }) {
                 </label>
                 <label style={{ display: 'block' }}>
                   <input type="radio" checked={!redoUndone} onChange={() => setRedoUndone(false)} /> 維持原本日期不動
+                </label>
+              </div>
+            )}
+
+            {doneItems.length > 0 && (
+              <div className="tile" style={{ marginTop: 12, padding: '8px 12px', background: 'var(--fill)' }}>
+                <div style={{ marginBottom: 4 }}>已完成 <b>{doneItems.length}</b> 項，不會再排進來</div>
+                <label style={{ display: 'block' }}>
+                  <input type="checkbox" checked={redoDone} onChange={e => setRedoDone(e.target.checked)} /> 想重讀一次，也一起排
                 </label>
               </div>
             )}
