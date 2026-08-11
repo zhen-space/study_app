@@ -403,7 +403,21 @@ export default function Tasks({ view, tasks, lists, filters, habits = [], reload
   const [hidden, setHidden] = useState(new Set());
   // 樂觀覆蓋：編輯後畫面立刻變，不用等「存檔→重抓」兩趟往返；重抓回來就清掉
   const [over, setOver] = useState({});
-  useEffect(() => { setHidden(new Set()); setOver({}); }, [tasks]);
+  // 重抓回來就清掉樂觀狀態——但 hidden 不能無條件清空：
+  // 勾完成之後可能先收到一份「還沒寫進去」的舊資料（別的地方也會觸發重載），
+  // 清掉的話那一列會冒出來、等下一份資料到了才又消失，看起來就是閃一下。
+  // 所以只放掉伺服器已經確認的：資料回來仍然符合目前視圖 = 還沒生效，繼續蓋著。
+  useEffect(() => {
+    setHidden(h => {
+      if (!h.size) return h;
+      const keep = [...h].filter(id => {
+        const t = tasks.find(x => x.id === id);
+        return t && matchView(t, view, { filters });
+      });
+      return keep.length === h.size ? h : new Set(keep);
+    });
+    setOver({});
+  }, [tasks]);
   const tv = Object.keys(over).length ? tasks.map(t => over[t.id] ? { ...t, ...over[t.id] } : t) : tasks;
   const shown = tv.filter(t => matchView(t, view, { filters }) && !hidden.has(t.id));
   const sel = tv.find(t => t.id === selId);
@@ -445,6 +459,8 @@ export default function Tasks({ view, tasks, lists, filters, habits = [], reload
     setHidden(h => new Set([...h, t.id]));   // 勾完成立即從當前列表消失
     api(`/tasks/${t.id}`, { method: 'PATCH', body: { completed: !t.completed } }).then(() => reload('tasks')).catch(() => reload('tasks'));
     if (!t.completed) showToast(`已完成「${t.title}」`, async () => {
+      // 復原：要主動取消遮蔽，不然它會一直被當成「等伺服器確認完成」而不顯示
+      setHidden(h => { const n = new Set(h); n.delete(t.id); return n; });
       await api(`/tasks/${t.id}`, { method: 'PATCH', body: { completed: false } });
       reload('tasks');
     });
@@ -486,6 +502,7 @@ export default function Tasks({ view, tasks, lists, filters, habits = [], reload
     setSelId(null);
     api(`/tasks/${t.id}`, { method: 'DELETE' }).then(() => reload('tasks')).catch(() => reload('tasks'));
     showToast(`已刪除「${t.title}」`, async () => {
+      setHidden(h => { const n = new Set(h); n.delete(t.id); return n; });   // 同上，復原要取消遮蔽
       await api(`/tasks/${t.id}`, { method: 'PATCH', body: { deleted: false } });
       reload('tasks');
     });
