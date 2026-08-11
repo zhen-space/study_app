@@ -366,10 +366,21 @@ export default function Tasks({ view, tasks, lists, filters, habits = [], reload
   });
   const pickSort = v => { setSortBy(v); try { localStorage.setItem('taskSort', v); } catch {} };
 
+  // 科目（＝清單）在側邊欄的順序，拿來當「依科目」的第一層排序
+  const subjOrd = {};
+  lists.forEach((l, i) => { subjOrd[String(l.id)] = i; });
+  // numeric：課名裡的數字要照數值比大小，不然「單元10」會排在「單元2」前面
+  const byLesson = new Intl.Collator('zh-Hant', { numeric: true }).compare;
+
   const sortFns = {
     default: defaultSort, // 依時間，同一天依課序
     priority: (a, b) => b.priority - a.priority || defaultSort(a, b),
     title: (a, b) => a.title.localeCompare(b.title, 'zh-Hant'),
+    // 依科目：先照科目順序分堆，同一科內照課名順序
+    subject: (a, b) =>
+      ((subjOrd[String(a.list_id)] ?? 99) - (subjOrd[String(b.list_id)] ?? 99))
+      || byLesson(a.title, b.title)
+      || defaultSort(a, b),
   };
   const applySort = list => sortFns[sortBy] ? [...list].sort(sortFns[sortBy]) : list;
 
@@ -485,6 +496,7 @@ export default function Tasks({ view, tasks, lists, filters, habits = [], reload
             <select value={sortBy} onChange={e => pickSort(e.target.value)} style={{ marginLeft: 'auto', fontSize: 13 }}>
               <option value="default">預設排序</option>
               <option value="time">依時間</option>
+              <option value="subject">依科目</option>
               <option value="priority">依優先級</option>
               <option value="title">依標題</option>
             </select>
