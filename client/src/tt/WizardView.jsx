@@ -542,15 +542,18 @@ export default function WizardView({ lists, reload, goTasks }) {
     }
     // 已經打勾完成的不要再排一次（想重讀才勾「已完成的也重排」）。
     // 同一科＋同一個標題才算同一件事，不同科目撞名不會誤刪。
-    let items = expanded2;
+    // 注意：這裡不能取名 items——外面已經有一個 items（勾選的目錄項目），
+    // 在同一個函式裡再 let 一次會讓函式開頭那行的 items 落進暫時性死區，
+    // 一進 genPreview 就丟 ReferenceError，按鈕看起來像完全沒反應。
+    let sendItems = expanded2;
     if (!redoDone && doneItems.length) {
       const done = new Set(doneItems.map(t => `${t.list_id}|${t.title}`));
-      items = expanded2.filter(i => !done.has(`${i.subject_id}|${i.title}`));
+      sendItems = expanded2.filter(i => !done.has(`${i.subject_id}|${i.title}`));
     }
-    if (!items.length) { setErr('這次沒有要排的項目——選的範圍可能都已經完成了'); return; }
+    if (!sendItems.length) { setErr('這次沒有要排的項目——選的範圍可能都已經完成了'); return; }
     try {
       const body = {
-        items, startDate: dGlobal.start, endDate: dGlobal.end,
+        items: sendItems, startDate: dGlobal.start, endDate: dGlobal.end,
         excludeWeekdays: exWd, excludeDates: exDates, skipIfBusyHours: busyHours,
         timed, perDay: (timed || limitPerDay) ? perDay : 0, pace,
       };
