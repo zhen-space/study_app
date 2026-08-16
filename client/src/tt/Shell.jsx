@@ -2,10 +2,13 @@ import { useEffect, useMemo, useState } from 'react';
 import { api } from '../api';
 import { matchView, today } from './helpers';
 import Tasks from './Tasks';
+import TodayView from './TodayView';
+import PlansView from './PlansView';
+import PlanDetailView from './PlanDetailView';
+import StudyView from './StudyView';
 import CalendarView from './CalendarView';
 import MatrixView from './MatrixView';
 import HabitsView from './HabitsView';
-import PomoView from './PomoView';
 import StatsView from './StatsView';
 import PetView from './PetView';
 import WizardView from './WizardView';
@@ -15,6 +18,10 @@ import Companion from './Companion';
 import Icon, { LIST_ICONS, LIST_COLORS } from './Icons';
 
 export default function Shell({ onLogout }) {
+  // 資訊架構：今天（執行）｜計畫（計畫管理）｜讀書（主要動作）｜任務（任務管理）｜行事曆（時間管理）
+  // 其餘既有功能（習慣、寵物、統計、矩陣、單字、備忘錄、精靈）移到側邊「更多」，功能都還在。
+  // 「任務」這一格要涵蓋所有任務類視圖（清單、標籤、篩選、搜尋…）
+  const TASK_VIEWS = ['tasks', 'week', 'inbox', 'all', 'completed', 'trash', 'list', 'tag', 'filter', 'search'];
   const [view, setViewRaw] = useState({ type: 'today' });
   const [side, setSide] = useState(false);
   const setView = v => { setViewRaw(v); setSide(false); };
@@ -51,7 +58,7 @@ export default function Shell({ onLogout }) {
         .catch(() => {});
     }
     const go = p.get('go'); // App 圖示快速選單（manifest shortcuts）
-    if (go && ['wizard', 'vocab', 'memo', 'calendar', 'pomo', 'habits', 'pet', 'stats'].includes(go)) {
+    if (go && ['wizard', 'vocab', 'memo', 'calendar', 'pomo', 'habits', 'pet', 'stats', 'today', 'plans', 'study', 'tasks'].includes(go)) {
       setViewRaw({ type: go });
       window.history.replaceState({}, '', window.location.pathname);
     }
@@ -120,9 +127,10 @@ export default function Shell({ onLogout }) {
     reload();
   }
 
+  // 任務頁底下的清單分頁（「今天」已經獨立成主導航，這裡不再重複）
   const smart = [
-    ['today', 'today', '今天'], ['week', 'week', '未來 7 天'], ['inbox', 'inbox', '願望清單'],
-    ['all', 'all', '所有任務'], ['completed', 'done', '已完成'], ['trash', 'trash', '垃圾桶'],
+    ['tasks', 'all', '所有任務'], ['week', 'week', '未來 7 天'], ['inbox', 'inbox', '願望清單'],
+    ['completed', 'done', '已完成'], ['trash', 'trash', '垃圾桶'],
   ];
   const [editList, setEditList] = useState(null); // 正在編輯的清單 id
   async function patchList(l, body) {
@@ -143,7 +151,10 @@ export default function Shell({ onLogout }) {
     }
     reload();
   }
-  const pages = [['wizard', 'wizard', '排程精靈'], ['vocab', 'book', '單字本'], ['memo', 'note', '備忘錄'], ['calendar', 'calendar', '日曆'], ['matrix', 'matrix', '矩陣'], ['habits', 'habit', '習慣'], ['pomo', 'pomo', '番茄鐘'], ['pet', 'paw', '寵物'], ['stats', 'stats', '統計']];
+  // 主導航（桌面側邊欄也照同一套 IA）
+  const mainNav = [['today', 'today', '今天'], ['plans', 'wizard', '計畫'], ['study', 'pomo', '讀書'], ['tasks', 'all', '任務'], ['calendar', 'calendar', '行事曆']];
+  // 不屬於五大主導航的既有功能：一個都沒刪，收在「更多」
+  const pages = [['wizard', 'wizard', '排程精靈'], ['vocab', 'book', '單字本'], ['memo', 'note', '備忘錄'], ['matrix', 'matrix', '矩陣'], ['habits', 'habit', '習慣'], ['pet', 'paw', '寵物'], ['stats', 'stats', '統計']];
 
   const is = v => JSON.stringify(view) === JSON.stringify(v);
   const titleOf = () => {
@@ -151,7 +162,8 @@ export default function Shell({ onLogout }) {
     if (view.type === 'tag') return '#' + view.tag;
     if (view.type === 'filter') return filters.find(f => f.id === view.id)?.name || '';
     if (view.type === 'search') return `搜尋「${view.q}」`;
-    return smart.find(([t]) => t === view.type)?.[1].slice(2) || '';
+    if (view.type === 'tasks') return '所有任務';
+    return smart.find(([t]) => t === view.type)?.[2] || '任務';
   };
 
   return (
@@ -161,6 +173,14 @@ export default function Shell({ onLogout }) {
       <div className={'sidebar' + (side ? ' open' : '')}>
         <input placeholder="🔍 搜尋任務" value={searchQ} style={{ margin: '0 2px 8px', width: 'calc(100% - 4px)' }}
           onChange={e => { const q = e.target.value; setSearchQ(q); setViewRaw(q.trim() ? { type: 'search', q } : { type: 'today' }); }} />
+        <div className="side-sec">主導航</div>
+        {mainNav.map(([type, icon, label]) => (
+          <div key={type} className={'side-item' + (view.type === type ? ' active' : '')} onClick={() => setView({ type })}>
+            <Icon name={icon} size={18} style={{ opacity: .8 }} />{label}
+            <span className="count">{type === 'today' ? count({ type: 'today' }) : ''}</span>
+          </div>
+        ))}
+        <div className="side-sec">任務清單</div>
         {smart.map(([type, icon, label]) => (
           <div key={type} className={'side-item' + (is({ type }) ? ' active' : '')} onClick={() => setView({ type })}>
             <Icon name={icon} size={18} style={{ opacity: .8 }} />{label}
@@ -230,10 +250,16 @@ export default function Shell({ onLogout }) {
         <div className="muted" style={{ padding: '4px 12px', fontSize: 11 }}>版本 {window.APP_VER || ''}</div>
       </div>
 
-      {view.type === 'calendar' ? <CalendarView tasks={tasks.filter(t => !t.deleted)} reload={reload} />
+      {view.type === 'today' ? <TodayView tasks={tasks} lists={lists} filters={filters} habits={habits} reload={reload}
+            goStudy={() => setView({ type: 'study' })} goVocab={() => setView({ type: 'vocab' })} goMemo={() => setView({ type: 'memo' })} />
+        : view.type === 'plans' ? <PlansView tasks={tasks} lists={lists}
+            openPlan={k => setView({ type: 'plan', key: k })} goWizard={() => setView({ type: 'wizard' })} />
+        : view.type === 'plan' ? <PlanDetailView planKey={view.key} tasks={tasks} lists={lists} reload={reload}
+            onBack={() => setView({ type: 'plans' })} goWizard={() => setView({ type: 'wizard' })} />
+        : view.type === 'study' || view.type === 'pomo' ? <StudyView tasks={tasks.filter(t => !t.deleted)} />
+        : view.type === 'calendar' ? <CalendarView tasks={tasks.filter(t => !t.deleted)} reload={reload} />
         : view.type === 'matrix' ? <MatrixView tasks={tasks.filter(t => !t.deleted)} reload={reload} />
         : view.type === 'habits' ? <HabitsView habits={habits} reload={reload} />
-        : view.type === 'pomo' ? <PomoView tasks={tasks.filter(t => !t.deleted)} />
         : view.type === 'stats' ? <StatsView />
         : view.type === 'pet' ? <PetView />
         : view.type === 'wizard' ? <WizardView lists={lists} reload={reload} goTasks={() => setView({ type: 'today' })} />
@@ -244,18 +270,25 @@ export default function Shell({ onLogout }) {
 
       {view.type !== 'pet' && petData && <Companion pet={petData.pet} tasks={tasks} />}
 
+      {/* 手機底部導航：今天｜計畫｜〔讀書〕｜任務｜行事曆。
+          「讀書」是中央主要動作，不是一般分頁——凸起的圓形按鈕、永遠是強調色。 */}
       <div className="bottom-nav">
-        {[
-          [{ type: 'today' }, 'today', '任務', v => !['calendar', 'matrix', 'habits', 'pomo', 'stats', 'pet', 'wizard', 'vocab', 'memo'].includes(v.type)],
-          [{ type: 'calendar' }, 'calendar', '日曆'],
-          [{ type: 'habits' }, 'habit', '習慣'],
-          [{ type: 'pomo' }, 'pomo', '番茄鐘'],
-          [{ type: 'pet' }, 'paw', '寵物'],
-        ].map(([v, icon, label, test]) => (
-          <button key={label} className={(test ? test(view) : view.type === v.type) ? 'on' : ''} onClick={() => setView(v)}>
-            <Icon name={icon} size={22} className="bi" />{label}
-          </button>
-        ))}
+        <button className={view.type === 'today' ? 'on' : ''} onClick={() => setView({ type: 'today' })}>
+          <Icon name="today" size={22} className="bi" />今天
+        </button>
+        <button className={['plans', 'plan'].includes(view.type) ? 'on' : ''} onClick={() => setView({ type: 'plans' })}>
+          <Icon name="wizard" size={22} className="bi" />計畫
+        </button>
+        <button className="primary" aria-label="開始讀書" onClick={() => setView({ type: 'study' })}>
+          <span className={'primary-fab' + (view.type === 'study' ? ' on' : '')}><Icon name="pomo" size={26} /></span>
+          <span className="primary-label">讀書</span>
+        </button>
+        <button className={TASK_VIEWS.includes(view.type) ? 'on' : ''} onClick={() => setView({ type: 'tasks' })}>
+          <Icon name="all" size={22} className="bi" />任務
+        </button>
+        <button className={view.type === 'calendar' ? 'on' : ''} onClick={() => setView({ type: 'calendar' })}>
+          <Icon name="calendar" size={22} className="bi" />行事曆
+        </button>
       </div>
     </div>
   );

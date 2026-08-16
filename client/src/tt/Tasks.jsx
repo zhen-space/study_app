@@ -31,6 +31,11 @@ export function repeatLabel(r, dueDate) {
   } catch { return r; }
 }
 
+// v1 學生端先不露出「重複任務」：只隱藏 UI 入口。
+// RepeatPicker、repeatLabel、以及後端的 nextDate()／recurring 欄位全部保留，
+// 既有的重複任務照常運作，之後要放回來把這個改成 true 就好。
+const RECURRING_UI = false;
+
 // 詳細重複設定（完整 TickTick 式）：每天/週/月/年/平日/記憶曲線/自訂；
 // 月可「按日期多選＋最後一天」或「第 N 個星期 X」；可設結束條件與完成後起算
 function RepeatPicker({ value, dueDate, missPolicy, onChange }) {
@@ -265,8 +270,10 @@ export function Detail({ task, lists, onSave, onDelete, onClose }) {
           {[0, 1, 2, 3].map(p => <option key={p} value={p}>{PRI[p][0]}</option>)}
         </select>
       </div>
-      <RepeatPicker value={t.recurring} dueDate={t.due_date} missPolicy={t.miss_policy}
-        onChange={(recurring, miss_policy) => up({ recurring, miss_policy })} />
+      {RECURRING_UI && (
+        <RepeatPicker value={t.recurring} dueDate={t.due_date} missPolicy={t.miss_policy}
+          onChange={(recurring, miss_policy) => up({ recurring, miss_policy })} />
+      )}
       <div className="drow">
         <label>標籤</label>
         <input placeholder="用逗號分隔" value={t.tags.join(',')}
@@ -340,11 +347,13 @@ function AddSheet({ view, lists, onDone, onClose }) {
             <option value="">願望清單</option>
             {lists.map(l => <option key={l.id} value={l.id}>{l.name}</option>)}
           </select>
-          <button type="button" className={'tag-pill' + (f.recurring ? ' on' : '')} onClick={() => setShowRepeat(s => !s)}>
-            🔁 {f.recurring ? repeatLabel(f.recurring, f.due_date) : '重複'}
-          </button>
+          {RECURRING_UI && (
+            <button type="button" className={'tag-pill' + (f.recurring ? ' on' : '')} onClick={() => setShowRepeat(s => !s)}>
+              🔁 {f.recurring ? repeatLabel(f.recurring, f.due_date) : '重複'}
+            </button>
+          )}
         </div>
-        {showRepeat && (
+        {RECURRING_UI && showRepeat && (
           <div style={{ marginTop: 8 }}>
             <RepeatPicker value={f.recurring} dueDate={f.due_date} missPolicy={f.miss_policy}
               onChange={(r, mp) => setF({ ...f, recurring: r, miss_policy: mp || f.miss_policy })} />
@@ -356,7 +365,7 @@ function AddSheet({ view, lists, onDone, onClose }) {
   );
 }
 
-export default function Tasks({ view, tasks, lists, filters, habits = [], reload, title, goVocab, goMemo }) {
+export default function Tasks({ view, tasks, lists, filters, habits = [], reload, title, goVocab, goMemo, topSlot = null }) {
   const [selId, setSelId] = useState(null);
   const [quick, setQuick] = useState('');
   const [showAdd, setShowAdd] = useState(false);
@@ -544,6 +553,7 @@ export default function Tasks({ view, tasks, lists, filters, habits = [], reload
           </form>
         )}
         <div className="main-body">
+          {topSlot}
           {view.type === 'today' && <MemoCard goMemo={goMemo} />}
           {view.type === 'trash'
             ? shown.map(t => (
