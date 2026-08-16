@@ -18,6 +18,7 @@ export function matchView(t, view, ctx) {
     case 'today': return t.due_date === td && !t.completed;
     case 'week': return t.due_date && t.due_date >= td && t.due_date <= addDays(td, 6) && !t.completed;
     case 'all': return !t.completed;
+    case 'tasks': return !t.completed;      // 主導航「任務」＝所有未完成
     case 'completed': return !!t.completed;
     case 'list': return t.list_id === view.id && !t.completed;
     case 'tag': return t.tags.includes(view.tag) && !t.completed;
