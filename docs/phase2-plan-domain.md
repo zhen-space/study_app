@@ -348,6 +348,11 @@ Phase 2 拆成兩段，**中間有一道不得跨越的閘門**：
 
 以下三項與 §1–§5A 同等效力。
 
+> 📄 Scheduling persistence（ScheduleVersion、ScheduledBlock、restore、
+> feasibility、Lock、diff）的完整契約另見
+> [`phase2c-schedule-persistence.md`](phase2c-schedule-persistence.md)。
+> 本文件只負責 Plan domain。
+
 ### 2A-1：Schedule persistence 的過渡例外（有期限）
 
 `scheduled_blocks` 是**最終架構下**排程時間的 source of truth（決策 1）。
@@ -362,6 +367,7 @@ Phase 2 拆成兩段，**中間有一道不得跨越的閘門**：
 - 不得為了形式一致而把 ScheduleVersion + blocks 硬塞進 2A——那會讓
   Phase 2A 從 Plan domain 膨脹成完整的 scheduling persistence，範圍與風險都失控
 - Phase 2C 上線時，本例外**必須連同這段文字一起刪除**，並改為決策 2 的單向鏡射
+  （2C-1 已定案，見 `phase2c-schedule-persistence.md` §4.3 與 §11 最後一項）
 
 ### 2A-2：新建計畫的 Plan 命名
 
