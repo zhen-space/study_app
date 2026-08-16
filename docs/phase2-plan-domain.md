@@ -319,7 +319,7 @@ Phase 2 拆成兩段，**中間有一道不得跨越的閘門**：
 在數字未知的情況下執行 migration，等於用猜測去改動使用者的正式資料，
 而且 `plan_id` 一旦寫錯，要還原就得反推當初的錯誤分組——代價遠高於等待。
 
-### Phase 2A 允許做的事
+### Phase 2A 允許做的事（詳細約定見 §5B）
 
 - ✅ 建立 §8 的四張表與兩個欄位補丁（`CREATE TABLE IF NOT EXISTS` / `try-ALTER` 都是冪等的，
   加了空表不影響任何既有行為）
@@ -341,6 +341,76 @@ Phase 2 拆成兩段，**中間有一道不得跨越的閘門**：
 2. 依 §5 判定採用條件 A 或 B，結果寫回本文件
 3. 產出 ③ 誤判清單並經人工檢視
 4. 使用者明確同意執行 Phase 2B
+
+---
+
+## 5B. Phase 2A Contract（本階段的正式約定）
+
+以下三項與 §1–§5A 同等效力。
+
+### 2A-1：Schedule persistence 的過渡例外（有期限）
+
+`scheduled_blocks` 是**最終架構下**排程時間的 source of truth（決策 1）。
+但 Phase 2A **不實作排程持久化**，該表在 2A 期間是空的。
+
+因此明確定義一個**有期限的 transitional exception**：
+
+> **在 Phase 2C 排程持久化上線之前，Plan Task 的 `tasks.due_date` 暫時仍是
+> 實際的權威時間來源。**
+
+- 這是**已知且刻意**的暫時狀態，不是決策 1 已經達成
+- 不得為了形式一致而把 ScheduleVersion + blocks 硬塞進 2A——那會讓
+  Phase 2A 從 Plan domain 膨脹成完整的 scheduling persistence，範圍與風險都失控
+- Phase 2C 上線時，本例外**必須連同這段文字一起刪除**，並改為決策 2 的單向鏡射
+
+### 2A-2：新建計畫的 Plan 命名
+
+排程精靈在**確認步驟**新增一個 Plan 名稱欄位，預設值自動產生，使用者可直接接受或修改：
+
+| 情況 | 預設名稱 |
+|---|---|
+| 單一科目 ＋ 單一本書 | `{科目}｜{書名}` |
+| 其他（多科或多本） | `讀書計畫｜{起始日}–{結束日}` |
+
+規則與決策 4（legacy 命名）刻意一致，讓新舊計畫在列表裡看起來是同一類東西。
+
+這**不是** 3-Step Wizard 重寫——只是讓 Phase 2A 能建立正式 Plan entity。
+精靈的其餘步驟與排程行為完全不動。
+
+### 2A-3：Plan-scoped 刪除（阻斷級修正）
+
+現況 `DELETE /api/plan-tasks` 用 heuristic 硬刪**所有**符合條件的未完成任務：
+
+```sql
+DELETE FROM tasks WHERE user_id=? AND completed=0
+  AND (tags LIKE '%讀書計劃%' OR title LIKE '%｜%')
+```
+
+正式 Plan 上線後，重新排程會把**其他 Plan 的任務一起刪掉**，留下空的 Plan。
+這是資料損失，必須在 2A 一併修正。
+
+**正式做法：**
+
+```
+DELETE /api/plans/:id/tasks?incomplete=1
+```
+
+作用範圍嚴格限定：
+
+```sql
+user_id = current user
+AND plan_id = :id
+AND completed = 0
+```
+
+**舊端點處置：**
+
+- `DELETE /api/plan-tasks` **保留**，供 legacy compatibility（尚未 migrate 的舊資料）
+- 必須在程式碼中標註 `@deprecated legacy-only`
+- **新的正式 Plan flow 不得再呼叫它**
+
+**測試要求：** Phase 2A 至少要有一個**跨 Plan 防誤刪**測試案例——
+建立兩個 Plan，刪除其中一個的未完成任務，斷言另一個 Plan 的任務完全未受影響。
 
 ---
 
@@ -647,6 +717,9 @@ Phase 2 起的排程精靈**必須直接建立 Plan 記錄並指派 `task.plan_i
 - [ ] 實作 §7 的 Plan CRUD API
 - [ ] Task API 接受 `plan_id` / `deadline_date`
 - [ ] Compatibility layer（§9 讀取優先順序）
+- [ ] `DELETE /api/plans/:id/tasks?incomplete=1`，舊端點標註 deprecated（§5B-3）
+- [ ] 精靈確認步驟加 Plan 名稱欄位，預設值依 §5B-2
+- [ ] 跨 Plan 防誤刪測試（§5B-3 強制要求）
 - [ ] 前端 `usePlans()` 改讀 API，legacy 推導退居相容路徑
 - [ ] 排程精靈改為建立 Plan ＋ 指派 `plan_id`（只影響**新**建立的計畫）
 - [ ] 後端測試（既有 26 項全綠 ＋ Plan CRUD 新測試）
