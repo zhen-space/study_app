@@ -18,8 +18,18 @@ export const day = n => {
   return d.toISOString().slice(0, 10);
 };
 
-// 開一台只給這次測試用的伺服器：隨機埠、暫存 SQLite、跟正式/開發資料完全隔離
+// 開一台只給這次測試用的伺服器：隨機埠、暫存 SQLite、跟正式/開發資料完全隔離。
+// 起不來就換個埠再試（最多 3 次）——CI 上多個測試檔並行、每個檔又可能開好幾台，
+// 隨機埠偶爾會撞在一起，撞到就整組 hook 掛掉。重試比擴大埠範圍可靠。
 export async function startServer() {
+  let lastErr;
+  for (let attempt = 1; attempt <= 3; attempt++) {
+    try { return await bootOnce(); } catch (e) { lastErr = e; }
+  }
+  throw lastErr;
+}
+
+async function bootOnce() {
   const dir = mkdtempSync(path.join(tmpdir(), 'studyapp-test-'));
   const port = 3400 + Math.floor(Math.random() * 500);
   const proc = spawn(process.execPath, ['src/index.js'], {
@@ -38,9 +48,16 @@ export async function startServer() {
   proc.stdout.on('data', d => { log += d; });
   proc.stderr.on('data', d => { log += d; });
 
+  // 起不來時要看得出原因：退出碼與訊號都印出來，
+  // 不然日誌只剩一行「API on :PORT」，根本查不下去
+  const bail = () => {
+    try { rmSync(dir, { recursive: true, force: true }); } catch {}
+    return new Error(`伺服器啟動失敗（exit=${proc.exitCode} signal=${proc.signalCode} port=${port}）：\n${log}`);
+  };
+
   const base = `http://127.0.0.1:${port}/api`;
   for (let i = 0; i < 100; i++) {
-    if (proc.exitCode !== null) throw new Error('伺服器啟動失敗：\n' + log);
+    if (proc.exitCode !== null || proc.signalCode !== null) throw bail();
     try {
       const r = await fetch(base + '/auth/login', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
@@ -55,8 +72,8 @@ export async function startServer() {
     method: 'POST', headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ email, password: '12345678', name: '測試' }),
   });
-  const { token } = await reg.json();
-  if (!token) throw new Error('註冊測試帳號失敗：\n' + log);
+  const { token } = await reg.json().catch(() => ({}));
+  if (!token) { proc.kill('SIGKILL'); throw bail(); }
   const H = { 'Content-Type': 'application/json', Authorization: 'Bearer ' + token };
 
   // 送一次排程，回傳 { blocks, check, unplaced }

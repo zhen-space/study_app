@@ -3,10 +3,13 @@
 // 以及一筆「既有的重複任務」——v1 雖然把 recurring UI 藏起來了，
 // 但資料還在，畫面不能因此炸掉。
 
-const iso = n => {
-  const d = new Date(Date.now() + 8 * 3600e3 + n * 864e5);
-  return d.toISOString().slice(0, 10);
-};
+// 日期一定要跟元件用同一支時間函式算。
+// 之前這裡自己寫 `Date.now() + 8h`（台灣時區），但 helpers.today() 用的是
+// 本機時間——CI 跑 UTC，於是每天 16:00–24:00 UTC 這段時間兩者差一天，
+// 「今天的任務」「今天的行程」全部對不上，測試就會莫名其妙紅。
+import { today as appToday, addDays } from '../tt/helpers';
+
+const iso = n => addDays(appToday(), n);
 export const TODAY = iso(0);
 
 export const lists = [
