@@ -31,12 +31,14 @@ export default function Shell({ onLogout }) {
   const [filters, setFilters] = useState([]);
   const [habits, setHabits] = useState([]);
   const [petData, setPetData] = useState(null);
+  const [apiPlans, setApiPlans] = useState([]);   // 正式 Plan（Phase 2A）
 
   // 改一筆任務不需要把清單／篩選／習慣整包重抓——之前每個動作都打 5 支 API，
   // 手機上就是每按一下等好幾百毫秒。scope='tasks' 只抓真正會變的（任務＋金幣）。
   const reload = (scope) => {
     api('/tasks').then(setTasks).catch(() => {});
     api('/pet').then(setPetData).catch(() => {});     // 完成任務會加金幣
+    api('/plans').then(setApiPlans).catch(() => setApiPlans([]));  // 沒有這支也要能跑
     if (scope === 'tasks') return;
     api('/lists').then(setLists).catch(() => {});
     api('/filters').then(setFilters).catch(() => {});
@@ -252,9 +254,9 @@ export default function Shell({ onLogout }) {
 
       {view.type === 'today' ? <TodayView tasks={tasks} lists={lists} filters={filters} habits={habits} reload={reload}
             goStudy={() => setView({ type: 'study' })} goVocab={() => setView({ type: 'vocab' })} goMemo={() => setView({ type: 'memo' })} />
-        : view.type === 'plans' ? <PlansView tasks={tasks} lists={lists}
+        : view.type === 'plans' ? <PlansView tasks={tasks} lists={lists} apiPlans={apiPlans}
             openPlan={k => setView({ type: 'plan', key: k })} goWizard={() => setView({ type: 'wizard' })} />
-        : view.type === 'plan' ? <PlanDetailView planKey={view.key} tasks={tasks} lists={lists} reload={reload}
+        : view.type === 'plan' ? <PlanDetailView planKey={view.key} tasks={tasks} lists={lists} apiPlans={apiPlans} reload={reload}
             onBack={() => setView({ type: 'plans' })} goWizard={() => setView({ type: 'wizard' })} />
         : view.type === 'study' || view.type === 'pomo' ? <StudyView tasks={tasks.filter(t => !t.deleted)} />
         : view.type === 'calendar' ? <CalendarView tasks={tasks.filter(t => !t.deleted)} reload={reload} />

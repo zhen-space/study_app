@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { api } from '../api';
+import { planName } from './plans';
 import { today, addDays } from './helpers';
 import { parseICS } from './ics';
 import { fileToPayload } from './vocabImport';
@@ -88,6 +89,7 @@ export default function WizardView({ lists, reload, goTasks }) {
   const [redoUndone, setRedoUndone] = useState(true); // 要不要一起重新安排
   const [doneItems, setDoneItems] = useState([]);     // 已經打勾完成的（預設不再排進去）
   const [redoDone, setRedoDone] = useState(false);    // 想重讀一次時才勾
+  const [planNameInput, setPlanNameInput] = useState('');  // 這份計畫要叫什麼（確認步驟）
   const [err, setErr] = useState('');
   const [saving, setSaving] = useState(false);
   const [importMsg, setImportMsg] = useState('');
@@ -566,14 +568,38 @@ export default function WizardView({ lists, reload, goTasks }) {
       pv.blocks = [...pv.blocks].sort((a, b) =>
         a.date.localeCompare(b.date) || (subjOrd[String(a.subject_id)] ?? 99) - (subjOrd[String(b.subject_id)] ?? 99));
       setPreview(pv);
+      // 預設計畫名稱：單科單書用「{科目}｜{書名}」，其他用「讀書計畫｜{起}–{迄}」。
+      // 只有使用者還沒自己打過才覆蓋，免得重新產生預覽把他改的名字洗掉。
+      setPlanNameInput(n => n.trim() ? n : planName(
+        pv.blocks.map(b => ({ title: b.title, list_id: b.subject_id, due_date: b.date })), lists));
       setStep(4);
     } catch (e) { setErr(e.message); }
   }
   async function confirm() {
     setSaving(true);
     try {
+      const dates = preview.blocks.map(b => b.date).filter(Boolean).sort();
+      // Phase 2A：一次排程＝一個正式 Plan。先建 Plan，再把任務掛上去。
+      // 不再靠標籤／標題讓前端事後去猜哪些任務屬於同一份計畫。
+      const counts = {};
+      preview.blocks.forEach(b => { counts[b.subject_id] = (counts[b.subject_id] || 0) + 1; });
+      const primary = Object.entries(counts).sort((a, b) => b[1] - a[1])[0]?.[0];
+      const plan = await api('/plans', {
+        method: 'POST',
+        body: {
+          name: planNameInput.trim() || planName(
+            preview.blocks.map(b => ({ title: b.title, list_id: b.subject_id, due_date: b.date })), lists),
+          primary_list_id: primary ? Number(primary) : null,
+          start_date: dates[0] || null,
+          target_date: dates[dates.length - 1] || null,
+          status: 'active',
+          source: 'manual',
+        },
+      });
       // 未做完的已經併進這次排程 → 清掉舊的那幾筆（已完成的保留當紀錄）；
-      // 使用者若選「維持原本日期」就不動它們
+      // 使用者若選「維持原本日期」就不動它們。
+      // 舊資料還沒 migrate，所以這裡仍要呼叫 legacy 端點；正式 Plan 之間
+      // 則各自用 /plans/:id/tasks?incomplete=1，不會互相誤刪。
       if (redoUndone) { try { await api('/plan-tasks', { method: 'DELETE' }); } catch {} }
       // 一個請求打包建立全部任務（逐筆等待太慢）
       await api('/tasks/bulk', {
@@ -581,6 +607,10 @@ export default function WizardView({ lists, reload, goTasks }) {
         body: {
           tasks: preview.blocks.map(b => ({
             title: b.title, list_id: b.subject_id, due_date: b.date, tags: ['讀書計劃'],
+            plan_id: plan.id,
+            // 排程演算法算完會把每個項目自己的截止日放在 block.deadline，
+            // 這裡把它寫進正式的 deadline_date 欄位（跟排定日期 due_date 分開）
+            ...(b.deadline ? { deadline_date: b.deadline } : {}),
             ...(b.start_time ? { due_time: b.start_time, notes: `讀書時段 ${b.start_time}–${b.end_time}` } : {}),
           })),
         },
@@ -1436,6 +1466,11 @@ export default function WizardView({ lists, reload, goTasks }) {
                 })}
               </div>
             ))}
+            <div className="tile" style={{ marginTop: 14, padding: '10px 12px', background: 'var(--fill)' }}>
+              <div className="muted" style={{ fontSize: 12, marginBottom: 4 }}>這份計畫要叫什麼？</div>
+              <input value={planNameInput} onChange={e => setPlanNameInput(e.target.value)}
+                placeholder="計畫名稱" style={{ width: '100%' }} />
+            </div>
             <div className="row" style={{ marginTop: 14 }}>
               <button className="btn ghost" onClick={() => setStep(3)}>不滿意，重新調整</button>
               <button className="btn" disabled={saving} onClick={confirm}>{saving ? '建立中…' : `滿意，加入待辦（${preview.blocks.length} ${timed ? '段' : '項'}）！`}</button>

@@ -159,6 +159,64 @@ CREATE TABLE IF NOT EXISTS list_shares (
   owner_id INTEGER NOT NULL,
   member_id INTEGER NOT NULL
 );
+
+-- ↓ Phase 2A：正式 Plan domain。契約見 docs/phase2-plan-domain.md
+-- Plan＝有目標、範圍、期限與生命週期的工作單位。跟 lists（科目分類）是兩回事：
+-- 一個科目可以有多個 Plan，一個 Plan 也可以跨科目。
+-- 進度不存在這裡（會不同步），一律從底下的 tasks 推導。
+CREATE TABLE IF NOT EXISTS plans (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  user_id INTEGER NOT NULL,
+  name TEXT NOT NULL,
+  description TEXT DEFAULT '',
+  goal_id INTEGER,
+  primary_list_id INTEGER,          -- 只是主要分類／顯示用，不代表 Plan 的身分
+  start_date TEXT,
+  target_date TEXT,
+  status TEXT NOT NULL DEFAULT 'draft',   -- draft | active | completed | archived
+  source TEXT NOT NULL DEFAULT 'manual',  -- manual | ai | legacy_migration | import
+  created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+  updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
+  completed_at TEXT,
+  archived_at TEXT
+);
+-- ↓ 以下三張表 Phase 2A 只建不寫。排程持久化是 Phase 2C；
+-- 先建好是為了避免之後又動一次 schema。
+-- 注意：version 屬於「使用者的排程」而不是某一個 Plan——同一天可能同時在排
+-- 好幾個 Plan，掛在單一 Plan 上跨 Plan 協調會立刻出問題。
+CREATE TABLE IF NOT EXISTS schedule_versions (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  user_id INTEGER NOT NULL,
+  version_no INTEGER NOT NULL,
+  parent_version_id INTEGER,
+  reason TEXT DEFAULT '',
+  source TEXT NOT NULL DEFAULT 'initial',  -- initial | ai_replan | restore | manual
+  created_at TEXT DEFAULT CURRENT_TIMESTAMP
+);
+-- block 只認 task；要知道屬於哪個 Plan 就 task_id → tasks.plan_id。
+-- 不在這裡放 plan_id，否則 task 改了 Plan 之後這裡會留著舊的。
+CREATE TABLE IF NOT EXISTS scheduled_blocks (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  user_id INTEGER NOT NULL,
+  schedule_version_id INTEGER NOT NULL,
+  task_id INTEGER NOT NULL,
+  date TEXT NOT NULL,
+  start_time TEXT,
+  end_time TEXT,
+  planned_minutes INTEGER
+);
+-- 鎖是硬約束：排程引擎與 AI 永遠不得自動刪除或繞過。
+-- time/day 鎖限制的是整體排程，不屬於任何 Plan。
+CREATE TABLE IF NOT EXISTS schedule_locks (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  user_id INTEGER NOT NULL,
+  type TEXT NOT NULL,               -- task | time | day
+  task_id INTEGER,
+  date TEXT,
+  start_time TEXT,
+  end_time TEXT,
+  created_at TEXT DEFAULT CURRENT_TIMESTAMP
+);
 `;
 
 export async function initSchema() {
@@ -182,6 +240,12 @@ export async function initSchema() {
   try { await client.execute("ALTER TABLE toc_items ADD COLUMN publisher TEXT DEFAULT ''"); } catch {}
   try { await client.execute("ALTER TABLE fixed_events ADD COLUMN kind TEXT DEFAULT ''"); } catch {}
   try { await client.execute("ALTER TABLE memos ADD COLUMN due_date TEXT DEFAULT ''"); } catch {}
+  // Phase 2A：任務歸屬哪個 Plan（可為 NULL——「買筆」這種事不該被迫塞進某個計畫）
+  try { await client.execute("ALTER TABLE tasks ADD COLUMN plan_id INTEGER"); } catch {}
+  // Phase 2A：正式截止日。跟 due_date（排定日期）分開，NULL＝沒有硬性截止
+  try { await client.execute("ALTER TABLE tasks ADD COLUMN deadline_date TEXT"); } catch {}
+  try { await client.execute("CREATE INDEX IF NOT EXISTS idx_tasks_plan ON tasks(plan_id)"); } catch {}
+  try { await client.execute("CREATE INDEX IF NOT EXISTS idx_plans_user ON plans(user_id, status)"); } catch {}
   // 舊資料的分類補進「記住的分類」清單，之後直接用選的
   try { await client.execute("INSERT INTO memo_categories (user_id,name,order_index) SELECT DISTINCT user_id,category,0 FROM memos WHERE category<>'' AND category IS NOT NULL AND NOT EXISTS (SELECT 1 FROM memo_categories c WHERE c.user_id=memos.user_id AND c.name=memos.category)"); } catch {}
   // 舊 bug（重複扣款）造成的負金幣歸零

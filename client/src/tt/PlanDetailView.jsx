@@ -7,8 +7,8 @@ import { usePlans, bookOf, shortTitle, md, byLesson } from './plans';
 // 單一計畫的內容：照書分堆、每本書照課名順序。
 // 打勾走的是既有的 PATCH /tasks/:id，沒有另一套完成邏輯。
 
-export default function PlanDetailView({ planKey, tasks, lists, reload, onBack, goWizard }) {
-  const plan = usePlans(tasks, lists).find(p => p.key === planKey);
+export default function PlanDetailView({ planKey, tasks, lists, apiPlans = [], reload, onBack, goWizard }) {
+  const plan = usePlans(tasks, lists, apiPlans).find(p => p.key === planKey);
   const [showDone, setShowDone] = useState(false);
 
   if (!plan) {
@@ -34,6 +34,7 @@ export default function PlanDetailView({ planKey, tasks, lists, reload, onBack, 
     <div className="main">
       <div className="main-head">
         <h2>{plan.name}</h2>
+        {plan.isLegacy && <span className="chip" title="還沒轉成正式計畫的舊資料">舊資料</span>}
         <span className="muted">{plan.done}／{plan.total}</span>
       </div>
       <div className="main-body">

@@ -11,6 +11,17 @@ const asArr = s => { if (Array.isArray(s)) return s; try { const v = JSON.parse(
 const cleanTags = arr => arr.filter(x => typeof x === 'string' && x.trim() && !/^[a-zA-Z]{1,2}$/.test(x.trim()));
 const parseTask = t => ({ ...t, tags: cleanTags(asArr(t.tags)), subtasks: asArr(t.subtasks) });
 
+// 任務要掛到某個 Plan 之前的檢查：計畫得是自己的，而且不能是已封存／已完成的
+// （那兩種狀態代表「這件事告一段落了」，再往裡面丟東西沒有意義）。
+// 回傳錯誤訊息字串，沒問題回 null。
+async function checkPlan(planId, userId) {
+  if (planId == null) return null;
+  const p = await q.get('SELECT id, status FROM plans WHERE id=? AND user_id=?', [planId, userId]);
+  if (!p) return '找不到這個計畫';
+  if (p.status === 'archived' || p.status === 'completed') return '已封存或已完成的計畫不能再加入任務';
+  return null;
+}
+
 // 每個 (kind, ref) 只發一次金幣，避免反覆勾選刷幣
 async function award(userId, kind, refId, coins, refKey = '') {
   const r = await q.run('INSERT OR IGNORE INTO coin_awards (user_id,kind,ref_id,ref_key,coins) VALUES (?,?,?,?,?)',
@@ -102,8 +113,11 @@ router.get('/tasks', async (req, res) => {
 });
 
 router.post('/tasks', async (req, res) => {
-  const { title, list_id, notes, due_date, due_time, priority, tags, subtasks, recurring, miss_policy } = req.body;
+  const { title, list_id, notes, due_date, due_time, priority, tags, subtasks, recurring, miss_policy,
+    plan_id, deadline_date } = req.body;
   if (!title) return res.status(400).json({ error: '請輸入標題' });
+  const planErr = await checkPlan(plan_id ?? null, req.userId);
+  if (planErr) return res.status(400).json({ error: planErr });
   // 新增到「分享給我的清單」時，任務掛在清單擁有者名下（雙方都看得到）
   let ownerId = req.userId;
   if (list_id) {
@@ -114,10 +128,11 @@ router.post('/tasks', async (req, res) => {
       ownerId = l.user_id;
     }
   }
-  const r = await q.run(`INSERT INTO tasks (user_id,list_id,title,notes,due_date,due_time,priority,tags,subtasks,recurring,miss_policy)
-    VALUES (?,?,?,?,?,?,?,?,?,?,?)`,
+  const r = await q.run(`INSERT INTO tasks (user_id,list_id,title,notes,due_date,due_time,priority,tags,subtasks,recurring,miss_policy,plan_id,deadline_date)
+    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`,
     [ownerId, list_id || null, title, notes || '', due_date || null, due_time || null,
-      priority || 0, JSON.stringify(cleanTags(asArr(tags || []))), JSON.stringify(subtasks || []), recurring || null, miss_policy || 'keep']);
+      priority || 0, JSON.stringify(cleanTags(asArr(tags || []))), JSON.stringify(subtasks || []), recurring || null, miss_policy || 'keep',
+      plan_id ?? null, deadline_date || null]);
   res.json(parseTask(await q.get('SELECT * FROM tasks WHERE id=?', [r.lastInsertRowid])));
 });
 
@@ -199,6 +214,10 @@ router.patch('/tasks/:id', async (req, res) => {
   const t = await q.get('SELECT * FROM tasks WHERE id=?', [req.params.id]);
   if (!(await canTouch(req.userId, t))) return res.status(404).json({ error: 'not found' });
   const b = req.body;
+  if (b.plan_id !== undefined && b.plan_id !== null && b.plan_id !== t.plan_id) {
+    const planErr = await checkPlan(b.plan_id, req.userId);
+    if (planErr) return res.status(400).json({ error: planErr });
+  }
   const f = {
     list_id: b.list_id !== undefined ? b.list_id : t.list_id,
     title: b.title ?? t.title,
@@ -214,11 +233,14 @@ router.patch('/tasks/:id', async (req, res) => {
     completed_at: b.completed !== undefined ? (b.completed ? new Date().toISOString() : null) : t.completed_at,
     order_index: b.order_index ?? t.order_index,
     deleted: b.deleted !== undefined ? (b.deleted ? 1 : 0) : (t.deleted || 0),
+    plan_id: b.plan_id !== undefined ? b.plan_id : (t.plan_id ?? null),
+    deadline_date: b.deadline_date !== undefined ? (b.deadline_date || null) : (t.deadline_date ?? null),
   };
   await q.run(`UPDATE tasks SET list_id=?,title=?,notes=?,due_date=?,due_time=?,priority=?,tags=?,subtasks=?,
-    recurring=?,miss_policy=?,completed=?,completed_at=?,order_index=?,deleted=? WHERE id=?`,
+    recurring=?,miss_policy=?,completed=?,completed_at=?,order_index=?,deleted=?,plan_id=?,deadline_date=? WHERE id=?`,
     [f.list_id, f.title, f.notes, f.due_date, f.due_time, f.priority, f.tags, f.subtasks,
-      f.recurring, f.miss_policy, f.completed, f.completed_at, f.order_index, f.deleted, t.id]);
+      f.recurring, f.miss_policy, f.completed, f.completed_at, f.order_index, f.deleted,
+      f.plan_id, f.deadline_date, t.id]);
 
   if (b.completed && !t.completed && t.recurring && t.due_date) {
     let cfg = null;
@@ -259,11 +281,18 @@ router.delete('/tasks/:id', async (req, res) => {
 router.post('/tasks/bulk', async (req, res) => {
   const list = (req.body.tasks || []).filter(t => t.title);
   if (!list.length) return res.status(400).json({ error: '沒有任務' });
+  // 整批只會屬於同一個計畫（精靈一次建立一份），檢查一次就好
+  const planIds = [...new Set(list.map(t => t.plan_id).filter(x => x != null))];
+  for (const pid of planIds) {
+    const planErr = await checkPlan(pid, req.userId);
+    if (planErr) return res.status(400).json({ error: planErr });
+  }
   await q.batch(list.map(t => [
-    `INSERT INTO tasks (user_id,list_id,title,notes,due_date,due_time,priority,tags,subtasks,recurring,miss_policy)
-     VALUES (?,?,?,?,?,?,?,?,?,?,?)`,
+    `INSERT INTO tasks (user_id,list_id,title,notes,due_date,due_time,priority,tags,subtasks,recurring,miss_policy,plan_id,deadline_date)
+     VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`,
     [req.userId, t.list_id || null, t.title, t.notes || '', t.due_date || null, t.due_time || null,
-      t.priority || 0, JSON.stringify(cleanTags(asArr(t.tags || []))), JSON.stringify(t.subtasks || []), t.recurring || null, t.miss_policy || 'keep'],
+      t.priority || 0, JSON.stringify(cleanTags(asArr(t.tags || []))), JSON.stringify(t.subtasks || []), t.recurring || null, t.miss_policy || 'keep',
+      t.plan_id ?? null, t.deadline_date || null],
   ]));
   res.json({ added: list.length });
 });
@@ -323,6 +352,10 @@ router.get('/plan-tasks', async (req, res) => {
      ORDER BY due_date, id`, [req.userId, done]);
   res.json(rows);
 });
+// @deprecated legacy-only —— 不要在新的 Plan 流程呼叫這支。
+// 它是照標籤／標題全域猜的，正式 Plan 上線後會把「別的計畫」的未完成任務
+// 一起刪掉。新流程一律用 DELETE /api/plans/:id/tasks?incomplete=1，
+// 只作用在該計畫自己的任務上。這支保留只為了還沒 migrate 的舊資料。
 router.delete('/plan-tasks', async (req, res) => {
   // 標籤比對＋標題含全形「｜」（排程精靈專用的分隔符）：涵蓋先前標籤遺失 bug 建立的舊排程
   const r = await q.run(`DELETE FROM tasks WHERE user_id=? AND completed=0 AND (tags LIKE '%讀書計劃%' OR title LIKE '%｜%')`, [req.userId]);
