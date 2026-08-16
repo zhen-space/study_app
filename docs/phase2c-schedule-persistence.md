@@ -1,6 +1,6 @@
 # Phase 2C：Schedule Persistence
 
-> 狀態：**2C-1 已定案，尚未實作。** 2C-2 之後尚未設計。
+> 狀態：**2C-1、2C-2 已定案，尚未實作。** 2C-3／2C-4 尚未設計。
 > Plan domain 契約另見 [`phase2-plan-domain.md`](phase2-plan-domain.md)。
 > 基準 commit：`32fed0e`（Phase 2A 合併後）
 > 最後更新：2026-08-16
@@ -21,7 +21,7 @@ Phase 2C 的任務就是關掉它。2C 完成時，該例外連同那段文字�
 | | 內容 | 狀態 |
 |---|---|---|
 | **2C-1** | ScheduleVersion / ScheduledBlock schema、active version 契約、bootstrap | ✅ **已定案**（本文件 §1–§8） |
-| **2C-2** | 版本恢復（restore）＋ feasibility | ⬜ 未設計 |
+| **2C-2** | 版本恢復（restore）＋ feasibility | ✅ **已定案**（§12–§19） |
 | **2C-3** | Lock 持久化 | ⬜ 未設計 |
 | **2C-4** | 重排 diff（moved / added / removed） | ⬜ 未設計 |
 
@@ -232,11 +232,31 @@ block.task_id 找不到對應 task  → 歷史畫面改用 snapshot 顯示
 | 端點 | 現況 | 2C 要怎麼辦 |
 |---|---|---|
 | `DELETE /api/tasks/:id` | 預設軟刪除，`?hard=1` 才硬刪 | ✅ 已符合 |
-| `DELETE /api/plans/:id/tasks?incomplete=1` | **硬刪除** | 要改成軟刪除，或明確認定為 maintenance 流程 |
+| `DELETE /api/plans/:id/tasks?incomplete=1` | **硬刪除** | ✅ **已裁決：改成軟刪除**（見 §5.2） |
 | `DELETE /api/plan-tasks`（legacy） | **硬刪除** | legacy-only，維持現狀但不得被新流程呼叫 |
 
-Phase 2A 建立的 Plan-scoped 刪除目前是硬刪，實作 2C 時必須先解決這一項，
-否則重新排程會持續製造 orphan block。
+### 5.2 裁決：Plan-scoped 刪除改為軟刪除
+
+> **重新排程是正常使用者流程，不是 maintenance。正常流程就不該破壞歷史版本的可讀性。**
+
+```
+Plan-scoped remove incomplete tasks
+  → tasks.deleted = 1
+  → 不 hard delete
+  → 舊 ScheduledBlock 保留
+  → 歷史版本仍可用 snapshot 顯示
+```
+
+舊的 `DELETE /api/plan-tasks` 可以繼續維持 hard delete，但必須**真的只剩 legacy-only**，
+2C 新流程永遠不得呼叫它。
+
+### 5.3 ⛔ Implementation prerequisite（不是可選項）
+
+> **在第一個 ScheduledBlock 真正寫入 production 之前，
+> 必須先把 Plan-scoped incomplete delete 改成 soft delete。**
+
+順序反過來的話，每次重新排程都會製造一批指向已消失任務的 block，
+而 §5 剛規定歷史 block 必須留著——等於一上線就開始累積無法修復的髒資料。
 
 ---
 
@@ -266,7 +286,7 @@ UI 用 `source` 過濾，預設只顯示重排。
 改課表就自動搬動任務，是在使用者沒同意的情況下改他的計畫。
 正確做法是標記「排程可能需要調整」，直到使用者真的接受重排才建立新版本。
 
-那個標記怎麼算、放哪裡，屬於 **2C-2（feasibility）**。
+那個標記怎麼算、放哪裡，見 **§18（feasibility）**。
 
 ---
 
@@ -395,8 +415,432 @@ V80 是 restore from V12，但 V12 已經被清掉
 - [ ] unplaced 規則：沒有 block 的 Plan Task `due_date = NULL`（§4.4）
 - [ ] UI 顯示 unplaced 數量（§4.4）
 - [ ] bootstrap（§8）
-- [ ] **先解決 §5.1 的硬刪除衝突**，否則會持續製造 orphan block
+- [ ] ⛔ **先做 §5.3 prerequisite**：Plan-scoped incomplete delete 改成軟刪除
+      （必須早於第一個 ScheduledBlock 寫入 production）
 - [ ] 測試：immutability（舊版 block 不可改）、atomic 失敗不留半套、
       併發不重號、unplaced → NULL、bootstrap 不捏造過去、
       block 只指向 Task、task 硬刪後歷史版本仍顯示得出來
 - [ ] 2C 全部完成後，**刪除 `phase2-plan-domain.md` §5B 2A-1 的過渡例外**
+
+### 2C-2 追加（見 §12–§21）
+
+- [ ] `schedule_versions` 增補 `restored_from_version_id`（§12.1）
+- [ ] `GET /api/schedule/versions/:id/restore-preview`
+- [ ] `POST /api/schedule/versions/:id/restore`（執行時重新驗證，§19.4）
+- [ ] 六種衝突判定 ＋ 兩層 feasibility（§13、§17）
+- [ ] 測試：restore 不啟用舊版而是產生新版、過去／已完成／已刪除被 skip、
+      Lock 與固定行程優先、**新增的 Task 不被 restore 弄不見**、
+      `nothing_to_restore` 不建立版本、preview 過期時不默默照做
+- [ ] ⚠️ 注意 §21 的實作相依：Lock 檢查需要 2C-3
+
+---
+---
+
+# Part 2：2C-2 — Restore ＋ Feasibility
+
+> 狀態：**已定案，尚未實作。**
+
+---
+
+## 12. Restore 的本質
+
+> **Restore 不是「把 `active_version_id` 指回舊版」。**
+>
+> Restore 是：**拿舊版當「目標模板」，用現在世界的 hard constraints 驗證後，
+> 產生一個新的 ScheduleVersion。**
+
+```
+現在 active = V3
+使用者選「恢復 V1」
+  → 讀 V1 當模板
+  → 用現在的世界驗證
+  → 產生 V4（source = restore）
+
+不是：active_version_id = V1
+```
+
+理由：V1 是**過去某一刻**對未來的安排。現在的世界已經不同了——時間過去了、
+任務完成了、課表改了、鎖加上去了。直接啟用 V1 會讓使用者的排程回到一個
+**已經不成立**的狀態。
+
+### 12.1 版本血緣：兩個不同的欄位
+
+Restore 產生的 V4，`parent_version_id` 該指誰？V3（前一版）還是 V1（模板）？
+
+**兩個都要記，但語意不同。** 建議增補：
+
+```sql
+ALTER TABLE schedule_versions ADD COLUMN restored_from_version_id INTEGER;
+```
+
+| 欄位 | 語意 |
+|---|---|
+| `parent_version_id` | **血緣**：這一版接在誰後面 → V3 |
+| `restored_from_version_id` | **模板**：這一版是照誰恢復的 → V1 |
+
+只記其中一個都會壞事：只記 V1 → 版本鏈斷掉，「上一版是什麼」查不出來；
+只記 V3 → 使用者看不出這版是從哪裡恢復的。
+
+### 12.2 `effective_from`
+
+> **Restore 產生的新版本，`effective_from` 是「操作當下的 planning day」，
+> 不是舊版的 `effective_from`。**
+
+今天 8/17 恢復 8/10 建立的版本 → V4 的 `effective_from = 8/17`，不能寫 8/10。
+V4 是今天產生的新未來 snapshot，不是把時間倒回去。
+
+---
+
+## 13. 六種衝突
+
+### 13.1 過去時間
+
+```
+block 已經過去 → 永遠不可恢復
+```
+
+判定分兩種模式（**目前排程有 timed 與非 timed 兩種，規則不同**）：
+
+| 模式 | 判定 |
+|---|---|
+| **timed**（有 `start_time` / `end_time`） | `block.end <= now` → 不可恢復 |
+| **非 timed**（只有 `date`） | `block.date < 今天` → 不可恢復；`block.date == 今天` → **可以恢復**（今天還沒過完） |
+
+**跨過現在的 timed block（例如 15:30–16:30，現在 16:00）整段視為不可恢復。**
+
+不能偷偷截成 16:00–16:30——那已經不是原本那個 block 了。Restore 的語意是
+「把原安排放回去」，截斷就變成了另一種安排。
+
+`type = 'past'`
+
+### 13.2 任務已完成
+
+```
+task.completed = true → skip
+```
+
+**這不是 error，是「已經不需要恢復」。** UI 顯示：
+
+```
+1 項因已完成而略過
+```
+
+### 13.3 任務已刪除或不存在
+
+```
+task 已軟刪除，或 task_id 找不到對應資料 → skip
+```
+
+**Restore 是恢復 schedule，不是復活 domain entity。**
+即使只剩 `task_title_snapshot`，也**不得**據此重新建立 Task。
+
+歷史畫面仍可用 snapshot 顯示（§5），但那是「看得到」，不是「拿得回來」。
+
+### 13.4 現在的 Lock 衝突
+
+```
+V1 想把數學放 18:00–19:00
+現在有 🔒 18:00–21:00
+→ 不可恢復
+```
+
+**Lock 不隨 ScheduleVersion 回滾**（2C-3 定案方向）。
+所以 **Restore 永遠服從「現在的」Lock**，這是 hard conflict。
+
+`type = 'lock'`
+
+### 13.5 現在的固定行程／課表衝突
+
+```
+V1：數學 18:00–19:00
+現在：補習 18:00–21:00
+→ 不可恢復
+```
+
+與 Lock 同屬 current-world hard conflict，但**來源必須分開**，因為 UI 解法不同：
+
+- **Lock** → 可以提示使用者自行解鎖
+- **固定行程** → 通常不能叫排程引擎把課表移開
+
+`type = 'fixed_event'`
+
+### 13.6 任務 constraint 已改變
+
+**這一項最容易被漏掉。**
+
+```
+V1 當時：數學 deadline = 8/20，block 排在 8/19  ✅ 當時合法
+現在：   數學 deadline 已改成 8/18
+→ 即使 8/19 沒有撞任何東西，也不可恢復
+```
+
+同理，作息或可讀時段改變（原本可晚上讀，現在只能早上）→ 舊 block 的晚上時段也不可恢復。
+
+> **Restore 必須服從「目前」的 Task / Plan / constraint 狀態，
+> 不是舊版當時的 constraint snapshot。**
+>
+> 舊 constraint snapshot 只能用來**解釋歷史**，不能推翻現在的規則。
+
+`type = 'task_constraint'` / `type = 'deadline'`
+
+---
+
+## 14. Restore 的三種結果
+
+| 結果 | 條件 |
+|---|---|
+| **`full`** | 所有「仍有意義」的舊 block 都可恢復 |
+| **`partial`** | 部分可恢復，部分有衝突 |
+| **`impossible`** | 全部無法恢復，或恢復後整體排程明確無效 |
+
+**被 skip 的（已完成、已刪除）不算失敗。**
+
+```
+10 個舊 block
+ 2 個已完成 → skip
+ 8 個全部可恢復
+→ status = 'full'（恢復成功）
+```
+
+### 14.1 補一個邊界狀態：`nothing_to_restore`
+
+上面的定義有個空隙：**10 個 block 全部因為已完成而 skip，restorable = 0，
+conflicts = 0** —— 這算 `full` 還是 `impossible`？
+
+按定義是 `full`（沒有衝突），但前端顯示「恢復成功」而畫面什麼都沒變，
+使用者會以為壞掉了。
+
+**建議增加第四種 status：**
+
+```
+'nothing_to_restore'   restorable = 0 且 conflicts = 0
+```
+
+UI 訊息：「這一版的內容都已經完成了，沒有需要恢復的項目。」
+**不建立新版本**——沒有任何改變就不該產生版本。
+
+### 14.2 `partial` 必須先 preview
+
+`partial` **不得自動執行**。先給預覽：
+
+```
+可恢復 8 項
+2 項無法恢復（列出原因）
+```
+
+使用者選「恢復可恢復的部分」，才建立新版本。
+
+---
+
+## 15. Partial restore 時，其他排程怎麼辦
+
+**這是 2C-2 最容易做錯的地方。**
+
+```
+現在 active V3：        要恢復的 V1：
+  數學 8/18               數學 8/17
+  英文 8/19               英文 8/18
+  化學 8/20             （V1 不知道有化學）
+```
+
+化學怎麼辦？
+
+> **Restore 的目標不是「把 V1 的 blocks 疊在 V3 上」，
+> 而是以 V1 作為 snapshot baseline，再套上現在的現實。**
+
+```
+Restored version =
+      舊版本中可恢復的 blocks
+    + 現在存在但舊版本不知道的 Task → unplaced（不是刪掉）
+```
+
+規則：
+
+| 情況 | 處理 |
+|---|---|
+| 已完成 | 不排 |
+| 已刪除 | 不排 |
+| V1 有、現在仍有效 | 嘗試恢復原位置 |
+| **V1 沒有、現在新加入的 Task** | **保留為 unplaced，不得刪除** |
+
+最後一條特別重要——否則恢復 V1 會把後來新增的任務**莫名其妙弄不見**。
+
+---
+
+## 16. Restore 不自動重新最佳化
+
+假設 V1 有兩個 block 撞到現在的補習。
+
+**Restore 不得自己說「那我把它們搬到明天」。** 那就不是 restore 了。
+
+> **Restore 只做一件事：判斷「原位置能不能保留」。**
+> 不能保留的標為 **unplaced**。
+
+之後使用者若點「幫我重新安排這 2 項」，才進入 AI replan，產生另一個版本：
+
+```
+V4  source = restore
+    → 恢復能恢復的
+    → 2 個任務 unplaced
+
+V5  source = ai_replan
+    → 才替那 2 個任務找新位置
+```
+
+語意乾淨：**restore 管「放回去」，replan 管「重新安排」，兩件事不混。**
+
+---
+
+## 17. Feasibility 分兩層
+
+**不能只看 block collision。**
+
+### 17.1 Block-level feasibility
+
+逐一檢查舊 block 本身：
+
+- 是否已過去（§13.1）
+- 是否撞固定行程（§13.5）
+- 是否撞 Lock（§13.4）
+- 是否違反目前的 task constraint（§13.6）
+- 任務是否已完成／已刪除（§13.2、§13.3）
+
+### 17.2 Schedule-level feasibility
+
+恢復**完之後**再整體檢查：
+
+- 同一時間是否兩個 block 撞在一起
+- 是否超過每日容量
+- 是否讓某個 Task 超過 deadline
+- 是否出現 constraint competition
+- 是否出現 unplaced tasks
+- 整體是否仍可完成
+
+> **兩層必須分開。**
+> 每一個 block 單獨都合法，**不代表**整份 restore 後的 schedule 有解。
+
+### 17.3 非 timed 模式的特殊處理
+
+非 timed 的 block 只有日期、沒有時間，所以**「撞固定行程」在 block-level 根本判斷不了**。
+
+規則：
+
+| 模式 | 「撞固定行程」在哪一層判斷 |
+|---|---|
+| timed | **block-level**（時間區間直接比對） |
+| 非 timed | **schedule-level**（那天的可用時間總量是否還夠） |
+
+實作時建議**復用既有能力**而不是重寫：`POST /api/schedule/preview` 回傳的
+`check.subjects`（含 `availDays` / `wantDays`）已經在做類似的容量判斷。
+
+---
+
+## 18. Feasibility 標記（固定行程變更後）
+
+§6.2 定了「固定行程變更不自動產生版本」，只標記「排程可能需要調整」。
+
+該標記**不落庫**，改為**讀取時計算**：查 active version 的 blocks 與目前固定行程／Lock
+是否衝突。理由：落庫就要維護失效時機（改課表、改鎖、改任務都要更新），
+而這個判斷本來就很便宜。
+
+若日後量測顯示太慢，再考慮把結果快取進 `user_schedule_state`。
+
+---
+
+## 19. 資料結構
+
+### 19.1 `RestorePreview`
+
+```ts
+interface RestorePreview {
+  source_version_id: number;          // 要恢復的舊版
+  restorable_blocks: ScheduledBlock[];
+  skipped_completed: number[];        // task_id
+  skipped_deleted: number[];          // task_id
+  conflicts: RestoreConflict[];
+  unplaced_task_ids: number[];        // 恢復後會變成 unplaced 的（含新增的 Task）
+  status: 'full' | 'partial' | 'impossible' | 'nothing_to_restore';
+}
+```
+
+### 19.2 `RestoreConflict`
+
+```ts
+interface RestoreConflict {
+  task_id: number;
+  block_id: number;
+  type: 'past'
+      | 'fixed_event'
+      | 'lock'
+      | 'task_constraint'
+      | 'schedule_collision'
+      | 'deadline';
+  message: string;                    // 繁中，直接給使用者看
+}
+```
+
+`type` 分這麼細是為了讓前端能**真的解釋**發生什麼事，而不是只說「無法恢復」。
+`lock` 可以提示解鎖、`fixed_event` 要改課表、`deadline` 要延期——三種解法完全不同。
+
+### 19.3 API 形狀（建議）
+
+```
+GET  /api/schedule/versions/:id/restore-preview   → RestorePreview
+POST /api/schedule/versions/:id/restore           → 新的 ScheduleVersion
+```
+
+### 19.4 ⚠️ Preview 會過期，執行時必須重新驗證
+
+Preview 算完到使用者按下確認之間，世界可能已經變了——在另一個分頁完成了任務、
+加了固定行程、上了鎖。
+
+> **`POST .../restore` 不得信任 preview 的結果，必須重新完整驗證一次。**
+
+若重算結果與 preview 不同（可恢復數量變了、多了新衝突），**不要默默照做**，
+回報差異並要求重新確認。
+
+建立 restore version 一樣是 **atomic transaction**（§7.1），
+一樣要 bounded retry（§7.2）。
+
+---
+
+## 20. 2C-2 定案總表
+
+| # | 定案 |
+|---|---|
+| 1 | **Restore 永遠產生新 ScheduleVersion**，舊版只作 template，不重新啟用 |
+| 2 | 過去、已完成、已刪除**不恢復** |
+| 3 | 現在的 Lock、固定行程、Task constraint **永遠優先** |
+| 4 | Restore **不自動移動**衝突的 block |
+| 5 | 無法恢復的有效 Task → **unplaced** |
+| 6 | 後來新增、舊版不知道的 Task **保留成 unplaced，不得刪除** |
+| 7 | `partial` **必須先 preview**，由使用者確認 |
+| 8 | Feasibility 分 **block-level** 與 **schedule-level** 兩層 |
+| 9 | 建立 restore version 仍需 **atomic transaction** |
+| 10 | `effective_from` = **操作當下**的 planning day，不是舊版的 |
+
+### 本輪補充（設計時發現）
+
+| # | 補充 |
+|---|---|
+| 11 | `parent_version_id`（血緣）與 `restored_from_version_id`（模板）**分開記** |
+| 12 | 新增第四種 status **`nothing_to_restore`**，且不建立版本 |
+| 13 | 「過去」的判定**分 timed / 非 timed**；跨過現在的 timed block 整段不可恢復 |
+| 14 | 非 timed 的固定行程衝突只能在 **schedule-level** 判斷 |
+| 15 | **Preview 會過期**，執行時必須重新驗證，結果不同要重新確認 |
+
+---
+
+## 21. 2C-2 實作相依（順序警告）
+
+⚠️ **2C-2 的實作依賴 2C-3（Lock 持久化）。**
+
+§13.4 要求 restore 檢查「現在的 Lock」，但 Lock 目前只有空表、沒有寫入路徑。
+
+兩種可行順序：
+
+- **建議**：實作順序改為 **2C-3 先於 2C-2**（契約順序不變）
+- 或：2C-2 先實作，Lock 表為空時視為「無鎖」，並在 2C-3 完成後補測試
+
+**契約定案的順序（2C-1 → 2C-2 → 2C-3 → 2C-4）不等於實作順序。**
+
