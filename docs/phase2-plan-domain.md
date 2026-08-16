@@ -1,6 +1,7 @@
 # Phase 2：Plan Domain Contract 與 Legacy Migration Audit
 
-> 狀態：**契約已定案，尚未實作。** 本文件是 Phase 2 開工前的唯一權威依據。
+> 狀態：**契約已定案。Phase 2A 可實作；Phase 2B（legacy migration）被 §5A 閘門擋住。**
+> 本文件是 Phase 2 開工前的唯一權威依據。
 > 基準 commit：`54d97aa`（Phase 1 合併後）
 > 最後更新：2026-08-16
 
@@ -92,10 +93,20 @@ ALTER TABLE tasks ADD COLUMN deadline_date TEXT;
 
 兩者不可互相取代。`deadline_date` 為 NULL 表示無硬性截止。
 
-### 決策 4：Legacy migration Plan 命名 `{科目名}｜{書名}`
+### 決策 4：Legacy migration Plan 命名
+
+依 cluster 的組成決定：
+
+| cluster 組成 | 名稱 |
+|---|---|
+| **單一科目 ＋ 單一本書** | `{科目}｜{書名}` |
+| **多科 或 多本書** | `讀書計畫｜{MIN(due_date)}–{MAX(due_date)}` |
 
 書名取自標題第 2 段（`物理｜新大滿貫｜單元3｜節2｜範例+例題` → `新大滿貫`），
-取不到時回退 `toc_items.book`，再取不到則只用科目名。
+取不到時回退 `toc_items.book`。
+
+⚠️ 名稱裡的日期**只是 migration 的顯示名稱／推定範圍，不代表 deadline**。
+使用者隨時可以改名，改名不觸發任何排程行為（見 §6.4）。
 
 ### 決策 5：migrated Plan 的日期
 
@@ -246,12 +257,22 @@ WHERE user_id = ? AND title LIKE '%｜%' AND tags NOT LIKE '%讀書計劃%';
 1. 取出 `tags LIKE '%讀書計劃%'` 的任務（含 `deleted=1`，排除 ③ 的誤判集合）
 2. 依 `created_at` 排序，**相鄰間隔 > 5 分鐘**即切為新 cluster
    （批次內部橫跨數秒，正常使用不會在 5 分鐘內連續建立兩份計畫）
-3. 每個 cluster **再依 `list_id` 細分**——舊資料一次生成本來就會跨科，
-   而 Phase 2 的 Plan 雖然允許跨科，但舊資料無從得知使用者原本的意圖，
-   拆到科目粒度比硬湊成一個跨科 Plan 更貼近當時的實際使用
-4. 每個 (cluster, list_id) → 一個 Plan
-   - `name` = `{科目名}｜{書名}`（決策 4）
-   - `start_date` / `target_date` = 該組 `MIN/MAX(due_date)`（決策 5）
+3. **一個 created_at cluster ＝ 一個 migrated Legacy Plan。**
+
+   > 🚫 **不得**在 cluster 之後再依 `list_id` 細分。
+   >
+   > 一次精靈生成本來就是跨科的——那就是使用者當時建立的**一份**計畫。
+   > 依科目拆開會把「一科＝一個 Plan」這個錯誤的 domain assumption
+   > 重新塞回正式資料模型，正是 Phase 2 要消滅的東西。
+   >
+   > Task 保留各自的 `list_id`（科目分類不變），但它們共屬同一個 Plan。
+   > 這也正好示範了不變式 §1-1：**一個 Plan 可以跨科目**。
+
+4. 每個 cluster → 一個 Plan
+   - `name` 依決策 4（單科單書 → `{科目}｜{書名}`；跨科或多書 → `讀書計畫｜{起}–{迄}`）
+   - `primary_list_id` = 該 cluster 中任務數最多的 `list_id`（僅供顯示，非 identity）；
+     並列時取 `lists.order_index` 較前者
+   - `start_date` / `target_date` = 該 cluster 的 `MIN/MAX(due_date)`（決策 5）
    - `status` = 全部完成 → `completed`；否則 → `active`
    - `source` = `legacy_migration`
    - `deadline_date` **不設定**
@@ -263,9 +284,11 @@ WHERE user_id = ? AND title LIKE '%｜%' AND tags NOT LIKE '%讀書計劃%';
 **採用規則（fallback）：**
 
 1. 每個 `list_id` 建立**一個** `legacy_migration` Plan
-2. `name` = `{科目名}｜{書名}`（同一科多本書時，書名以「、」串接前 3 本）
+2. `name` 依決策 4（多本書時視為「多本」→ 用 `讀書計畫｜{起}–{迄}`）
 3. 日期同決策 5
-4. 文件必須明記：**此為降級結果，非 domain rule**
+4. **此為資訊不足下的降級結果，不是 domain rule。**
+   條件 B 產生的「一科一 Plan」是舊資料的殘骸，不得被任何新程式碼
+   當成 Plan 的建立規則。新建計畫一律走 §7 的 Plan CRUD
 
 ### 兩種條件都適用的規則
 
@@ -275,6 +298,49 @@ WHERE user_id = ? AND title LIKE '%｜%' AND tags NOT LIKE '%讀書計劃%';
   **一律不得修改**，只補 `plan_id`
 - 舊的 `讀書計劃` tag **暫時保留**，避免既有 UI／篩選器／匯出壞掉；
   等 Phase 2 穩定後再做 cleanup migration
+
+---
+
+## 5A. Migration Execution Gate（硬性閘門）
+
+Phase 2 拆成兩段，**中間有一道不得跨越的閘門**：
+
+| 階段 | 內容 | 前提 |
+|---|---|---|
+| **Phase 2A** | 新 schema、Plan CRUD/API、新資料寫入路徑、compatibility layer | 無（可立即開始） |
+| **Phase 2B** | Legacy data migration（替既有 Task 寫入 `plan_id`） | **§4 production audit 必須先回填** |
+
+### 🚫 閘門規則
+
+**在 §4 的正式資料查詢結果回填之前，不得執行任何會替既有 legacy Task 寫入
+`plan_id` 的 production migration。**
+
+理由：§5 的 clustering 規則要採條件 A 還是條件 B，取決於 §4 的實際數字。
+在數字未知的情況下執行 migration，等於用猜測去改動使用者的正式資料，
+而且 `plan_id` 一旦寫錯，要還原就得反推當初的錯誤分組——代價遠高於等待。
+
+### Phase 2A 允許做的事
+
+- ✅ 建立 §8 的四張表與兩個欄位補丁（`CREATE TABLE IF NOT EXISTS` / `try-ALTER` 都是冪等的，
+  加了空表不影響任何既有行為）
+- ✅ 實作 §7 的 Plan CRUD API
+- ✅ **新**建立的計畫走正式 Plan 路徑（建立 Plan 記錄 ＋ 指派 `task.plan_id`）
+- ✅ Compatibility layer：`plan_id` 有值走正式 Plan，沒有值走 legacy heuristic（§9）
+- ✅ 前端讀 Plan API，legacy 推導退居相容路徑
+
+### Phase 2A 禁止做的事
+
+- ❌ 對既有 Task 執行任何 `UPDATE ... SET plan_id = ...` 的批次寫入
+- ❌ 移除或停用 legacy heuristic（舊資料還沒有 `plan_id`，拿掉會讓既有計畫從畫面消失）
+- ❌ 清除 `讀書計劃` tag
+- ❌ 修改 `tasks.due_date` 的既有語意（決策 2 的單向同步只套用在**新的** Plan Task）
+
+### 解除閘門的條件
+
+1. §4 三個查詢在正式 Turso 上執行完畢，數字回填本文件
+2. 依 §5 判定採用條件 A 或 B，結果寫回本文件
+3. 產出 ③ 誤判清單並經人工檢視
+4. 使用者明確同意執行 Phase 2B
 
 ---
 
@@ -573,13 +639,28 @@ Phase 2 起的排程精靈**必須直接建立 Plan 記錄並指派 `task.plan_i
 
 ---
 
-## 10. Phase 2 開工檢查清單
+## 10. 開工檢查清單
+
+### Phase 2A（可立即開始，不碰既有資料）
+
+- [ ] 建 §8 的四張表 ＋ 兩個欄位補丁（`plan_id`、`deadline_date`）
+- [ ] 實作 §7 的 Plan CRUD API
+- [ ] Task API 接受 `plan_id` / `deadline_date`
+- [ ] Compatibility layer（§9 讀取優先順序）
+- [ ] 前端 `usePlans()` 改讀 API，legacy 推導退居相容路徑
+- [ ] 排程精靈改為建立 Plan ＋ 指派 `plan_id`（只影響**新**建立的計畫）
+- [ ] 後端測試（既有 26 項全綠 ＋ Plan CRUD 新測試）
+- [ ] 前端測試（既有 18 項全綠 ＋ Plan API 相容性測試）
+- [ ] `npm run build` 全綠
+
+### 閘門（§5A）
 
 - [ ] 在正式 Turso 上跑完 §4 的三個查詢，回填數字
 - [ ] 依 §5 判定採用條件 A 或 B，把結果寫回本文件
-- [ ] 建 §8 的四張表 ＋ 兩個欄位補丁
-- [ ] 實作 §7 的 Plan CRUD
-- [ ] 執行 §5 的 legacy migration，產出誤判清單供人工檢視
-- [ ] 前端 `usePlans()` 改讀 API
-- [ ] 排程精靈改為建立 Plan ＋ 指派 `plan_id`
-- [ ] `cd server && npm test`（26 項）、`cd client && npm test`（18 項）、`npm run build` 全綠
+- [ ] 使用者明確同意執行 Phase 2B
+
+### Phase 2B（閘門通過後才能執行）
+
+- [ ] 執行 §5 的 legacy migration，產出 ③ 誤判清單供人工檢視
+- [ ] 驗證既有 Task 的 `id / title / list_id / tags / due_date / completed / deleted` 未被更動
+- [ ] 全部測試重跑
