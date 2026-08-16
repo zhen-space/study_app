@@ -30,8 +30,9 @@ jobs:
         working-directory: server
 
   build:
-    # Render 是 build 完才部署，所以這裡先確認前端建得起來，
-    # 免得語法錯誤要等到部署才發現。
+    # 「建得起來」跟「點得動」是兩回事：build 只打包不執行，
+    # 之前就發生過建置全綠、按鈕一按整個爆掉還照樣上線。
+    # 所以這個 job 兩件都做：先跑 smoke test，再建置。
     name: 前端建置
     runs-on: ubuntu-latest
     steps:
@@ -42,6 +43,8 @@ jobs:
           cache: npm
           cache-dependency-path: client/package-lock.json
       - run: npm ci
+        working-directory: client
+      - run: npm test
         working-directory: client
       - run: npm run build
         working-directory: client
