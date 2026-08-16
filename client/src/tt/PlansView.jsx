@@ -2,7 +2,8 @@ import Icon from './Icons';
 import { usePlans, md } from './plans';
 
 // 「計畫」＝計畫管理：回答「我要完成什麼計畫」。
-// 資料來源與推導邏輯在 ./plans.js（從既有 tasks 推導，沒有新後端）。
+// 資料來源在 ./plans.js：正式 Plan（後端 plans 表）＋ 還沒 migrate 的舊資料推導，
+// Phase 2A 兩者並存，舊的會標上「舊資料」。
 
 const Bar = ({ done, total, color }) => (
   <div style={{ height: 6, borderRadius: 3, background: 'var(--fill-strong)', overflow: 'hidden' }}>
@@ -11,8 +12,8 @@ const Bar = ({ done, total, color }) => (
 );
 
 
-export default function PlansView({ tasks, lists, openPlan, goWizard }) {
-  const plans = usePlans(tasks, lists);
+export default function PlansView({ tasks, lists, apiPlans = [], openPlan, goWizard }) {
+  const plans = usePlans(tasks, lists, apiPlans);
 
   return (
     <div className="main">
@@ -37,6 +38,8 @@ export default function PlansView({ tasks, lists, openPlan, goWizard }) {
             <div className="row">
               <Icon name={p.icon} size={18} style={{ color: p.color }} />
               <b style={{ fontSize: 16 }}>{p.name}</b>
+              {p.isLegacy && <span className="chip" title="還沒轉成正式計畫的舊資料">舊資料</span>}
+              {p.status === 'draft' && <span className="chip">草稿</span>}
               <span className="muted" style={{ marginLeft: 'auto', fontSize: 13 }}>{p.done}／{p.total}</span>
             </div>
             <div style={{ marginTop: 8 }}><Bar done={p.done} total={p.total} color={p.color} /></div>

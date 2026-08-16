@@ -33,6 +33,20 @@ export const tasks = [
   { id: 19, list_id: null, title: '已刪除的東西', due_date: null, due_time: null, priority: 0, completed: 0, tags: [], subtasks: [], recurring: null, order_index: 8, deleted: 1 },
 ];
 
+// Phase 2A：正式 Plan（後端 plans 表）。id 12 底下掛了跨科目的任務——
+// 用來確認「一個 Plan 可以跨科目」在畫面上真的成立。
+export const plans = [
+  { id: 12, user_id: 1, name: '第二次段考準備', description: '', goal_id: null, primary_list_id: 1,
+    start_date: TODAY, target_date: iso(14), status: 'active', source: 'manual',
+    created_at: '', updated_at: '', completed_at: null, archived_at: null,
+    task_count: 2, completed_task_count: 0 },
+];
+// 掛在正式 Plan 底下的任務（帶 plan_id，不該被 legacy 推導撿走）
+export const planTasks = [
+  { id: 21, list_id: 1, plan_id: 12, title: '物理｜段考範圍｜力學複習', due_date: TODAY, due_time: null, priority: 0, completed: 0, tags: ['讀書計劃'], subtasks: [], recurring: null, deadline_date: iso(14), order_index: 20, deleted: 0 },
+  { id: 22, list_id: 2, plan_id: 12, title: '地科｜段考範圍｜大氣複習', due_date: iso(1), due_time: null, priority: 0, completed: 0, tags: ['讀書計劃'], subtasks: [], recurring: null, deadline_date: iso(14), order_index: 21, deleted: 0 },
+];
+
 export const events = [
   { id: 1, title: '數學課', date: TODAY, start_time: '08:10', end_time: '09:00', recurring: null, location: '教室' },
   { id: 2, title: '社團', date: TODAY, start_time: '15:30', end_time: '17:00', recurring: 'weekly', location: '' },
@@ -58,6 +72,7 @@ export const tstats = {
 // 路徑 → 回傳值。沒列到的一律回空陣列，避免任何一支沒 mock 到就整個測試爆掉。
 export const responses = {
   '/tasks': tasks,
+  '/plans': [],
   '/lists': lists,
   '/filters': [],
   '/habits': habits,

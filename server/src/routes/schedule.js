@@ -157,7 +157,7 @@ router.post('/preview', async (req, res) => {
     while (day.slotIdx < day.slots.length) {
       const end = day.slots[day.slotIdx][1];
       if (day.pos + w.chunk <= end) {
-        blocks.push({ subject_id: w.subject_id, title: w.title, date: day.date, start_time: toHM(day.pos), end_time: toHM(day.pos + w.chunk) });
+        blocks.push({ subject_id: w.subject_id, title: w.title, date: day.date, _we: w.end, start_time: toHM(day.pos), end_time: toHM(day.pos + w.chunk) });
         day.pos += w.chunk + BREAK; day.load += w.chunk; day.count++; day.subs.add(w.subject_id);
         if (day.pos >= end) { day.slotIdx++; day.pos = day.slots[day.slotIdx]?.[0] ?? null; }
         return true;
@@ -854,7 +854,9 @@ router.post('/preview', async (req, res) => {
     subjects: subjSpan,
   };
 
-  blocks.forEach(b => { delete b._bk; delete b._ws; delete b._we; delete b._one; });
+  // 每個項目自己的截止日：內部欄位清掉之前，先留一份公開的給前端
+  // （Phase 2A 的 tasks.deadline_date 要用。純輸出欄位，不影響排程語意）
+  blocks.forEach(b => { b.deadline = b._we || null; delete b._bk; delete b._ws; delete b._we; delete b._one; });
   blocks.sort((a, b) => a.date === b.date ? (a.start_time || '').localeCompare(b.start_time || '') : a.date.localeCompare(b.date));
   res.json({
     blocks, check, unplaced: failed.length > 0,
