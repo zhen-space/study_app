@@ -365,7 +365,7 @@ function AddSheet({ view, lists, onDone, onClose }) {
   );
 }
 
-export default function Tasks({ view, tasks, lists, filters, habits = [], reload, title, goVocab, goMemo, topSlot = null }) {
+export default function Tasks({ view, tasks, lists, filters, habits = [], reload, title, subtitle = '', listLabel = '', goVocab, goMemo, topSlot = null }) {
   const [selId, setSelId] = useState(null);
   const [quick, setQuick] = useState('');
   const [showAdd, setShowAdd] = useState(false);
@@ -532,8 +532,14 @@ export default function Tasks({ view, tasks, lists, filters, habits = [], reload
     <>
       <div className="main">
         <div className="main-head">
-          <h2>{title}</h2><span className="muted">{shown.length} 項</span>
-          {!['trash', 'completed'].includes(view.type) && shown.length > 1 && (
+          {/* 大標題區只放標題與副標。數量與排序會擠掉大標題的份量，
+              有 listLabel 的頁面（Today）改放到清單那一行去。 */}
+          <div className="page-head-text">
+            <h2>{title}</h2>
+            {subtitle && <div className="head-sub">{subtitle}</div>}
+          </div>
+          {!listLabel && <span className="muted">{shown.length} 項</span>}
+          {!listLabel && !['trash', 'completed'].includes(view.type) && shown.length > 1 && (
             <select value={sortBy} onChange={e => pickSort(e.target.value)} style={{ marginLeft: 'auto', fontSize: 13 }}>
               <option value="default">預設排序</option>
               <option value="time">依時間</option>
@@ -555,6 +561,23 @@ export default function Tasks({ view, tasks, lists, filters, habits = [], reload
         <div className="main-body">
           {topSlot}
           {view.type === 'today' && <MemoCard goMemo={goMemo} />}
+          {listLabel && shown.length > 0 && (
+            <div className="row" style={{ marginTop: 'var(--section-gap)', marginBottom: 'var(--sp-2)' }}>
+              <div className="ui-section-title" style={{ marginBottom: 0 }}>{listLabel}</div>
+              <span className="muted">{shown.length} 項</span>
+              {!['trash', 'completed'].includes(view.type) && shown.length > 1 && (
+                <select aria-label="排序方式" value={sortBy} onChange={e => pickSort(e.target.value)}
+                  style={{ marginLeft: 'auto', fontSize: 13 }}>
+                  <option value="default">預設排序</option>
+                  <option value="time">依時間</option>
+                  <option value="subject">依科目</option>
+                  <option value="subjectGroup">照科目分堆</option>
+                  <option value="priority">依優先級</option>
+                  <option value="title">依標題</option>
+                </select>
+              )}
+            </div>
+          )}
           {view.type === 'trash'
             ? shown.map(t => (
               <div key={t.id} className="trow" style={{ cursor: 'default' }}>

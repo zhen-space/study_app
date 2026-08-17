@@ -177,7 +177,9 @@ export default function Shell({ onLogout }) {
 
   return (
     <div className="app">
-      <button className="menu-btn" style={{ position: 'fixed', top: 'calc(4px + env(safe-area-inset-top))', left: 4, zIndex: 10 }} onClick={() => setSide(true)}>☰</button>
+      <button className="menu-btn" aria-label="開啟選單"
+        style={{ position: 'fixed', top: 'calc(4px + env(safe-area-inset-top))', left: 4, zIndex: 10 }}
+        onClick={() => setSide(true)}>☰</button>
       {side && <div className="backdrop" onClick={() => setSide(false)} />}
       <div className={'sidebar' + (side ? ' open' : '')}>
         <input placeholder="🔍 搜尋任務" value={searchQ} style={{ margin: '0 2px 8px', width: 'calc(100% - 4px)' }}

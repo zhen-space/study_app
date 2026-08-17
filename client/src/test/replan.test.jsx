@@ -105,7 +105,7 @@ async function mountShell(over = {}, { seed = true } = {}) {
   if (seed) { seedConditions(12); seedConditions(13); }
   setApi({ '/tasks': [...PLAN_TASKS], '/plans': [PLAN], ...over });
   const r = render(<Shell onLogout={() => {}} />);
-  await screen.findByText('項待完成');
+  await screen.findByRole('heading', { name: '今天' });
   await waitFor(() => expect(calls.some(([p]) => p.startsWith('/plans'))).toBe(true));
   await flush();
   return r;
@@ -245,7 +245,7 @@ describe('重排範圍與寫入時機', () => {
     seedConditions(12); seedConditions(13);
     setApi({ '/tasks': [...PLAN_TASKS, OTHER_TASK], '/plans': [PLAN, OTHER_PLAN] });
     render(<Shell onLogout={() => {}} />);
-    await screen.findByText('項待完成');
+    await screen.findByRole('heading', { name: '今天' });
     await flush();
     await click(screen.getByRole('button', { name: '查看' }));
     await click(screen.getAllByRole('button', { name: '讓 AI 重新安排' })[0]);
@@ -301,7 +301,7 @@ describe('重排範圍與寫入時機', () => {
       '/schedule/preview': () => Promise.reject(new Error('沒有可排的日期')),
     });
     render(<Shell onLogout={() => {}} />);
-    await screen.findByText('項待完成');
+    await screen.findByRole('heading', { name: '今天' });
     await flush();
     await click(screen.getByRole('button', { name: '讓 AI 重新安排' }));
     await click(screen.getByRole('button', { name: '重新安排' }));
@@ -323,7 +323,7 @@ describe('重排必須沿用原計畫的排程條件', () => {
     seedConditions(12, cond);
     setApi({ '/tasks': [...PLAN_TASKS], '/plans': [PLAN], ...over });
     render(<Shell onLogout={() => {}} />);
-    await screen.findByText('項待完成');
+    await screen.findByRole('heading', { name: '今天' });
     await flush();
     await click(screen.getByRole('button', { name: '讓 AI 重新安排' }));
     await click(screen.getByRole('button', { name: '重新安排' }));
@@ -545,7 +545,7 @@ describe('排程條件的生命週期（不人工 seed）', () => {
       '/schedule/preview': { check: null, blocks: [{ subject_id: 1, title: t55[0].title, date: iso(2) }] },
     });
     render(<Shell onLogout={() => {}} />);
-    await screen.findByText('項待完成');
+    await screen.findByRole('heading', { name: '今天' });
     await flush();
     await click(screen.getByRole('button', { name: '讓 AI 重新安排' }));
     expect(screen.queryByText('需要先確認安排條件'), '剛建立完就該有條件可用').not.toBeInTheDocument();

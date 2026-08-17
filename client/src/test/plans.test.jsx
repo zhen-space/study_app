@@ -43,7 +43,7 @@ const click = el => act(async () => { el.click(); });
 // 同 shell.test.jsx：要等資料真的載入，不能只等第一個渲染出來的字。
 // ready 是「載入完成才會出現」的一段文字，預設用今天的一般任務。
 const goPlans = async (ready = '買參考書') => {
-  await screen.findByText('項待完成');
+  await screen.findByRole('heading', { name: '今天' });
   if (ready) await screen.findByText(ready);
   await click(within(bottomNav()).getByText('計畫').closest('button'));
 };
