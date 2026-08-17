@@ -275,7 +275,7 @@ export default function Shell({ onLogout }) {
         : view.type === 'pet' ? <PetView />
         // key：建立／調整不同計畫要當成不同的精靈重新開始，
         // 否則 React 會沿用同一個實例，草稿與既有任務都會是上一個計畫的
-        : view.type === 'wizard' ? <WizardView key={`wz:${view.mode || 'create'}:${view.planId ?? 'new'}`} lists={lists} reload={reload}
+        : view.type === 'wizard' ? <WizardView key={`wz:${view.mode || 'create'}:${view.planId ?? 'new'}:${view.section || ''}`} lists={lists} tasks={tasks} reload={reload}
             goTasks={() => setView({ type: 'today' })} goCalendar={() => setView({ type: 'calendar' })}
             mode={view.mode || 'create'} planId={view.planId ?? null} initialSection={view.section || ''}
             planTitle={apiPlans.find(p => p.id === view.planId)?.name || ''}

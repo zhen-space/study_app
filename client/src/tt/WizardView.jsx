@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { api } from '../api';
-import { planName } from './plans';
+import { planName, isLegacyPlanTask } from './plans';
 import { applyWizardSchedule } from './wizardApply';
 import { today, addDays } from './helpers';
 import { parseICS } from './ics';
@@ -50,7 +50,7 @@ const STEPS = ['讀什麼', '怎麼安排', 'AI 排程結果'];
 const SECTION_STEP = { content: 0, all: 0, time: 1, cond: 1, deadline: 1 };
 
 export default function WizardView({
-  lists, reload, goTasks, goCalendar,
+  lists, tasks = [], reload, goTasks, goCalendar,
   // Edit Mode：從計畫明細的「調整計畫」進來，帶著要調整的那個計畫
   mode = 'create', planId = null, planTitle = '', planTasks = [], initialSection = '', onDone,
 }) {
@@ -97,9 +97,8 @@ export default function WizardView({
   const [dGlobal, setDGlobal] = useState({ start: today(), end: addDays(today(), 6) });
   const [dMap, setDMap] = useState({});               // `${sid}|${gi}` → {start,end}
   const [preview, setPreview] = useState(null);
-  const [apiLeftover, setApiLeftover] = useState([]); // 上次排程還沒做完的（Create Mode：全域舊資料）
   const [redoUndone, setRedoUndone] = useState(true); // 要不要一起重新安排
-  const [apiDone, setApiDone] = useState([]);         // 已經打勾完成的（預設不再排進去）
+  const [mergedLeftover, setMergedLeftover] = useState([]); // 這次真的被併進排程的舊任務（含 id）
   const [redoDone, setRedoDone] = useState(false);    // 想重讀一次時才勾
   const [planNameInput, setPlanNameInput] = useState('');  // 這份計畫要叫什麼（確認步驟）
   const [err, setErr] = useState('');
@@ -112,12 +111,6 @@ export default function WizardView({
   useEffect(() => {
     loadEv();
     api('/settings').then(s => { setSettings(s); setShift({ sleep_start: s.sleep_start, sleep_end: s.sleep_end }); });
-    // Edit Mode 的「未完成／已完成」一律取自這個計畫自己的任務，
-    // 不碰 /plan-tasks 這支全域 legacy 端點——否則會掃到別的計畫。
-    if (mode !== 'edit') {
-      api('/plan-tasks').then(setApiLeftover).catch(() => {});
-      api('/plan-tasks?done=1').then(setApiDone).catch(() => {});
-    }
     api('/import/toc').then(setTocs);
     // AI 解讀結果自動保存：離開頁面回來還在
     try { const saved = localStorage.getItem('wizardAiPreview'); if (saved) setAiPreview(JSON.parse(saved)); } catch {}
@@ -174,7 +167,9 @@ export default function WizardView({
       }
     } catch {}
     draftLoaded.current = true;
-  }, []);
+    // draftKey／initialSection 在同一個掛載期間不會變（Shell 用它們當 key），
+    // 列進來只是讓相依關係寫全，語意沒有改變
+  }, [draftKey, initialSection]);
   // 草稿是舊的也沒關係：科目改過顏色/名稱就同步成現在的
   useEffect(() => {
     if (!lists.length) return;
@@ -203,12 +198,23 @@ export default function WizardView({
 
   const evGroups = useMemo(() => groupEvents(events), [events]);
 
-  // Edit Mode：只看這個計畫自己的任務；Create Mode：沿用原本的全域 legacy 來源
+  // 「上次還沒做完的」要從哪裡來，是這一段最危險的地方。
+  //
+  // 原本走 GET /plan-tasks，但那支是照「讀書計劃」標籤／標題全域撈的，
+  // 而且回傳裡沒有 plan_id——正式 Plan 的任務會被一起撈進來，跟著重排一次，
+  // 同一份內容就會同時存在兩個計畫。所以這裡改成自己從 tasks 推導，
+  // Create Mode 只認 legacy（plan_id == null），Edit Mode 只認這個計畫自己的。
   const livePlanTasks = useMemo(() => planTasks.filter(t => !t.deleted), [planTasks]);
   const leftover = useMemo(
-    () => (isEdit ? livePlanTasks.filter(t => !t.completed) : apiLeftover), [isEdit, livePlanTasks, apiLeftover]);
+    () => (isEdit ? livePlanTasks.filter(t => !t.completed) : tasks.filter(isLegacyPlanTask).filter(t => !t.completed)),
+    [isEdit, livePlanTasks, tasks]);
+  // 已完成的不再重排。這份只用來「排除」，不會寫入任何東西，
+  // 所以維持原本的全域範圍（做過的內容不該在任何計畫裡再冒出來）。
   const doneItems = useMemo(
-    () => (isEdit ? livePlanTasks.filter(t => t.completed) : apiDone), [isEdit, livePlanTasks, apiDone]);
+    () => (isEdit ? livePlanTasks.filter(t => t.completed)
+      : tasks.filter(t => t.completed && !t.deleted
+        && ((Array.isArray(t.tags) && t.tags.includes('讀書計劃')) || (t.title || '').includes('｜')))),
+    [isEdit, livePlanTasks, tasks]);
 
   /* ---------- 題型組別（可全域或分科） ---------- */
   const calcGroups = (ts, cb, tg) => {
@@ -546,6 +552,9 @@ export default function WizardView({
     });
     // 上次沒做完的一起重排：標題原樣帶回去（伺服器會自己認出純題目），
     // 已經在這次勾選裡的就不重複加
+    // 這次真正被帶進排程的舊任務，逐筆記下來（連 id 一起）。
+    // 之後只有「這幾筆」有資格被軟刪除——沒被帶進來的一律不動。
+    const merged2 = [];
     if (redoUndone && leftover.length) {
       const have = new Set(expanded2.map(i => i.title));
       const gw = fixWin(mergeWin('all|all'));
@@ -554,8 +563,10 @@ export default function WizardView({
         have.add(t.title);
         const w = bySubject ? fixWin(mergeWin(`${t.list_id}|all`)) : gw;
         expanded2.push({ subject_id: t.list_id, title: t.title, minutes: 60, start: w.start, end: w.end, spread: false });
+        merged2.push(t);
       }
     }
+    setMergedLeftover(merged2);
     // 已經打勾完成的不要再排一次（想重讀才勾「已完成的也重排」）。
     // 同一科＋同一個標題才算同一件事，不同科目撞名不會誤刪。
     // 注意：這裡不能取名 items——外面已經有一個 items（勾選的目錄項目），
@@ -603,9 +614,12 @@ export default function WizardView({
           preview.blocks.map(b => ({ title: b.title, list_id: b.subject_id, due_date: b.date })), lists),
         blocks: preview.blocks,
         existingTasks: livePlanTasks,
-        // 未做完的已經併進這次排程 → 清掉舊的那幾筆（已完成的保留當紀錄）。
-        // 這支是全域 legacy 端點，只有建立新計畫時才允許呼叫。
-        clearLegacyLeftover: !isEdit && redoUndone,
+        // 舊任務只有同時滿足這三件事才會被軟刪除：
+        //   ① 這次真的被帶進排程（merged）
+        //   ② 內容確實出現在最後的排程結果裡（沒排進去的不能刪）
+        //   ③ plan_id == null（正式 Plan 的任務一律不碰，apply layer 還會再擋一次）
+        legacyMerged: isEdit ? [] : mergedLeftover.filter(t =>
+          preview.blocks.some(b => b.title === t.title && String(b.subject_id) === String(t.list_id))),
         // 使用者選「維持原本日期不動」時，這次沒排到的任務原封不動留著
         removeUnscheduled: redoUndone,
       });

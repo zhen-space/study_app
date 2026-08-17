@@ -20,7 +20,7 @@ vi.mock('../api', () => ({ api: vi.fn() }));
 const { api } = await import('../api');
 const WizardView = (await import('../tt/WizardView')).default;
 const PlanDetailView = (await import('../tt/PlanDetailView')).default;
-const { reconcile } = await import('../tt/wizardApply');
+const { reconcile, applyWizardSchedule } = await import('../tt/wizardApply');
 
 let calls;
 const setApi = (over = {}) => {
@@ -179,6 +179,87 @@ describe('Create Mode', () => {
     expect(bulk.length).toBe(1);
     expect(bulk[0][1].body.tasks.length).toBe(fx.previewBlocks.length);
     expect(bulk[0][1].body.tasks[0].plan_id).toBe(99);
+    noCrash();
+  });
+});
+
+// legacy 的 DELETE /plan-tasks 是照「讀書計劃」標籤／標題全域刪的，
+// 正式 Plan 的任務同樣帶那個標籤 —— 呼叫它等於刪別人的計畫。
+// GET /plan-tasks 同樣沒有 scope（回傳裡連 plan_id 都沒有），所以連讀都不能用。
+describe('legacy 全域端點已經完全退出新版 Wizard', () => {
+  // 舊資料（沒有 plan_id）＋ 正式 Plan 的任務（plan_id=12，一樣帶「讀書計劃」標籤）
+  const allTasks = [...fx.tasks, ...fx.planTasks];
+  const legacyTitle = '物理｜新大滿貫｜單元2｜節1｜範例+例題';   // fx.tasks id=11，plan_id == null
+  const planTaskTitle = '物理｜段考範圍｜力學複習';               // fx.planTasks id=21，plan_id=12
+  // 排程結果包含那筆舊資料 → 它才有資格被軟刪除
+  const createPreview = {
+    check: null,
+    blocks: [
+      { subject_id: 1, title: legacyTitle, date: today(), start_time: null, end_time: null, deadline: null },
+      { subject_id: 1, title: '單元1 力學｜範例+例題', date: addDays(today(), 1), start_time: null, end_time: null, deadline: null },
+    ],
+  };
+  const run = async () => {
+    setApi({ '/schedule/preview': createPreview });
+    await mountWizard({ tasks: allTasks });
+    await toResult();
+    await click(btn(/加入待辦/));
+    await flush();
+  };
+
+  it('27. Create Mode 永遠不碰 /plan-tasks（不刪，也不讀）', async () => {
+    await run();
+    expect(sent('/plan-tasks', 'DELETE').length, '這支會刪掉別的計畫的任務').toBe(0);
+    expect(calls.filter(([p]) => p.startsWith('/plan-tasks')).length, '連讀都不該讀，它沒有 scope').toBe(0);
+    noCrash();
+  });
+
+  it('28. 已有正式 Plan 的未完成任務，不會被拉進新計畫的排程', async () => {
+    await run();
+    const body = sent('/schedule/preview', 'POST')[0][1].body;
+    expect(body.items.map(i => i.title)).not.toContain(planTaskTitle);
+    noCrash();
+  });
+
+  it('29. 建立新計畫不會 DELETE 或 PATCH 別的計畫的任務', async () => {
+    await run();
+    const touched = calls
+      .filter(([p, o]) => p.startsWith('/tasks/') && ['DELETE', 'PATCH'].includes(o?.method))
+      .map(([p]) => p);
+    for (const id of [21, 22, 23]) {
+      expect(touched, `Plan 12 的任務 ${id} 不該被動到`).not.toContain(`/tasks/${id}`);
+    }
+    noCrash();
+  });
+
+  it('30. 只有「這次真的排進去的、plan_id == null 的」舊任務會被軟刪除', async () => {
+    await run();
+    const dels = calls.filter(([p, o]) => p.startsWith('/tasks/') && o?.method === 'DELETE').map(([p]) => p);
+    // id=11 有排進這次結果 → 刪
+    expect(dels).toContain('/tasks/11');
+    // id=12、13、15 也是舊資料，但沒出現在排程結果裡 → 一律留著（重複比誤刪安全）
+    for (const id of [12, 13, 15]) expect(dels).not.toContain(`/tasks/${id}`);
+    noCrash();
+  });
+
+  it('31. 帶「讀書計劃」標籤但已屬於正式 Plan 的任務不受影響', async () => {
+    await run();
+    const planTask = fx.planTasks.find(t => t.id === 21);
+    expect(planTask.tags).toContain('讀書計劃');   // 標籤條件會撈到它，所以才危險
+    expect(calls.filter(([p]) => p === '/tasks/21').length, '完全不該被碰').toBe(0);
+    noCrash();
+  });
+
+  it('32. 選「維持原本日期不動」時，舊任務一筆都不刪', async () => {
+    setApi({ '/schedule/preview': createPreview });
+    await mountWizard({ tasks: allTasks });
+    await toStep2();
+    await click(screen.getByText(/維持原本日期不動/).closest('label').querySelector('input'));
+    await click(btn(/產生排程/));
+    await flush();
+    await click(btn(/加入待辦/));
+    await flush();
+    expect(calls.filter(([p, o]) => p.startsWith('/tasks/') && o?.method === 'DELETE').length).toBe(0);
     noCrash();
   });
 });
@@ -362,6 +443,21 @@ describe('reconcile 對應規則', () => {
     const r = reconcile([], [t(1, 'A', { completed: 1 }), t(2, 'B', { deleted: 1 })]);
     expect(r.remove).toEqual([]);
     expect(r.update).toEqual([]);
+  });
+
+  // apply layer 是第二道防線：就算呼叫端把不該刪的東西傳進來，它也要擋下來。
+  // （第一道是 Wizard 只把 legacy 任務放進 leftover）
+  it('33. 就算把正式 Plan 的任務傳進 legacyMerged，apply layer 也不會刪它', async () => {
+    await applyWizardSchedule({
+      mode: 'create', name: '新計畫', blocks: [{ subject_id: 1, title: 'A', date: '2026-01-01' }],
+      legacyMerged: [
+        { id: 7, title: 'B', list_id: 1, plan_id: null, completed: 0 },   // 真的舊資料 → 刪
+        { id: 8, title: 'C', list_id: 1, plan_id: 12, completed: 0 },     // 屬於別的計畫 → 不准刪
+        { id: 9, title: 'D', list_id: 1, plan_id: null, completed: 1 },   // 已完成 → 不准刪
+      ],
+    });
+    const dels = calls.filter(([p, o]) => p.startsWith('/tasks/') && o?.method === 'DELETE').map(([p]) => p);
+    expect(dels).toEqual(['/tasks/7']);
   });
 
   it('26. 標題重複時一對一配對，多出來的才算移除', () => {

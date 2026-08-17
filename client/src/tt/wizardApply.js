@@ -12,7 +12,9 @@ import { api } from '../api';
 //   ・不寫 scheduled_blocks / schedule_versions（那是 2C 的事，還沒實作）
 //   ・不在前端另存一份排程狀態（沒有第三套 schedule store）
 //   ・Edit Mode 不 POST /plans（會多生一個計畫）
-//   ・Edit Mode 不呼叫 legacy DELETE /plan-tasks（那支是全域的，會掃到別的計畫）
+//   ・任何模式都不呼叫 legacy DELETE /plan-tasks。那支照「讀書計劃」標籤／
+//     標題全域刪，正式 Plan 的任務同樣帶那個標籤，會誤刪別的計畫。
+//     新流程一律針對「明確知道 id 而且 plan_id == null」的舊任務逐筆軟刪除。
 
 /* ---------- 身分比對 ---------- */
 
@@ -64,7 +66,7 @@ export function reconcile(blocks, existing = []) {
 // mode='edit'  ：只調整既有計畫，任務身分盡量保留
 export async function applyWizardSchedule({
   mode = 'create', planId = null, name = '', blocks = [],
-  existingTasks = [], clearLegacyLeftover = false, removeUnscheduled = true,
+  existingTasks = [], legacyMerged = [], removeUnscheduled = true,
 }) {
   const dates = blocks.map(b => b.date).filter(Boolean).sort();
   const counts = {};
@@ -111,12 +113,17 @@ export async function applyWizardSchedule({
     method: 'POST',
     body: { name, ...meta, status: 'active', source: 'manual' },
   });
-  // 舊資料還沒 migrate，未做完的那批已經併進這次排程 → 清掉舊的。
-  // 這支是 legacy 全域端點，只有「建立新計畫」時才允許呼叫。
-  if (clearLegacyLeftover) { try { await api('/plan-tasks', { method: 'DELETE' }); } catch {} }
   await api('/tasks/bulk', {
     method: 'POST',
     body: { tasks: blocks.map(b => ({ ...blockFields(b), tags: ['讀書計劃'], plan_id: plan.id })) },
   });
-  return { planId: plan.id, created: blocks.length, updated: 0, removed: 0 };
+  // 舊資料的未完成項目若已經併進這次排程，就把「那幾筆」軟刪除，不然會重複。
+  //
+  // 這裡刻意逐筆走 DELETE /tasks/:id，不用 legacy 的全域 DELETE /plan-tasks——
+  // 那支是照「讀書計劃」標籤／標題全域刪的，正式 Plan 的任務同樣帶那個標籤，
+  // 會把別的計畫的未完成任務一起刪掉。id 拿不到的寧可留著不刪：
+  // 資料重複遠比跨計畫誤刪安全。
+  const safe = legacyMerged.filter(t => t && t.id != null && t.plan_id == null && !t.completed);
+  for (const t of safe) await api(`/tasks/${t.id}`, { method: 'DELETE' });
+  return { planId: plan.id, created: blocks.length, updated: 0, removed: safe.length };
 }
