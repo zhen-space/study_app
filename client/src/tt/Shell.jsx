@@ -35,16 +35,23 @@ export default function Shell({ onLogout }) {
 
   // 改一筆任務不需要把清單／篩選／習慣整包重抓——之前每個動作都打 5 支 API，
   // 手機上就是每按一下等好幾百毫秒。scope='tasks' 只抓真正會變的（任務＋金幣）。
+  // 回傳 Promise：建立計畫之後要等清單真的更新，才能開它的明細
   const reload = (scope) => {
-    api('/tasks').then(setTasks).catch(() => {});
-    api('/pet').then(setPetData).catch(() => {});     // 完成任務會加金幣
-    api('/plans').then(setApiPlans).catch(() => setApiPlans([]));  // 沒有這支也要能跑
-    if (scope === 'tasks') return;
-    api('/lists').then(setLists).catch(() => {});
-    api('/filters').then(setFilters).catch(() => {});
-    api('/habits').then(setHabits).catch(() => {});
+    const jobs = [
+      api('/tasks').then(setTasks).catch(() => {}),
+      api('/pet').then(setPetData).catch(() => {}),   // 完成任務會加金幣
+      // 帶 includeArchived：計畫頁要能顯示（並恢復）已封存的計畫。
+      // 舊後端沒有這支也要能跑，所以失敗就退回空陣列走 legacy 推導。
+      api('/plans?includeArchived=1').then(setApiPlans).catch(() => setApiPlans([])),
+    ];
+    if (scope !== 'tasks') jobs.push(
+      api('/lists').then(setLists).catch(() => {}),
+      api('/filters').then(setFilters).catch(() => {}),
+      api('/habits').then(setHabits).catch(() => {}),
+    );
+    return Promise.all(jobs);
   };
-  useEffect(reload, []);
+  useEffect(() => { reload(); }, []);
   useEffect(() => { api('/pet').then(setPetData).catch(() => {}); }, [view.type]);
   // 提醒通知需要授權（之前從沒請求過，通知一直發不出來）
   useEffect(() => {
@@ -254,7 +261,7 @@ export default function Shell({ onLogout }) {
 
       {view.type === 'today' ? <TodayView tasks={tasks} lists={lists} filters={filters} habits={habits} reload={reload}
             goStudy={() => setView({ type: 'study' })} goVocab={() => setView({ type: 'vocab' })} goMemo={() => setView({ type: 'memo' })} />
-        : view.type === 'plans' ? <PlansView tasks={tasks} lists={lists} apiPlans={apiPlans}
+        : view.type === 'plans' ? <PlansView tasks={tasks} lists={lists} apiPlans={apiPlans} reload={reload}
             openPlan={k => setView({ type: 'plan', key: k })} goWizard={() => setView({ type: 'wizard' })} />
         : view.type === 'plan' ? <PlanDetailView planKey={view.key} tasks={tasks} lists={lists} apiPlans={apiPlans} reload={reload}
             onBack={() => setView({ type: 'plans' })} goWizard={() => setView({ type: 'wizard' })} />

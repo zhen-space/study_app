@@ -22,7 +22,9 @@ const Shell = (await import('../tt/Shell')).default;
 // （前面版本少了這步，某個 case 把 /tasks 改成空陣列之後，
 //   後面所有 case 都跟著拿到空資料——測試互相污染。）
 const setApi = (over = {}) => {
-  api.mockImplementation(path => {
+  api.mockImplementation(raw => {
+    // Shell 會帶 ?includeArchived=1，假資料只認得基底路徑
+    const path = raw.startsWith('/plans?') ? '/plans' : raw;
     if (path in over) return Promise.resolve(over[path]);
     if (path in fx.responses) return Promise.resolve(fx.responses[path]);
     if (path.endsWith('/attachments')) return Promise.resolve([]);
@@ -143,12 +145,14 @@ describe('TodayView', () => {
 });
 
 describe('PlansView / PlanDetailView', () => {
-  it('5. PlansView 能 render，計畫依科目分組', async () => {
+  it('5. PlansView 能 render，舊資料照科目列出', async () => {
     await mountShell();
     await click(navButton('計畫'));
-    expect(within(main()).getByText('物理')).toBeInTheDocument();
-    expect(within(main()).getByText('地科')).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: /安排新的讀書計畫/ })).toBeInTheDocument();
+    // 卡片標題（legacy 的名稱就是科目名）
+    const titles = [...main().querySelectorAll('.tile b')].map(b => b.textContent);
+    expect(titles).toContain('物理');
+    expect(titles).toContain('地科');
+    expect(screen.getByRole('button', { name: /建立計畫/ })).toBeInTheDocument();
     noCrash();
   });
 
@@ -157,14 +161,14 @@ describe('PlansView / PlanDetailView', () => {
     render(<Shell onLogout={() => {}} />);
     await waitFor(() => expect(screen.getByText('項待完成')).toBeInTheDocument());
     await click(navButton('計畫'));
-    expect(screen.getByText(/還沒有讀書計畫/)).toBeInTheDocument();
+    expect(screen.getByText(/還沒有計畫/)).toBeInTheDocument();
     noCrash();
   });
 
-  it('6a. 有效 planKey：點計畫卡進得了明細，照書分堆', async () => {
+  it('6a. 有效 planKey：點計畫卡進得了明細，同科多本書再分小段', async () => {
     await mountShell();
     await click(navButton('計畫'));
-    await click(within(main()).getByText('物理').closest('.tile'));
+    await click([...main().querySelectorAll('.tile')].find(el => el.querySelector('b')?.textContent === '物理'));
     expect(within(main()).getByRole('heading', { name: '物理' })).toBeInTheDocument();
     expect(screen.getByText(/新大滿貫/)).toBeInTheDocument();
     expect(screen.getByText(/週攻略/)).toBeInTheDocument();

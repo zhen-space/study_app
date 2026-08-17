@@ -13,7 +13,9 @@ const { api } = await import('../api');
 const Shell = (await import('../tt/Shell')).default;
 
 const setApi = (over = {}) => {
-  api.mockImplementation(path => {
+  api.mockImplementation(raw => {
+    // Shell 會帶 ?includeArchived=1，假資料只認得基底路徑
+    const path = raw.startsWith('/plans?') ? '/plans' : raw;
     if (path in over) return Promise.resolve(over[path]);
     if (path in fx.responses) return Promise.resolve(fx.responses[path]);
     if (path.endsWith('/attachments')) return Promise.resolve([]);
@@ -81,7 +83,8 @@ describe('Legacy 相容', () => {
     setApi({ '/plans': [], '/tasks': fx.tasks });
     render(<Shell onLogout={() => {}} />);
     await goPlans();
-    expect(within(main()).getByText('物理')).toBeInTheDocument();
+    const titles = [...main().querySelectorAll('.tile b')].map(b => b.textContent);
+    expect(titles).toContain('物理');
     expect(within(main()).getAllByText('舊資料').length).toBeGreaterThan(0);
     noCrash();
   });
