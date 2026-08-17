@@ -94,13 +94,13 @@ export default function ReplanSheet({ plan, health, raw, lists = [], reload, onC
         {stage === 'confirm' || stage === 'loading' ? (
           <>
             <Head title={`重新安排「${plan.name}」`} />
-            <div className="side-sec" style={{ marginTop: 10 }}>原因</div>
+            <div className="sheet-sec" style={{ marginTop: 10 }}>原因</div>
             {(health?.reasons || []).map(r => (
               <div key={r.type} className="muted" style={{ fontSize: 13 }}>・{r.message}</div>
             ))}
-            <div className="side-sec" style={{ marginTop: 12 }}>AI 將重新計算</div>
+            <div className="sheet-sec" style={{ marginTop: 12 }}>AI 將重新計算</div>
             <div className="muted" style={{ fontSize: 13 }}>・還沒完成、而且屬於這個計畫的 {pending.length} 項</div>
-            <div className="side-sec" style={{ marginTop: 12 }}>不會修改</div>
+            <div className="sheet-sec" style={{ marginTop: 12 }}>不會修改</div>
             <div className="muted" style={{ fontSize: 13 }}>・已經完成的項目</div>
             <div className="muted" style={{ fontSize: 13 }}>・其他計畫</div>
             <div className="muted" style={{ fontSize: 13 }}>・過去的完成紀錄</div>

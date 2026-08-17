@@ -491,3 +491,106 @@ select { -webkit-appearance: none; appearance: none; padding-right: 26px;
 .ui-empty { text-align: center; padding: var(--sp-7) var(--sp-4); }
 .ui-empty b { display: block; font-size: 17px; margin-bottom: var(--sp-2); }
 .ui-empty p { font-size: 14px; color: var(--text-2); margin-bottom: var(--sp-5); line-height: 1.6; }
+
+/* ---- IconButton：視覺小、觸控目標仍然 44px ---- */
+.ui-iconbtn {
+  display: inline-grid; place-items: center; min-width: 44px; min-height: 44px;
+  border-radius: var(--radius-sm); color: var(--text-2);
+  transition: background var(--motion-fast) var(--ease), color var(--motion-fast) var(--ease);
+}
+.ui-iconbtn:hover { background: var(--fill); color: var(--text); }
+.ui-iconbtn:active { background: var(--fill-strong); }
+
+/* ---- ListRow ---- */
+.ui-row { display: flex; align-items: flex-start; gap: var(--sp-3); padding: 12px 0; }
+.ui-row-lead { flex-shrink: 0; display: flex; align-items: center; min-height: 24px; }
+.ui-row-main { flex: 1; min-width: 0; }
+.ui-row-title { font-size: 16px; font-weight: 600; overflow-wrap: anywhere; }
+.ui-row-sub { font-size: 13px; color: var(--text-2); overflow-wrap: anywhere; }
+.ui-row-trail { flex-shrink: 0; color: var(--text-2); font-size: 13px; }
+.ui-row--muted .ui-row-title { color: var(--text-3); }
+
+/* ---- PageHeader ---- */
+.page-head-text { min-width: 0; }
+.page-head-text h2 { overflow-wrap: anywhere; }
+
+/* ============================================================
+   Accessibility（UI-R1 §16）
+   ============================================================ */
+/* 只有鍵盤操作才顯示焦點框：滑鼠點擊不會出現，但 Tab 一定看得到 */
+:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 6px; }
+.ui-btn:focus-visible, .ui-iconbtn:focus-visible, .ui-seg button:focus-visible { outline-offset: 3px; }
+/* 觸控目標：主要互動元素至少 44px */
+.ui-btn--md, .ui-btn--lg { min-height: 44px; }
+.ui-btn--sm { min-height: 36px; }
+@media (pointer: coarse) { .ui-btn--sm { min-height: 44px; } }
+.bottom-nav button { min-height: 74px; }
+/* 圓形勾選框在觸控裝置放大到 44px 的可點區（視覺大小不變） */
+.trow input[type=checkbox] { position: relative; }
+.trow input[type=checkbox]::before {
+  content: ''; position: absolute; inset: -11px; border-radius: 50%;
+}
+
+/* ============================================================
+   RWD（UI-R1 §14）
+   桌機不是「手機放大」：限制可讀寬度，導航改成側邊，
+   Today 的時間軸與清單維持跟手機一致的密度。
+   ============================================================ */
+/* 內容可讀寬度：超寬螢幕不讓一行字橫跨整個畫面 */
+.main-body > * { max-width: var(--content-max, 720px); }
+.main-head { max-width: none; }
+.main-head > .page-head-text { max-width: var(--content-max, 720px); }
+
+@media (min-width: 769px) {
+  /* 桌機保留側邊欄，主內容置左但有可讀上限 */
+  .main-body { padding-left: var(--sp-7); padding-right: var(--sp-7); }
+  .main-head { padding-left: var(--sp-7); padding-right: var(--sp-7); }
+  .main-head h2 { font-size: 34px; }
+}
+@media (min-width: 1280px) {
+  :root { --content-max: 760px; }
+}
+/* 大手機：留白稍微放寬，但不改變層級 */
+@media (min-width: 420px) and (max-width: 768px) {
+  :root { --page-x: 22px; }
+}
+/* 平板：兩欄太空、單欄太寬 —— 用可讀寬度置中 */
+@media (min-width: 700px) and (max-width: 1024px) {
+  :root { --content-max: 640px; }
+}
+
+/* ============================================================
+   Visual QA 之後的修正（UI-R1）
+   實際在 375／430／768／1280 看過之後才發現的問題。
+   ============================================================ */
+@media (max-width: 768px) {
+  /* 漢堡鍵原本跟兩行的大標題擠在同一條中線上，改成對齊標題那一行 */
+  .main-head { align-items: flex-start; }
+  .menu-btn { position: absolute; left: 4px; padding: 6px 12px; min-height: 44px; }
+  .main-head .page-head-text { padding-top: 2px; }
+
+  /* 中央「讀書」的字被切掉：膠囊＋文字需要的高度比 74px 多 */
+  .bottom-nav button { min-height: 78px; }
+  .bottom-nav button.primary { padding-top: 12px; padding-bottom: 8px; }
+
+  /* 新增任務的浮動鈕原本又大又重，蓋住時間軸最後一項。
+     縮小、降低存在感，並讓內容底部留出它的位置。
+     （Tasks 全面重做是 UI-R4，這裡只先讓它不礙事） */
+  .fab { width: 48px; height: 48px; font-size: 26px; box-shadow: var(--shadow-subtle);
+    right: 16px; bottom: calc(94px + env(safe-area-inset-bottom)); }
+  .main-body { padding-bottom: calc(104px + env(safe-area-inset-bottom)); }
+}
+
+/* 時間軸的副標是 meta，不要跟標題一樣重 */
+.tl-sub { line-height: 1.5; }
+/* 時間軸留白：項目之間鬆一點才掃得動 */
+.tl-body { padding-bottom: var(--sp-5); }
+/* Today 的「開始讀書」：次要樣式但仍要看得出是動作，給它 accent 文字 */
+.ui-btn--secondary.ui-btn--block { color: var(--accent); }
+/* 快速新增輸入框原本是白底＋陰影，在桌機變成整頁最搶眼的東西，
+   而且它排在今日進度上面。降成一般 fill，不搶大標題與進度 */
+.quick-add input { background: var(--fill); box-shadow: none; }
+.quick-add input:focus { background: var(--surface-2); }
+/* Bottom Sheet 裡的小標題（原本借用側邊欄的 .side-sec，會多一層縮排） */
+.sheet-sec { font-size: 12px; font-weight: 600; letter-spacing: .03em; color: var(--text-2);
+  text-transform: uppercase; margin-bottom: var(--sp-1); }

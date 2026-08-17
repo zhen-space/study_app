@@ -3,10 +3,10 @@ import { api } from '../api';
 import { today } from './helpers';
 import Tasks from './Tasks';
 import Icon from './Icons';
-import { usePlans } from './plans';
+import { usePlans, shortTitle } from './plans';
 import { usePlansNeedingAdjustment } from './planHealth';
 import ReplanSheet from './ReplanSheet';
-import { Button, SurfaceCard } from './ui';
+import { Button, SurfaceCard, ProgressBar } from './ui';
 
 // 「今天」＝執行頁：回答「我現在該做什麼」。
 //
@@ -112,9 +112,13 @@ function NextUp({ tasks, lists }) {
     ...tasks.filter(t => !t.deleted && !t.completed && t.due_date === td && t.due_time && t.plan_id != null)
       .map(t => {
         const l = lists.find(x => String(x.id) === String(t.list_id));
-        return { key: 't' + t.id, time: HM(t.due_time), kind: 'task', color: l?.color, title: l?.name || '讀書', sub: t.title };
+        // 標題＝實際要做的事（去掉「科目｜書名｜」前綴），科目退成下面一行的 meta。
+        // 原本把科目名當標題、副標又整串重複一次，同一個詞會出現兩次。
+        return { key: 't' + t.id, time: HM(t.due_time), kind: 'task', color: l?.color,
+          title: shortTitle(t.title), sub: l?.name || '讀書' };
       }),
-    ...todayEv.map(e => ({ key: 'e' + e.id, time: HM(e.start_time), kind: 'event', title: e.title, sub: e.location || '' })),
+    ...todayEv.map(e => ({ key: 'e' + e.id, time: HM(e.start_time), kind: 'event', title: e.title,
+      sub: e.location ? `固定行程・${e.location}` : '固定行程' })),
   ].sort((a, b) => a.time.localeCompare(b.time));
 
   if (!rows.length) return null;
@@ -144,7 +148,6 @@ function TodayProgress({ tasks, goStudy }) {
   const mine = tasks.filter(t => !t.deleted && t.due_date === td);
   const done = mine.filter(t => t.completed).length;
   const left = mine.length - done;
-  const pct = mine.length ? Math.round(done / mine.length * 100) : 0;
 
   return (
     <div>
@@ -154,11 +157,15 @@ function TodayProgress({ tasks, goStudy }) {
         </span>
         <span className="ui-meta">已完成</span>
       </div>
-      <div className="today-progress" style={{ marginTop: 'var(--sp-2)' }}><i style={{ width: `${pct}%` }} /></div>
+      <div style={{ marginTop: 'var(--sp-2)' }}>
+        <ProgressBar value={done} max={mine.length} label={`今日進度：${mine.length} 項中已完成 ${done} 項`} />
+      </div>
       <div className="ui-meta" style={{ marginTop: 'var(--sp-2)' }}>
         {mine.length ? <>還有 {left} <span>項待完成</span></> : '今天沒有排任務'}
       </div>
-      <Button variant="primary" size="lg" block style={{ marginTop: 'var(--sp-4)' }} onClick={goStudy}>
+      {/* 中央導航的「讀書」才是全 App 的 Primary Action。這裡再放一顆一樣重的
+          實心大鈕，整頁就會變成兩個主要動作互相搶——所以降成 secondary。 */}
+      <Button variant="secondary" size="md" block style={{ marginTop: 'var(--sp-4)' }} onClick={goStudy}>
         <Icon name="pomo" size={18} />開始讀書
       </Button>
     </div>
