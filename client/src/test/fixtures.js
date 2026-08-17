@@ -61,6 +61,18 @@ export const planTasks = [
   { id: 23, list_id: 1, plan_id: 12, title: '物理｜段考範圍｜電磁複習', due_date: null, due_time: null, priority: 0, completed: 0, tags: ['讀書計劃'], subtasks: [], recurring: null, deadline_date: null, order_index: 22, deleted: 0 },
 ];
 
+// 排程精靈用的課本目錄（形狀比照 GET /import/toc）
+export const tocs = [
+  { id: 101, list_id: 1, book: '新大滿貫', publisher: '龍騰', title: '單元1 力學', level: '章',
+    sections: [{ title: '節1 直線運動', level: '節', children: [] }, { title: '節2 力', level: '節', children: [] }] },
+];
+// POST /schedule/preview 的回傳（形狀比照後端）
+export const previewBlocks = [
+  { subject_id: 1, title: '單元1 力學｜範例+例題', date: TODAY, start_time: null, end_time: null, deadline: null },
+  { subject_id: 1, title: '單元1 力學｜單元練習+歷屆試題', date: iso(1), start_time: null, end_time: null, deadline: null },
+];
+export const preview = { blocks: previewBlocks, check: { dailyMin: 1, dailyMax: 1, subjects: [], warnings: [], tight: [] } };
+
 export const events = [
   { id: 1, title: '數學課', date: TODAY, start_time: '08:10', end_time: '09:00', recurring: null, location: '教室' },
   { id: 2, title: '社團', date: TODAY, start_time: '15:30', end_time: '17:00', recurring: 'weekly', location: '' },
@@ -98,7 +110,7 @@ export const responses = {
   '/memos': [],
   '/memo-cats': [],
   '/trash': [],
-  '/import/toc': [],
+  '/import/toc': tocs,
   '/plan-tasks': tasks.filter(t => !t.completed && t.tags.includes('讀書計劃')),
   '/plan-tasks?done=1': tasks.filter(t => t.completed && t.tags.includes('讀書計劃')),
 };

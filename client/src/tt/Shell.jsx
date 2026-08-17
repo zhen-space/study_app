@@ -264,14 +264,23 @@ export default function Shell({ onLogout }) {
         : view.type === 'plans' ? <PlansView tasks={tasks} lists={lists} apiPlans={apiPlans} reload={reload}
             openPlan={k => setView({ type: 'plan', key: k })} goWizard={() => setView({ type: 'wizard' })} />
         : view.type === 'plan' ? <PlanDetailView planKey={view.key} tasks={tasks} lists={lists} apiPlans={apiPlans} reload={reload}
-            onBack={() => setView({ type: 'plans' })} goWizard={() => setView({ type: 'wizard' })} />
+            onBack={() => setView({ type: 'plans' })} goWizard={() => setView({ type: 'wizard' })}
+            // 「調整計畫」＝Edit Mode：帶著這個計畫進精靈，不會建立新計畫
+            adjustPlan={(planId, section) => setView({ type: 'wizard', mode: 'edit', planId, section, from: view.key })} />
         : view.type === 'study' || view.type === 'pomo' ? <StudyView tasks={tasks.filter(t => !t.deleted)} />
         : view.type === 'calendar' ? <CalendarView tasks={tasks.filter(t => !t.deleted)} reload={reload} />
         : view.type === 'matrix' ? <MatrixView tasks={tasks.filter(t => !t.deleted)} reload={reload} />
         : view.type === 'habits' ? <HabitsView habits={habits} reload={reload} />
         : view.type === 'stats' ? <StatsView />
         : view.type === 'pet' ? <PetView />
-        : view.type === 'wizard' ? <WizardView lists={lists} reload={reload} goTasks={() => setView({ type: 'today' })} />
+        // key：建立／調整不同計畫要當成不同的精靈重新開始，
+        // 否則 React 會沿用同一個實例，草稿與既有任務都會是上一個計畫的
+        : view.type === 'wizard' ? <WizardView key={`wz:${view.mode || 'create'}:${view.planId ?? 'new'}:${view.section || ''}`} lists={lists} tasks={tasks} reload={reload}
+            goTasks={() => setView({ type: 'today' })} goCalendar={() => setView({ type: 'calendar' })}
+            mode={view.mode || 'create'} planId={view.planId ?? null} initialSection={view.section || ''}
+            planTitle={apiPlans.find(p => p.id === view.planId)?.name || ''}
+            planTasks={view.planId != null ? tasks.filter(t => t.plan_id === view.planId) : []}
+            onDone={() => setView({ type: 'plan', key: view.from || `plan:${view.planId}` })} />
         : view.type === 'vocab' ? <VocabView />
         : view.type === 'memo' ? <MemoView />
         : <Tasks view={view} tasks={tasks} lists={lists} filters={filters} habits={habits} reload={reload} title={titleOf()}
