@@ -1,7 +1,6 @@
 # Phase 2C：Schedule Persistence
 
-> 狀態：**2C-1、2C-2、2C-3 已定案，尚未實作。**
-> 2C-4 契約已定案，內容在後續 PR 併入本文件（本文件已有指向 2C-4 章節的前向引用）。
+> 狀態：**2C-1、2C-2、2C-3、2C-4 全部已定案，尚未實作。**
 > Plan domain 契約另見 [`phase2-plan-domain.md`](phase2-plan-domain.md)。
 > 基準 commit：`32fed0e`（Phase 2A 合併後）
 > 最後更新：2026-08-17
@@ -24,7 +23,7 @@ Phase 2C 的任務就是關掉它。2C 完成時，該例外連同那段文字�
 | **2C-1** | ScheduleVersion / ScheduledBlock schema、active version 契約、bootstrap | ✅ **已定案**（本文件 §1–§8） |
 | **2C-2** | 版本恢復（restore）＋ feasibility | ✅ **已定案**（§12–§19） |
 | **2C-3** | Lock 持久化 ＋ feasibility 整合 | ✅ **已定案**（§22–§31） |
-| **2C-4** | 重排 diff ＋ stale preview protection | ✅ **已定案**（內容於後續 PR 併入本文件 §33–§49） |
+| **2C-4** | 重排 diff ＋ stale preview protection | ✅ **已定案**（§33–§49） |
 
 ---
 
@@ -426,7 +425,7 @@ V80 是 restore from V12，但 V12 已經被清掉
 - 版本恢復的實際邏輯 → **2C-2**
 - feasibility（排程是否仍可行、固定行程變動後的標記）→ **2C-2**
 - Lock 持久化與版本化 → **2C-3**（傾向 Lock 不隨版本回滾，理由屆時再定）
-- 重排 diff（moved / added / removed）→ **2C-4**
+- 重排 diff（moved / added / removed）→ **2C-4**（§33–§49，已定案）
 - 歷史排程查詢（§3 說明的取捨）
 - **排程演算法本身完全不動** —— 2C-1 只是把它算出來的結果持久化
 
@@ -1216,3 +1215,508 @@ DELETE /api/schedule/locks/:id          使用者主動解鎖 → 寫 released_a
       - 手動拖曳被鎖任務被拒絕
       - restore 時 Lock 優先於舊版位置
 
+
+---
+
+# Part 4：2C-4 — Schedule Diff 契約
+
+> 狀態：**✅ 定案，尚未實作**
+>
+> 這一部分只定契約。不實作 production persistence，也不實作 UI。
+
+## 33. 為什麼需要正式 diff
+
+「套用新版安排」這個動作，使用者按下去之前必須看得懂**到底會改什麼**。
+
+前端拿兩版資料自己比對是行不通的：它沒有 Lock、沒有 feasibility、沒有
+`effective_from` 的概念，而且會退化成「照標題猜」——那正是 Phase 2B 一路在拔掉的東西。
+
+所以 diff 必須跟版本系統**屬於同一個真相**：由後端從 immutable snapshot 算出來，
+前端只負責 render。
+
+而且——這條比 moved/added/removed 本身更重要——
+
+> **Preview 到 Apply 之間，世界可能已經變了。**
+> 基於 V5 算出來的候選版本，絕對不能覆蓋一個已經變成 V6 的世界。
+
+§38 的 stale protection 就是在解這件事。
+
+---
+
+## 34. 比較對象與 `comparison_from`
+
+```
+base      = 操作開始時的 active ScheduleVersion
+candidate = 即將建立（或已建立）的新 ScheduleVersion
+```
+
+適用於 AI replan、Wizard edit／regenerate、手動單筆調整（2C-1 §6.1）、restore。
+
+### 34.1 只比較 `effective_from` 當天起
+
+```
+comparison_from = candidate.effective_from
+
+before = base 之中 date >= comparison_from 的 blocks
+after  = candidate 之中 date >= comparison_from 的 blocks
+```
+
+這條是**必要的**，不是最佳化。舉例：
+
+```
+V3 effective_from = 8/15，涵蓋 8/15、8/16、8/17…
+V4 effective_from = 8/17
+```
+
+V4 依定義不包含 8/15、8/16 —— 那兩天已經是歷史（2C-2 §12.2：`effective_from`
+是操作當下的 planning day）。如果不裁掉，8/15、8/16 的每一項都會被算成 **REMOVED**，
+使用者會看到「這次調整移除了 12 項」，而其實一項都沒動。
+
+> **歷史不進 diff。** 過去的 block 屬於 base 版本的紀錄，不屬於這次變更。
+
+---
+
+## 35. Identity：只用 `task_id`
+
+Diff 的比對身分**一律**是 `task_id`。
+
+明確禁止：
+
+- 標題比對
+- 科目＋標題的啟發式
+- block id 比對（block 是每一版重新產生的，id 必然不同，比了永遠是全部換掉）
+- 前端自己猜
+
+`task_title_snapshot` / `subject_name_snapshot`（2C-1 §2.2）**只作顯示**。
+它們存在的理由是「任務被刪掉之後歷史版本還看得懂」，不是第二份身分。
+
+---
+
+## 36. 四種狀態
+
+每個 `task_id` 在 `comparison_from` 之後的排程位置，分成：
+
+| type | 定義 | 學生看到的意思 |
+|---|---|---|
+| `unchanged` | before 與 after 的 canonical placement 完全相同 | （通常不顯示） |
+| `moved` | 兩邊都有，但位置不同 | 時間有調整 |
+| `added` | before 沒有，after 有 | 新安排 |
+| `removed` | before 有，after 沒有 | 移出目前安排／尚未安排 |
+
+### 36.1 語意邊界（很容易被誤解，必須寫死）
+
+- **`added` 不代表 Task 是新建立的。** 它只表示「這項任務進入了未來排程」。
+  一個存在很久、之前 unplaced 的任務被排進來，就是 `added`。
+- **`removed` 不代表 Task 被刪除。** 它只表示「這項任務不在這一版的未來排程裡」。
+  如果它仍是有效的 Plan Task，它的正式狀態是 **unplaced**（2C-1 §4.4）。
+
+UI 文案不得把 `removed` 講成「刪除」。§43 有對照表。
+
+### 36.2 哪些改變**不算** move
+
+placement 的比較欄位**只有**：
+
+```
+date, start_time, end_time, planned_minutes
+```
+
+以下都**不算** scheduling move：
+
+- Task 改名（`task_title_snapshot` 變了）
+- 科目改名或改顏色（`subject_name_snapshot` 變了）
+- Task 的 priority / notes / tags 改變
+- block id 不同（必然不同）
+
+理由：diff 回答的是「排程改了什麼」，不是「任務資料改了什麼」。
+把改名算成 move，會讓使用者以為 AI 動了他的時間表。
+
+---
+
+## 37. `change_flags` 與多 block
+
+### 37.1 `change_flags`
+
+`moved` 項目另外回傳：
+
+```
+change_flags: { date_changed, time_changed, duration_changed }
+```
+
+讓 UI 能直接顯示「8/18 → 8/19」或「19:00 → 20:00」，**不需要前端再算一次 diff**。
+
+`time_changed` 指 `start_time` 或 `end_time` 任一改變；`duration_changed` 指
+`planned_minutes` 改變。三者可以同時為真。
+
+### 37.2 多 block 必須從一開始就撐住
+
+2C-1 §2.2 刻意**沒有**加 `UNIQUE(schedule_version_id, task_id)`：目前生成器保證
+一個任務一版只有一個 block，但那是生成器的不變式，不是 schema 的。
+
+所以 diff engine 的核心資料結構是 **list**，不是單一 block：
+
+```
+before_blocks[]   after_blocks[]
+```
+
+比較方式：兩邊各自做 **canonical sort**，再逐項比對整個序列。
+
+```
+canonical sort key: date → start_time → end_time → planned_minutes
+```
+
+- 序列長度不同 → `moved`
+- 任一位置的四個欄位不同 → `moved`
+- 完全相同 → `unchanged`
+
+`start_time` / `end_time` 在非 timed 模式是 NULL；排序時 NULL 一律排在最前面，
+兩邊都是 NULL 視為相等。
+
+> 一個任務**部分** block 消失（2 個變 1 個）是 **`moved`，不是 `removed` ＋ `added`**。
+> type 由「before/after 是否為空」決定，只有整組消失才是 `removed`。
+
+API 為了 UI 方便，可以額外提供單一 `before` / `after` 摘要欄位（取 canonical 第一個），
+但**核心演算法不得假設只有一個 block**。這條由測試守（§42）。
+
+---
+
+## 38. 🔴 Stale preview protection（本輪最重要的一條）
+
+2C-2 §19.4 已經說過「preview 不可信任，執行時必須重新驗證」。2C-4 把它正式化成
+一個**樂觀鎖 token**。
+
+### 38.1 流程
+
+```
+1. preview / diff 回傳     base_version_id
+2. 使用者確認
+3. client apply 時必須帶回 base_version_id
+4. 在 transaction 內確認 user_schedule_state.active_version_id 仍 == base_version_id
+5. 不相等 → 拒絕，回 409 stale_schedule
+```
+
+### 38.2 實作機制（不是「先讀再寫」）
+
+先 `SELECT` 再 `UPDATE` 中間仍有窗口。切換 active pointer 必須是**條件式更新**：
+
+```sql
+UPDATE user_schedule_state
+   SET active_version_id = :new_version_id, updated_at = CURRENT_TIMESTAMP
+ WHERE user_id = :user_id
+   AND active_version_id = :base_version_id;   -- ← 樂觀鎖就在這裡
+```
+
+`rowsAffected === 0` → 有人搶先改了 → **整筆交易 rollback**，回 409。
+
+這一步和 §7.1 的 version＋blocks 寫入必須在**同一個 transaction boundary** 內。
+
+### 38.3 UI 該怎麼反應
+
+收到 409 之後：重新取得 active schedule → 重新 preview → 讓使用者再確認一次。
+**不得**自動重試套用——使用者剛才看到的 diff 已經不是現在的事實了。
+
+### 38.4 首次建立的邊界
+
+使用者還沒有任何排程時，`active_version_id` 是 NULL。此時 apply 帶 `base_version_id: null`，
+條件式更新用 `active_version_id IS NULL`。這一樣是樂觀鎖，不是特例豁免。
+
+---
+
+## 39. Lock 與 feasibility 都在 diff 之前
+
+### 39.1 Lock
+
+2C-3 §29.2 已定案「事前釘住 ＋ 事後驗證」。對 diff 的意涵是：
+
+> **候選版本如果動到任何 locked placement，candidate 根本不成立。**
+
+不能是「先接受 candidate → diff 顯示 locked item moved → 使用者自己發現鎖失效」。
+Lock 驗證發生在 diff **之前**，成功 candidate 的 diff 中，locked item 原則上只會是
+`unchanged`。
+
+可以在 item 上加 `locked: true` 作 UI 標註（顯示一個小鎖），但那是註記，不是驗證。
+
+> 例外只有一種：任務在此期間已完成或已刪除，依 2C-3 §26.2 豁免——此時它本來就
+> 不再參與排程，不會出現在 after，也不該被當成違反鎖。
+
+### 39.2 Feasibility
+
+正式 diff **只針對完整、可成立的 candidate**。
+
+feasibility 失敗時：
+
+- 不建立 ScheduleVersion
+- `active_version_id` 不變
+- **不回傳一份假裝可套用的正式 diff**
+
+回傳 feasibility problems / solutions（2C-2 §17），`diff = null`。
+
+> 半套排程不是 candidate。給使用者看一份他按下去也不會成立的 diff，比不給更糟。
+
+---
+
+## 40. Restore 重用同一個 engine
+
+Restore **不是**「舊版 vs 舊版」。
+
+```
+base      = 現在的 active version
+candidate = 用舊版當模板、套上現在的 hard constraints 之後產生的 restore candidate
+```
+
+版本血緣沿用 2C-2 §12.1 的兩個欄位：
+
+```
+parent_version_id        = 操作前的 active version   ← diff 的 base
+restored_from_version_id = 模板版本
+```
+
+`comparison_from` 一樣是 candidate 的 `effective_from`（2C-2 §12.2：操作當下的
+planning day，不是舊版的）。
+
+`nothing_to_restore`（2C-2 §14.1）不建立版本 → 沒有 candidate → `diff = null`。
+
+---
+
+## 41. 版本歷史 diff
+
+```
+GET /api/schedule/versions/:id/diff
+```
+
+比較該版本與它的 `parent_version_id`，`comparison_from` 使用 **child 的**
+`effective_from`。
+
+因為 ScheduleVersion 與 ScheduledBlock 都是 immutable，歷史 diff **永遠可以重算**，
+不需要前端保存，也不需要新增 diff table 或 JSON blob。
+
+### 41.1 Audit：immutable snapshot 夠不夠重建 diff？
+
+逐一檢查 diff response 需要的每個欄位：
+
+| 需要的資訊 | 來源 | 可重建？ |
+|---|---|---|
+| `comparison_from` | `schedule_versions.effective_from` | ✅ |
+| before / after blocks | `scheduled_blocks`（immutable） | ✅ |
+| `task_id` | `scheduled_blocks.task_id` | ✅ |
+| 顯示用標題／科目 | `task_title_snapshot` / `subject_name_snapshot` | ✅ |
+| base 是哪一版 | `parent_version_id` | ✅ |
+| `locked` 標註 | ⚠️ 見下 | ❌ |
+
+**唯一重建不了的是 `locked` 標註。** `schedule_locks` 是**現在**的狀態，不是快照；
+查一個三週前的版本時，當時鎖了什麼已經無從得知。
+
+裁決：**不為此新增欄位。**
+`locked` 只在「即將套用的 candidate diff」出現（那時 lock 狀態就是現在的狀態，正確），
+歷史 diff 一律省略 `locked` 欄位。歷史畫面顯示鎖沒有實際價值，
+為它加一張 snapshot 表是把 immutable 模型弄髒。
+
+### 41.2 沒有 parent 的版本
+
+bootstrap / initial（`parent_version_id IS NULL`）沒有 baseline。
+
+裁決：回傳 `base_version_id: null`、`is_initial: true`、`items: []`，
+summary 只有 `added` 計數等於 `block_count`。
+
+**不**把每一個 block 都展成 `added` item——語意上雖然成立（before 是空集合），
+但那會讓 UI 把「初次建立 40 項」渲染成「新增 40 項」，跟真的新增 40 項長得一樣。
+UI 應該顯示「初次建立」。
+
+> ⚠️ 這一條是我在設計時做的取捨，需要你確認。如果你希望 initial 版本也能逐項展開，
+> 改成回傳完整 `added` items ＋ 保留 `is_initial: true` 讓 UI 自己決定文案也可以。
+
+---
+
+## 42. 回傳格式
+
+```jsonc
+{
+  "base_version_id": 12,          // null = 初次建立
+  "candidate_version_id": null,   // preview 階段還沒建立；歷史 diff 才有值
+  "comparison_from": "2026-08-17",
+  "is_initial": false,
+  "summary": { "unchanged": 18, "moved": 4, "added": 2, "removed": 1 },
+  "items": [
+    {
+      "task_id": 3312,
+      "type": "moved",
+      "task_title_snapshot": "物理｜新大滿貫｜單元3｜節2｜範例+例題",
+      "subject_name_snapshot": "物理",
+      "locked": false,                       // candidate diff 才有；歷史 diff 省略
+      "before_blocks": [
+        { "date": "2026-08-18", "start_time": "19:00", "end_time": "20:00", "planned_minutes": 60 }
+      ],
+      "after_blocks": [
+        { "date": "2026-08-19", "start_time": "19:00", "end_time": "20:00", "planned_minutes": 60 }
+      ],
+      "change_flags": { "date_changed": true, "time_changed": false, "duration_changed": false }
+    }
+  ]
+}
+```
+
+欄位名稱可以再調，但**語意不得退化成只有 `changed_count`**。UI 必須能直接 render，
+不得再自己拿兩版資料做啟發式比對。
+
+`unchanged` 項目是否放進 `items`：預設**放**（UI 可以自己過濾），但 API 應支援
+`?include_unchanged=0` 讓大排程的 response 不必背 400 個沒變的項目。
+
+### 42.1 排序必須 deterministic
+
+```
+排序鍵：min(after_blocks 的 date+time)，after 為空則用 min(before_blocks)
+      → 再比 task_id
+```
+
+同一份 diff 每次呼叫的 response 順序必須一致，否則測試會飄、UI 會跳。
+
+### 42.2 跨使用者
+
+所有版本查詢一律帶 `user_id` 條件。base 與 candidate 若不屬於同一個使用者，
+一律 404（**不是** 403——不要洩漏「這個 id 存在」）。
+
+---
+
+## 43. UI 語意對照
+
+API 用 `unchanged / moved / added / removed`，學生介面不照字翻：
+
+| API | 學生看到 |
+|---|---|
+| `moved` | 時間有調整 |
+| `added` | 新安排 |
+| `removed` | 移出目前安排（會回到「尚未安排」） |
+| `unchanged` | 不變（通常收合或不顯示） |
+
+**`removed` 絕對不能寫成「刪除」。**
+
+---
+
+## 44. `due_date` 不參與 diff
+
+Diff **永遠**比較 `ScheduledBlock`。
+
+`tasks.due_date` 在 2C 之後只是 active block 的鏡射（2C-1 §4.3），是衍生資料。
+禁止用 task 的 `due_date` 差異去推測排程 diff——鏡射有延遲、有例外（unplaced 任務
+的 due_date 是 NULL），拿它當真相會得到錯的答案。
+
+---
+
+## 45. Apply 的交易邊界
+
+Diff preview 本身**不改任何資料**。
+
+正式 apply 必須在同一個 transaction boundary 內完成：
+
+```
+1. 驗證 base_version_id（§38.2 條件式更新）
+2. feasibility / lock validation
+3. 建立 ScheduleVersion
+4. 寫入全部 ScheduledBlocks
+5. 寫入 block_count
+6. 更新 due_date / due_time 鏡射
+7. 切換 active_version_id
+```
+
+任何一步失敗 → **active version 完全不變**。沿用 §7.1 的 `q.batch()`
+與 §7.2 的 bounded retry。
+
+---
+
+## 46. 契約測試矩陣（2C-4）
+
+- [ ] 日期改變 → `moved` ＋ `date_changed`
+- [ ] 同日時間改變 → `moved` ＋ `time_changed`
+- [ ] 時長改變 → `moved` ＋ `duration_changed`
+- [ ] 完全相同 → `unchanged`
+- [ ] before 沒有、after 有 → `added`
+- [ ] before 有、after 沒有 → `removed`
+- [ ] **`effective_from` 往前推進，過去的 block 不得被算成 `removed`**
+- [ ] Task 改名不算 `moved`
+- [ ] 科目顯示名稱改變不算 `moved`
+- [ ] 一個 task 兩個 block 變一個 → `moved`（不是 removed ＋ added）
+- [ ] 兩個 block 完全相同（順序不同）→ `unchanged`（canonical sort 生效）
+- [ ] 非 timed 模式（start_time 為 NULL）兩邊相等 → `unchanged`
+- [ ] locked block 被修改 → candidate rejected，**不產出正式 diff**
+- [ ] locked 任務已完成 → 依 §26.2 豁免，不算違反
+- [ ] infeasible candidate → `diff = null`，不建立版本，active 不變
+- [ ] restore diff 比較的是 current active → candidate（不是舊版 vs 舊版）
+- [ ] `nothing_to_restore` → 不建立版本，`diff = null`
+- [ ] stale `base_version_id` → apply 被拒，回 409，active 不變
+- [ ] `base_version_id: null` 且已存在 active → 一樣被拒
+- [ ] 別人的 version id → 404
+- [ ] 同一份 diff 連續呼叫兩次，items 順序完全相同
+- [ ] 歷史 diff（`GET /versions/:id/diff`）可從 immutable snapshot 重算
+- [ ] `parent_version_id IS NULL` → `is_initial: true`，不展成一堆 `added`
+
+---
+
+## 47. 2C-1～2C-4 一致性 audit
+
+逐項檢查是否互相矛盾：
+
+| 檢查點 | 結果 |
+|---|---|
+| `effective_from`（2C-2 §12.2）vs `comparison_from`（§34） | ✅ 一致：都是操作當下的 planning day |
+| `parent_version_id` / `restored_from_version_id`（2C-2 §12.1） | ✅ 一致：diff base 用 parent，不用 template |
+| Restore 產生新版本（2C-2 §20-1） | ✅ 一致：restore 走同一個 engine |
+| Lock 事前釘住（2C-3 §29.2） | ✅ 一致：lock 驗證在 diff 之前（§39.1） |
+| Lock 對已完成／已刪除豁免（2C-3 §26.2） | ✅ 一致，§39.1 明文引用 |
+| Feasibility 兩層（2C-2 §17） | ✅ 一致：schedule-level 失敗即無 candidate |
+| `due_date` 鏡射（2C-1 §4.3） | ✅ 一致：§44 明文禁止用它做 diff |
+| Unplaced 是正式狀態（2C-1 §4.4） | ✅ 一致：`removed` 的正式落點就是 unplaced |
+| Transaction boundary（2C-1 §7.1） | ✅ 一致，§45 沿用並補上樂觀鎖 |
+| `version_no` bounded retry（2C-1 §7.2） | ⚠️ 見下 |
+| 無 `UNIQUE(version_id, task_id)`（2C-1 §2.2） | ✅ 一致：§37.2 的 list 比較就是為它設計 |
+| `block_count` 冗餘欄位（2C-1 §2.1） | ✅ 一致：§41.2 用它當 initial 的 summary |
+
+### 47.1 需要對既有 2C-1～2C-3 做的文字修正（三處）
+
+1. **2C-2 §19.4 需要補一句指向 §38。**
+   §19.4 目前只說「preview 不可信任，必須重新驗證」，沒有定義驗證的 token。
+   2C-4 把它正式化成 `base_version_id` 樂觀鎖，§19.4 應加註「見 2C-4 §38」。
+
+2. **2C-1 §7.2 的 bounded retry 與 §38 的樂觀鎖有互動，必須寫清楚順序。**
+   `version_no` 唯一鍵衝突時要 retry；但 `base_version_id` 不符時**絕對不能 retry**。
+   兩者長得像（都是併發衝突）但處理方式相反：
+   前者重讀 MAX+1 再試，後者直接放棄並回 409 讓使用者重看一次。
+   建議在 §7.2 補一段區分。
+
+3. **2C-1 §2.2 的 snapshot 欄位說明可以補一句**：
+   除了「任務被刪掉後歷史版本還看得懂」，它們也是 diff 的顯示來源（§35），
+   但**不是** diff 的身分依據。
+
+> 這三處都是補充說明，不改變任何既有裁決。等你確認後我再改 PR #6 的文字，
+> 不在這一批擅自動既有段落。
+
+---
+
+## 48. 2C-4 實作檢查清單（尚未開始）
+
+- [ ] `server/src/schedule/diff.js` 純函式模組（輸入兩組 blocks，輸出 diff，不碰 DB）
+- [ ] canonical sort ＋ 序列比較（§37.2）
+- [ ] `comparison_from` 裁切（§34.1）
+- [ ] `change_flags` 計算（§37.1）
+- [ ] deterministic ordering（§42.1）
+- [ ] `?include_unchanged=0`（§42）
+- [ ] apply 端的條件式更新樂觀鎖（§38.2）＋ 409 錯誤型別
+- [ ] `GET /schedule/versions/:id/diff`（§41）
+- [ ] `is_initial` 邊界（§41.2）
+- [ ] 跨使用者一律 404（§42.2）
+- [ ] §46 的全部契約測試
+
+---
+
+## 49. 2C 整體實作順序（更新）
+
+```
+1. 2C-1  schema ＋ active version ＋ bootstrap
+2. 2C-3  schedule_locks ＋ 事前釘住      ← 必須在 2C-2 之前
+3. 2C-2  feasibility ＋ restore
+4. 2C-4  diff engine ＋ stale protection
+5. 前端  Schedule Version / Restore / Lock UI（UI-R 線之後）
+```
+
+2C-3 排在 2C-2 之前的理由見 §36（2C-2 §21）：restore 需要 Lock 已經存在才驗得完整。
+
+2C-4 排最後，因為它依賴前三者的資料結構全部就位；但它的**契約**必須在
+2C-1 開工前就定案——`effective_from` 的裁切規則會影響 schema 的使用方式。
