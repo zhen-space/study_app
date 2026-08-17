@@ -8,7 +8,7 @@
 // console.error 判斷（React 把 render 期間的例外印在那裡）。
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import { render, screen, waitFor, within } from '@testing-library/react';
+import { render, screen, within } from '@testing-library/react';
 import { act } from 'react';
 import * as fx from './fixtures';
 
@@ -49,12 +49,12 @@ const noCrash = () => {
 };
 
 // 掛上 Shell 並等資料載入完成。
-// 「項待完成」在資料還沒回來時就會渲染，所以光等它不夠——要再等一筆
+// 大標題在資料還沒回來時就會渲染，所以光等它不夠——要再等一筆
 // 真的來自 /tasks 的東西出現，否則後面的斷言會拍到載入到一半的畫面
 // （CI 比本機慢，這個競態只在 CI 炸過）。
 async function mountShell() {
   const r = render(<Shell onLogout={() => {}} />);
-  await screen.findByText('項待完成');
+  await screen.findByRole('heading', { name: '今天' });
   await screen.findByText('買參考書');      // 今天的一般任務＝/tasks 已載入
   return r;
 }
@@ -128,7 +128,7 @@ describe('TodayView', () => {
     await mountShell();
     // 今天的固定行程有出現（/events 是另一支 API，要等它回來）
     expect(await screen.findByText('數學課')).toBeInTheDocument();
-    expect(screen.getByText('今天的行程')).toBeInTheDocument();
+    expect(screen.getByText('接下來')).toBeInTheDocument();
 
     await click(mainButton(/開始讀書/));
     expect(screen.getByRole('heading', { name: '番茄專注' })).toBeInTheDocument();
@@ -138,7 +138,7 @@ describe('TodayView', () => {
   it('今天沒有任何任務時也不會炸', async () => {
     setApi({ '/tasks': [] });
     render(<Shell onLogout={() => {}} />);
-    await waitFor(() => expect(screen.getByText('項待完成')).toBeInTheDocument());
+    await screen.findByRole('heading', { name: '今天' });
     expect(screen.getByText('今天沒有排任務')).toBeInTheDocument();
     noCrash();
   });
@@ -159,7 +159,7 @@ describe('PlansView / PlanDetailView', () => {
   it('5b. 沒有任何 Plan 時不 crash', async () => {
     setApi({ '/tasks': [] });
     render(<Shell onLogout={() => {}} />);
-    await waitFor(() => expect(screen.getByText('項待完成')).toBeInTheDocument());
+    await screen.findByRole('heading', { name: '今天' });
     await click(navButton('計畫'));
     expect(screen.getByText(/還沒有計畫/)).toBeInTheDocument();
     noCrash();

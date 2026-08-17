@@ -365,7 +365,7 @@ function AddSheet({ view, lists, onDone, onClose }) {
   );
 }
 
-export default function Tasks({ view, tasks, lists, filters, habits = [], reload, title, goVocab, goMemo, topSlot = null }) {
+export default function Tasks({ view, tasks, lists, filters, habits = [], reload, title, subtitle = '', listLabel = '', goVocab, goMemo, topSlot = null }) {
   const [selId, setSelId] = useState(null);
   const [quick, setQuick] = useState('');
   const [showAdd, setShowAdd] = useState(false);
@@ -532,7 +532,12 @@ export default function Tasks({ view, tasks, lists, filters, habits = [], reload
     <>
       <div className="main">
         <div className="main-head">
-          <h2>{title}</h2><span className="muted">{shown.length} 項</span>
+          {/* 大標題區：標題＋日期副標。副標只在有給的時候出現 */}
+          <div>
+            <h2>{title}</h2>
+            {subtitle && <div className="head-sub">{subtitle}</div>}
+          </div>
+          <span className="muted">{shown.length} 項</span>
           {!['trash', 'completed'].includes(view.type) && shown.length > 1 && (
             <select value={sortBy} onChange={e => pickSort(e.target.value)} style={{ marginLeft: 'auto', fontSize: 13 }}>
               <option value="default">預設排序</option>
@@ -555,6 +560,9 @@ export default function Tasks({ view, tasks, lists, filters, habits = [], reload
         <div className="main-body">
           {topSlot}
           {view.type === 'today' && <MemoCard goMemo={goMemo} />}
+          {listLabel && shown.length > 0 && (
+            <div className="ui-section-title" style={{ marginTop: 'var(--section-gap)' }}>{listLabel}</div>
+          )}
           {view.type === 'trash'
             ? shown.map(t => (
               <div key={t.id} className="trow" style={{ cursor: 'default' }}>

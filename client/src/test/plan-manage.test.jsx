@@ -71,7 +71,7 @@ const cardByName = name => [...main().querySelectorAll('.tile')].find(el => el.q
 
 async function goPlans(ready = '買參考書') {
   render(<Shell onLogout={() => {}} />);
-  await screen.findByText('項待完成');
+  await screen.findByRole('heading', { name: '今天' });
   if (ready) await screen.findByText(ready);
   await click(within(bottomNav()).getByText('計畫').closest('button'));
 }

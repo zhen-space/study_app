@@ -5,6 +5,7 @@ import { today, addDays } from './helpers';
 import { shortTitle } from './plans';
 import { applyWizardSchedule } from './wizardApply';
 import { buildSchedulePreviewRequest, planScheduleConditions, CONDITION_LABEL } from './schedulePreview';
+import { BottomSheet, Button, SurfaceCard } from './ui';
 
 // AI 重排流程：確認 → 預覽 → 套用。
 //
@@ -88,8 +89,8 @@ export default function ReplanSheet({ plan, health, raw, lists = [], reload, onC
   );
 
   return (
-    <div className="cal-modal-back" onClick={onClose}>
-      <div className="ev-sheet tile" style={{ padding: '14px 16px' }} onClick={e => e.stopPropagation()}>
+    <BottomSheet onClose={onClose}>
+      <>
         {stage === 'confirm' || stage === 'loading' ? (
           <>
             <Head title={`重新安排「${plan.name}」`} />
@@ -107,28 +108,28 @@ export default function ReplanSheet({ plan, health, raw, lists = [], reload, onC
             {/* 找不到這個計畫當初的排法時，不會自己補一組預設值硬排下去，
                 而是請使用者確認一次；確認過的條件之後就會被沿用。 */}
             {!complete && (
-              <div style={{ border: '1px solid var(--border)', borderRadius: 8, padding: 10, marginTop: 12, background: 'var(--fill)' }}>
+              <SurfaceCard tone="accent" style={{ marginTop: 'var(--sp-3)' }}>
                 <b>需要先確認安排條件</b>
                 <div className="muted" style={{ fontSize: 13, marginTop: 2 }}>
                   找不到這個計畫當初的排法，AI 不會自己替你決定：
                 </div>
                 {missing.map(k => (
-                  <div key={k} className="muted" style={{ fontSize: 13 }}>・{CONDITION_LABEL[k] || k}</div>
+                  <div key={k} className="ui-meta">・{CONDITION_LABEL[k] || k}</div>
                 ))}
-              </div>
+              </SurfaceCard>
             )}
 
             {err && <div className="error" style={{ marginTop: 10 }}>{err}</div>}
             <div className="row" style={{ marginTop: 14 }}>
               {complete ? (
                 <>
-                  <button className="btn ghost" disabled={stage === 'loading'} onClick={() => onEditConditions('deadline')}>修改條件</button>
-                  <button className="btn" style={{ marginLeft: 'auto' }} disabled={stage === 'loading' || !pending.length} onClick={run}>
+                  <Button variant="secondary" disabled={stage === 'loading'} onClick={() => onEditConditions('deadline')}>修改條件</Button>
+                  <Button variant="primary" style={{ marginLeft: 'auto' }} disabled={stage === 'loading' || !pending.length} onClick={run}>
                     {stage === 'loading' ? '重新安排中…' : '重新安排'}
-                  </button>
+                  </Button>
                 </>
               ) : (
-                <button className="btn" style={{ marginLeft: 'auto' }} onClick={() => onEditConditions('deadline')}>確認安排條件</button>
+                <Button variant="primary" style={{ marginLeft: 'auto' }} onClick={() => onEditConditions('deadline')}>確認安排條件</Button>
               )}
             </div>
             {stage === 'loading' && (
@@ -142,15 +143,15 @@ export default function ReplanSheet({ plan, health, raw, lists = [], reload, onC
 
             {/* 排不下：照後端已經算得出來的原因說明，不自己編缺口數字 */}
             {preview.unplaced && (
-              <div style={{ border: '1px solid var(--red)', borderRadius: 8, padding: 10, marginTop: 10 }}>
-                <div className="error"><b>目前無法完整安排</b></div>
-                <div className="muted" style={{ margin: '4px 0 8px', fontSize: 13 }}>{preview.message}</div>
+              <SurfaceCard tone="warning" style={{ marginTop: 'var(--sp-3)' }}>
+                <b style={{ color: 'var(--warning)' }}>目前無法完整安排</b>
+                <div className="ui-meta" style={{ margin: '4px 0 8px' }}>{preview.message}</div>
                 <div className="row" style={{ flexWrap: 'wrap' }}>
-                  <button className="btn sm ghost" onClick={() => onEditConditions('deadline')}>延後期限</button>
-                  <button className="btn sm ghost" onClick={() => onEditConditions('time')}>調整可用時間</button>
-                  <button className="btn sm ghost" onClick={() => onEditConditions('content')}>減少學習內容</button>
+                  <Button size="sm" onClick={() => onEditConditions('deadline')}>延後期限</Button>
+                  <Button size="sm" onClick={() => onEditConditions('time')}>調整可用時間</Button>
+                  <Button size="sm" onClick={() => onEditConditions('content')}>減少學習內容</Button>
                 </div>
-              </div>
+              </SurfaceCard>
             )}
             {(preview.check?.tight || []).map((t, i) => (
               <div key={'t' + i} style={{ marginTop: 8, fontSize: 13, color: 'var(--orange, #C46A22)' }}>
@@ -183,14 +184,14 @@ export default function ReplanSheet({ plan, health, raw, lists = [], reload, onC
             </div>
             {err && <div className="error" style={{ marginTop: 8 }}>{err}</div>}
             <div className="row" style={{ marginTop: 12 }}>
-              <button className="btn ghost" disabled={stage === 'saving'} onClick={() => onEditConditions('deadline')}>返回修改條件</button>
-              <button className="btn" style={{ marginLeft: 'auto' }} disabled={stage === 'saving'} onClick={apply}>
+              <Button variant="secondary" disabled={stage === 'saving'} onClick={() => onEditConditions('deadline')}>返回修改條件</Button>
+              <Button variant="primary" style={{ marginLeft: 'auto' }} disabled={stage === 'saving'} onClick={apply}>
                 {stage === 'saving' ? '套用中…' : '套用新版安排'}
-              </button>
+              </Button>
             </div>
           </>
         )}
-      </div>
-    </div>
+      </>
+    </BottomSheet>
   );
 }
