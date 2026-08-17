@@ -20,6 +20,10 @@ export default function PlanDetailView({ planKey, tasks, lists, apiPlans = [], r
   const [manage, setManage] = useState(false);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState('');
+  // 新增任務：空白計畫建立後總得有辦法往裡面加第一件事，
+  // 不然使用者會停在一個什麼都不能做的頁面
+  const [adding, setAdding] = useState(false);
+  const [nt, setNt] = useState({ title: '', list_id: '', deadline_date: '' });
 
   if (!plan) {
     return (
@@ -50,6 +54,23 @@ export default function PlanDetailView({ planKey, tasks, lists, apiPlans = [], r
   const patch = body => run(() => api(`/plans/${plan.planId}`, { method: 'PATCH', body }));
   const archive = () => run(() => api(`/plans/${plan.planId}/archive`, { method: 'POST', body: {} }));
   const restore = () => run(() => api(`/plans/${plan.planId}/restore`, { method: 'POST', body: {} }));
+  // 走既有的 POST /tasks，自動帶上目前的 plan_id——使用者不用再選一次計畫。
+  // 不給 due_date：加進計畫不等於已經排好時間，所以它會出現在「尚未安排」。
+  const addTask = () => run(async () => {
+    const title = nt.title.trim();
+    if (!title) return;
+    await api('/tasks', {
+      method: 'POST',
+      body: {
+        title,
+        plan_id: plan.planId,
+        list_id: nt.list_id ? Number(nt.list_id) : null,
+        deadline_date: nt.deadline_date || null,
+      },
+    });
+    setNt({ title: '', list_id: nt.list_id, deadline_date: '' });   // 科目留著，連續加同一科比較順
+  });
+
   const complete = () => run(async () => {
     // 後端會先回未解決的任務讓使用者確認，force 才真的完成
     const r = await api(`/plans/${plan.planId}/complete`, { method: 'POST', body: {} });
@@ -60,13 +81,16 @@ export default function PlanDetailView({ planKey, tasks, lists, apiPlans = [], r
     }
   });
 
-  // 依科目分組；同一科有多本書時再分小段
+  // 依科目分組；同一科有多本書時再分小段。
+  // 尚未安排的已經有自己的區塊，這裡要排除掉，否則同一筆會出現兩次。
+  const unplacedIds = new Set(plan.unplaced.map(t => t.id));
+  const placed = plan.items.filter(t => !unplacedIds.has(t.id));
   const groups = plan.subjects.length
     ? plan.subjects.map(s => ({
         subject: s,
-        items: plan.items.filter(t => String(t.list_id ?? '') === String(s.id ?? '')),
+        items: placed.filter(t => String(t.list_id ?? '') === String(s.id ?? '')),
       }))
-    : [{ subject: null, items: plan.items }];
+    : [{ subject: null, items: placed }];
 
   const visible = list => list.filter(t => showDone || !t.completed).sort((a, b) => byLesson(a.title, b.title));
 
@@ -149,6 +173,46 @@ export default function PlanDetailView({ planKey, tasks, lists, apiPlans = [], r
           </div>
         )}
 
+        {/* 新增任務：正式 Plan 才有。legacy 沒有 plan id，加了也掛不上去 */}
+        {isReal && plan.status !== 'archived' && (
+          <div style={{ marginTop: 12 }}>
+            {!adding
+              ? <button className="btn ghost" style={{ width: '100%' }} onClick={() => setAdding(true)}>
+                  <Icon name="plus" size={16} style={{ verticalAlign: '-3px', marginRight: 6 }} />新增任務
+                </button>
+              : (
+                <div className="tile" style={{ padding: '12px 14px', background: 'var(--fill)' }}>
+                  <div className="row">
+                    <b>新增任務到這個計畫</b>
+                    <button className="icon-btn" style={{ marginLeft: 'auto' }} onClick={() => { setAdding(false); setErr(''); }}>
+                      <Icon name="x" size={14} />
+                    </button>
+                  </div>
+                  <input aria-label="任務名稱" placeholder="要做什麼？" value={nt.title} style={{ width: '100%', marginTop: 8 }}
+                    onChange={e => setNt({ ...nt, title: e.target.value })}
+                    onKeyDown={e => e.key === 'Enter' && addTask()} />
+                  <div className="row" style={{ marginTop: 8, flexWrap: 'wrap' }}>
+                    <span className="muted" style={{ fontSize: 12 }}>科目</span>
+                    <select aria-label="科目" value={nt.list_id} onChange={e => setNt({ ...nt, list_id: e.target.value })}>
+                      <option value="">未分科目</option>
+                      {lists.filter(l => !l.shared_in).map(l => <option key={l.id} value={l.id}>{l.name}</option>)}
+                    </select>
+                    <span className="muted" style={{ fontSize: 12 }}>截止日</span>
+                    <input type="date" aria-label="截止日" value={nt.deadline_date}
+                      onChange={e => setNt({ ...nt, deadline_date: e.target.value })} />
+                  </div>
+                  <div className="row" style={{ marginTop: 10 }}>
+                    <span className="muted" style={{ fontSize: 12 }}>加進來的任務會先放在「尚未安排」</span>
+                    <button className="btn sm" style={{ marginLeft: 'auto' }} disabled={busy || !nt.title.trim()} onClick={addTask}>
+                      {busy ? '新增中…' : '新增'}
+                    </button>
+                  </div>
+                  {err && <div className="error" style={{ marginTop: 8 }}>{err}</div>}
+                </div>
+              )}
+          </div>
+        )}
+
         {/* 尚未安排：在計畫裡 ≠ 已經排到日期 */}
         {plan.unplaced.length > 0 && (
           <div className="tgroup" style={{ marginTop: 12 }}>
@@ -160,7 +224,7 @@ export default function PlanDetailView({ planKey, tasks, lists, apiPlans = [], r
 
         {plan.total === 0 && (
           <div className="muted" style={{ marginTop: 24, textAlign: 'center' }}>
-            這個計畫還沒有任何任務
+            這個計畫還沒有任務{isReal && plan.status !== 'archived' ? '——用上面的「新增任務」加第一件事吧' : ''}
           </div>
         )}
 

@@ -57,6 +57,11 @@ const type = (el, value) => act(async () => {
   setter.call(el, value);
   el.dispatchEvent(new Event('input', { bubbles: true }));
 });
+const select = (el, value) => act(async () => {
+  const setter = Object.getOwnPropertyDescriptor(window.HTMLSelectElement.prototype, 'value').set;
+  setter.call(el, value);
+  el.dispatchEvent(new Event('change', { bubbles: true }));
+});
 // React 的 onBlur 實際上掛在會冒泡的 focusout 上，dispatch 'blur' 不會觸發
 const blur = el => act(async () => { el.dispatchEvent(new FocusEvent('focusout', { bubbles: true })); });
 
@@ -123,7 +128,7 @@ describe('建立計畫', () => {
     await goPlans();
     await click(cardByName('新的計畫'));
     expect(within(main()).getByRole('heading', { name: '新的計畫' })).toBeInTheDocument();
-    expect(screen.getByText(/這個計畫還沒有任何任務/)).toBeInTheDocument();
+    expect(screen.getByText(/這個計畫還沒有任務/)).toBeInTheDocument();
     noCrash();
   });
 });
@@ -280,6 +285,120 @@ describe('尚未安排', () => {
   });
 });
 
+describe('新增任務到計畫（空白計畫的閉環）', () => {
+  // /tasks 會隨著新增而變，所以用函式回傳當下的清單。
+  // 一定要回傳「副本」——回同一個陣列參照的話 setTasks 會被 React 判定沒變化，
+  // 畫面不會重新渲染，測試就會看到過期的畫面（這是假資料的問題，不是產品的）
+  const withLiveTasks = (plans, initial) => {
+    let tasks = [...initial];
+    setApi({
+      '/plans': plans,
+      '/tasks': opts => {
+        if (opts?.method === 'POST') {
+          const t = {
+            id: 900 + tasks.length, list_id: opts.body.list_id ?? null, plan_id: opts.body.plan_id,
+            title: opts.body.title, due_date: null, due_time: null, priority: 0, completed: 0,
+            tags: [], subtasks: [], recurring: null, deadline_date: opts.body.deadline_date ?? null,
+            order_index: 99, deleted: 0,
+          };
+          tasks.push(t);
+          return t;
+        }
+        return [...tasks];
+      },
+    });
+  };
+
+  it('空白計畫顯示 empty state，並提供「新增任務」入口', async () => {
+    setApi({ '/plans': [fx.emptyPlan], '/tasks': fx.tasks });
+    await goPlans();
+    await click(cardByName('新的計畫'));
+    expect(screen.getByText(/這個計畫還沒有任務/)).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /新增任務/ })).toBeInTheDocument();
+    noCrash();
+  });
+
+  it('空白計畫可以新增第一個任務，request 帶正確的 plan_id', async () => {
+    withLiveTasks([fx.emptyPlan], fx.tasks);
+    await goPlans();
+    await click(cardByName('新的計畫'));
+    await click(screen.getByRole('button', { name: /新增任務/ }));
+    await type(screen.getByLabelText('任務名稱'), '整理第一章筆記');
+    await click(screen.getByRole('button', { name: '新增' }));
+
+    const posts = sent('POST', '/tasks');
+    expect(posts.length).toBe(1);
+    expect(posts[0][1].body.title).toBe('整理第一章筆記');
+    expect(posts[0][1].body.plan_id).toBe(fx.emptyPlan.id);   // ★ 不用使用者再選一次計畫
+    noCrash();
+  });
+
+  it('新增成功後留在明細頁，任務立刻出現在「尚未安排」', async () => {
+    withLiveTasks([fx.emptyPlan], fx.tasks);
+    await goPlans();
+    await click(cardByName('新的計畫'));
+    await click(screen.getByRole('button', { name: /新增任務/ }));
+    await type(screen.getByLabelText('任務名稱'), '整理第一章筆記');
+    await click(screen.getByRole('button', { name: '新增' }));
+    await screen.findByText('整理第一章筆記');          // 等 reload 把新任務帶回來
+
+    // 還在同一個計畫的明細
+    expect(within(main()).getByRole('heading', { name: '新的計畫' })).toBeInTheDocument();
+    const group = [...main().querySelectorAll('.tgroup')]
+      .find(g => g.querySelector('.glabel')?.textContent.includes('尚未安排'));
+    expect(group, '新任務沒有日期，應該落在「尚未安排」').toBeTruthy();
+    expect(within(group).getByText('整理第一章筆記')).toBeInTheDocument();
+    expect(screen.queryByText(/這個計畫還沒有任務/)).not.toBeInTheDocument();
+    noCrash();
+  });
+
+  it('可以帶科目與截止日；設了截止日仍然是「尚未安排」（截止日 ≠ 排定日期）', async () => {
+    withLiveTasks([fx.emptyPlan], fx.tasks);
+    await goPlans();
+    await click(cardByName('新的計畫'));
+    await click(screen.getByRole('button', { name: /新增任務/ }));
+    await type(screen.getByLabelText('任務名稱'), '物理錯題訂正');
+    await select(screen.getByLabelText('科目'), String(fx.lists[0].id));
+    await type(screen.getByLabelText('截止日'), '2026-12-01');
+    await click(screen.getByRole('button', { name: '新增' }));
+    await screen.findByText('物理錯題訂正');
+
+    const body = sent('POST', '/tasks')[0][1].body;
+    expect(body.list_id).toBe(fx.lists[0].id);
+    expect(body.deadline_date).toBe('2026-12-01');
+    expect(body.due_date).toBeUndefined();          // 不會偷偷幫它排日期
+    // 有截止日不代表已經排進行事曆，所以還是落在「尚未安排」
+    const group = [...main().querySelectorAll('.tgroup')]
+      .find(g => g.querySelector('.glabel')?.textContent.includes('尚未安排'));
+    expect(within(group).getByText('物理錯題訂正')).toBeInTheDocument();
+    noCrash();
+  });
+
+  it('已經有任務的計畫也還是能繼續新增', async () => {
+    withLiveTasks([fx.plans[0]], [...fx.tasks, ...fx.planTasks]);
+    await goPlans();
+    await click(cardByName('第二次段考準備'));
+    await click(screen.getByRole('button', { name: /新增任務/ }));
+    await type(screen.getByLabelText('任務名稱'), '再加一項');
+    await click(screen.getByRole('button', { name: '新增' }));
+    await screen.findByText('再加一項');
+
+    const posts = sent('POST', '/tasks');
+    expect(posts.length).toBe(1);
+    expect(posts[0][1].body.plan_id).toBe(12);
+    noCrash();
+  });
+
+  it('已封存的計畫不提供新增任務（後端本來就會擋）', async () => {
+    setApi({ '/plans': [fx.archivedPlan], '/tasks': fx.tasks });
+    await goPlans();
+    await click(screen.getByRole('button', { name: /顯示已封存/ }));
+    await click(cardByName('封存過的計畫'));
+    expect(screen.queryByRole('button', { name: /新增任務/ })).not.toBeInTheDocument();
+    noCrash();
+  });
+});
+
 describe('Legacy 計畫', () => {
   it('標示為舊資料，而且不 crash', async () => {
     setApi({ '/plans': [], '/tasks': fx.tasks });
@@ -297,6 +416,7 @@ describe('Legacy 計畫', () => {
     expect(screen.queryByRole('button', { name: '標記完成' })).not.toBeInTheDocument();
     expect(screen.queryByRole('button', { name: '封存' })).not.toBeInTheDocument();
     expect(screen.queryByLabelText('計畫名稱')).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /新增任務/ }), 'legacy 不該有正式 Plan 的新增任務入口').not.toBeInTheDocument();
     expect(screen.getByText(/不能改名、改期限或封存/)).toBeInTheDocument();
     noCrash();
   });
