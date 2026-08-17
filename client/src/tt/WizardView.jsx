@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { api } from '../api';
 import { planName, isLegacyPlanTask } from './plans';
 import { applyWizardSchedule } from './wizardApply';
+import { buildSchedulePreviewRequest } from './schedulePreview';
 import { today, addDays } from './helpers';
 import { parseICS } from './ics';
 import { fileToPayload } from './vocabImport';
@@ -579,12 +580,16 @@ export default function WizardView({
     }
     if (!sendItems.length) { setErr('這次沒有要排的項目——選的範圍可能都已經完成了'); return; }
     try {
-      const body = {
+      // request 的組法只有一套（./schedulePreview），Today 的 AI 重排走同一支，
+      // 免得同一個計畫在不同入口被用不同的排法排一次
+      const body = buildSchedulePreviewRequest({
         items: sendItems, startDate: dGlobal.start, endDate: dGlobal.end,
-        excludeWeekdays: exWd, excludeDates: exDates, skipIfBusyHours: busyHours,
-        timed, perDay: (timed || limitPerDay) ? perDay : 0, pace,
-      };
-      if (!follow) { body.sleep_start = shift.sleep_start; body.sleep_end = shift.sleep_end; }
+        conditions: {
+          timed, limitPerDay, perDay, pace,
+          excludeWeekdays: exWd, excludeDates: exDates, skipIfBusyHours: busyHours,
+          ...(follow ? {} : { sleep_start: shift.sleep_start, sleep_end: shift.sleep_end }),
+        },
+      });
       const pv = await api('/schedule/preview', { method: 'POST', body });
       // 同一天之內：同科目排在一起（照科目清單順序），同科目內保持原本順序
       // （原本是「全科的範例組→全科的練習組」，同一科會被其他科隔開）

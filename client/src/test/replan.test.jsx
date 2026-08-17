@@ -19,6 +19,7 @@ import { today, addDays } from '../tt/helpers';
 vi.mock('../api', () => ({ api: vi.fn() }));
 const { api } = await import('../api');
 const Shell = (await import('../tt/Shell')).default;
+const { buildSchedulePreviewRequest, taskMinutes } = await import('../tt/schedulePreview');
 
 const iso = n => addDays(today(), n);
 const task = (id, over = {}) => ({
@@ -85,8 +86,15 @@ const flush = () => act(async () => { await new Promise(r => setTimeout(r, 0)); 
 const writes = () => calls.filter(([, o]) => o?.method && o.method !== 'GET');
 const sent = (path, method) => calls.filter(([p, o]) => p === path && o?.method === method);
 
+// 這個計畫當初設定的排法。刻意每一項都跟「前端隨便給的預設值」不同
+// （不是 even、不是一天 3 項、不是時間模式），這樣測試才看得出來是不是真的沿用。
+const CONDITIONS = { timed: false, limitPerDay: true, perDay: 2, pace: 'front', exWd: [0], exDates: [iso(5)], busyHours: 4 };
+const seedConditions = (planId = 12, over = {}) =>
+  localStorage.setItem(`wizardDraft:plan:${planId}`, JSON.stringify({ ...CONDITIONS, ...over }));
+
 // 掛上 Shell 並等資料真的載入完（跟 shell.test.jsx 同一套等法）
-async function mountShell(over = {}) {
+async function mountShell(over = {}, { seed = true } = {}) {
+  if (seed) { seedConditions(12); seedConditions(13); }
   setApi({ '/tasks': [...PLAN_TASKS], '/plans': [PLAN], ...over });
   const r = render(<Shell onLogout={() => {}} />);
   await screen.findByText('項待完成');
@@ -226,6 +234,7 @@ describe('重排範圍與寫入時機', () => {
   });
 
   it('13. 別的計畫的任務完全不受影響', async () => {
+    seedConditions(12); seedConditions(13);
     setApi({ '/tasks': [...PLAN_TASKS, OTHER_TASK], '/plans': [PLAN, OTHER_PLAN] });
     render(<Shell onLogout={() => {}} />);
     await screen.findByText('項待完成');
@@ -278,6 +287,7 @@ describe('重排範圍與寫入時機', () => {
   });
 
   it('17. 預覽失敗時保留原排程，而且可以重試', async () => {
+    seedConditions(12);
     setApi({
       '/tasks': [...PLAN_TASKS], '/plans': [PLAN],
       '/schedule/preview': () => Promise.reject(new Error('沒有可排的日期')),
@@ -292,6 +302,87 @@ describe('重排範圍與寫入時機', () => {
     expect(writes().filter(([p]) => p !== '/schedule/preview'), '失敗不得留下任何寫入').toEqual([]);
     // 還留在確認畫面，可以再按一次
     expect(screen.getByRole('button', { name: '重新安排' })).toBeEnabled();
+    noCrash();
+  });
+});
+
+// 重排＝用「原本的排法」重算剩下的內容。
+// 如果 Today 自己補一組預設值（60 分鐘／平均分配／一天 3 項），
+// 學生在精靈裡設定的排法就會被悄悄換掉——測試全綠也看不出來，所以這裡直接守住。
+describe('重排必須沿用原計畫的排程條件', () => {
+  const previewBody = () => sent('/schedule/preview', 'POST')[0][1].body;
+  const openPreview = async (over = {}, cond = {}) => {
+    seedConditions(12, cond);
+    setApi({ '/tasks': [...PLAN_TASKS], '/plans': [PLAN], ...over });
+    render(<Shell onLogout={() => {}} />);
+    await screen.findByText('項待完成');
+    await flush();
+    await click(screen.getByRole('button', { name: '讓 AI 重新安排' }));
+    await click(screen.getByRole('button', { name: '重新安排' }));
+    await flush();
+  };
+
+  it('不會把 pace 寫死成 even', async () => {
+    await openPreview();
+    expect(previewBody().pace).toBe('front');
+  });
+
+  it('不會把每天數量寫死成 3', async () => {
+    await openPreview();
+    expect(previewBody().perDay).toBe(2);
+  });
+
+  it('不會把每一項的時長寫死成 60 分鐘', async () => {
+    // 只排進度的計畫：排程器根本不看 minutes，就不該生一個假數字
+    await openPreview();
+    for (const it of previewBody().items) expect(it.minutes).toBeUndefined();
+  });
+
+  it('時間模式的時長從任務自己的時段還原，不是 60', async () => {
+    const timedTasks = PLAN_TASKS.map(t => t.completed ? t
+      : { ...t, due_time: '08:00', notes: '讀書時段 08:00–09:30' });
+    await openPreview({ '/tasks': timedTasks }, { timed: true, perDay: 4 });
+    const mins = previewBody().items.map(i => i.minutes);
+    expect(mins).toEqual([90, 90]);
+    expect(previewBody().timed).toBe(true);
+  });
+
+  it('有保存的排程條件會原樣帶進 preview', async () => {
+    await openPreview();
+    const b = previewBody();
+    expect(b.timed).toBe(false);
+    expect(b.excludeWeekdays).toEqual([0]);
+    expect(b.excludeDates).toEqual([iso(5)]);
+    expect(b.skipIfBusyHours).toBe(4);
+  });
+
+  it('找不到原本的排法時不會偷偷用預設值，而是請使用者先確認', async () => {
+    // 沒有這個計畫的條件
+    await mountShell({}, { seed: false });
+    await click(screen.getByRole('button', { name: '讓 AI 重新安排' }));
+    expect(screen.getByText('需要先確認安排條件')).toBeInTheDocument();
+    // 不給「直接排下去」這個選項，也絕對不能已經打了 preview
+    expect(screen.queryByRole('button', { name: '重新安排' })).not.toBeInTheDocument();
+    expect(sent('/schedule/preview', 'POST').length, '條件不齊時不得擅自排程').toBe(0);
+    noCrash();
+  });
+
+  it('確認安排條件會進到既有的 Edit Mode，不另做一套設定頁', async () => {
+    await mountShell({}, { seed: false });
+    await click(screen.getByRole('button', { name: '讓 AI 重新安排' }));
+    await click(screen.getByRole('button', { name: '確認安排條件' }));
+    await flush();
+    expect(screen.getByRole('heading', { name: '調整「第二次段考」' })).toBeInTheDocument();
+    noCrash();
+  });
+
+  it('時間模式但任務沒有時段可還原時，同樣要求先確認', async () => {
+    // timed=true，但任務身上沒有「讀書時段」可以還原時長
+    await mountShell({}, { seed: false });
+    seedConditions(12, { timed: true });
+    await click(screen.getByRole('button', { name: '讓 AI 重新安排' }));
+    expect(screen.getByText('需要先確認安排條件')).toBeInTheDocument();
+    expect(screen.getByText(/每一項大約要花多久/)).toBeInTheDocument();
     noCrash();
   });
 });
@@ -346,5 +437,48 @@ describe('排不下時的解法入口（deep-link 進既有 Edit Mode）', () =>
     await flush();
     expect(screen.getByRole('heading', { name: '調整「第二次段考」' })).toBeInTheDocument();
     noCrash();
+  });
+});
+
+// 建立、調整、重排三個入口共用同一支 builder；有兩套 mapping 就會出現
+// 「同一個計畫在不同入口被用不同語意排一次」這種很難查的問題。
+describe('preview request 只有一套 mapping', () => {
+  const items = [{ subject_id: 1, title: 'A' }];
+  const base = { items, startDate: '2026-01-01', endDate: '2026-01-10' };
+
+  it('時間模式一定有每日上限', () => {
+    const b = buildSchedulePreviewRequest({ ...base, conditions: { timed: true, perDay: 4, pace: 'even' } });
+    expect(b.timed).toBe(true);
+    expect(b.perDay).toBe(4);
+  });
+
+  it('只排進度且沒限制數量時，perDay=0（不限）', () => {
+    const b = buildSchedulePreviewRequest({ ...base, conditions: { timed: false, limitPerDay: false, perDay: 5, pace: 'even' } });
+    expect(b.perDay).toBe(0);
+  });
+
+  it('只排進度但有勾限制數量時，沿用使用者填的數字', () => {
+    const b = buildSchedulePreviewRequest({ ...base, conditions: { timed: false, limitPerDay: true, perDay: 5, pace: 'front' } });
+    expect(b.perDay).toBe(5);
+    expect(b.pace).toBe('front');
+  });
+
+  it('沒帶作息調整就不送 sleep 欄位（用帳號本來的作息）', () => {
+    const b = buildSchedulePreviewRequest({ ...base, conditions: { timed: true, perDay: 3, pace: 'even' } });
+    expect('sleep_start' in b).toBe(false);
+    const b2 = buildSchedulePreviewRequest({ ...base, conditions: { timed: true, perDay: 3, pace: 'even', sleep_start: '00:30', sleep_end: '07:00' } });
+    expect(b2.sleep_start).toBe('00:30');
+  });
+
+  it('builder 不自己補預設值：沒給的條件不會憑空出現', () => {
+    const b = buildSchedulePreviewRequest({ ...base, conditions: {} });
+    expect(b.pace).toBeUndefined();
+    expect(b.excludeWeekdays).toEqual([]);
+  });
+
+  it('從「讀書時段」還原時長', () => {
+    expect(taskMinutes({ notes: '讀書時段 08:00–09:30' })).toBe(90);
+    expect(taskMinutes({ notes: '' })).toBeNull();
+    expect(taskMinutes({ notes: '讀書時段 09:00–08:00' })).toBeNull();
   });
 });

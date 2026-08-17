@@ -4,6 +4,7 @@ import Icon from './Icons';
 import { today, addDays } from './helpers';
 import { shortTitle } from './plans';
 import { applyWizardSchedule } from './wizardApply';
+import { buildSchedulePreviewRequest, planScheduleConditions, CONDITION_LABEL } from './schedulePreview';
 
 // AI 重排流程：確認 → 預覽 → 套用。
 //
@@ -25,8 +26,10 @@ export default function ReplanSheet({ plan, health, raw, lists = [], reload, onC
 
   // 重排的對象：這個計畫底下還沒完成的任務。完成的連讀都不讀進來。
   const pending = plan.items.filter(t => !t.completed && !t.deleted);
-  // 原本就排到幾點的計畫，重排也排到幾點；否則只排到哪一天
-  const timed = pending.some(t => t.due_time);
+
+  // 重排＝用「原本的排法」重算剩下的內容。條件不齊就不排，
+  // 絕對不自己補一組預設值——那等於偷偷換掉學生設定的排法。
+  const { conditions, minutes, missing, complete } = planScheduleConditions(plan.planId, pending);
 
   async function run() {
     setStage('loading'); setErr('');
@@ -38,18 +41,18 @@ export default function ReplanSheet({ plan, health, raw, lists = [], reload, onC
     try {
       const pv = await api('/schedule/preview', {
         method: 'POST',
-        body: {
+        body: buildSchedulePreviewRequest({
           items: pending.map(t => ({
             subject_id: t.list_id,
             title: t.title,
-            minutes: 60,
+            // 只排進度時排程器不看 minutes，就不要生一個假數字出來
+            ...(conditions.timed ? { minutes: minutes[t.id] } : {}),
             start,
             // 每一項自己的硬性截止日還是硬的（deadline_date ≠ 排定日期）
             end: t.deadline_date && t.deadline_date >= start ? t.deadline_date : end,
-            spread: false,
           })),
-          startDate: start, endDate: end, timed, perDay: timed ? 3 : 0, pace: 'even',
-        },
+          startDate: start, endDate: end, conditions,
+        }),
       });
       pv.blocks = [...pv.blocks].sort((a, b) => a.date.localeCompare(b.date));
       setPreview(pv);
@@ -100,12 +103,33 @@ export default function ReplanSheet({ plan, health, raw, lists = [], reload, onC
             <div className="muted" style={{ fontSize: 13 }}>・已經完成的項目</div>
             <div className="muted" style={{ fontSize: 13 }}>・其他計畫</div>
             <div className="muted" style={{ fontSize: 13 }}>・過去的完成紀錄</div>
+
+            {/* 找不到這個計畫當初的排法時，不會自己補一組預設值硬排下去，
+                而是請使用者確認一次；確認過的條件之後就會被沿用。 */}
+            {!complete && (
+              <div style={{ border: '1px solid var(--border)', borderRadius: 8, padding: 10, marginTop: 12, background: 'var(--fill)' }}>
+                <b>需要先確認安排條件</b>
+                <div className="muted" style={{ fontSize: 13, marginTop: 2 }}>
+                  找不到這個計畫當初的排法，AI 不會自己替你決定：
+                </div>
+                {missing.map(k => (
+                  <div key={k} className="muted" style={{ fontSize: 13 }}>・{CONDITION_LABEL[k] || k}</div>
+                ))}
+              </div>
+            )}
+
             {err && <div className="error" style={{ marginTop: 10 }}>{err}</div>}
             <div className="row" style={{ marginTop: 14 }}>
-              <button className="btn ghost" disabled={stage === 'loading'} onClick={() => onEditConditions('deadline')}>修改條件</button>
-              <button className="btn" style={{ marginLeft: 'auto' }} disabled={stage === 'loading' || !pending.length} onClick={run}>
-                {stage === 'loading' ? '重新安排中…' : '重新安排'}
-              </button>
+              {complete ? (
+                <>
+                  <button className="btn ghost" disabled={stage === 'loading'} onClick={() => onEditConditions('deadline')}>修改條件</button>
+                  <button className="btn" style={{ marginLeft: 'auto' }} disabled={stage === 'loading' || !pending.length} onClick={run}>
+                    {stage === 'loading' ? '重新安排中…' : '重新安排'}
+                  </button>
+                </>
+              ) : (
+                <button className="btn" style={{ marginLeft: 'auto' }} onClick={() => onEditConditions('deadline')}>確認安排條件</button>
+              )}
             </div>
             {stage === 'loading' && (
               <div className="muted" style={{ fontSize: 12, marginTop: 8 }}>AI 正在算新的安排，先別關掉…</div>
