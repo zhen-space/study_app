@@ -57,16 +57,34 @@ export function usePlans(tasks, lists, apiPlans = []) {
     const decorate = (items, extra) => {
       const dates = items.map(t => t.due_date).filter(Boolean).sort();
       const list = lists.find(x => String(x.id) === String(extra.listId));
+      // 跨科摘要：一個 Plan 可以同時有好幾科的任務，卡片與明細都要顯示得出來。
+      // primary_list_id 只是顯示提示，不代表 Plan 的身分。
+      const bySubj = new Map();
+      for (const t of items) {
+        const k = String(t.list_id ?? '');
+        bySubj.set(k, (bySubj.get(k) || 0) + 1);
+      }
+      const subjects = [...bySubj.entries()]
+        .sort((a, b) => b[1] - a[1] || (ord[a[0]] ?? 99) - (ord[b[0]] ?? 99))
+        .map(([k, count]) => {
+          const l = lists.find(x => String(x.id) === k);
+          return { id: k === '' ? null : Number(k), name: l?.name || '未分科目', color: l?.color || 'var(--muted)', icon: l?.icon || 'book', count };
+        });
       return {
         items,
         done: items.filter(t => t.completed).length,
         total: items.length,
         overdue: items.filter(t => !t.completed && t.due_date && t.due_date < today()).length,
+        // 「在計畫裡」不等於「已經排到日期」——沒有日期的就是還沒安排。
+        // （2C 之後改看 active ScheduleVersion 的 block，目前 due_date 仍是權威來源，
+        //   見 docs/phase2c-schedule-persistence.md §5B 2A-1 的過渡例外）
+        unplaced: items.filter(t => !t.completed && !t.due_date),
+        subjects,
         start: extra.start ?? dates[0] ?? '',
         end: extra.end ?? dates[dates.length - 1] ?? '',
         books: [...new Set(items.map(t => bookOf(t.title)))],
-        color: list?.color || 'var(--muted)',
-        icon: list?.icon || 'book',
+        color: list?.color || subjects[0]?.color || 'var(--muted)',
+        icon: list?.icon || subjects[0]?.icon || 'book',
         ...extra,
       };
     };

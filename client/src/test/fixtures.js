@@ -42,12 +42,23 @@ export const plans = [
   { id: 12, user_id: 1, name: '第二次段考準備', description: '', goal_id: null, primary_list_id: 1,
     start_date: TODAY, target_date: iso(14), status: 'active', source: 'manual',
     created_at: '', updated_at: '', completed_at: null, archived_at: null,
-    task_count: 2, completed_task_count: 0 },
+    task_count: 3, completed_task_count: 0 },
 ];
+// 空白計畫（剛建立、還沒有任何任務）
+export const emptyPlan = {
+  id: 30, user_id: 1, name: '新的計畫', description: '', goal_id: null, primary_list_id: null,
+  start_date: null, target_date: null, status: 'active', source: 'manual',
+  created_at: '', updated_at: '', completed_at: null, archived_at: null,
+  task_count: 0, completed_task_count: 0,
+};
+export const archivedPlan = { ...emptyPlan, id: 31, name: '封存過的計畫', status: 'archived', archived_at: TODAY };
+export const completedPlan = { ...emptyPlan, id: 32, name: '做完的計畫', status: 'completed', completed_at: TODAY };
 // 掛在正式 Plan 底下的任務（帶 plan_id，不該被 legacy 推導撿走）
 export const planTasks = [
   { id: 21, list_id: 1, plan_id: 12, title: '物理｜段考範圍｜力學複習', due_date: TODAY, due_time: null, priority: 0, completed: 0, tags: ['讀書計劃'], subtasks: [], recurring: null, deadline_date: iso(14), order_index: 20, deleted: 0 },
   { id: 22, list_id: 2, plan_id: 12, title: '地科｜段考範圍｜大氣複習', due_date: iso(1), due_time: null, priority: 0, completed: 0, tags: ['讀書計劃'], subtasks: [], recurring: null, deadline_date: iso(14), order_index: 21, deleted: 0 },
+  // 在計畫裡但還沒排到日期＝尚未安排（due_date 為 null）
+  { id: 23, list_id: 1, plan_id: 12, title: '物理｜段考範圍｜電磁複習', due_date: null, due_time: null, priority: 0, completed: 0, tags: ['讀書計劃'], subtasks: [], recurring: null, deadline_date: null, order_index: 22, deleted: 0 },
 ];
 
 export const events = [
