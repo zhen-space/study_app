@@ -1,9 +1,10 @@
 # Phase 2C：Schedule Persistence
 
-> 狀態：**2C-1、2C-2、2C-3 已定案，尚未實作。** 2C-4 尚未設計。
+> 狀態：**2C-1、2C-2、2C-3 已定案，尚未實作。**
+> 2C-4 契約已定案，內容在後續 PR 併入本文件（本文件已有指向 2C-4 章節的前向引用）。
 > Plan domain 契約另見 [`phase2-plan-domain.md`](phase2-plan-domain.md)。
 > 基準 commit：`32fed0e`（Phase 2A 合併後）
-> 最後更新：2026-08-16
+> 最後更新：2026-08-17
 
 ---
 
@@ -23,7 +24,7 @@ Phase 2C 的任務就是關掉它。2C 完成時，該例外連同那段文字�
 | **2C-1** | ScheduleVersion / ScheduledBlock schema、active version 契約、bootstrap | ✅ **已定案**（本文件 §1–§8） |
 | **2C-2** | 版本恢復（restore）＋ feasibility | ✅ **已定案**（§12–§19） |
 | **2C-3** | Lock 持久化 ＋ feasibility 整合 | ✅ **已定案**（§22–§31） |
-| **2C-4** | 重排 diff（moved / added / removed） | ⬜ 未設計 |
+| **2C-4** | 重排 diff ＋ stale preview protection | ✅ **已定案**（內容於後續 PR 併入本文件 §33–§49） |
 
 ---
 
@@ -95,6 +96,14 @@ CREATE INDEX IF NOT EXISTS idx_sb_task ON scheduled_blocks(task_id);
 ```
 
 **兩個 snapshot 欄位不是第二份 domain identity**（見 §5）。
+
+它們有兩個用途，都只跟「顯示」有關：
+
+1. 任務被刪掉之後，歷史版本仍然看得懂當時排了什麼
+2. diff 的顯示來源（2C-4 §35）
+
+> **identity 永遠是 `task_id`。** diff 的比對、restore 的對應、lock 的判定，
+> 一律不得用 snapshot 標題或科目名去猜——那正是 Phase 2B 一路拔掉的東西。
 
 **不加** `UNIQUE(schedule_version_id, task_id)`。目前生成器保證一個任務在一版裡只有一個
 block，但那是**生成器的不變式，不是 schema 的**——之後若要支援「一個任務拆成兩段時間」，
@@ -330,6 +339,24 @@ CREATE UNIQUE INDEX idx_sv_user_no ON schedule_versions(user_id, version_no);
 
 不是只重試一次——競爭來源不只兩個分頁，還有 Web ＋ 手機、AI 重排 ＋ 手動操作、
 請求重送。**最壞情況是慢一點並回報失敗，絕不是產生半套版本。**
+
+### 7.2.1 ⚠️ 兩種併發衝突長得像，處理方式相反
+
+同一個 transaction 裡會遇到兩種衝突，**絕對不能用同一套處理**：
+
+| 衝突 | 意思 | 處理 |
+|---|---|---|
+| `version_no` 唯一鍵衝突 | 只是號碼被別人先用走了 | **bounded retry**：重讀 MAX+1 再試 |
+| `base_version_id` 不符（2C-4 §38） | 使用者看到的排程已經不是現在的排程 | **絕對不可 retry**，直接 409 |
+
+差別在於「使用者看到的東西還算不算數」。
+
+號碼衝突不影響語意——candidate 的內容沒變，換個號碼寫進去就好。
+但 `base_version_id` 不符表示**世界在 preview 之後被改過了**：使用者當初看到的 diff
+是拿 V5 算的，現在已經是 V6。這時候 retry 等於「把他沒看過的變更靜默套用下去」。
+
+> 實作時最容易寫錯的地方，就是把兩者一起塞進同一個 `catch` 然後一律重試。
+> 正確做法是分開判斷：號碼衝突重試，stale base 直接往上拋 409。
 
 ---
 
@@ -797,6 +824,13 @@ Preview 算完到使用者按下確認之間，世界可能已經變了——在
 加了固定行程、上了鎖。
 
 > **`POST .../restore` 不得信任 preview 的結果，必須重新完整驗證一次。**
+
+「重新驗證」需要一個明確的判斷依據，不能只靠重算後憑感覺比對。
+2C-4 §38 把它正式化成 **`base_version_id` 樂觀鎖**：preview 回傳當時的
+`base_version_id`，apply 時帶回來，在 transaction 內用**條件式 UPDATE**
+確認 active pointer 仍然是同一版；不符就回 409，**不得 retry**（§7.2.1）。
+
+restore 與一般 apply 走同一套保護，沒有例外。
 
 若重算結果與 preview 不同（可恢復數量變了、多了新衝突），**不要默默照做**，
 回報差異並要求重新確認。
