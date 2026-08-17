@@ -3,6 +3,8 @@ import { api } from '../api';
 import Icon from './Icons';
 import { today } from './helpers';
 import { usePlans, bookOf, shortTitle, md, byLesson } from './plans';
+import { planHealth } from './planHealth';
+import ReplanSheet from './ReplanSheet';
 
 // 單一計畫的內容。
 //
@@ -29,6 +31,7 @@ export default function PlanDetailView({ planKey, tasks, lists, apiPlans = [], r
   const [showDone, setShowDone] = useState(false);
   const [manage, setManage] = useState(false);
   const [adjust, setAdjust] = useState(false);
+  const [replan, setReplan] = useState(false);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState('');
   // 新增任務：空白計畫建立後總得有辦法往裡面加第一件事，
@@ -51,6 +54,8 @@ export default function PlanDetailView({ planKey, tasks, lists, apiPlans = [], r
   const isReal = !plan.isLegacy && plan.planId != null;
   // 只有正式且還在進行的計畫能調整；封存的先恢復再說
   const showAdjust = isReal && plan.status !== 'archived' && !!adjustPlan;
+  // 跟 Today 用同一套判斷、同一套重排流程，不寫第二份
+  const health = planHealth(plan, apiPlans.find(p => p.id === plan.planId));
   const raw = apiPlans.find(p => p.id === plan.planId);   // 正式 Plan 的原始欄位（日期等）
 
   // 完成任務走既有的 PATCH /tasks/:id，沒有第二套完成邏輯
@@ -155,6 +160,22 @@ export default function PlanDetailView({ planKey, tasks, lists, apiPlans = [], r
           {plan.overdue > 0 && <span style={{ color: 'var(--red)' }}>逾期 {plan.overdue} 項</span>}
           {plan.subjects.length > 1 && <span className="muted">{plan.subjects.length} 個科目</span>}
         </div>
+
+        {/* 需要調整時才出現；正常的計畫看不到這一段 */}
+        {health?.needsAdjustment && (
+          <div className="tile" style={{ padding: '10px 12px', marginTop: 10, borderLeft: '3px solid var(--orange, #C46A22)' }}>
+            <b>目前安排需要調整</b>
+            <div className="muted" style={{ fontSize: 13, marginTop: 2 }}>{health.reasons[0].message}</div>
+            <div className="row" style={{ marginTop: 8 }}>
+              <button className="btn sm" onClick={() => setReplan(true)}>讓 AI 重新安排</button>
+            </div>
+          </div>
+        )}
+        {replan && health && (
+          <ReplanSheet plan={plan} health={health} raw={raw} lists={lists} reload={reload}
+            onClose={() => setReplan(false)}
+            onEditConditions={sec => { setReplan(false); adjustPlan?.(plan.planId, sec); }} />
+        )}
 
         {plan.isLegacy && (
           <div className="muted" style={{ fontSize: 12, marginTop: 6 }}>

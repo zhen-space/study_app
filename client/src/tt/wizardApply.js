@@ -66,7 +66,7 @@ export function reconcile(blocks, existing = []) {
 // mode='edit'  ：只調整既有計畫，任務身分盡量保留
 export async function applyWizardSchedule({
   mode = 'create', planId = null, name = '', blocks = [],
-  existingTasks = [], legacyMerged = [], removeUnscheduled = true,
+  existingTasks = [], legacyMerged = [], removeUnscheduled = true, updatePlanDates = true,
 }) {
   const dates = blocks.map(b => b.date).filter(Boolean).sort();
   const counts = {};
@@ -82,13 +82,26 @@ export async function applyWizardSchedule({
   if (mode === 'edit') {
     if (planId == null) throw new Error('缺少計畫 id，無法套用新版安排');
     const { update, create, remove } = reconcile(blocks, existingTasks);
-    // ① 還在的：只改排定位置，標題／科目／標籤／完成狀態都不動
-    for (const { task, block } of update) {
-      const f = blockFields(block);
-      await api(`/tasks/${task.id}`, {
-        method: 'PATCH',
-        body: { due_date: f.due_date, due_time: f.due_time, notes: f.notes, deadline_date: f.deadline_date },
-      });
+    // ① 還在的：只改排定位置，標題／科目／標籤／完成狀態都不動。
+    //
+    // 逐筆送出＝沒有交易保護：中途失敗的話，前面幾筆已經寫進去了。
+    // 目前後端沒有批次更新端點，這一批不新增後端 API，所以至少讓錯誤訊息
+    // 說清楚做到哪裡。真正的 all-or-nothing 要等 2C persistence 一起處理
+    // （見 docs/phase2c-schedule-persistence.md 的 technical debt）。
+    let ok = 0;
+    try {
+      for (const { task, block } of update) {
+        const f = blockFields(block);
+        await api(`/tasks/${task.id}`, {
+          method: 'PATCH',
+          body: { due_date: f.due_date, due_time: f.due_time, notes: f.notes, deadline_date: f.deadline_date },
+        });
+        ok++;
+      }
+    } catch (e) {
+      e.applied = ok;
+      e.message = `${e.message}（已經更新 ${ok}／${update.length} 項，其餘維持原樣）`;
+      throw e;
     }
     // ② 新增的
     if (create.length) {
@@ -100,7 +113,10 @@ export async function applyWizardSchedule({
     // ③ 這次不再排的：軟刪除（進垃圾桶，救得回來），只動這個計畫底下的。
     //    使用者選「維持原本日期不動」時（removeUnscheduled=false）一筆都不刪。
     if (removeUnscheduled) for (const t of remove) await api(`/tasks/${t.id}`, { method: 'DELETE' });
-    await api(`/plans/${planId}`, { method: 'PATCH', body: { ...meta, ...(name.trim() ? { name: name.trim() } : {}) } });
+    // 重排（Replan）只是把既有內容搬到新的日子，不該順手改掉使用者自己設的
+    // 起訖日，也不會改名 —— 所以 updatePlanDates=false 時整個 PATCH 都跳過。
+    const patch = { ...(updatePlanDates ? meta : {}), ...(name.trim() ? { name: name.trim() } : {}) };
+    if (Object.keys(patch).length) await api(`/plans/${planId}`, { method: 'PATCH', body: patch });
     return {
       planId, created: create.length, updated: update.length,
       removed: removeUnscheduled ? remove.length : 0,
