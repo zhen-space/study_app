@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { api } from '../api';
 import { planName } from './plans';
+import { applyWizardSchedule } from './wizardApply';
 import { today, addDays } from './helpers';
 import { parseICS } from './ics';
 import { fileToPayload } from './vocabImport';
@@ -43,14 +44,25 @@ function Help({ children }) {
   );
 }
 
-export default function WizardView({ lists, reload, goTasks }) {
-  const [step, setStep] = useState(0);
+// 三個步驟：讀什麼 → 怎麼安排 → AI 排程結果。沒有第四步。
+const STEPS = ['讀什麼', '怎麼安排', 'AI 排程結果'];
+// 從「調整計畫」底部選單進來時，要直接跳到哪一段
+const SECTION_STEP = { content: 0, all: 0, time: 1, cond: 1, deadline: 1 };
+
+export default function WizardView({
+  lists, reload, goTasks, goCalendar,
+  // Edit Mode：從計畫明細的「調整計畫」進來，帶著要調整的那個計畫
+  mode = 'create', planId = null, planTitle = '', planTasks = [], initialSection = '', onDone,
+}) {
+  const isEdit = mode === 'edit' && planId != null;
+  const [step, setStep] = useState(SECTION_STEP[initialSection] ?? 0);
+  // 第 3 步的檢視方式：清單／日曆。只是換看法，不是換排法
+  const [resultView, setResultView] = useState('list');
+  const [applied, setApplied] = useState(null);   // Edit Mode 套用結果摘要
   const [events, setEvents] = useState([]);
   const [settings, setSettings] = useState(null);
   const [follow, setFollow] = useState(true);
   const [shift, setShift] = useState({ sleep_start: '', sleep_end: '' });
-  const [evForm, setEvForm] = useState({ title: '', date: today(), start_time: '08:00', end_time: '09:00', recurring: '', location: '' });
-  const [selEv, setSelEv] = useState({});           // 行程多選刪除
   const [items, setItems] = useState([]);           // 已勾選的章節項目
   const [rangeInput, setRangeInput] = useState({});
   const [tocs, setTocs] = useState([]);
@@ -85,9 +97,9 @@ export default function WizardView({ lists, reload, goTasks }) {
   const [dGlobal, setDGlobal] = useState({ start: today(), end: addDays(today(), 6) });
   const [dMap, setDMap] = useState({});               // `${sid}|${gi}` → {start,end}
   const [preview, setPreview] = useState(null);
-  const [leftover, setLeftover] = useState([]);       // 上次排程還沒做完的
+  const [apiLeftover, setApiLeftover] = useState([]); // 上次排程還沒做完的（Create Mode：全域舊資料）
   const [redoUndone, setRedoUndone] = useState(true); // 要不要一起重新安排
-  const [doneItems, setDoneItems] = useState([]);     // 已經打勾完成的（預設不再排進去）
+  const [apiDone, setApiDone] = useState([]);         // 已經打勾完成的（預設不再排進去）
   const [redoDone, setRedoDone] = useState(false);    // 想重讀一次時才勾
   const [planNameInput, setPlanNameInput] = useState('');  // 這份計畫要叫什麼（確認步驟）
   const [err, setErr] = useState('');
@@ -100,8 +112,12 @@ export default function WizardView({ lists, reload, goTasks }) {
   useEffect(() => {
     loadEv();
     api('/settings').then(s => { setSettings(s); setShift({ sleep_start: s.sleep_start, sleep_end: s.sleep_end }); });
-    api('/plan-tasks').then(setLeftover).catch(() => {});
-    api('/plan-tasks?done=1').then(setDoneItems).catch(() => {});
+    // Edit Mode 的「未完成／已完成」一律取自這個計畫自己的任務，
+    // 不碰 /plan-tasks 這支全域 legacy 端點——否則會掃到別的計畫。
+    if (mode !== 'edit') {
+      api('/plan-tasks').then(setApiLeftover).catch(() => {});
+      api('/plan-tasks?done=1').then(setApiDone).catch(() => {});
+    }
     api('/import/toc').then(setTocs);
     // AI 解讀結果自動保存：離開頁面回來還在
     try { const saved = localStorage.getItem('wizardAiPreview'); if (saved) setAiPreview(JSON.parse(saved)); } catch {}
@@ -114,10 +130,13 @@ export default function WizardView({ lists, reload, goTasks }) {
   }, [aiPreview]);
 
   /* ---------- 精靈草稿自動記憶：勾選、範圍、日期、排法等全部設定 ---------- */
+  // Edit Mode 的草稿要分計畫存，不然調整 A 計畫會把 B 計畫的草稿蓋掉。
+  // （草稿只是「這次操作到一半的設定」，不是計畫資料，不是第二套排程狀態）
+  const draftKey = isEdit ? `wizardDraft:plan:${planId}` : 'wizardDraft';
   const draftLoaded = useRef(false);
   useEffect(() => {
     try {
-      const d = JSON.parse(localStorage.getItem('wizardDraft') || 'null');
+      const d = JSON.parse(localStorage.getItem(draftKey) || 'null');
       if (d) {
         d.items && setItems(d.items);
         d.subjSpread && setSubjSpread(d.subjSpread);
@@ -149,7 +168,9 @@ export default function WizardView({ lists, reload, goTasks }) {
         if (d.dMap) {
           setDMap(Object.fromEntries(Object.entries(d.dMap).filter(([, v]) => !v?.end || v.end >= today())));
         }
-        d.step != null && setStep(Math.min(d.step, 3)); // 確認頁需重新產生預覽，最多回到日期步
+        // 第 3 步要重新產生預覽才有東西看，草稿最多還原到第 2 步；
+        // 有指定 section（從「調整計畫」深連結進來）時以 section 為準
+        if (d.step != null && !initialSection) setStep(Math.min(d.step, 1));
       }
     } catch {}
     draftLoaded.current = true;
@@ -170,17 +191,24 @@ export default function WizardView({ lists, reload, goTasks }) {
   useEffect(() => {
     if (!draftLoaded.current) return;
     try {
-      localStorage.setItem('wizardDraft', JSON.stringify({
+      localStorage.setItem(draftKey, JSON.stringify({
         items, subjSpread, typeRef, typesBy, combineBy, typeGroupBy, finals, firstsSel, plainSel, skipTypes,
         exWd, exDates, levelMin, busyHours, timed, limitPerDay, perDay, pace, groupSize,
         bySubject, byGroup, dGlobal, dMap, step,
       }));
     } catch {}
-  }, [items, subjSpread, typeRef, typesBy, combineBy, typeGroupBy, finals, firstsSel, plainSel, skipTypes,
+  }, [draftKey, items, subjSpread, typeRef, typesBy, combineBy, typeGroupBy, finals, firstsSel, plainSel, skipTypes,
     exWd, exDates, levelMin, busyHours, timed, limitPerDay, perDay, pace, groupSize,
     bySubject, byGroup, dGlobal, dMap, step]);
 
   const evGroups = useMemo(() => groupEvents(events), [events]);
+
+  // Edit Mode：只看這個計畫自己的任務；Create Mode：沿用原本的全域 legacy 來源
+  const livePlanTasks = useMemo(() => planTasks.filter(t => !t.deleted), [planTasks]);
+  const leftover = useMemo(
+    () => (isEdit ? livePlanTasks.filter(t => !t.completed) : apiLeftover), [isEdit, livePlanTasks, apiLeftover]);
+  const doneItems = useMemo(
+    () => (isEdit ? livePlanTasks.filter(t => t.completed) : apiDone), [isEdit, livePlanTasks, apiDone]);
 
   /* ---------- 題型組別（可全域或分科） ---------- */
   const calcGroups = (ts, cb, tg) => {
@@ -280,20 +308,6 @@ export default function WizardView({ lists, reload, goTasks }) {
     } catch { setImportMsg('讀取失敗，請確認是 .ics 行事曆檔'); }
     e.target.value = '';
   }
-  async function addEvent(e) {
-    e.preventDefault();
-    if (!evForm.title.trim()) return;
-    await api('/events', { method: 'POST', body: { ...evForm, recurring: evForm.recurring || null } });
-    setEvForm(f => ({ ...f, title: '' }));
-    loadEv();
-  }
-  async function deleteSelected() {
-    const ids = evGroups.filter(g => selEv[g.ids[0]]).flatMap(g => g.ids);
-    for (const id of ids) await api(`/events/${id}`, { method: 'DELETE' });
-    setSelEv({});
-    loadEv();
-  }
-
   /* ---------- 科目章節 ---------- */
   // 常見科目的預設顏色（英文=藍、生物=黃）
   const SUBJ_COLOR = { 英文: '#0086CC', 英語: '#0086CC', 國文: '#e03131', 數學: '#16a34a', 化學: '#f59f00', 物理: '#9333ea', 生物: '#eab308', 地科: '#0d9488', 歷史: '#b45309', 地理: '#65a30d', 公民: '#db2777' };
@@ -570,58 +584,39 @@ export default function WizardView({ lists, reload, goTasks }) {
       setPreview(pv);
       // 預設計畫名稱：單科單書用「{科目}｜{書名}」，其他用「讀書計畫｜{起}–{迄}」。
       // 只有使用者還沒自己打過才覆蓋，免得重新產生預覽把他改的名字洗掉。
-      setPlanNameInput(n => n.trim() ? n : planName(
-        pv.blocks.map(b => ({ title: b.title, list_id: b.subject_id, due_date: b.date })), lists));
-      setStep(4);
+      setPlanNameInput(n => n.trim() ? n : (planTitle || planName(
+        pv.blocks.map(b => ({ title: b.title, list_id: b.subject_id, due_date: b.date })), lists)));
+      setApplied(null);
+      setStep(2);
     } catch (e) { setErr(e.message); }
   }
+  // 真正寫進資料庫的只有這一步，而且只透過 ./wizardApply 這一層。
+  // 精靈本身不知道排定位置目前是存在 due_date——2C 換成 ScheduleVersion 時，
+  // 三個步驟一行都不用改。
   async function confirm() {
     setSaving(true);
     try {
-      const dates = preview.blocks.map(b => b.date).filter(Boolean).sort();
-      // Phase 2A：一次排程＝一個正式 Plan。先建 Plan，再把任務掛上去。
-      // 不再靠標籤／標題讓前端事後去猜哪些任務屬於同一份計畫。
-      const counts = {};
-      preview.blocks.forEach(b => { counts[b.subject_id] = (counts[b.subject_id] || 0) + 1; });
-      const primary = Object.entries(counts).sort((a, b) => b[1] - a[1])[0]?.[0];
-      const plan = await api('/plans', {
-        method: 'POST',
-        body: {
-          name: planNameInput.trim() || planName(
-            preview.blocks.map(b => ({ title: b.title, list_id: b.subject_id, due_date: b.date })), lists),
-          primary_list_id: primary ? Number(primary) : null,
-          start_date: dates[0] || null,
-          target_date: dates[dates.length - 1] || null,
-          status: 'active',
-          source: 'manual',
-        },
+      const r = await applyWizardSchedule({
+        mode: isEdit ? 'edit' : 'create',
+        planId,
+        name: planNameInput.trim() || planName(
+          preview.blocks.map(b => ({ title: b.title, list_id: b.subject_id, due_date: b.date })), lists),
+        blocks: preview.blocks,
+        existingTasks: livePlanTasks,
+        // 未做完的已經併進這次排程 → 清掉舊的那幾筆（已完成的保留當紀錄）。
+        // 這支是全域 legacy 端點，只有建立新計畫時才允許呼叫。
+        clearLegacyLeftover: !isEdit && redoUndone,
+        // 使用者選「維持原本日期不動」時，這次沒排到的任務原封不動留著
+        removeUnscheduled: redoUndone,
       });
-      // 未做完的已經併進這次排程 → 清掉舊的那幾筆（已完成的保留當紀錄）；
-      // 使用者若選「維持原本日期」就不動它們。
-      // 舊資料還沒 migrate，所以這裡仍要呼叫 legacy 端點；正式 Plan 之間
-      // 則各自用 /plans/:id/tasks?incomplete=1，不會互相誤刪。
-      if (redoUndone) { try { await api('/plan-tasks', { method: 'DELETE' }); } catch {} }
-      // 一個請求打包建立全部任務（逐筆等待太慢）
-      await api('/tasks/bulk', {
-        method: 'POST',
-        body: {
-          tasks: preview.blocks.map(b => ({
-            title: b.title, list_id: b.subject_id, due_date: b.date, tags: ['讀書計劃'],
-            plan_id: plan.id,
-            // 排程演算法算完會把每個項目自己的截止日放在 block.deadline，
-            // 這裡把它寫進正式的 deadline_date 欄位（跟排定日期 due_date 分開）
-            ...(b.deadline ? { deadline_date: b.deadline } : {}),
-            ...(b.start_time ? { due_time: b.start_time, notes: `讀書時段 ${b.start_time}–${b.end_time}` } : {}),
-          })),
-        },
-      });
+      setApplied(r);
+      localStorage.removeItem(draftKey);
     } catch (e) { setSaving(false); setErr(e.message); return; }
     setSaving(false);
-    reload();
-    goTasks();
+    await reload();
+    if (isEdit) onDone?.();
+    else goTasks();
   }
-
-  const steps = ['行程與作息', '科目與範圍', '題型與偏好', '日期安排', '確認'];
   const dateInput = (k, label) => {
     const o = dMap[k] || {};
     const v = mergeWin(k);
@@ -643,39 +638,73 @@ export default function WizardView({ lists, reload, goTasks }) {
     );
   };
 
-  const selCount = evGroups.filter(g => selEv[g.ids[0]]).length;
+
+  // 排程結果：清單與日曆看的是同一份 preview，只是換一種看法，不是換排法
+  const byDate = useMemo(
+    () => (preview?.blocks || []).reduce((a, b) => { (a[b.date] = a[b.date] || []).push(b); return a; }, {}),
+    [preview]);
+  const calCells = useMemo(() => {
+    const days = Object.keys(byDate).sort();
+    if (!days.length) return [];
+    const cells = [];
+    for (let i = 0; i < new Date(days[0] + 'T00:00:00').getDay(); i++) cells.push({ date: null, list: [] });
+    for (let d = days[0]; d <= days[days.length - 1]; d = addDays(d, 1)) cells.push({ date: d, list: byDate[d] || [] });
+    return cells;
+  }, [byDate]);
 
   return (
     <div className="main">
-      <div className="main-head"><h2>🪄 排程精靈</h2></div>
+      <div className="main-head">
+        <h2>{isEdit ? `調整「${planTitle || '這個計畫'}」` : '🪄 排程精靈'}</h2>
+      </div>
       <div className="main-body">
-        <div className="steps" style={{ marginTop: 8 }}>{steps.map((_, i) => <div key={i} className={'step-dot' + (i <= step ? ' on' : '')} />)}</div>
-        <div className="muted" style={{ marginBottom: 10 }}>步驟 {step + 1}／5：{steps[step]}</div>
+        {isEdit && (
+          <div className="muted" style={{ fontSize: 12, marginTop: 6 }}>
+            調整的是這一個計畫，不會新增計畫，也不會影響其他計畫
+          </div>
+        )}
+        <div className="steps" style={{ marginTop: 8 }}>{STEPS.map((_, i) => <div key={i} className={'step-dot' + (i <= step ? ' on' : '')} />)}</div>
+        <div className="muted" style={{ marginBottom: 10 }}>步驟 {step + 1}／3：{STEPS[step]}</div>
 
-        {/* ============ 0 行程與作息 ============ */}
-        {step === 0 && settings && (
-          <div className="tile">
-            <div style={{ background: 'var(--bg)', borderRadius: 8, padding: 10, marginBottom: 10 }}>
-              <b>要怎麼安排讀書進度？</b>
-              <label style={{ display: 'block', marginTop: 6 }}>
-                <input type="radio" checked={timed} onChange={() => setTimed(true)} /> <b>計算時間</b>：算出每章/節要花多久，排成含時段的讀書計劃
-              </label>
-              <label style={{ display: 'block', marginTop: 4 }}>
-                <input type="radio" checked={!timed} onChange={() => setTimed(false)} /> <b>只排進度</b>：單純把章節平均分到每天，不算時間、不顯示時段
-              </label>
-              {!timed && (
-                <div className="row" style={{ marginTop: 6 }}>
-                  <label><input type="checkbox" checked={limitPerDay} onChange={e => setLimitPerDay(e.target.checked)} /> 限制每天數量</label>
-                  {limitPerDay && <>
-                    <span className="muted">每天排</span>
-                    <input type="number" min="1" max="10" value={perDay} style={{ width: 56 }} onChange={e => setPerDay(Math.max(1, +e.target.value || 1))} />
-                    <span className="muted">個</span>
-                  </>}
-                  {!limitPerDay && <span className="muted">（不限，平均鋪滿日期範圍）</span>}
-                </div>
-              )}
-            </div>
+        {/* ============ 步驟 2 之一：這次要排到什麼程度 ============
+            這是第 2 步唯一的「主要選擇」，用學生聽得懂的話問，
+            不把 timed 這個內部參數講出來。 */}
+        {step === 1 && (
+          <div className="tile" style={{ marginBottom: 10 }}>
+            <b>這次要排到什麼程度？</b>
+            <label style={{ display: 'block', marginTop: 6 }}>
+              <input type="radio" name="wz-howfar" checked={!timed} onChange={() => setTimed(false)} />
+              {' '}<b>只安排每天要做什麼</b>：每天列出要讀的內容，不綁幾點
+            </label>
+            <label style={{ display: 'block', marginTop: 4 }}>
+              <input type="radio" name="wz-howfar" checked={timed} onChange={() => setTimed(true)} />
+              {' '}<b>安排到實際時間</b>：連幾點到幾點都排好，自動避開上課與睡覺
+            </label>
+            {!timed && (
+              <div className="row" style={{ marginTop: 6 }}>
+                <label><input type="checkbox" checked={limitPerDay} onChange={e => setLimitPerDay(e.target.checked)} /> 限制每天數量</label>
+                {limitPerDay && <>
+                  <span className="muted">每天排</span>
+                  <input type="number" min="1" max="10" value={perDay} style={{ width: 56 }} onChange={e => setPerDay(Math.max(1, +e.target.value || 1))} />
+                  <span className="muted">個</span>
+                </>}
+                {!limitPerDay && <span className="muted">（不限，平均鋪滿日期範圍）</span>}
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* ============ 步驟 2 之二：可用時間 ============
+            時間資料就是既有的行事曆與作息設定，精靈不另外做一套日曆——
+            要改行程請到行事曆，這裡只顯示現況與匯入工具。 */}
+        {step === 1 && settings && (
+          <details className="tile" id="wz-sec-time" open={initialSection === 'time'} style={{ marginBottom: 10 }}>
+            <summary style={{ cursor: 'pointer', fontWeight: 700 }}>可用時間</summary>
             <p>排程會自動避開<b>既定行程</b>{timed ? '與睡覺、吃飯時間' : ''}。</p>
+            <div className="row" style={{ marginTop: 6 }}>
+              <span className="muted">目前有 {evGroups.length} 組固定行程</span>
+              <button className="btn sm ghost" onClick={() => goCalendar?.()}>去行事曆調整</button>
+            </div>
             <div className="row" style={{ marginTop: 10 }}>
               <label className="btn sm ghost">📅 匯入 .ics<input type="file" accept=".ics,text/calendar" style={{ display: 'none' }} onChange={importICS} /></label>
               <label className="btn sm" style={{ opacity: aiBusy ? .6 : 1 }}>🤖 AI 匯入課表<input type="file" disabled={aiBusy} accept=".pdf,.docx,.xlsx,.xls,.csv,.txt,image/*" style={{ display: 'none' }} onChange={importAI} /></label>
@@ -743,47 +772,23 @@ export default function WizardView({ lists, reload, goTasks }) {
               </div>
             )}
 
-            <form className="row" style={{ marginTop: 12 }} onSubmit={addEvent}>
-              <input placeholder="手動新增行程" value={evForm.title} onChange={e => setEvForm(f => ({ ...f, title: e.target.value }))} style={{ flex: 1, minWidth: 120 }} />
-              <input type="date" value={evForm.date} onChange={e => setEvForm(f => ({ ...f, date: e.target.value }))} />
-              <input type="time" value={evForm.start_time} onChange={e => setEvForm(f => ({ ...f, start_time: e.target.value }))} />
-              <input type="time" value={evForm.end_time} onChange={e => setEvForm(f => ({ ...f, end_time: e.target.value }))} />
-              <input placeholder="地點" value={evForm.location} style={{ width: 80 }} onChange={e => setEvForm(f => ({ ...f, location: e.target.value }))} />
-              <select value={evForm.recurring} onChange={e => setEvForm(f => ({ ...f, recurring: e.target.value }))}>
-                <option value="">單次</option><option value="weekly">每週</option>
-              </select>
-              <button className="btn sm">＋</button>
-            </form>
-
-            {/* 已統整的行程清單＋多選刪除 */}
             {evGroups.length > 0 && (
               <div style={{ marginTop: 12 }}>
-                <div className="row">
-                  <b>目前行程（{evGroups.length} 組）</b>
-                  {selCount > 0 && <button className="btn sm danger" onClick={deleteSelected}>刪除選取（{selCount}）</button>}
-                  <button className="btn sm ghost" onClick={() => {
-                    const all = evGroups.every(g => selEv[g.ids[0]]);
-                    setSelEv(all ? {} : Object.fromEntries(evGroups.map(g => [g.ids[0], true])));
-                  }}>{evGroups.every(g => selEv[g.ids[0]]) ? '取消全選' : '全選'}</button>
-                </div>
-                {evGroups.map(g => (
-                  <div key={g.ids[0]} className="row" style={{ marginTop: 6 }}>
-                    <input type="checkbox" checked={!!selEv[g.ids[0]]} onChange={() => setSelEv(s => ({ ...s, [g.ids[0]]: !s[g.ids[0]] }))} />
+                <b>目前行程（{evGroups.length} 組）</b>
+                {evGroups.slice(0, 8).map(g => (
+                  <div key={g.ids[0]} className="row" style={{ marginTop: 4 }}>
                     <span><b>{g.title}</b></span>
                     <span className="muted" style={{ flex: 1 }}>{g.when} {g.start_time}–{g.end_time}</span>
-                    <button className="icon-btn" onClick={async () => {
-                      if (!window.confirm(`刪除「${g.title}」的 ${g.ids.length} 筆行程？`)) return;
-                      for (const id of g.ids) await api(`/events/${id}`, { method: 'DELETE' });
-                      loadEv();
-                    }}>✕</button>
                   </div>
                 ))}
+                {evGroups.length > 8 && <div className="muted" style={{ fontSize: 12, marginTop: 4 }}>…還有 {evGroups.length - 8} 組</div>}
+                <div className="muted" style={{ fontSize: 12, marginTop: 6 }}>要新增或刪除行程請到行事曆，這裡只顯示現況</div>
               </div>
             )}
 
             <div style={{ marginTop: 14 }}>
-              <label style={{ display: 'block' }}><input type="radio" checked={follow} onChange={() => setFollow(true)} /> 遵循平常作息（睡 {settings.sleep_start}–{settings.sleep_end}）</label>
-              <label style={{ display: 'block', marginTop: 4 }}><input type="radio" checked={!follow} onChange={() => setFollow(false)} /> 這次調整（可前後 1–2 小時）</label>
+              <label style={{ display: 'block' }}><input type="radio" name="wz-sleep" checked={follow} onChange={() => setFollow(true)} /> 遵循平常作息（睡 {settings.sleep_start}–{settings.sleep_end}）</label>
+              <label style={{ display: 'block', marginTop: 4 }}><input type="radio" name="wz-sleep" checked={!follow} onChange={() => setFollow(false)} /> 這次調整（可前後 1–2 小時）</label>
               {!follow && (
                 <div className="row" style={{ marginTop: 6 }}>
                   <input type="time" value={shift.sleep_start} onChange={e => setShift(s => ({ ...s, sleep_start: e.target.value }))} />
@@ -792,13 +797,12 @@ export default function WizardView({ lists, reload, goTasks }) {
                 </div>
               )}
             </div>
-            <button className="btn" style={{ marginTop: 14 }} onClick={() => setStep(1)}>下一步</button>
-          </div>
+          </details>
         )}
 
-        {/* ============ 1 科目與範圍 ============ */}
-        {step === 1 && (
-          <div className="tile">
+        {/* ============ 步驟 1：讀什麼 ============ */}
+        {step === 0 && (
+          <div className="tile" id="wz-sec-content">
             <Help>
               每科先「拍課本目錄」建立章節，之後直接勾選。<br />
               ・可勾章／節／主題任一層，勾小的會取代大的<br />
@@ -1072,14 +1076,13 @@ export default function WizardView({ lists, reload, goTasks }) {
               );
             })}
             <div className="row" style={{ marginTop: 16 }}>
-              <button className="btn ghost" onClick={() => setStep(0)}>上一步</button>
-              <button className="btn" disabled={!items.length} onClick={() => setStep(2)}>下一步（已選 {items.length} 項）</button>
+              <button className="btn" disabled={!items.length} onClick={() => setStep(1)}>下一步：怎麼安排（已選 {items.length} 項）</button>
             </div>
           </div>
         )}
 
-        {/* ============ 2 題型與偏好 ============ */}
-        {step === 2 && (() => {
+        {/* ============ 步驟 2 之三：排程條件（題型與偏好） ============ */}
+        {step === 1 && (() => {
           const sids = [...new Set(items.map(i => i.subject_id))];
           // 用字串比對：下拉選單回傳的是字串，科目 id 是數字，直接 === 會找不到名字
           const sname = sid => lists.find(l => String(l.id) === String(sid))?.name || '';
@@ -1110,8 +1113,9 @@ export default function WizardView({ lists, reload, goTasks }) {
             </div>
           );
           return (
-            <div className="tile">
-              <b>各科的章節要打散還是照順序？</b>
+            <details className="tile" id="wz-sec-cond" open={initialSection === 'cond'} style={{ marginBottom: 10 }}>
+              <summary style={{ cursor: 'pointer', fontWeight: 700 }}>排程條件</summary>
+              <b style={{ display: 'block', marginTop: 8 }}>各科的章節要打散還是照順序？</b>
               {sids.map(sid => (
                 <div key={sid} style={{ marginTop: 8 }}>
                   <div className="row">
@@ -1287,17 +1291,14 @@ export default function WizardView({ lists, reload, goTasks }) {
                 </>;
               })()}
 
-              <div className="row" style={{ marginTop: 16 }}>
-                <button className="btn ghost" onClick={() => setStep(1)}>上一步</button>
-                <button className="btn" onClick={() => setStep(3)}>下一步</button>
-              </div>
-            </div>
+            </details>
           );
         })()}
 
-        {/* ============ 3 日期安排 ============ */}
-        {step === 3 && (
-          <div className="tile">
+        {/* ============ 步驟 2 之四：完成期限 ============ */}
+        {step === 1 && (
+          <details className="tile" id="wz-sec-deadline" open={initialSection !== 'time' && initialSection !== 'cond'} style={{ marginBottom: 10 }}>
+            <summary style={{ cursor: 'pointer', fontWeight: 700 }}>完成期限</summary>
             <div className="row">
               <label>整體範圍：</label>
               <input type="date" value={dGlobal.start} onChange={e => setDGlobal(d => ({ ...d, start: e.target.value }))} />
@@ -1312,12 +1313,14 @@ export default function WizardView({ lists, reload, goTasks }) {
 
             {leftover.length > 0 && (
               <div className="tile" style={{ marginTop: 12, padding: '8px 12px', background: 'var(--fill)' }}>
-                <div style={{ marginBottom: 4 }}>上次還有 <b>{leftover.length}</b> 項沒做完</div>
+                <div style={{ marginBottom: 4 }}>
+                  {isEdit ? '這個計畫' : '上次'}還有 <b>{leftover.length}</b> 項沒做完
+                </div>
                 <label style={{ display: 'block' }}>
-                  <input type="radio" checked={redoUndone} onChange={() => setRedoUndone(true)} /> 一起重新安排
+                  <input type="radio" name="wz-redo" checked={redoUndone} onChange={() => setRedoUndone(true)} /> 一起重新安排
                 </label>
                 <label style={{ display: 'block' }}>
-                  <input type="radio" checked={!redoUndone} onChange={() => setRedoUndone(false)} /> 維持原本日期不動
+                  <input type="radio" name="wz-redo" checked={!redoUndone} onChange={() => setRedoUndone(false)} /> 維持原本日期不動
                 </label>
               </div>
             )}
@@ -1388,17 +1391,35 @@ export default function WizardView({ lists, reload, goTasks }) {
               <input type="number" min="0" max="24" value={busyHours} style={{ width: 60 }} onChange={e => setBusyHours(+e.target.value || 0)} />
               <span className="muted">小時，就不排讀書（填 0＝不限制）</span>
             </div>
-            {err && <div className="error" style={{ marginTop: 8 }}>{err}</div>}
-            <div className="row" style={{ marginTop: 14 }}>
-              <button className="btn ghost" onClick={() => setStep(2)}>上一步</button>
-              <button className="btn" onClick={genPreview}>產生排程</button>
-            </div>
-          </div>
+          </details>
         )}
 
-        {/* ============ 4 確認 ============ */}
-        {step === 4 && preview && (
+        {/* 第 2 步的共同結尾：不管展開哪一段，產生排程都在這裡 */}
+        {step === 1 && (
+          <>
+            {err && <div className="error" style={{ marginTop: 8 }}>{err}</div>}
+            <div className="row" style={{ marginTop: 14 }}>
+              <button className="btn ghost" onClick={() => setStep(0)}>上一步</button>
+              <button className="btn" onClick={genPreview}>產生排程</button>
+            </div>
+          </>
+        )}
+
+        {/* ============ 步驟 3：AI 排程結果 ============ */}
+        {step === 2 && preview && (
           <div className="tile">
+            {/* 目前是哪一種安排，結果頁要一直看得到（不是看法，是排法） */}
+            <div className="row" style={{ marginBottom: 10, flexWrap: 'wrap' }}>
+              <span className="chip">{timed ? '時間排程' : '每日待辦'}</span>
+              <span className="muted" style={{ fontSize: 12 }}>
+                {timed ? '已排到幾點到幾點' : '只列出每天要做什麼'}
+              </span>
+              <span className="row" style={{ marginLeft: 'auto', gap: 4 }}>
+                {/* 只是換看法，不會改變排法 */}
+                <button className={'btn sm' + (resultView === 'list' ? '' : ' ghost')} onClick={() => setResultView('list')}>清單</button>
+                <button className={'btn sm' + (resultView === 'cal' ? '' : ' ghost')} onClick={() => setResultView('cal')}>日曆</button>
+              </span>
+            </div>
             {preview.check && (
               <div style={{ background: 'var(--fill)', borderRadius: 10, padding: '8px 12px', marginBottom: 10 }}>
                 <span className="muted">
@@ -1448,33 +1469,71 @@ export default function WizardView({ lists, reload, goTasks }) {
                 <div className="muted" style={{ margin: '4px 0 8px' }}>{preview.message}</div>
                 <div className="muted">想怎麼處理？</div>
                 <div className="row" style={{ marginTop: 6, flexWrap: 'wrap' }}>
-                  <button className="btn sm" onClick={() => setStep(1)}>刪掉一些內容</button>
-                  <button className="btn sm ghost" onClick={() => setStep(3)}>增加讀書天數/延長日期</button>
+                  <button className="btn sm" onClick={() => setStep(0)}>刪掉一些內容</button>
+                  <button className="btn sm ghost" onClick={() => setStep(1)}>增加讀書天數/延長日期</button>
                   {timed && <button className="btn sm ghost" onClick={() => { setTimed(false); genPreview(); }}>改成「不計時、只排進度」</button>}
                 </div>
               </div>
             )}
-            {Object.entries(preview.blocks.reduce((a, b) => { (a[b.date] = a[b.date] || []).push(b); return a; }, {})).map(([d, list]) => (
-              <div key={d} style={{ marginBottom: 10 }}>
-                <b>{d}（週{WD[new Date(d + 'T00:00:00').getDay()]}）</b>
-                {list.map((b, i) => {
-                  const l = lists.find(x => String(x.id) === String(b.subject_id)); // 字串/數字都對得到，顏色不會消失
-                  return <div key={i} className="row" style={{ marginTop: 4 }}>
-                    {b.start_time && <span className="muted">{b.start_time}–{b.end_time}</span>}
-                    <span style={{ color: l?.color }}>■</span><span>{l?.name}｜{b.title}</span>
-                  </div>;
-                })}
-              </div>
-            ))}
+            {resultView === 'list'
+              ? Object.entries(byDate).map(([d, list]) => (
+                <div key={d} style={{ marginBottom: 10 }}>
+                  <b>{d}（週{WD[new Date(d + 'T00:00:00').getDay()]}）</b>
+                  {list.map((b, i) => {
+                    const l = lists.find(x => String(x.id) === String(b.subject_id)); // 字串/數字都對得到，顏色不會消失
+                    return <div key={i} className="row" style={{ marginTop: 4 }}>
+                      {b.start_time && <span className="muted">{b.start_time}–{b.end_time}</span>}
+                      <span style={{ color: l?.color }}>■</span><span>{l?.name}｜{b.title}</span>
+                    </div>;
+                  })}
+                </div>
+              ))
+              : (
+                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(7, 1fr)', gap: 4 }}>
+                  {[0, 1, 2, 3, 4, 5, 6].map(w => (
+                    <div key={'h' + w} className="muted" style={{ fontSize: 11, textAlign: 'center' }}>{WD[w]}</div>
+                  ))}
+                  {calCells.map((c, i) => (
+                    <div key={i} style={{ minHeight: 52, border: '1px solid var(--border)', borderRadius: 6, padding: 3, opacity: c.date ? 1 : .25 }}>
+                      {c.date && <>
+                        <div style={{ fontSize: 11, fontWeight: 600 }}>{+c.date.slice(8)}</div>
+                        {c.list.slice(0, 3).map((b, j) => {
+                          const l = lists.find(x => String(x.id) === String(b.subject_id));
+                          return <div key={j} style={{ fontSize: 10, color: l?.color, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                            {b.start_time ? `${b.start_time} ` : ''}{b.title}
+                          </div>;
+                        })}
+                        {c.list.length > 3 && <div className="muted" style={{ fontSize: 10 }}>＋{c.list.length - 3}</div>}
+                      </>}
+                    </div>
+                  ))}
+                </div>
+              )}
             <div className="tile" style={{ marginTop: 14, padding: '10px 12px', background: 'var(--fill)' }}>
               <div className="muted" style={{ fontSize: 12, marginBottom: 4 }}>這份計畫要叫什麼？</div>
-              <input value={planNameInput} onChange={e => setPlanNameInput(e.target.value)}
+              <input aria-label="計畫名稱" value={planNameInput} onChange={e => setPlanNameInput(e.target.value)}
                 placeholder="計畫名稱" style={{ width: '100%' }} />
             </div>
+            {isEdit && (
+              <div className="muted" style={{ fontSize: 12, marginTop: 8 }}>
+                這只是預覽，按下「套用新版安排」之前，原本的計畫不會有任何改變
+              </div>
+            )}
+            {err && <div className="error" style={{ marginTop: 8 }}>{err}</div>}
             <div className="row" style={{ marginTop: 14 }}>
-              <button className="btn ghost" onClick={() => setStep(3)}>不滿意，重新調整</button>
-              <button className="btn" disabled={saving} onClick={confirm}>{saving ? '建立中…' : `滿意，加入待辦（${preview.blocks.length} ${timed ? '段' : '項'}）！`}</button>
+              <button className="btn ghost" onClick={() => setStep(1)}>不滿意，重新調整</button>
+              <button className="btn" disabled={saving} onClick={confirm}>
+                {saving ? (isEdit ? '套用中…' : '建立中…')
+                  : isEdit ? `套用新版安排（${preview.blocks.length} ${timed ? '段' : '項'}）`
+                    : `滿意，加入待辦（${preview.blocks.length} ${timed ? '段' : '項'}）！`}
+              </button>
             </div>
+            {applied && (
+              <div className="muted" style={{ marginTop: 8, fontSize: 12 }}>
+                已套用：保留 {applied.updated} 項、新增 {applied.created} 項
+                {applied.removed ? `、移除 ${applied.removed} 項` : ''}
+              </div>
+            )}
           </div>
         )}
       </div>

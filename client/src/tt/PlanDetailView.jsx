@@ -14,10 +14,21 @@ import { usePlans, bookOf, shortTitle, md, byLesson } from './plans';
 
 const STATUS_LABEL = { draft: '草稿', active: '進行中', completed: '已完成', archived: '已封存' };
 
-export default function PlanDetailView({ planKey, tasks, lists, apiPlans = [], reload, onBack, goWizard }) {
+// 「調整計畫」的入口：先問要調整哪一段，再深連結到排程精靈對應的位置。
+// 一次只調一件事，不用每次都從頭走一遍精靈。
+const ADJUST = [
+  ['content', '學習內容', '加、減或換讀的範圍'],
+  ['deadline', '完成期限', '改開始日、目標日與分配方式'],
+  ['time', '可用時間', '看目前的行程與作息（要改請到行事曆）'],
+  ['cond', '排程條件', '題型、順序、每天幾項'],
+  ['all', '全部設定', '從頭走一次精靈'],
+];
+
+export default function PlanDetailView({ planKey, tasks, lists, apiPlans = [], reload, onBack, goWizard, adjustPlan }) {
   const plan = usePlans(tasks, lists, apiPlans).find(p => p.key === planKey);
   const [showDone, setShowDone] = useState(false);
   const [manage, setManage] = useState(false);
+  const [adjust, setAdjust] = useState(false);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState('');
   // 新增任務：空白計畫建立後總得有辦法往裡面加第一件事，
@@ -38,6 +49,8 @@ export default function PlanDetailView({ planKey, tasks, lists, apiPlans = [], r
   }
 
   const isReal = !plan.isLegacy && plan.planId != null;
+  // 只有正式且還在進行的計畫能調整；封存的先恢復再說
+  const showAdjust = isReal && plan.status !== 'archived' && !!adjustPlan;
   const raw = apiPlans.find(p => p.id === plan.planId);   // 正式 Plan 的原始欄位（日期等）
 
   // 完成任務走既有的 PATCH /tasks/:id，沒有第二套完成邏輯
@@ -120,8 +133,13 @@ export default function PlanDetailView({ planKey, tasks, lists, apiPlans = [], r
       <div className="main-body">
         <div className="row">
           <button className="btn sm ghost" onClick={onBack}>← 計畫列表</button>
+          {showAdjust && (
+            <button className="btn sm" style={{ marginLeft: 'auto' }} onClick={() => setAdjust(true)}>
+              <Icon name="wizard" size={14} /> 調整計畫
+            </button>
+          )}
           {isReal && (
-            <button className="btn sm ghost" style={{ marginLeft: 'auto' }} onClick={() => setManage(v => !v)}>
+            <button className="btn sm ghost" style={showAdjust ? undefined : { marginLeft: 'auto' }} onClick={() => setManage(v => !v)}>
               <Icon name="pencil" size={14} /> {manage ? '完成' : '管理'}
             </button>
           )}
@@ -252,6 +270,35 @@ export default function PlanDetailView({ planKey, tasks, lists, apiPlans = [], r
             </div>
           );
         })}
+
+        {/* 調整計畫：先問要調哪一段，再跳到排程精靈對應的位置 */}
+        {adjust && (
+          <div className="cal-modal-back" onClick={() => setAdjust(false)}>
+            <div className="ev-sheet tile" style={{ padding: '14px 16px' }} onClick={e => e.stopPropagation()}>
+              <div className="row">
+                <b>要調整什麼？</b>
+                <button className="icon-btn" style={{ marginLeft: 'auto' }} onClick={() => setAdjust(false)}>
+                  <Icon name="x" size={14} />
+                </button>
+              </div>
+              <div className="muted" style={{ fontSize: 12, marginTop: 2 }}>
+                調整的是「{plan.name}」，不會建立新的計畫
+              </div>
+              {ADJUST.map(([sec, label, hint]) => (
+                <button key={sec} className="btn ghost" style={{ width: '100%', marginTop: 8, textAlign: 'left' }}
+                  onClick={() => { setAdjust(false); adjustPlan(plan.planId, sec); }}>
+                  <b>{label}</b>
+                  <span className="muted" style={{ fontSize: 12, marginLeft: 8 }}>{hint}</span>
+                </button>
+              ))}
+              {/* 鎖定還沒有地方存（要等 2C 的 Task Lock），先顯示成之後才有的功能 */}
+              <button className="btn ghost" style={{ width: '100%', marginTop: 8, textAlign: 'left' }} disabled title="還沒開放">
+                <b>鎖定內容</b>
+                <span className="muted" style={{ fontSize: 12, marginLeft: 8 }}>把某幾項釘在原本的日子（之後才有）</span>
+              </button>
+            </div>
+          </div>
+        )}
 
         {plan.done > 0 && (
           <button className="btn sm ghost" style={{ marginTop: 12 }} onClick={() => setShowDone(s => !s)}>
