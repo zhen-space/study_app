@@ -3,6 +3,9 @@ import { api } from '../api';
 import { today } from './helpers';
 import Tasks from './Tasks';
 import Icon from './Icons';
+import { usePlans } from './plans';
+import { usePlansNeedingAdjustment } from './planHealth';
+import ReplanSheet from './ReplanSheet';
 
 // 「今天」＝執行頁：回答「我現在該做什麼」。
 // 它不是 Tasks 的 today 篩選——上面多了今日進度、今天的固定行程、
@@ -11,6 +14,73 @@ import Icon from './Icons';
 // 不另外複製一套勾選／編輯／刪除的邏輯。
 
 const HM = t => (t || '').slice(0, 5);
+
+// 計畫已經明顯偏離目前安排時，Today 主動說一聲，並給一個直接重排的入口。
+// 一切正常就什麼都不顯示——這裡不該變成常駐的紅字。
+function AdjustBanner({ tasks, lists, apiPlans, reload, goWizardEdit }) {
+  const plans = usePlans(tasks, lists, apiPlans);
+  const needing = usePlansNeedingAdjustment(plans, apiPlans);
+  const [dismissed, setDismissed] = useState([]);   // 只是這次畫面上收起來，不動任何資料
+  const [picking, setPicking] = useState(false);
+  const [replanKey, setReplanKey] = useState(null);
+
+  const live = needing.filter(h => !dismissed.includes(h.planId));
+  if (!live.length) return null;
+
+  const health = live.find(h => h.planKey === replanKey);
+  const plan = plans.find(p => p.key === replanKey);
+
+  const cta = h => (
+    <div className="row" style={{ marginTop: 10 }}>
+      <button className="btn sm" onClick={() => setReplanKey(h.planKey)}>讓 AI 重新安排</button>
+      {/* 「稍後」只把提示收起來，不改計畫狀態、不寫任何旗標。
+          問題還在的話，下次進 Today 還是會再出現。 */}
+      <button className="btn sm ghost" onClick={() => setDismissed(d => [...d, h.planId])}>稍後</button>
+    </div>
+  );
+
+  return (
+    <>
+      <div className="tile" style={{ padding: '12px 14px', marginBottom: 10, borderLeft: '3px solid var(--orange, #C46A22)' }}>
+        {live.length === 1 ? (
+          <>
+            <div className="row"><b>計畫需要調整</b></div>
+            <div style={{ marginTop: 2 }}>{live[0].name}</div>
+            <div className="muted" style={{ fontSize: 13, marginTop: 2 }}>
+              {live[0].reasons[0].message}，目前安排需要重新計算。
+            </div>
+            {cta(live[0])}
+          </>
+        ) : (
+          <>
+            {/* 多個計畫時只給摘要，不要堆一排大方塊 */}
+            <div className="row"><b>{live.length} 個計畫需要調整</b></div>
+            {live.slice(0, 3).map(h => (
+              <div key={h.planId} className="muted" style={{ fontSize: 13, marginTop: 2 }}>{h.name}</div>
+            ))}
+            {live.length > 3 && <div className="muted" style={{ fontSize: 12 }}>…還有 {live.length - 3} 個</div>}
+            <div className="row" style={{ marginTop: 10 }}>
+              <button className="btn sm" onClick={() => setPicking(v => !v)}>查看</button>
+            </div>
+            {picking && live.map(h => (
+              <div key={h.planId} className="tile" style={{ padding: '10px 12px', marginTop: 8, background: 'var(--fill)' }}>
+                <b>{h.name}</b>
+                <div className="muted" style={{ fontSize: 13, marginTop: 2 }}>{h.reasons[0].message}</div>
+                {cta(h)}
+              </div>
+            ))}
+          </>
+        )}
+      </div>
+
+      {plan && health && (
+        <ReplanSheet plan={plan} health={health} raw={apiPlans.find(p => p.id === plan.planId)}
+          lists={lists} reload={reload} onClose={() => setReplanKey(null)}
+          onEditConditions={sec => { setReplanKey(null); goWizardEdit?.(plan.planId, sec); }} />
+      )}
+    </>
+  );
+}
 
 function TodayHeader({ tasks, goStudy }) {
   const [events, setEvents] = useState([]);
@@ -66,14 +136,17 @@ function TodayHeader({ tasks, goStudy }) {
   );
 }
 
-export default function TodayView({ tasks, lists, filters, habits, reload, goStudy, goVocab, goMemo }) {
+export default function TodayView({ tasks, lists, filters, habits, apiPlans = [], reload, goStudy, goVocab, goMemo, goWizardEdit }) {
   return (
     <Tasks
       view={{ type: 'today' }}
       tasks={tasks} lists={lists} filters={filters} habits={habits} reload={reload}
       title="今天"
       goVocab={goVocab} goMemo={goMemo}
-      topSlot={<TodayHeader tasks={tasks} goStudy={goStudy} />}
+      topSlot={<>
+        <AdjustBanner tasks={tasks} lists={lists} apiPlans={apiPlans} reload={reload} goWizardEdit={goWizardEdit} />
+        <TodayHeader tasks={tasks} goStudy={goStudy} />
+      </>}
     />
   );
 }
