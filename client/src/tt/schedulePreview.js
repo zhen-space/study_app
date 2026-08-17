@@ -16,11 +16,31 @@
 //   章節打散或照順序、幾個單位綁一組、題型分組
 //
 //   Phase 2A 的 plans 表沒有 scheduling profile 欄位，Task 也沒有 workload 欄位。
-//   在 2C 把排程條件正式收進 domain 之前，唯一能證明「屬於這個計畫」的來源，
-//   是排程精靈 Edit Mode 存下的 per-plan 草稿 wizardDraft:plan:<id>。
+//   在 2C 把排程條件正式收進 domain 之前，這裡用一個過渡的前端快照補位：
+//   使用者「成功套用一次排程」時，把那次真正用的條件記下來。
 //   拿不到就是拿不到 —— 不准猜成 60 分鐘／even／一天 3 項。
+//
+// ── 為什麼不是用 wizardDraft ────────────────────────────────
+//   wizardDraft 的語意是「這次操作到一半的設定」，成功套用後就會被清掉，
+//   正好是重排最需要它的時候它已經不在了。兩者生命週期相反，不能混用。
+//
+// ── 這個快照的限制（technical debt，2C 要收掉）────────────────
+//   ・存在 localStorage：跨裝置不同步、清瀏覽器資料就消失
+//   ・2B-UI-2 之前建立的計畫沒有快照
+//   ・不是 domain persistence，只是過渡層；正式做法是 Plan 的
+//     scheduling profile 由後端保存（見 docs/phase2c-schedule-persistence.md）
+//   它唯一比 wizardDraft 正確的地方，是生命週期與語意一致。
 
-const DRAFT_KEY = planId => `wizardDraft:plan:${planId}`;
+// 「這個計畫最近一次成功套用排程時，使用者確認的排法」
+const CONFIRMED_KEY = planId => `scheduleConditions:plan:${planId}`;
+
+// 快照只保存「條件」，不保存排程結果。
+// 白名單寫死在這裡：due_date / due_time / blocks / version 這類東西
+// 就算呼叫端不小心傳進來也存不進去——這裡不能長成第三套 schedule state。
+const CONDITION_FIELDS = [
+  'timed', 'limitPerDay', 'perDay', 'pace',
+  'excludeWeekdays', 'excludeDates', 'skipIfBusyHours',
+];
 
 // 缺哪一項條件就無法忠實重現原本的排法（給 UI 顯示用）
 export const CONDITION_LABEL = {
@@ -64,26 +84,35 @@ export function taskMinutes(t) {
   return mins > 0 ? mins : null;
 }
 
+// 成功套用一次排程後呼叫：把這次真正用的條件記下來，之後重排才有得依循。
+// 一定要在清掉 wizardDraft 之前呼叫。
+export function saveConfirmedConditions(planId, conditions) {
+  if (planId == null) return null;
+  const out = {};
+  for (const k of CONDITION_FIELDS) if (conditions?.[k] !== undefined) out[k] = conditions[k];
+  try { localStorage.setItem(CONFIRMED_KEY(planId), JSON.stringify(out)); } catch {}
+  return out;
+}
+
+export function readConfirmedConditions(planId) {
+  if (planId == null) return null;
+  try { return JSON.parse(localStorage.getItem(CONFIRMED_KEY(planId)) || 'null'); } catch { return null; }
+}
+
 // 這個計畫的排法是什麼？拿不到就明講拿不到。
 // pending＝這個計畫還沒完成的任務（重排的對象）。
+//
+// 只讀「已確認的條件快照」。刻意不讀 wizardDraft：那是操作中的草稿，
+// 可能是使用者改到一半、根本沒套用過的設定，不能當成這個計畫的排法。
 export function planScheduleConditions(planId, pending = []) {
-  let draft = null;
-  try { draft = JSON.parse(localStorage.getItem(DRAFT_KEY(planId)) || 'null'); } catch { draft = null; }
+  const saved = readConfirmedConditions(planId);
 
   const missing = [];
-  if (!draft || draft.timed == null) missing.push('timed');
-  if (!draft || !draft.pace) missing.push('pace');
-  if (!draft || draft.perDay == null) missing.push('perDay');
+  if (!saved || saved.timed == null) missing.push('timed');
+  if (!saved || !saved.pace) missing.push('pace');
+  if (!saved || saved.perDay == null) missing.push('perDay');
 
-  const conditions = draft ? {
-    timed: draft.timed,
-    limitPerDay: draft.limitPerDay,
-    perDay: draft.perDay,
-    pace: draft.pace,
-    excludeWeekdays: draft.exWd,
-    excludeDates: draft.exDates,
-    skipIfBusyHours: draft.busyHours,
-  } : null;
+  const conditions = saved ? { ...saved } : null;
 
   // 時間模式才需要每項時長；只排進度時排程器根本不看 minutes，
   // 所以不用（也不該）生一個假的數字出來。

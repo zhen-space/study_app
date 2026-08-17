@@ -11,7 +11,7 @@
 // 就是為了那時候不用重寫 UI。
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import { render, screen, within, waitFor } from '@testing-library/react';
+import { render, screen, within, waitFor, cleanup } from '@testing-library/react';
 import { act } from 'react';
 import * as fx from './fixtures';
 import { today, addDays } from '../tt/helpers';
@@ -19,7 +19,9 @@ import { today, addDays } from '../tt/helpers';
 vi.mock('../api', () => ({ api: vi.fn() }));
 const { api } = await import('../api');
 const Shell = (await import('../tt/Shell')).default;
-const { buildSchedulePreviewRequest, taskMinutes } = await import('../tt/schedulePreview');
+const WizardView = (await import('../tt/WizardView')).default;
+const { buildSchedulePreviewRequest, taskMinutes, saveConfirmedConditions, readConfirmedConditions }
+  = await import('../tt/schedulePreview');
 
 const iso = n => addDays(today(), n);
 const task = (id, over = {}) => ({
@@ -88,9 +90,15 @@ const sent = (path, method) => calls.filter(([p, o]) => p === path && o?.method 
 
 // 這個計畫當初設定的排法。刻意每一項都跟「前端隨便給的預設值」不同
 // （不是 even、不是一天 3 項、不是時間模式），這樣測試才看得出來是不是真的沿用。
-const CONDITIONS = { timed: false, limitPerDay: true, perDay: 2, pace: 'front', exWd: [0], exDates: [iso(5)], busyHours: 4 };
+//
+// 注意：這裡走的是正式的 saveConfirmedConditions，不是自己拼一段 JSON ——
+// 測試用的形狀不能跟production 漂移。真實生命週期另有下面的 lifecycle 測試。
+const CONDITIONS = {
+  timed: false, limitPerDay: true, perDay: 2, pace: 'front',
+  excludeWeekdays: [0], excludeDates: [iso(5)], skipIfBusyHours: 4,
+};
 const seedConditions = (planId = 12, over = {}) =>
-  localStorage.setItem(`wizardDraft:plan:${planId}`, JSON.stringify({ ...CONDITIONS, ...over }));
+  saveConfirmedConditions(planId, { ...CONDITIONS, ...over });
 
 // 掛上 Shell 並等資料真的載入完（跟 shell.test.jsx 同一套等法）
 async function mountShell(over = {}, { seed = true } = {}) {
@@ -480,5 +488,100 @@ describe('preview request 只有一套 mapping', () => {
     expect(taskMinutes({ notes: '讀書時段 08:00–09:30' })).toBe(90);
     expect(taskMinutes({ notes: '' })).toBeNull();
     expect(taskMinutes({ notes: '讀書時段 09:00–08:00' })).toBeNull();
+  });
+});
+
+// 真實生命週期：條件不是測試塞進去的，是使用者跑完排程精靈留下的。
+//
+// 這一段守的是 wizardDraft 與「已確認條件」的差別。草稿在成功套用後就會被
+// 清掉（它本來就只代表操作到一半的設定），所以重排的條件不能靠它——
+// 不然「建立計畫 → 成功排程 → 隔天落後 → 按重排 → 系統說找不到原本的排法」。
+describe('排程條件的生命週期（不人工 seed）', () => {
+  const renderWizard = (props = {}) => render(
+    <WizardView lists={fx.lists} tasks={[]} reload={() => Promise.resolve()}
+      goTasks={() => {}} goCalendar={() => {}} {...props} />);
+
+  // 跑一次精靈：選內容 → 選排法 → 產生排程 → 套用
+  async function runWizard({ planId = null, mode = 'create', tasks = [], daily = true, front = true } = {}) {
+    setApi({
+      '/tasks': tasks,
+      '/plans': mode === 'create' ? { id: 55 } : [PLAN],
+      '/schedule/preview': {
+        check: null,
+        blocks: [{ subject_id: 1, title: '單元1 力學｜範例+例題', date: iso(1), start_time: null, end_time: null, deadline: null }],
+      },
+    });
+    renderWizard({ mode, planId, planTitle: mode === 'edit' ? PLAN.name : '', planTasks: tasks, onDone: () => {} });
+    await waitFor(() => expect(calls.some(([p]) => p === '/import/toc')).toBe(true));
+    await flush();
+    await click(screen.getByText('單元1 力學').closest('.row').querySelector('input[type=checkbox]'));
+    await click(screen.getByRole('button', { name: /下一步：怎麼安排/ }));
+    // 用學生語言選排法（不是 timed=false）
+    if (daily) await click(screen.getByText(/只安排每天要做什麼/).closest('label').querySelector('input'));
+    if (front) await click(screen.getByText(/盡早排完/).closest('label').querySelector('input'));
+    await click(screen.getByRole('button', { name: '產生排程' }));
+    await flush();
+    await click(screen.getByRole('button', { name: daily ? /加入待辦|套用新版安排/ : /加入待辦|套用新版安排/ }));
+    await flush();
+  }
+
+  it('A. 建立計畫成功後，草稿被清掉，但排法留了下來', async () => {
+    await runWizard();
+    expect(localStorage.getItem('wizardDraft'), '草稿本來就該在成功後清掉').toBeNull();
+    const saved = readConfirmedConditions(55);
+    expect(saved, '成功套用後必須留下這個計畫的排法').toBeTruthy();
+    expect(saved.timed).toBe(false);
+    expect(saved.pace).toBe('front');
+  });
+
+  it('A2. 接著進 Today 重排，不會再要求確認條件，而且沿用剛才的排法', async () => {
+    await runWizard();
+    cleanup();
+    // 隔天：這個計畫落後了
+    const p55 = { ...PLAN, id: 55 };
+    const t55 = [task(61, { plan_id: 55, title: '單元1 力學｜範例+例題', due_date: iso(-1) })];
+    setApi({
+      '/tasks': t55, '/plans': [p55],
+      '/schedule/preview': { check: null, blocks: [{ subject_id: 1, title: t55[0].title, date: iso(2) }] },
+    });
+    render(<Shell onLogout={() => {}} />);
+    await screen.findByText('項待完成');
+    await flush();
+    await click(screen.getByRole('button', { name: '讓 AI 重新安排' }));
+    expect(screen.queryByText('需要先確認安排條件'), '剛建立完就該有條件可用').not.toBeInTheDocument();
+    await click(screen.getByRole('button', { name: '重新安排' }));
+    await flush();
+    const body = sent('/schedule/preview', 'POST').pop()[1].body;
+    expect(body.pace).toBe('front');
+    expect(body.timed).toBe(false);
+    noCrash();
+  });
+
+  it('B. 用 Edit Mode 改過排法之後，重排會用新的排法', async () => {
+    // 先有一份舊的排法：平均分配、時間模式
+    saveConfirmedConditions(12, { timed: true, perDay: 3, pace: 'even' });
+    await runWizard({ mode: 'edit', planId: 12, tasks: PLAN_TASKS });
+    const saved = readConfirmedConditions(12);
+    expect(saved.pace, 'Edit Mode 套用後要更新成新的排法').toBe('front');
+    expect(saved.timed).toBe(false);
+  });
+
+  it('C. 草稿不存在也不影響重排（草稿與條件是兩件事）', async () => {
+    await runWizard();
+    localStorage.removeItem('wizardDraft');
+    localStorage.removeItem('wizardDraft:plan:55');
+    expect(readConfirmedConditions(55)).toBeTruthy();
+  });
+
+  it('E. 條件快照只存排法，絕對不含排程結果', async () => {
+    await runWizard();
+    const raw = localStorage.getItem('scheduleConditions:plan:55');
+    for (const k of ['due_date', 'due_time', 'blocks', 'version', 'scheduled']) {
+      expect(raw, `快照不該出現 ${k}`).not.toContain(k);
+    }
+    // 就算呼叫端硬塞，白名單也會擋掉
+    saveConfirmedConditions(55, { pace: 'even', due_date: iso(1), blocks: [{ date: iso(1) }] });
+    const saved = readConfirmedConditions(55);
+    expect(Object.keys(saved)).toEqual(['pace']);
   });
 });

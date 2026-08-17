@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { api } from '../api';
 import { planName, isLegacyPlanTask } from './plans';
 import { applyWizardSchedule } from './wizardApply';
-import { buildSchedulePreviewRequest } from './schedulePreview';
+import { buildSchedulePreviewRequest, saveConfirmedConditions } from './schedulePreview';
 import { today, addDays } from './helpers';
 import { parseICS } from './ics';
 import { fileToPayload } from './vocabImport';
@@ -430,6 +430,13 @@ export default function WizardView({
   const unitTok = title => title.split(/[\s　]/)[0] || title;
 
   /* ---------- 產生排程 ---------- */
+  // 使用者設定的「排法」。產生預覽與（成功套用後）存進條件快照都用這一份，
+  // 兩邊不會各寫一次、也不會漂移。
+  const conditions = {
+    timed, limitPerDay, perDay, pace,
+    excludeWeekdays: exWd, excludeDates: exDates, skipIfBusyHours: busyHours,
+  };
+
   async function genPreview() {
     setErr('');
     // 依「課本章節順序」排序（不管使用者點選先後），照順序模式才會正確
@@ -584,11 +591,8 @@ export default function WizardView({
       // 免得同一個計畫在不同入口被用不同的排法排一次
       const body = buildSchedulePreviewRequest({
         items: sendItems, startDate: dGlobal.start, endDate: dGlobal.end,
-        conditions: {
-          timed, limitPerDay, perDay, pace,
-          excludeWeekdays: exWd, excludeDates: exDates, skipIfBusyHours: busyHours,
-          ...(follow ? {} : { sleep_start: shift.sleep_start, sleep_end: shift.sleep_end }),
-        },
+        // 「這次調整作息」是一次性的，只影響這次預覽，不進條件快照
+        conditions: { ...conditions, ...(follow ? {} : { sleep_start: shift.sleep_start, sleep_end: shift.sleep_end }) },
       });
       const pv = await api('/schedule/preview', { method: 'POST', body });
       // 同一天之內：同科目排在一起（照科目清單順序），同科目內保持原本順序
@@ -629,6 +633,10 @@ export default function WizardView({
         removeUnscheduled: redoUndone,
       });
       setApplied(r);
+      // 先把這次真正用的排法記下來，之後 Today 的 AI 重排才有得依循。
+      // 順序很重要：草稿是「操作到一半」，套用成功後就沒有意義了，
+      // 但條件必須活得比草稿久——所以一定是先存快照、再清草稿。
+      saveConfirmedConditions(r.planId, conditions);
       localStorage.removeItem(draftKey);
     } catch (e) { setSaving(false); setErr(e.message); return; }
     setSaving(false);
