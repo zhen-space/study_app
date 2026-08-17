@@ -46,10 +46,14 @@ const noCrash = () => {
   expect(real, '不應該有 runtime exception：\n' + real.join('\n')).toEqual([]);
 };
 
-// 掛上 Shell 並等資料載入完成
+// 掛上 Shell 並等資料載入完成。
+// 「項待完成」在資料還沒回來時就會渲染，所以光等它不夠——要再等一筆
+// 真的來自 /tasks 的東西出現，否則後面的斷言會拍到載入到一半的畫面
+// （CI 比本機慢，這個競態只在 CI 炸過）。
 async function mountShell() {
   const r = render(<Shell onLogout={() => {}} />);
-  await waitFor(() => expect(screen.getByText('項待完成')).toBeInTheDocument());
+  await screen.findByText('項待完成');
+  await screen.findByText('買參考書');      // 今天的一般任務＝/tasks 已載入
   return r;
 }
 // 主內容區（跟底部導航區分開——兩邊都有「開始讀書」）
@@ -120,8 +124,8 @@ describe('五大主導航都能切換', () => {
 describe('TodayView', () => {
   it('4. 能 render，且「開始讀書」進得了 Study', async () => {
     await mountShell();
-    // 今天的固定行程有出現
-    expect(screen.getByText('數學課')).toBeInTheDocument();
+    // 今天的固定行程有出現（/events 是另一支 API，要等它回來）
+    expect(await screen.findByText('數學課')).toBeInTheDocument();
     expect(screen.getByText('今天的行程')).toBeInTheDocument();
 
     await click(mainButton(/開始讀書/));

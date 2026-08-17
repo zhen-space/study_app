@@ -38,8 +38,11 @@ const noCrash = () => {
 const main = () => document.querySelector('.main');
 const bottomNav = () => document.querySelector('.bottom-nav');
 const click = el => act(async () => { el.click(); });
-const goPlans = async () => {
-  await waitFor(() => expect(screen.getByText('項待完成')).toBeInTheDocument());
+// 同 shell.test.jsx：要等資料真的載入，不能只等第一個渲染出來的字。
+// ready 是「載入完成才會出現」的一段文字，預設用今天的一般任務。
+const goPlans = async (ready = '買參考書') => {
+  await screen.findByText('項待完成');
+  if (ready) await screen.findByText(ready);
   await click(within(bottomNav()).getByText('計畫').closest('button'));
 };
 
@@ -65,7 +68,7 @@ describe('正式 Plan（API）', () => {
   it('有 plan_id 的任務不會再被 legacy 推導撿走（不會重複出現兩次）', async () => {
     setApi({ '/plans': fx.plans, '/tasks': fx.planTasks });
     render(<Shell onLogout={() => {}} />);
-    await goPlans();
+    await goPlans(/力學複習/);          // 這個 case 的假資料沒有「買參考書」
     // 只有一張卡＝正式 Plan；沒有額外冒出「物理」「地科」兩張 legacy 卡
     expect(within(main()).queryByText('舊資料')).not.toBeInTheDocument();
     expect(within(main()).getAllByText(/第二次段考準備/).length).toBe(1);
