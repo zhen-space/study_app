@@ -1,6 +1,6 @@
 # Phase 2C：Schedule Persistence
 
-> 狀態：**2C-1、2C-2 已定案，尚未實作。** 2C-3／2C-4 尚未設計。
+> 狀態：**2C-1、2C-2、2C-3 已定案，尚未實作。** 2C-4 尚未設計。
 > Plan domain 契約另見 [`phase2-plan-domain.md`](phase2-plan-domain.md)。
 > 基準 commit：`32fed0e`（Phase 2A 合併後）
 > 最後更新：2026-08-16
@@ -22,7 +22,7 @@ Phase 2C 的任務就是關掉它。2C 完成時，該例外連同那段文字�
 |---|---|---|
 | **2C-1** | ScheduleVersion / ScheduledBlock schema、active version 契約、bootstrap | ✅ **已定案**（本文件 §1–§8） |
 | **2C-2** | 版本恢復（restore）＋ feasibility | ✅ **已定案**（§12–§19） |
-| **2C-3** | Lock 持久化 | ⬜ 未設計 |
+| **2C-3** | Lock 持久化 ＋ feasibility 整合 | ✅ **已定案**（§22–§31） |
 | **2C-4** | 重排 diff（moved / added / removed） | ⬜ 未設計 |
 
 ---
@@ -538,6 +538,8 @@ task 已軟刪除，或 task_id 找不到對應資料 → skip
 
 ### 13.4 現在的 Lock 衝突
 
+> Lock 的完整契約見 **§22–§31**。以下只是 restore 視角的摘要。
+
 ```
 V1 想把數學放 18:00–19:00
 現在有 🔒 18:00–21:00
@@ -843,4 +845,340 @@ Preview 算完到使用者按下確認之間，世界可能已經變了——在
 - 或：2C-2 先實作，Lock 表為空時視為「無鎖」，並在 2C-3 完成後補測試
 
 **契約定案的順序（2C-1 → 2C-2 → 2C-3 → 2C-4）不等於實作順序。**
+
+---
+---
+
+# Part 3：2C-3 — Lock 持久化 ＋ Feasibility 整合
+
+> 狀態：**已定案，尚未實作。**
+
+---
+
+## 22. 三個核心不變式
+
+| # | 不變式 |
+|---|---|
+| **L1** | **Task Lock 是 identity-based constraint**——只存 `task_id`，**不存日期時間** |
+| **L2** | **Time / Day Lock 是 schedule-space constraint**——是否仍有效**由目前時間推導** |
+| **L3** | **所有 Lock 都是 Hard Constraint。** candidate schedule 違反任何有效 Lock，就**不能回傳 success** |
+
+L3 展開成一句可以直接拿去寫測試的話：
+
+> **任何 candidate schedule，只要讓有效 Task Lock 對應的 Task 被移動、拆改、
+> 或變成 unplaced，該 candidate 必須被 feasibility 判為 hard conflict，
+> 不得當作成功排程。**
+
+Lock 是「使用者現在的意圖」，不是歷史 schedule snapshot 的一部分，所以：
+
+```
+ScheduleVersion = immutable schedule history
+ScheduleLock    = current hard constraints
+```
+
+兩個 domain 分離。**Lock 不進 ScheduleVersion，也不隨 restore 回滾**（§26）。
+
+---
+
+## 23. Schema
+
+2A 已建 `schedule_locks(id, user_id, type, task_id, date, start_time, end_time, created_at)`，
+2C-3 只補兩個欄位與索引：
+
+```sql
+ALTER TABLE schedule_locks ADD COLUMN released_at TEXT;
+ALTER TABLE schedule_locks ADD COLUMN release_reason TEXT;
+CREATE INDEX IF NOT EXISTS idx_locks_user_live ON schedule_locks(user_id, released_at);
+CREATE INDEX IF NOT EXISTS idx_locks_task ON schedule_locks(task_id);
+-- 同一個 task 同時只能有一個未釋放的 task lock
+CREATE UNIQUE INDEX IF NOT EXISTS idx_locks_task_one
+  ON schedule_locks(user_id, task_id) WHERE type='task' AND released_at IS NULL;
+```
+
+### 23.1 三種 type 的欄位使用是互斥的
+
+| `type` | `task_id` | `date` | `start_time` / `end_time` |
+|---|---|---|---|
+| `task` | 必填 | **必須 NULL** | **必須 NULL** |
+| `day` | 必須 NULL | 必填 | 必須 NULL |
+| `time` | 必須 NULL | 必填 | 必填 |
+
+Task Lock **不存日期時間**（L1）。存了就變成偽裝的 Time Lock，重排後會不知道該信哪一個。
+
+⚠️ SQLite **不能對既有表加 CHECK constraint**（要整表重建）。表目前雖然是空的，
+重建仍違背專案冪等 `try-ALTER` 的慣例。**改由 API 層驗證 ＋ 測試守住**，不動 schema。
+
+---
+
+## 24. 有效性：兩種 lifecycle，不共用欄位
+
+> **這兩種 lifecycle 不要混成同一套欄位。**
+
+### 24.1 Task Lock
+
+```
+effective(task lock) =
+      released_at IS NULL          ← 使用者主動解鎖（實際寫入，不推導）
+  AND task 存在
+  AND task.deleted  = false
+  AND task.completed = false
+```
+
+### 24.2 Time / Day Lock
+
+```
+effective(day lock)  = released_at IS NULL AND date >= 今天
+effective(time lock) = released_at IS NULL
+                       AND (date > 今天 OR (date = 今天 AND end_time > 現在))
+```
+
+### 24.3 為什麼完成／刪除用推導，而不是寫 `released_at`
+
+**因為要可逆。**
+
+如果任務完成就寫 `released_at`，使用者**取消完成**之後鎖不會回來——他原本的鎖定意圖
+被不可逆地丟掉了。推導版本是對稱的：取消完成，鎖自動恢復效力；從垃圾桶還原，鎖也回來。
+
+反過來，**使用者主動解鎖必須真的寫入**（`released_at` ＋ `release_reason='user'`），
+不能靠推導——那是一個明確的意圖表達，必須留下紀錄。
+
+保留列而不是硬刪除，是為了之後 debug「這個鎖後來怎麼了」。
+
+### 24.4 關於 Plan archive
+
+**不需要額外條款。** Plan 封存不刪任務、不清 `plan_id`，任務仍可能在 active version 裡，
+所以鎖繼續有效是一致的：封存管的是 Plan 的生命週期，不是 Task 的排程。
+Plan 之後恢復時，鎖也原封不動——正好符合「不要因為 context 改變就丟掉使用者設定」。
+
+### 24.5 過期的 Day / Time Lock 不自動清除
+
+查詢有效 constraints 時直接排除**已完全位於過去**的 Lock。管理頁預設只顯示有效的，
+另提供「顯示過去的鎖定」。
+
+**不要 cron，也不要 read-time mutation**——前者要多養一個排程器，後者會讓一次讀取
+產生寫入副作用，兩個都比留著幾列無害的舊資料糟。
+
+---
+
+## 25. Task Lock 凍結的到底是什麼
+
+Task Lock 鎖的是**該 Task 在 active ScheduleVersion 裡目前的整組 block 配置**。
+
+未來若支援「一個 Task 拆成兩段時間」，鎖的是**整組 block set**，不是只鎖第一塊。
+
+### 25.1 可比較的簽章
+
+```
+blockSignature(taskId, blocks) =
+    該 task 的所有 block，取 (date, start_time, end_time, planned_minutes)，
+    排序後的序列
+```
+
+**不能用 block id 比對**——每個版本都是新的資料列，id 必然不同。
+
+非 timed 模式沒有時間欄位，簽章實際上只比 `date`。
+
+### 25.2 基準是「評估當下的 active version」
+
+不是建立 lock 當時的版本。這樣簽章自我更新，lock 也就不需要存位置（L1）。
+
+---
+
+## 26. 衝突判定
+
+```
+active    = blockSignature(taskId, activeVersionBlocks)
+candidate = blockSignature(taskId, candidateBlocks)
+
+candidate 為空          → LOCKED_TASK_UNPLACED   severity: hard
+candidate ≠ active      → LOCKED_TASK_MOVED      severity: hard
+candidate = active      → ok
+```
+
+`UNPLACED` 技術上是 `MOVED` 的特例，**但必須分開回報**——UI 的解法完全不同：
+一個要延長範圍或解鎖，一個是位置被別的東西占走。
+
+### 26.1 Time / Day Lock 的判定
+
+| Lock | 凍結什麼 |
+|---|---|
+| **Time Lock** | 該時段**目前的 schedule slice**。原本空白 → 不准塞東西進來；原本有兩個 block → 那兩個不准動 |
+| **Day Lock** | 整天的 **day snapshot**。原本有什麼不准搬，原本空的地方不准塞 |
+
+**兩者都不是單純的 "unavailable"，而是 freeze。** 這點跟固定行程不一樣——
+固定行程是「這段時間被占用」，Lock 是「這段時間現在長什麼樣，就維持什麼樣」。
+
+衝突類型：`LOCKED_SLICE_CHANGED`（time）、`LOCKED_DAY_CHANGED`（day），皆為 `hard`。
+
+### 26.2 ⚠️ 必須豁免已完成／已刪除的任務
+
+**這一條不加，系統很快就會變成無法重排。**
+
+Day Lock 鎖住 8/20，那天有三個任務。使用者**完成**其中一個 → 它的 block 合理地不該再出現。
+若不豁免，之後**每一次重排都會被判 hard conflict**，因為「這天的內容跟鎖定當下不一樣了」。
+
+所以三種 Lock 的比對都必須先排除：
+
+```
+task.completed = true
+task.deleted   = true
+```
+
+與 2C-2 restore 的 skip 語意一致（§13.2、§13.3）。**完成一件事不該讓排程系統癱瘓。**
+
+---
+
+## 27. 建立 Lock 的前置條件（三種不一樣）
+
+| type | 可否在「空的」狀態下建立 | 理由 |
+|---|---|---|
+| **task** | ❌ **不行** | Task Lock 的語意是「固定目前位置」，unplaced 的任務根本沒有位置可固定，會產生語意不完整的 constraint |
+| **day** | ✅ **可以** | 「這天我要休息」＝ freeze empty day，**不准塞新東西進來**，這是有意義的 |
+| **time** | ✅ **可以** | 同上，freeze 一段空白時段 |
+
+這個不對稱是刻意的：**Task Lock 錨定在既有配置上，Day / Time Lock 錨定在時間本身。**
+
+對 unplaced 任務建立 Task Lock，API 回 400：
+
+```
+這個任務尚未排入時間，請先安排後再鎖定
+```
+
+---
+
+## 28. 使用者手動拖曳被鎖的 Task：禁止
+
+> **被鎖 Task 的 active block set 永遠不變，直到使用者先解除 Task Lock。**
+
+手動拖曳一個被鎖的任務 → **拒絕**，提示先解鎖。
+
+允許的話會有兩個後果：
+
+1. feasibility 必須判斷「是誰移動的」——等於把**意圖**耦合進本來純粹的比對邏輯
+2. 鎖就再也擋不住任何東西，因為使用者隨時可以繞過
+
+禁止之後，**AI 重排、手動拖曳、restore 三條路徑走完全相同的 feasibility 規則**，
+不需要任何 provenance 判斷。這是這條規則真正的價值。
+
+---
+
+## 29. 🔴 與排程演算法的整合：事前釘住，不是事後驗證
+
+`server/src/routes/schedule.js` 是純生成器——吃 items 產出 blocks，沒有任何 Lock 概念。
+
+### 29.1 為什麼不能只做事後驗證
+
+生成完再比對、違反就拒絕，會讓 Lock **實質無用**：排程演算法本來就會把所有項目
+重新分配，任何一次重排幾乎必定移動被鎖的任務 → 每次重排都失敗。
+
+使用者體驗會變成「我鎖了一個任務，然後就再也不能重排了」。
+**那是把 Hard Constraint 降級成裝飾。**
+
+### 29.2 採用：事前釘住 ＋ 事後驗證
+
+**不改排程演算法內部**，只改組裝輸入的那一層：
+
+```
+① 被鎖任務不放進 items（不參與重新分配）
+② 它們占用的日期／時段先從可用容量扣掉
+③ 生成完，把被鎖任務的原 block 原樣併回 candidate
+④ 再跑事後驗證當安全網
+```
+
+可以復用的既有機制：
+
+| Lock | 復用什麼 |
+|---|---|
+| Day Lock | `excludeDates`（已存在） |
+| Time Lock | `freeSlotsForDay()` 已經在為固定行程挖時段，走同一條路徑 |
+| Task Lock | 該任務占用的日期／時段比照上面兩者扣掉 |
+
+**改的是 caller，不是 algorithm**——符合 2C-1「排程演算法完全不動」的約束。
+
+事後驗證仍然保留，作為安全網：釘住的邏輯若有 bug，寧可整批失敗，也不要靜靜地
+產生一個違反 Lock 的版本。
+
+---
+
+## 30. 與 2C-2 Restore 的互動
+
+Restore 想把任務放回舊版位置，但該任務現在被鎖住 → **鎖優先**。
+
+```
+被鎖任務不參與 restore，保持目前位置
+舊版對它的安排不同 → RestorePreview 回報 type: 'lock'（2C-2 §19.2 已有此類型）
+```
+
+理由回到 §22：**Lock 是現在的意圖，ScheduleVersion 是過去的歷史。**
+恢復歷史不該推翻現在的意圖。
+
+---
+
+## 31. 實作形狀
+
+### 31.1 Pure module（開始拆 `schedule.js`）
+
+新開 `server/src/schedule/locks.js`，匯出**不碰 DB 的純函式**：
+
+```js
+effectiveLocks(locks, tasks, now)             // 濾出目前真正有效的
+blockSignature(taskId, blocks)                // 可比較的簽章
+checkLocks(candidate, active, locks, tasks)   // → conflicts[]
+```
+
+好處有三個：
+
+1. 可以單獨測，不用起伺服器
+2. **2C-2 restore、2C-3 lock、之後的 AI replan 共用同一套 validator**
+3. 這是 `schedule.js`（865 行）拆檔的第一塊——本來就在技術債清單上
+
+比在 route 裡一路堆判斷式好得多。
+
+### 31.2 衝突型別（併入 2C-2 §19.2）
+
+```ts
+type ConflictType =
+  | 'past' | 'fixed_event' | 'lock' | 'task_constraint'
+  | 'schedule_collision' | 'deadline'
+  | 'LOCKED_TASK_UNPLACED'      // 被鎖任務在候選排程裡沒有位置
+  | 'LOCKED_TASK_MOVED'         // 被鎖任務位置改變
+  | 'LOCKED_SLICE_CHANGED'      // Time Lock 涵蓋的時段內容改變
+  | 'LOCKED_DAY_CHANGED';       // Day Lock 涵蓋的整天內容改變
+```
+
+後四種一律 `severity: 'hard'`。
+
+### 31.3 API 形狀（沿用既有 REST 風格）
+
+```
+GET    /api/schedule/locks              有效的（?includeExpired=1 才含過去的）
+POST   /api/schedule/locks              建立（依 §27 驗證）
+DELETE /api/schedule/locks/:id          使用者主動解鎖 → 寫 released_at + release_reason='user'
+```
+
+`DELETE` 不硬刪列（§24.3）。
+
+---
+
+## 32. 2C-3 實作檢查清單（尚未開始）
+
+- [ ] `schedule_locks` 兩個欄位 ＋ 三個索引（含 partial unique）
+- [ ] API 層驗證三種 type 的欄位互斥（§23.1）
+- [ ] `server/src/schedule/locks.js` 純函式模組（§31.1）
+- [ ] 有效性推導：Task Lock 與 Time/Day Lock 兩套 lifecycle 分開（§24）
+- [ ] 事前釘住的輸入組裝（§29.2）＋ 事後驗證安全網
+- [ ] 手動拖曳被鎖任務 → 拒絕（§28）
+- [ ] Restore 讓被鎖任務保持原位並回報 `lock` 衝突（§30）
+- [ ] Lock CRUD API（§31.3）
+- [ ] 測試：
+      - 被鎖任務在重排後位置不變
+      - 被鎖任務變 unplaced → `LOCKED_TASK_UNPLACED`，結果不得為 success
+      - 被鎖任務被移動 → `LOCKED_TASK_MOVED`，結果不得為 success
+      - **完成該任務後重排不再報衝突**（§26.2 豁免）
+      - **取消完成後鎖恢復效力**（§24.3 可逆性）
+      - unplaced 任務不能建立 Task Lock；空白的 day/time **可以**上鎖
+      - Day Lock 的空白日不准被塞入新 block
+      - 過去的 day/time lock 不影響未來排程，且**沒有被自動刪除**
+      - 手動拖曳被鎖任務被拒絕
+      - restore 時 Lock 優先於舊版位置
 
