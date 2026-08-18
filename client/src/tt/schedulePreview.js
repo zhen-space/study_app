@@ -121,7 +121,7 @@ export function readConfirmedConditions(planId) {
 // 只讀「已確認的條件快照」。刻意不讀 wizardDraft：那是操作中的草稿，
 // 可能是使用者改到一半、根本沒套用過的設定，不能當成這個計畫的排法。
 export function planScheduleConditions(planId, pending = [], profile = null) {
-  const saved = profile && Object.keys(profile).length ? profile : readConfirmedConditions(planId);
+  const saved = profile && profile.timed != null ? profile : readConfirmedConditions(planId);
 
   const missing = [];
   if (!saved || saved.timed == null) missing.push('timed');
