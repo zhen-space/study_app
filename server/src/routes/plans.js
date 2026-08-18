@@ -3,6 +3,7 @@ import { q } from '../db/init.js';
 import { requireAuth } from '../middleware/auth.js';
 import { classifyScheduleHealth } from '../schedule/health.js';
 import { todayTW } from '../util/date.js';
+import { findSelfCollisions } from '../schedule/feasibility.js';
 
 // Plan＝有目標、範圍、期限與生命週期的工作單位。
 // 契約見 docs/phase2-plan-domain.md，動之前先讀。重點：
@@ -102,13 +103,17 @@ router.get('/plans/:id/health', async (req, res) => {
     q.get('SELECT COUNT(*) c FROM schedule_locks WHERE user_id=? AND released_at IS NULL', [req.userId]),
   ]);
   const pending = tasks.filter(t => !t.completed && !t.deleted);
-  const blockIds = state?.active_version_id == null ? new Set() : new Set((await q.all(
-    'SELECT b.task_id FROM scheduled_blocks b WHERE b.user_id=? AND b.schedule_version_id=?', [req.userId, state.active_version_id]))
-    .map(b => Number(b.task_id)));
+  const activeBlocks = state?.active_version_id == null ? [] : await q.all(
+    'SELECT b.*, t.plan_id,t.deadline_date,t.deleted,t.completed FROM scheduled_blocks b JOIN tasks t ON t.id=b.task_id AND t.user_id=b.user_id WHERE b.user_id=? AND b.schedule_version_id=?', [req.userId, state.active_version_id]);
+  const blockIds = new Set(activeBlocks.map(b => Number(b.task_id)));
   const overdue = pending.filter(t => t.due_date && t.due_date < today).length;
   const unplaced = state?.active_version_id == null ? pending.filter(t => !t.due_date).length : pending.filter(t => !blockIds.has(Number(t.id))).length;
   const lateTarget = plan.target_date ? pending.filter(t => t.due_date && t.due_date > plan.target_date).length : 0;
-  res.json({ plan_id: plan.id, ...classifyScheduleHealth({ pending: pending.length, overdue, unplaced, lateTarget, locked: locks?.c || 0 }) });
+  const deadlineViolation = activeBlocks.filter(b => Number(b.plan_id) === Number(plan.id) && b.deadline_date && b.date > b.deadline_date).length;
+  const collision = findSelfCollisions(activeBlocks.filter(b => !b.deleted && !b.completed)).size > 0;
+  // 尚未安排代表工作量完全沒有可用 placement；分鐘數是 preview 才能精算的值，
+  // health 不猜每項時長，因此只把確定的未安排數正規化輸出。
+  res.json({ plan_id: plan.id, ...classifyScheduleHealth({ pending: pending.length, overdue, unplaced, lateTarget, deadlineViolation, collision, locked: locks?.c || 0 }) });
 });
 
 // POST /api/plans
