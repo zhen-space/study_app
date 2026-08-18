@@ -18,6 +18,7 @@ const sched = await import('../src/schedule/persistence.js');
 
 const USER = 1;
 let planId, taskA, taskB;
+let looseTask, deletedTask, completedTask, otherUserTask;
 
 before(async () => {
   await initSchema();
@@ -30,6 +31,17 @@ before(async () => {
   const b = await q.run('INSERT INTO tasks (user_id,list_id,title,plan_id) VALUES (?,?,?,?)',
     [USER, l.lastInsertRowid, '任務B', planId]);
   taskA = a.lastInsertRowid; taskB = b.lastInsertRowid;
+  const loose = await q.run('INSERT INTO tasks (user_id,title) VALUES (?,?)', [USER, '一般待辦']);
+  looseTask = loose.lastInsertRowid;
+  const deleted = await q.run('INSERT INTO tasks (user_id,list_id,title,plan_id,deleted) VALUES (?,?,?,?,1)',
+    [USER, l.lastInsertRowid, '已刪除任務', planId]);
+  deletedTask = deleted.lastInsertRowid;
+  const completed = await q.run('INSERT INTO tasks (user_id,list_id,title,plan_id,completed) VALUES (?,?,?,?,1)',
+    [USER, l.lastInsertRowid, '已完成任務', planId]);
+  completedTask = completed.lastInsertRowid;
+  await q.run('INSERT INTO users (id,email,password_hash) VALUES (?,?,?)', [2, 'other@test', 'x']);
+  const other = await q.run('INSERT INTO tasks (user_id,title,plan_id) VALUES (?,?,?)', [2, '別人的任務', planId]);
+  otherUserTask = other.lastInsertRowid;
 });
 
 const counts = async () => ({
@@ -39,6 +51,20 @@ const counts = async () => ({
 });
 
 describe('交易邊界：全有或全無', () => {
+  test('非法 block task 一律拒絕，且 version、block、active、mirror 全部不變', async () => {
+    const before = await counts();
+    const dueBefore = await q.get('SELECT due_date FROM tasks WHERE id=?', [taskA]);
+    for (const taskId of [999999, otherUserTask, looseTask, deletedTask, completedTask]) {
+      await assert.rejects(() => sched.createScheduleVersion(USER, {
+        source: sched.SOURCE.MANUAL,
+        blocks: [{ task_id: taskA, date: '2026-09-01' }, { task_id: taskId, date: '2026-09-02' }],
+      }), /排程任務/);
+      assert.deepEqual(await counts(), before, `task ${taskId} 不得留下半套 version`);
+      assert.equal((await q.get('SELECT due_date FROM tasks WHERE id=?', [taskA])).due_date, dueBefore.due_date,
+        '失敗不得改動既有 due mirror');
+    }
+  });
+
   test('blocks 寫到一半失敗 → 版本、blocks、active、mirror 全部回滾', async () => {
     const v1 = await sched.createScheduleVersion(USER, {
       source: sched.SOURCE.MANUAL, effectiveFrom: '2026-09-01',
@@ -99,6 +125,18 @@ describe('交易邊界：全有或全無', () => {
 });
 
 describe('version_no 併發', () => {
+  test('同時 bootstrap 最終只會有一份 V1，兩個 caller 都看同一個 active', async () => {
+    const [a, b] = await Promise.all([
+      sched.bootstrapScheduleIfNeeded(2, '2026-09-01'),
+      sched.bootstrapScheduleIfNeeded(2, '2026-09-01'),
+    ]);
+    const active = await sched.getActiveVersionId(2);
+    assert.ok(active, '必須建立 active version');
+    assert.ok([a.version_id, b.version_id].includes(active), '兩個 caller 必須收斂到同一份 active');
+    const versions = await q.all('SELECT id FROM schedule_versions WHERE user_id=? AND source=?', [2, 'bootstrap']);
+    assert.equal(versions.length, 1, '★ bootstrap 不是 version_no retry，永遠只能有一份');
+  });
+
   test('連續建立的版本號遞增且唯一', async () => {
     const before = (await sched.listVersions(USER))[0].version_no;
     await sched.createScheduleVersion(USER, { source: sched.SOURCE.MANUAL, blocks: [] });

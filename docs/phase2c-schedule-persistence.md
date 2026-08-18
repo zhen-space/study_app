@@ -204,6 +204,14 @@ UI **必須明確承認 unplaced 是正式狀態，不是資料缺失**：
 
 非 Plan Task 的 `due_date` 不受本節影響，語意完全不變。
 
+### 4.4.1 已完成 Plan Task 的歷史鏡射例外
+
+已完成的 Plan Task 不屬於 active future schedule。即使 active version 沒有 block，
+也**不得**清除其既有 `due_date` / `due_time`：這兩欄在此時是歷史顯示相容資料。
+
+> active ScheduledBlock mirror 只治理**未完成、未刪除**的 Plan Task；completed Plan Task
+> 不因 active version 缺 block 而被清空。
+
 ---
 
 ## 5. 歷史 block 不因 Task 刪除而消失

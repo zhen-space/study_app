@@ -27,6 +27,17 @@ export const SOURCE = {
 
 export const BOOTSTRAP_REASON = '從既有排定日期建立第一版';
 
+// 送進持久化層的 block 不是「盡量寫進去」的資料；它必須是目前使用者一個
+// 有效、未完成的 Plan Task。用明確錯誤讓 route / caller 能回報輸入問題，並讓
+// transaction 在寫入任何 version metadata 前就 rollback。
+export class ScheduleInputError extends Error {
+  constructor(message) {
+    super(message);
+    this.name = 'ScheduleInputError';
+    this.status = 400;
+  }
+}
+
 // 版本號競爭最多重試幾次（§7.2）
 const VERSION_NO_RETRIES = 3;
 
@@ -119,10 +130,20 @@ export async function getActiveSchedule(userId) {
 export async function createScheduleVersion(userId, {
   source, reason = '', effectiveFrom = null,
   parentVersionId = null, restoredFromVersionId = null,
-  blocks = [], setActive = true,
+  blocks = [], setActive = true, onlyIfNoActive = false,
 }) {
   const effFrom = effectiveFrom || todayTW();
   return serializeWrite(() => withVersionNoRetry(() => q.tx(async tx => {
+    // bootstrap 的正確性不能依賴 transaction 外的預讀或同程序 writeQueue。
+    // 多個 instance 同時進來時，只有看見 active_version_id 仍為 NULL 的那一筆
+    // transaction 可以建立 V1；其他 caller 必須拿同一個既有 active version 回去。
+    if (onlyIfNoActive) {
+      const state = await tx.get(
+        'SELECT active_version_id FROM user_schedule_state WHERE user_id=?', [userId]);
+      if (state?.active_version_id != null) {
+        return { created: false, existing_version_id: state.active_version_id };
+      }
+    }
     // ① 版本號：同一使用者底下遞增。併發時靠 UNIQUE(user_id, version_no) 擋，
     //    由 withVersionNoRetry 重試（只有這一種衝突可以重試）
     const row = await tx.get(
@@ -138,12 +159,18 @@ export async function createScheduleVersion(userId, {
         reason, source, effFrom, blocks.length]);
     const versionId = v.lastInsertRowid;
 
-    // ② blocks。snapshot 由這裡查 tasks / lists 填入
+    // ② blocks。每一個都必須是這位使用者有效、未完成的 Plan Task；不得寫入
+    // orphan、別人的任務、一般待辦、已刪除或已完成任務。任何一筆不合法都使
+    // 整個 transaction rollback，不能 silently skip 或留下 partial version。
     for (const b of blocks) {
       const t = await tx.get(
-        `SELECT t.title, l.name AS subject
+        `SELECT t.id, t.title, t.plan_id, t.deleted, t.completed, l.name AS subject
            FROM tasks t LEFT JOIN lists l ON l.id = t.list_id
           WHERE t.id=? AND t.user_id=?`, [b.task_id, userId]);
+      if (!t) throw new ScheduleInputError(`排程任務不存在或不屬於目前使用者：${b.task_id}`);
+      if (t.plan_id == null) throw new ScheduleInputError(`排程任務必須屬於計畫：${b.task_id}`);
+      if (t.deleted) throw new ScheduleInputError(`排程任務已刪除：${b.task_id}`);
+      if (t.completed) throw new ScheduleInputError(`排程任務已完成：${b.task_id}`);
       await tx.run(
         `INSERT INTO scheduled_blocks
            (user_id, schedule_version_id, task_id, date, start_time, end_time,
@@ -294,6 +321,8 @@ export async function bootstrapScheduleIfNeeded(userId, planningDay = todayTW())
     effectiveFrom: planningDay,
     parentVersionId: null,
     blocks,
+    onlyIfNoActive: true,
   });
+  if (r.existing_version_id != null) return { created: false, version_id: r.existing_version_id };
   return { created: true, ...r };
 }
