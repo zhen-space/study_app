@@ -257,6 +257,30 @@ CREATE TABLE IF NOT EXISTS schedule_locks (
   end_time TEXT,
   created_at TEXT DEFAULT CURRENT_TIMESTAMP
 );
+-- Master Plan B：可重用作息／固定時間；不取代舊 fixed_events，而是逐步映射。
+CREATE TABLE IF NOT EXISTS availability_routines (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  user_id INTEGER NOT NULL,
+  type TEXT NOT NULL, -- class | fixed_event | sleep | meal | availability
+  title TEXT DEFAULT '',
+  weekdays TEXT DEFAULT '[]',
+  start_time TEXT,
+  end_time TEXT,
+  enabled INTEGER DEFAULT 1,
+  created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+  updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+);
+CREATE TABLE IF NOT EXISTS routine_exceptions (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  user_id INTEGER NOT NULL,
+  routine_id INTEGER,
+  date TEXT NOT NULL,
+  kind TEXT NOT NULL, -- unavailable | available | cancel
+  title TEXT DEFAULT '',
+  start_time TEXT,
+  end_time TEXT,
+  created_at TEXT DEFAULT CURRENT_TIMESTAMP
+);
 `;
 
 export async function initSchema() {
@@ -310,6 +334,8 @@ export async function initSchema() {
   try { await client.execute("CREATE INDEX IF NOT EXISTS idx_locks_task ON schedule_locks(task_id)"); } catch {}
   try { await client.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_locks_task_one ON schedule_locks(user_id, task_id) WHERE type='task' AND released_at IS NULL"); } catch {}
   try { await client.execute("CREATE INDEX IF NOT EXISTS idx_plans_user ON plans(user_id, status)"); } catch {}
+  try { await client.execute("CREATE INDEX IF NOT EXISTS idx_routines_user ON availability_routines(user_id, enabled)"); } catch {}
+  try { await client.execute("CREATE INDEX IF NOT EXISTS idx_routine_exceptions_user_date ON routine_exceptions(user_id, date)"); } catch {}
   // 舊資料的分類補進「記住的分類」清單，之後直接用選的
   try { await client.execute("INSERT INTO memo_categories (user_id,name,order_index) SELECT DISTINCT user_id,category,0 FROM memos WHERE category<>'' AND category IS NOT NULL AND NOT EXISTS (SELECT 1 FROM memo_categories c WHERE c.user_id=memos.user_id AND c.name=memos.category)"); } catch {}
   // 舊 bug（重複扣款）造成的負金幣歸零

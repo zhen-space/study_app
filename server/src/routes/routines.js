@@ -1,0 +1,17 @@
+import { Router } from 'express';
+import { q } from '../db/init.js';
+import { requireAuth } from '../middleware/auth.js';
+const router = Router(); router.use(requireAuth);
+const TYPES = new Set(['class', 'fixed_event', 'sleep', 'meal', 'availability']);
+const KINDS = new Set(['unavailable', 'available', 'cancel']);
+const validTime = t => t == null || /^\d\d:\d\d$/.test(t);
+const bodyOK = b => TYPES.has(b.type) && Array.isArray(b.weekdays) && b.weekdays.every(x => Number.isInteger(x) && x >= 0 && x <= 6)
+  && validTime(b.start_time) && validTime(b.end_time) && (!b.start_time || !b.end_time || b.start_time < b.end_time);
+router.get('/routines', async (req,res) => res.json(await q.all('SELECT * FROM availability_routines WHERE user_id=? ORDER BY type,id',[req.userId])));
+router.post('/routines', async (req,res) => { const b=req.body||{}; if(!bodyOK(b)) return res.status(400).json({error:'固定時間資料不正確'}); const r=await q.run('INSERT INTO availability_routines (user_id,type,title,weekdays,start_time,end_time,enabled) VALUES (?,?,?,?,?,?,?)',[req.userId,b.type,b.title||'',JSON.stringify(b.weekdays),b.start_time||null,b.end_time||null,b.enabled===false?0:1]); res.status(201).json(await q.get('SELECT * FROM availability_routines WHERE id=?',[r.lastInsertRowid])); });
+router.patch('/routines/:id', async (req,res) => { const old=await q.get('SELECT * FROM availability_routines WHERE id=? AND user_id=?',[req.params.id,req.userId]); if(!old)return res.status(404).json({error:'找不到固定時間'}); const b={...old,...req.body,weekdays:req.body?.weekdays??JSON.parse(old.weekdays)}; if(!bodyOK(b))return res.status(400).json({error:'固定時間資料不正確'}); await q.run('UPDATE availability_routines SET type=?,title=?,weekdays=?,start_time=?,end_time=?,enabled=?,updated_at=CURRENT_TIMESTAMP WHERE id=?',[b.type,b.title||'',JSON.stringify(b.weekdays),b.start_time||null,b.end_time||null,b.enabled?1:0,old.id]); res.json(await q.get('SELECT * FROM availability_routines WHERE id=?',[old.id])); });
+router.delete('/routines/:id', async (req,res) => { const r=await q.run('DELETE FROM availability_routines WHERE id=? AND user_id=?',[req.params.id,req.userId]); if(!r.changes)return res.status(404).json({error:'找不到固定時間'}); res.json({ok:true}); });
+router.get('/routine-exceptions', async (req,res) => res.json(await q.all('SELECT * FROM routine_exceptions WHERE user_id=? ORDER BY date,id',[req.userId])));
+router.post('/routine-exceptions', async (req,res) => { const b=req.body||{}; if(!/^\d{4}-\d{2}-\d{2}$/.test(b.date||'')||!KINDS.has(b.kind)||!validTime(b.start_time)||!validTime(b.end_time))return res.status(400).json({error:'例外日資料不正確'}); if(b.routine_id!=null&&!await q.get('SELECT 1 FROM availability_routines WHERE id=? AND user_id=?',[b.routine_id,req.userId]))return res.status(400).json({error:'找不到固定時間'}); const r=await q.run('INSERT INTO routine_exceptions (user_id,routine_id,date,kind,title,start_time,end_time) VALUES (?,?,?,?,?,?,?)',[req.userId,b.routine_id??null,b.date,b.kind,b.title||'',b.start_time||null,b.end_time||null]); res.status(201).json(await q.get('SELECT * FROM routine_exceptions WHERE id=?',[r.lastInsertRowid])); });
+router.delete('/routine-exceptions/:id', async (req,res) => { const r=await q.run('DELETE FROM routine_exceptions WHERE id=? AND user_id=?',[req.params.id,req.userId]); if(!r.changes)return res.status(404).json({error:'找不到例外日'}); res.json({ok:true}); });
+export default router;

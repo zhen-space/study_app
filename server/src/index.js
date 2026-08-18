@@ -10,6 +10,7 @@ import scheduleRouter from './routes/schedule.js';
 import ticktickRouter from './routes/ticktick.js';
 import importRouter from './routes/import.js';
 import plansRouter from './routes/plans.js';
+import routinesRouter from './routes/routines.js';
 
 const app = express();
 app.use(cors());
@@ -19,6 +20,7 @@ app.use('/api/auth', authRouter);
 app.use('/api', dataRouter);
 app.use('/api/schedule', scheduleRouter);
 app.use('/api', plansRouter);
+app.use('/api', routinesRouter);
 app.use('/api', ticktickRouter);
 app.use('/api/import', importRouter);
 
