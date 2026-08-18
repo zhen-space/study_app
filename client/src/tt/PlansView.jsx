@@ -2,63 +2,90 @@ import { useState } from 'react';
 import { api } from '../api';
 import Icon from './Icons';
 import { usePlans, md } from './plans';
+import { Button, IconButton, PageHeader, SurfaceCard, ProgressBar, ListRow, BottomSheet, EmptyState } from './ui';
 
 // 「計畫」＝計畫管理：回答「我要完成什麼計畫」。
 //
-// 資料來源在 ./plans.js：正式 Plan（後端 plans 表，走 /api/plans）
-// ＋ 還沒 migrate 的舊資料推導。兩者並存，舊的會標上「舊資料」而且
-// 不提供正式計畫才有的管理操作——它們沒有 plan id，改不動也封存不了。
+// UI-R2 起改用 Design System v1：Plan 本身是主角，管理功能收進 secondary。
+// 首頁只放「進行中」的卡片；已完成／已封存／舊資料收成一行，點進去才展開——
+// 不然 Plans 首頁很快就變成歷史資料庫。
+//
+// 資料來源在 ./plans.js：正式 Plan（後端 plans 表）＋ 還沒 migrate 的舊資料推導。
+// 兩者並存，舊的標上「舊資料」而且不提供正式計畫才有的管理操作。
 
-const STATUS_LABEL = { draft: '草稿', active: '進行中', completed: '已完成', archived: '已封存' };
+const STATUS_LABEL = { draft: '草稿', completed: '已完成', archived: '已封存' };
 
-const Bar = ({ done, total, color }) => (
-  <div style={{ height: 6, borderRadius: 3, background: 'var(--fill-strong)', overflow: 'hidden' }}>
-    <div style={{ width: `${total ? Math.round(done / total * 100) : 0}%`, height: '100%', background: color, transition: 'width .3s' }} />
-  </div>
-);
-
-// 跨科摘要：一個 Plan 可以同時有好幾科的任務
-const Subjects = ({ subjects }) => (
-  <div className="row" style={{ gap: 6, flexWrap: 'wrap' }}>
-    {subjects.slice(0, 4).map(s => (
-      <span key={String(s.id)} className="chip" style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
-        <Icon name={s.icon} size={12} style={{ color: s.color }} />{s.name}
-        <span className="muted">{s.count}</span>
-      </span>
-    ))}
-    {subjects.length > 4 && <span className="muted" style={{ fontSize: 12 }}>＋{subjects.length - 4} 科</span>}
-  </div>
-);
+// 科目只用小圓點識別，不整張卡染色
+function Subjects({ subjects }) {
+  if (!subjects.length) return null;
+  return (
+    <div className="row" style={{ gap: 'var(--sp-2)', fontSize: 13, color: 'var(--text-2)' }}>
+      {subjects.slice(0, 3).map((s, i) => (
+        <span key={String(s.id)} className="row" style={{ gap: 5 }}>
+          <span className="dot" style={{ width: 7, height: 7, background: s.color }} />
+          {s.name}{i < Math.min(subjects.length, 3) - 1 ? '' : ''}
+        </span>
+      ))}
+      {subjects.length > 3 && <span>＋{subjects.length - 3}</span>}
+    </div>
+  );
+}
 
 function PlanCard({ p, onOpen }) {
+  const pct = p.total ? Math.round(p.done / p.total * 100) : 0;
+  // 只在真的需要時說一句話，不要一排 chip
+  const note = p.total === 0 ? '還沒有任務'
+    : p.overdue > 0 ? '進度需要調整'
+      : p.unplaced.length > 0 ? `尚未安排 ${p.unplaced.length} 項`
+        : '';
   return (
-    <div className="tile" style={{ marginTop: 10, padding: '12px 14px', cursor: 'pointer' }} onClick={() => onOpen(p.key)}>
-      <div className="row">
-        <Icon name={p.icon} size={18} style={{ color: p.color }} />
-        <b style={{ fontSize: 16 }}>{p.name}</b>
-        {p.isLegacy && <span className="chip" title="還沒轉成正式計畫的舊資料">舊資料</span>}
-        {!p.isLegacy && p.status !== 'active' && <span className="chip">{STATUS_LABEL[p.status] || p.status}</span>}
-        <span className="muted" style={{ marginLeft: 'auto', fontSize: 13 }}>{p.done}／{p.total}</span>
+    <SurfaceCard className="plan-card" style={{ marginTop: 'var(--sp-3)', cursor: 'pointer' }}
+      role="button" tabIndex={0} onClick={() => onOpen(p.key)}
+      onKeyDown={e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onOpen(p.key); } }}>
+      {/* 長中文計畫名要能換行、日期靠右不被擠掉。
+          用 grid 而不是 flex：flex 的收縮在中文長字串上不夠可靠，
+          實測 375px 時標題會直接壓到日期上面。 */}
+      <div className="plan-card-head">
+        <div className="plan-card-title">
+          <b style={{ fontSize: 17 }}>{p.name}</b>
+          {p.isLegacy && <span className="chip">舊資料</span>}
+          {!p.isLegacy && STATUS_LABEL[p.status] && <span className="chip">{STATUS_LABEL[p.status]}</span>}
+        </div>
+        {p.end && <span className="ui-meta plan-card-date">{md(p.end)}</span>}
       </div>
-      <div style={{ marginTop: 8 }}><Bar done={p.done} total={p.total} color={p.color} /></div>
-      <div className="row" style={{ marginTop: 6, fontSize: 12 }}>
-        {p.end && <span className="muted">目標 {md(p.end)}</span>}
-        {p.overdue > 0 && <span style={{ color: 'var(--red)' }}>逾期 {p.overdue} 項</span>}
-        {p.unplaced.length > 0 && <span className="muted">尚未安排 {p.unplaced.length} 項</span>}
+      <div className="row" style={{ marginTop: 'var(--sp-3)', alignItems: 'center', gap: 'var(--sp-3)' }}>
+        <span style={{ fontSize: 15, fontWeight: 650, minWidth: 44 }}>{pct}%</span>
+        <span style={{ flex: 1 }}>
+          <ProgressBar value={p.done} max={p.total} label={`${p.name}：${p.total} 項中已完成 ${p.done} 項`} />
+        </span>
       </div>
-      {p.subjects.length > 0 && <div style={{ marginTop: 6 }}><Subjects subjects={p.subjects} /></div>}
-    </div>
+      <div className="row" style={{ marginTop: 'var(--sp-3)' }}>
+        <Subjects subjects={p.subjects} />
+        {note && <span className="ui-meta" style={{ marginLeft: 'auto' }}>{note}</span>}
+      </div>
+    </SurfaceCard>
+  );
+}
+
+// 已完成／已封存／舊資料：先收成一行，點了才展開
+function SectionRow({ label, count, open, onToggle }) {
+  return (
+    <button className="plan-section-row" aria-expanded={open} onClick={onToggle}>
+      <span>{label}</span>
+      <span className="ui-meta">{count}</span>
+      <Icon name="chevron" size={16} style={{ transform: open ? 'rotate(90deg)' : 'none', transition: 'transform var(--motion-fast) var(--ease)' }} />
+    </button>
   );
 }
 
 export default function PlansView({ tasks, lists, apiPlans = [], openPlan, goWizard, reload }) {
   const plans = usePlans(tasks, lists, apiPlans);
-  const [creating, setCreating] = useState(false);   // 打開「建立計畫」的選擇
-  const [blankName, setBlankName] = useState('');    // 空白計畫的名稱（null＝還沒選這條）
+  const [creating, setCreating] = useState(false);
+  const [blankName, setBlankName] = useState('');
   const [showBlank, setShowBlank] = useState(false);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState('');
-  const [showArchived, setShowArchived] = useState(false);
+  const [open, setOpen] = useState({});           // 哪幾個次要區塊被展開
 
   const real = plans.filter(p => !p.isLegacy);
   const live = real.filter(p => p.status === 'active' || p.status === 'draft');
@@ -66,93 +93,106 @@ export default function PlansView({ tasks, lists, apiPlans = [], openPlan, goWiz
   const archived = real.filter(p => p.status === 'archived');
   const legacy = plans.filter(p => p.isLegacy);
 
+  const closeSheet = () => { setCreating(false); setShowBlank(false); setErr(''); };
+
   async function createBlank() {
     const name = blankName.trim() || '新的計畫';
     setBusy(true); setErr('');
     try {
       const plan = await api('/plans', { method: 'POST', body: { name, status: 'active', source: 'manual' } });
-      setCreating(false); setShowBlank(false); setBlankName('');
+      closeSheet(); setBlankName('');
       await reload();              // 讓新計畫進到清單，明細才讀得到
       openPlan(`plan:${plan.id}`);
     } catch (e) { setErr(e.message); }
     setBusy(false);
   }
 
+  const toggle = k => setOpen(o => ({ ...o, [k]: !o[k] }));
+
   return (
     <div className="main">
-      <div className="main-head">
-        <h2>計畫</h2>
-        <span className="muted">{live.length} 個進行中</span>
-      </div>
+      <PageHeader
+        title="計畫"
+        subtitle={live.length ? `${live.length} 個進行中` : ''}
+        actions={<IconButton label="建立計畫" onClick={() => setCreating(true)}><Icon name="plus" size={20} /></IconButton>}
+      />
       <div className="main-body">
-        {!creating
-          ? <button className="btn" style={{ width: '100%', padding: '11px 0', fontSize: 16 }} onClick={() => setCreating(true)}>
-              <Icon name="plus" size={18} style={{ verticalAlign: '-3px', marginRight: 6 }} />建立計畫
-            </button>
-          : (
-            <div className="tile" style={{ padding: '12px 14px', background: 'var(--fill)' }}>
-              <div className="row"><b>要怎麼建立？</b>
-                <button className="icon-btn" style={{ marginLeft: 'auto' }} onClick={() => { setCreating(false); setShowBlank(false); setErr(''); }}>
-                  <Icon name="x" size={14} />
-                </button>
-              </div>
-              {!showBlank ? (
-                <>
-                  <button className="btn" style={{ width: '100%', marginTop: 10 }} onClick={goWizard}>
-                    <Icon name="wizard" size={16} style={{ verticalAlign: '-3px', marginRight: 6 }} />AI 幫我安排
-                  </button>
-                  <div className="muted" style={{ fontSize: 12, margin: '4px 0 10px' }}>拍課本目錄，自動排進每一天</div>
-                  <button className="btn ghost" style={{ width: '100%' }} onClick={() => setShowBlank(true)}>建立空白計畫</button>
-                  <div className="muted" style={{ fontSize: 12, marginTop: 4 }}>先建立計畫，之後再加任務</div>
-                </>
-              ) : (
-                <div style={{ marginTop: 10 }}>
-                  <div className="muted" style={{ fontSize: 12, marginBottom: 4 }}>計畫名稱</div>
-                  <input value={blankName} onChange={e => setBlankName(e.target.value)} placeholder="例如：第二次段考準備"
-                    style={{ width: '100%' }} onKeyDown={e => e.key === 'Enter' && createBlank()} />
-                  <div className="row" style={{ marginTop: 8 }}>
-                    <button className="btn sm ghost" onClick={() => setShowBlank(false)}>返回</button>
-                    <button className="btn sm" style={{ marginLeft: 'auto' }} disabled={busy} onClick={createBlank}>
-                      {busy ? '建立中…' : '建立'}
-                    </button>
-                  </div>
-                </div>
-              )}
-              {err && <div className="error" style={{ marginTop: 8 }}>{err}</div>}
-            </div>
-          )}
-
         {plans.length === 0 && (
-          <div className="muted" style={{ marginTop: 30, textAlign: 'center' }}>
-            還沒有計畫——用上面的「建立計畫」開始吧
-          </div>
+          <EmptyState
+            title="還沒有計畫"
+            description="建立一個讀書計畫，讓 AI 幫你把內容安排到每天。"
+            action={<Button variant="primary" size="lg" onClick={() => setCreating(true)}>建立計畫</Button>}
+          />
         )}
 
-        {live.length > 0 && <div className="side-sec" style={{ marginTop: 14 }}>進行中</div>}
         {live.map(p => <PlanCard key={p.key} p={p} onOpen={openPlan} />)}
 
-        {done.length > 0 && <div className="side-sec" style={{ marginTop: 18 }}>已完成</div>}
-        {done.map(p => <PlanCard key={p.key} p={p} onOpen={openPlan} />)}
-
-        {legacy.length > 0 && (
-          <>
-            <div className="side-sec" style={{ marginTop: 18 }}>舊資料</div>
-            <div className="muted" style={{ fontSize: 12, marginBottom: 2 }}>
-              還沒轉成正式計畫，只能看，不能改名或封存
-            </div>
-            {legacy.map(p => <PlanCard key={p.key} p={p} onOpen={openPlan} />)}
-          </>
-        )}
-
-        {archived.length > 0 && (
-          <>
-            <button className="btn sm ghost" style={{ marginTop: 18 }} onClick={() => setShowArchived(v => !v)}>
-              {showArchived ? '隱藏已封存' : `顯示已封存（${archived.length}）`}
-            </button>
-            {showArchived && archived.map(p => <PlanCard key={p.key} p={p} onOpen={openPlan} />)}
-          </>
-        )}
+        {/* 次要區塊：預設收合，視覺權重明顯低於進行中 */}
+        <div style={{ marginTop: 'var(--section-gap)' }}>
+          {done.length > 0 && (
+            <>
+              <SectionRow label="已完成" count={done.length} open={!!open.done} onToggle={() => toggle('done')} />
+              {open.done && done.map(p => <PlanCard key={p.key} p={p} onOpen={openPlan} />)}
+            </>
+          )}
+          {archived.length > 0 && (
+            <>
+              <SectionRow label="已封存" count={archived.length} open={!!open.archived} onToggle={() => toggle('archived')} />
+              {open.archived && archived.map(p => <PlanCard key={p.key} p={p} onOpen={openPlan} />)}
+            </>
+          )}
+          {legacy.length > 0 && (
+            <>
+              <SectionRow label="舊資料" count={legacy.length} open={!!open.legacy} onToggle={() => toggle('legacy')} />
+              {open.legacy && <>
+                <div className="ui-meta" style={{ padding: '0 0 var(--sp-1)' }}>還沒轉成正式計畫，只能查看</div>
+                {legacy.map(p => <PlanCard key={p.key} p={p} onOpen={openPlan} />)}
+              </>}
+            </>
+          )}
+        </div>
       </div>
+
+      {creating && (
+        <BottomSheet onClose={closeSheet} label="建立計畫">
+          <div className="row">
+            <b style={{ fontSize: 17 }}>建立計畫</b>
+            <IconButton label="關閉" style={{ marginLeft: 'auto' }} onClick={closeSheet}><Icon name="x" size={16} /></IconButton>
+          </div>
+          {!showBlank ? (
+            <div style={{ marginTop: 'var(--sp-4)' }}>
+              <Button variant="primary" size="lg" block onClick={goWizard}>
+                <Icon name="wizard" size={18} />AI 幫我安排
+              </Button>
+              <div className="ui-meta" style={{ margin: 'var(--sp-2) 0 var(--sp-5)', textAlign: 'center' }}>
+                拍教材或選內容，由 AI 建立安排
+              </div>
+              <ListRow
+                title="建立空白計畫" subtitle="先建立，再自己加入任務"
+                trailing={<Icon name="chevron" size={16} />}
+                role="button" tabIndex={0} style={{ cursor: 'pointer' }}
+                onClick={() => setShowBlank(true)}
+                onKeyDown={e => { if (e.key === 'Enter') setShowBlank(true); }}
+              />
+            </div>
+          ) : (
+            <div style={{ marginTop: 'var(--sp-4)' }}>
+              <label className="ui-meta" htmlFor="blank-plan-name">計畫名稱</label>
+              <input id="blank-plan-name" aria-label="計畫名稱" value={blankName} autoFocus
+                onChange={e => setBlankName(e.target.value)} placeholder="例如：第二次段考準備"
+                style={{ width: '100%', marginTop: 'var(--sp-1)' }}
+                onKeyDown={e => e.key === 'Enter' && createBlank()} />
+              <div className="row" style={{ marginTop: 'var(--sp-4)' }}>
+                <Button onClick={() => setShowBlank(false)}>返回</Button>
+                <Button variant="primary" style={{ marginLeft: 'auto' }} disabled={busy} onClick={createBlank}>
+                  {busy ? '建立中…' : '建立'}
+                </Button>
+              </div>
+            </div>
+          )}
+          {err && <div className="error" style={{ marginTop: 'var(--sp-3)' }}>{err}</div>}
+        </BottomSheet>
+      )}
     </div>
   );
 }

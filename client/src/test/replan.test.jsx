@@ -190,7 +190,7 @@ describe('兩個入口進同一套重排流程', () => {
   it('9. 計畫明細的 CTA 打開同一個重排確認畫面', async () => {
     await mountShell();
     await click(within(document.querySelector('.bottom-nav')).getByText('計畫').closest('button'));
-    await click([...document.querySelectorAll('.main .tile')].find(el => el.querySelector('b')?.textContent === '第二次段考'));
+    await click([...document.querySelectorAll('.main .plan-card')].find(el => el.querySelector('b')?.textContent === '第二次段考'));
     expect(screen.getByText('目前安排需要調整')).toBeInTheDocument();
     await click(screen.getByRole('button', { name: '讓 AI 重新安排' }));
     expect(screen.getByText('重新安排「第二次段考」')).toBeInTheDocument();

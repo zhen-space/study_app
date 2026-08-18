@@ -538,8 +538,13 @@ select { -webkit-appearance: none; appearance: none; padding-right: 26px;
    ============================================================ */
 /* 內容可讀寬度：超寬螢幕不讓一行字橫跨整個畫面 */
 .main-body > * { max-width: var(--content-max, 720px); }
+/* 標題列跟內容同一個可讀寬度：右上的動作要跟卡片右緣對齊，
+   不然桌機上 ＋ 會孤零零貼在畫面最右邊 */
 .main-head { max-width: none; }
-.main-head > .page-head-text { max-width: var(--content-max, 720px); }
+.main-head > .page-head-text { min-width: 0; }
+@media (min-width: 769px) {
+  .main-head { max-width: calc(var(--content-max, 720px) + var(--sp-7) * 2); }
+}
 
 @media (min-width: 769px) {
   /* 桌機保留側邊欄，主內容置左但有可讀上限 */
@@ -594,3 +599,26 @@ select { -webkit-appearance: none; appearance: none; padding-right: 26px;
 /* Bottom Sheet 裡的小標題（原本借用側邊欄的 .side-sec，會多一層縮排） */
 .sheet-sec { font-size: 12px; font-weight: 600; letter-spacing: .03em; color: var(--text-2);
   text-transform: uppercase; margin-bottom: var(--sp-1); }
+
+/* ---- Plans：次要區塊收合列（已完成／已封存／舊資料）---- */
+.plan-section-row {
+  display: flex; align-items: center; gap: var(--sp-2); width: 100%;
+  padding: 14px 2px; min-height: 44px; color: var(--text-2); font-size: 15px;
+  border-top: 1px solid var(--separator);
+  transition: color var(--motion-fast) var(--ease);
+}
+.plan-section-row:hover { color: var(--text); }
+.plan-section-row > .ui-meta { margin-left: auto; }
+.plan-card:active { transform: scale(.995); }
+.plan-card { transition: transform var(--motion-fast) var(--ease); }
+/* 返回：放在大標題上方的一行小字，不是一顆佔版面的按鈕 */
+.page-back {
+  display: inline-flex; align-items: center; min-height: 32px;
+  font-size: 14px; color: var(--accent); padding: 0; margin-bottom: 2px;
+}
+.page-back:hover { opacity: .8; }
+/* Plan 卡標題列：標題吃剩下的寬度並換行，日期永遠靠右且不換行 */
+.plan-card-head { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: var(--sp-2); align-items: baseline; }
+.plan-card-title { min-width: 0; display: flex; align-items: baseline; gap: var(--sp-2); flex-wrap: wrap; }
+.plan-card-title b { overflow-wrap: anywhere; }
+.plan-card-date { white-space: nowrap; }

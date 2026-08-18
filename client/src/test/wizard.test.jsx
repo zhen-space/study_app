@@ -272,18 +272,22 @@ describe('PlanDetail 的「調整計畫」入口', () => {
   it('12. 正式計畫有「調整計畫」，點了先出現底部選單', async () => {
     mountDetail({ adjustPlan: () => {} });
     await click(btn(/調整計畫/));
-    expect(screen.getByText('要調整什麼？')).toBeInTheDocument();
+    expect(screen.getByText('想調整什麼？')).toBeInTheDocument();
     noCrash();
   });
 
   it('13. 底部選單列出各段入口，「鎖定內容」先做成之後才有的功能', async () => {
     mountDetail({ adjustPlan: () => {} });
     await click(btn(/調整計畫/));
-    const sheet = document.querySelector('.ev-sheet');
+    const sheet = document.querySelector('.sheet-panel');
     for (const s of ['學習內容', '完成期限', '可用時間', '排程條件', '全部設定']) {
       expect(within(sheet).getByText(s)).toBeInTheDocument();
     }
-    expect(within(sheet).getByText('鎖定內容').closest('button')).toBeDisabled();
+    // Lock 尚未實作：顯示成之後才有的功能，而且不可點
+    const lock = within(sheet).getByText('鎖定內容').closest('.ui-row');
+    expect(lock).toBeTruthy();
+    expect(within(lock).getByText('尚未開放')).toBeInTheDocument();
+    expect(lock.getAttribute('role')).not.toBe('button');
     noCrash();
   });
 
@@ -291,7 +295,7 @@ describe('PlanDetail 的「調整計畫」入口', () => {
     const adjustPlan = vi.fn();
     mountDetail({ adjustPlan });
     await click(btn(/調整計畫/));
-    await click(within(document.querySelector('.ev-sheet')).getByText('排程條件').closest('button'));
+    await click(within(document.querySelector('.sheet-panel')).getByText('排程條件').closest('.ui-row'));
     expect(adjustPlan).toHaveBeenCalledWith(12, 'cond');
     noCrash();
   });

@@ -30,10 +30,11 @@ export function IconButton({ label, className = '', children, ...rest }) {
 
 /* ---------- PageHeader ---------- */
 // 大標題區：標題 ＋ 日期副標 ＋ 右側最多一兩個動作。
-export function PageHeader({ title, subtitle, actions = null, meta = null }) {
+export function PageHeader({ title, subtitle, actions = null, meta = null, back = null }) {
   return (
     <div className="main-head">
       <div className="page-head-text">
+        {back}
         <h2>{title}</h2>
         {subtitle && <div className="head-sub">{subtitle}</div>}
       </div>

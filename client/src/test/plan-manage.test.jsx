@@ -62,12 +62,10 @@ const select = (el, value) => act(async () => {
   setter.call(el, value);
   el.dispatchEvent(new Event('change', { bubbles: true }));
 });
-// React 的 onBlur 實際上掛在會冒泡的 focusout 上，dispatch 'blur' 不會觸發
-const blur = el => act(async () => { el.dispatchEvent(new FocusEvent('focusout', { bubbles: true })); });
 
 // 卡片標題在 <b> 裡；名稱可能同時是科目名，所以不能用純文字找
-const cardTitles = () => [...main().querySelectorAll('.tile b')].map(b => b.textContent);
-const cardByName = name => [...main().querySelectorAll('.tile')].find(el => el.querySelector('b')?.textContent === name);
+const cardTitles = () => [...main().querySelectorAll('.plan-card b')].map(b => b.textContent);
+const cardByName = name => [...main().querySelectorAll('.plan-card')].find(el => el.querySelector('b')?.textContent === name);
 
 async function goPlans(ready = '買參考書') {
   render(<Shell onLogout={() => {}} />);
@@ -75,26 +73,28 @@ async function goPlans(ready = '買參考書') {
   if (ready) await screen.findByText(ready);
   await click(within(bottomNav()).getByText('計畫').closest('button'));
 }
-// 打開某個正式計畫的明細，並展開「管理」
+// 打開某個正式計畫的明細，並打開右上「•••」的計畫選項
 async function openManage(planName) {
   await click(cardByName(planName));
-  await click(screen.getByRole('button', { name: /管理/ }));
+  await click(screen.getByRole('button', { name: '計畫選項' }));
 }
+// 底部選單裡的一列（ListRow，不是 button）
+const sheetRow = name => within(document.querySelector('.sheet-panel')).getByText(name).closest('.ui-row');
 const sent = (method, pathPart) =>
   calls.filter(([p, o]) => p.includes(pathPart) && (o?.method || 'GET') === method);
 
 describe('建立計畫', () => {
   it('「建立計畫」提供 AI 安排與空白計畫兩條路', async () => {
     await goPlans();
-    await click(screen.getByRole('button', { name: /建立計畫/ }));
+    await click(screen.getByRole('button', { name: '建立計畫' }));
     expect(screen.getByRole('button', { name: /AI 幫我安排/ })).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: /建立空白計畫/ })).toBeInTheDocument();
+    expect(screen.getByText('建立空白計畫')).toBeInTheDocument();
     noCrash();
   });
 
   it('AI 安排接到既有排程精靈', async () => {
     await goPlans();
-    await click(screen.getByRole('button', { name: /建立計畫/ }));
+    await click(screen.getByRole('button', { name: '建立計畫' }));
     await click(screen.getByRole('button', { name: /AI 幫我安排/ }));
     expect(screen.getByText('排程精靈')).toBeInTheDocument();
     noCrash();
@@ -110,8 +110,8 @@ describe('建立計畫', () => {
       '/tasks': [...fx.tasks, ...fx.planTasks],
     });
     await goPlans();
-    await click(screen.getByRole('button', { name: /建立計畫/ }));
-    await click(screen.getByRole('button', { name: /建立空白計畫/ }));
+    await click(screen.getByRole('button', { name: '建立計畫' }));
+    await click(screen.getByText('建立空白計畫').closest('.ui-row'));
     await type(screen.getByPlaceholderText(/第二次段考準備/), '暑假數學講義');
     await click(screen.getByRole('button', { name: '建立' }));
 
@@ -138,24 +138,40 @@ describe('Plan 管理操作（全部走既有 /plans API）', () => {
     '/plans': [fx.plans[0]], '/tasks': [...fx.tasks, ...fx.planTasks], ...over,
   });
 
+  // UI-R2：改成「編輯計畫資訊」sheet，按儲存才送出。
+  // 離焦即更新太容易誤觸——不小心點一下欄位再點別的地方就改了計畫。
+  const openEdit = async () => {
+    await openManage('第二次段考準備');
+    await click(sheetRow('編輯計畫資訊'));
+  };
+
   it('改名 → PATCH /plans/:id', async () => {
     withPlan();
     await goPlans();
-    await openManage('第二次段考準備');
-    const input = screen.getByLabelText('計畫名稱');
-    await type(input, '第二次段考衝刺');
-    await blur(input);
+    await openEdit();
+    await type(screen.getByLabelText('計畫名稱'), '第二次段考衝刺');
+    await click(screen.getByRole('button', { name: '儲存' }));
     const patches = sent('PATCH', '/plans/12');
     expect(patches.length).toBe(1);
     expect(patches[0][1].body).toEqual({ name: '第二次段考衝刺' });
     noCrash();
   });
 
-  it('名稱沒改就不送出（避免無意義的版本異動）', async () => {
+  it('什麼都沒改就按儲存，不送出（避免無意義的版本異動）', async () => {
     withPlan();
     await goPlans();
-    await openManage('第二次段考準備');
-    await blur(screen.getByLabelText('計畫名稱'));
+    await openEdit();
+    await click(screen.getByRole('button', { name: '儲存' }));
+    expect(sent('PATCH', '/plans/12').length).toBe(0);
+    noCrash();
+  });
+
+  it('打字但沒按儲存就關掉，不得送出（不做離焦即更新）', async () => {
+    withPlan();
+    await goPlans();
+    await openEdit();
+    await type(screen.getByLabelText('計畫名稱'), '手滑打的字');
+    await click(screen.getByRole('button', { name: '取消' }));
     expect(sent('PATCH', '/plans/12').length).toBe(0);
     noCrash();
   });
@@ -163,9 +179,9 @@ describe('Plan 管理操作（全部走既有 /plans API）', () => {
   it('修改期限 → PATCH /plans/:id 帶 target_date', async () => {
     withPlan();
     await goPlans();
-    await openManage('第二次段考準備');
-    const input = screen.getByLabelText('目標日期');
-    await type(input, '2026-12-31');
+    await openEdit();
+    await type(screen.getByLabelText('目標日期'), '2026-12-31');
+    await click(screen.getByRole('button', { name: '儲存' }));
     const patches = sent('PATCH', '/plans/12');
     expect(patches.length).toBe(1);
     expect(patches[0][1].body).toEqual({ target_date: '2026-12-31' });
@@ -174,24 +190,27 @@ describe('Plan 管理操作（全部走既有 /plans API）', () => {
 
   it('標記完成 → POST /plans/:id/complete；有未完成項目會先確認', async () => {
     withPlan({ '/plans/12/complete': { needs_confirm: true, unresolved: [{ id: 21 }, { id: 22 }] } });
-    vi.spyOn(window, 'confirm').mockReturnValue(true);
     await goPlans();
     await openManage('第二次段考準備');
-    await click(screen.getByRole('button', { name: '標記完成' }));
+    await click(sheetRow('標記完成'));
+
+    // UI-R2：改用 Bottom Sheet 確認，不再是 window.confirm。後端語意不變
+    expect(screen.getByText('完成這個計畫？')).toBeInTheDocument();
+    expect(screen.getByText(/還有 2 項尚未完成/)).toBeInTheDocument();
+    await click(screen.getByRole('button', { name: '仍然完成' }));
 
     const posts = sent('POST', '/plans/12/complete');
     expect(posts.length).toBe(2);                    // 先問，再帶 force
     expect(posts[1][1].body).toEqual({ force: true });
-    expect(window.confirm).toHaveBeenCalled();
     noCrash();
   });
 
   it('確認視窗按取消，就不會真的完成', async () => {
     withPlan({ '/plans/12/complete': { needs_confirm: true, unresolved: [{ id: 21 }] } });
-    vi.spyOn(window, 'confirm').mockReturnValue(false);
     await goPlans();
     await openManage('第二次段考準備');
-    await click(screen.getByRole('button', { name: '標記完成' }));
+    await click(sheetRow('標記完成'));
+    await click(screen.getByRole('button', { name: '取消' }));
     const posts = sent('POST', '/plans/12/complete');
     expect(posts.length).toBe(1);                    // 只問了，沒有 force
     noCrash();
@@ -201,8 +220,8 @@ describe('Plan 管理操作（全部走既有 /plans API）', () => {
     withPlan();
     await goPlans();
     await openManage('第二次段考準備');
-    expect(screen.getByText(/封存不會刪掉任何任務/)).toBeInTheDocument();
-    await click(screen.getByRole('button', { name: '封存' }));
+    expect(screen.getByText(/不會刪掉任何任務/)).toBeInTheDocument();
+    await click(sheetRow('封存'));
     expect(sent('POST', '/plans/12/archive').length).toBe(1);
     noCrash();
   });
@@ -210,10 +229,10 @@ describe('Plan 管理操作（全部走既有 /plans API）', () => {
   it('已封存的計畫顯示「恢復」→ POST /plans/:id/restore', async () => {
     setApi({ '/plans': [fx.archivedPlan], '/tasks': fx.tasks });
     await goPlans();
-    await click(screen.getByRole('button', { name: /顯示已封存/ }));
+    await click(screen.getByRole('button', { name: /已封存/ }));
     await openManage('封存過的計畫');
-    expect(screen.queryByRole('button', { name: '封存' })).not.toBeInTheDocument();
-    await click(screen.getByRole('button', { name: '恢復' }));
+    expect(within(document.querySelector('.sheet-panel')).queryByText('封存')).not.toBeInTheDocument();
+    await click(sheetRow('恢復計畫'));
     expect(sent('POST', '/plans/31/restore').length).toBe(1);
     noCrash();
   });
@@ -221,8 +240,9 @@ describe('Plan 管理操作（全部走既有 /plans API）', () => {
   it('已完成的計畫不再提供「標記完成」', async () => {
     setApi({ '/plans': [fx.completedPlan], '/tasks': fx.tasks });
     await goPlans();
+    await click(screen.getByRole('button', { name: /已完成/ }));
     await openManage('做完的計畫');
-    expect(screen.queryByRole('button', { name: '標記完成' })).not.toBeInTheDocument();
+    expect(within(document.querySelector('.sheet-panel')).queryByText('標記完成')).not.toBeInTheDocument();
     noCrash();
   });
 });
@@ -231,13 +251,19 @@ describe('狀態分組', () => {
   it('進行中／已完成分開，已封存預設收起來', async () => {
     setApi({ '/plans': [fx.plans[0], fx.completedPlan, fx.archivedPlan], '/tasks': [...fx.tasks, ...fx.planTasks] });
     await goPlans();
-    // 「已完成」在側邊欄和卡片狀態標籤上也會出現，所以只看區塊標題
-    const sections = [...main().querySelectorAll('.side-sec')].map(x => x.textContent);
-    expect(sections).toContain('進行中');
-    expect(sections).toContain('已完成');
-    expect(cardTitles()).not.toContain('封存過的計畫');       // 預設不顯示
-    await click(screen.getByRole('button', { name: /顯示已封存/ }));
+    // UI-R2：進行中直接是卡片；已完成／已封存收成一行，點了才展開，
+    // 免得 Plans 首頁變成歷史資料庫
+    expect(cardTitles()).toContain('第二次段考準備');
+    expect(cardTitles()).not.toContain('做完的計畫');
+    expect(cardTitles()).not.toContain('封存過的計畫');
+    const rows = [...main().querySelectorAll('.plan-section-row')].map(x => x.textContent);
+    expect(rows.some(r => r.includes('已完成'))).toBe(true);
+    expect(rows.some(r => r.includes('已封存'))).toBe(true);
+
+    await click(screen.getByRole('button', { name: /已封存/ }));
     expect(cardTitles()).toContain('封存過的計畫');
+    await click(screen.getByRole('button', { name: /已完成/ }));
+    expect(cardTitles()).toContain('做完的計畫');
     noCrash();
   });
 });
@@ -256,7 +282,7 @@ describe('跨科計畫', () => {
     setApi({ '/plans': [fx.plans[0]], '/tasks': [...fx.tasks, ...fx.planTasks] });
     await goPlans();
     await click(cardByName('第二次段考準備'));
-    const labels = [...main().querySelectorAll('.glabel')].map(x => x.textContent);
+    const labels = [...main().querySelectorAll('.ui-section-title')].map(x => x.textContent);
     expect(labels.some(l => l.includes('物理'))).toBe(true);
     expect(labels.some(l => l.includes('地科'))).toBe(true);
     expect(within(main()).getByText(/力學複習/)).toBeInTheDocument();
@@ -277,8 +303,8 @@ describe('尚未安排', () => {
     setApi({ '/plans': [fx.plans[0]], '/tasks': [...fx.tasks, ...fx.planTasks] });
     await goPlans();
     await click(cardByName('第二次段考準備'));
-    const group = [...main().querySelectorAll('.tgroup')]
-      .find(g => g.querySelector('.glabel')?.textContent.includes('尚未安排'));
+    const group = [...main().querySelectorAll('.ui-section')]
+      .find(g => g.querySelector('.ui-section-title')?.textContent.includes('尚未安排'));
     expect(group, '應該有「尚未安排」分組').toBeTruthy();
     expect(within(group).getByText(/電磁複習/)).toBeInTheDocument();
     noCrash();
@@ -314,7 +340,7 @@ describe('新增任務到計畫（空白計畫的閉環）', () => {
     await goPlans();
     await click(cardByName('新的計畫'));
     expect(screen.getByText(/這個計畫還沒有任務/)).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: /新增任務/ })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /新增第一個任務/ })).toBeInTheDocument();
     noCrash();
   });
 
@@ -322,7 +348,7 @@ describe('新增任務到計畫（空白計畫的閉環）', () => {
     withLiveTasks([fx.emptyPlan], fx.tasks);
     await goPlans();
     await click(cardByName('新的計畫'));
-    await click(screen.getByRole('button', { name: /新增任務/ }));
+    await click(screen.getByRole('button', { name: /新增第一個任務|新增任務/ }));
     await type(screen.getByLabelText('任務名稱'), '整理第一章筆記');
     await click(screen.getByRole('button', { name: '新增' }));
 
@@ -337,15 +363,15 @@ describe('新增任務到計畫（空白計畫的閉環）', () => {
     withLiveTasks([fx.emptyPlan], fx.tasks);
     await goPlans();
     await click(cardByName('新的計畫'));
-    await click(screen.getByRole('button', { name: /新增任務/ }));
+    await click(screen.getByRole('button', { name: /新增第一個任務|新增任務/ }));
     await type(screen.getByLabelText('任務名稱'), '整理第一章筆記');
     await click(screen.getByRole('button', { name: '新增' }));
     await screen.findByText('整理第一章筆記');          // 等 reload 把新任務帶回來
 
     // 還在同一個計畫的明細
     expect(within(main()).getByRole('heading', { name: '新的計畫' })).toBeInTheDocument();
-    const group = [...main().querySelectorAll('.tgroup')]
-      .find(g => g.querySelector('.glabel')?.textContent.includes('尚未安排'));
+    const group = [...main().querySelectorAll('.ui-section')]
+      .find(g => g.querySelector('.ui-section-title')?.textContent.includes('尚未安排'));
     expect(group, '新任務沒有日期，應該落在「尚未安排」').toBeTruthy();
     expect(within(group).getByText('整理第一章筆記')).toBeInTheDocument();
     expect(screen.queryByText(/這個計畫還沒有任務/)).not.toBeInTheDocument();
@@ -356,7 +382,7 @@ describe('新增任務到計畫（空白計畫的閉環）', () => {
     withLiveTasks([fx.emptyPlan], fx.tasks);
     await goPlans();
     await click(cardByName('新的計畫'));
-    await click(screen.getByRole('button', { name: /新增任務/ }));
+    await click(screen.getByRole('button', { name: /新增第一個任務|新增任務/ }));
     await type(screen.getByLabelText('任務名稱'), '物理錯題訂正');
     await select(screen.getByLabelText('科目'), String(fx.lists[0].id));
     await type(screen.getByLabelText('截止日'), '2026-12-01');
@@ -368,8 +394,8 @@ describe('新增任務到計畫（空白計畫的閉環）', () => {
     expect(body.deadline_date).toBe('2026-12-01');
     expect(body.due_date).toBeUndefined();          // 不會偷偷幫它排日期
     // 有截止日不代表已經排進行事曆，所以還是落在「尚未安排」
-    const group = [...main().querySelectorAll('.tgroup')]
-      .find(g => g.querySelector('.glabel')?.textContent.includes('尚未安排'));
+    const group = [...main().querySelectorAll('.ui-section')]
+      .find(g => g.querySelector('.ui-section-title')?.textContent.includes('尚未安排'));
     expect(within(group).getByText('物理錯題訂正')).toBeInTheDocument();
     noCrash();
   });
@@ -378,7 +404,7 @@ describe('新增任務到計畫（空白計畫的閉環）', () => {
     withLiveTasks([fx.plans[0]], [...fx.tasks, ...fx.planTasks]);
     await goPlans();
     await click(cardByName('第二次段考準備'));
-    await click(screen.getByRole('button', { name: /新增任務/ }));
+    await click(screen.getByRole('button', { name: /新增第一個任務|新增任務/ }));
     await type(screen.getByLabelText('任務名稱'), '再加一項');
     await click(screen.getByRole('button', { name: '新增' }));
     await screen.findByText('再加一項');
@@ -392,7 +418,7 @@ describe('新增任務到計畫（空白計畫的閉環）', () => {
   it('已封存的計畫不提供新增任務（後端本來就會擋）', async () => {
     setApi({ '/plans': [fx.archivedPlan], '/tasks': fx.tasks });
     await goPlans();
-    await click(screen.getByRole('button', { name: /顯示已封存/ }));
+    await click(screen.getByRole('button', { name: /已封存/ }));
     await click(cardByName('封存過的計畫'));
     expect(screen.queryByRole('button', { name: /新增任務/ })).not.toBeInTheDocument();
     noCrash();
@@ -403,27 +429,31 @@ describe('Legacy 計畫', () => {
   it('標示為舊資料，而且不 crash', async () => {
     setApi({ '/plans': [], '/tasks': fx.tasks });
     await goPlans();
-    expect(screen.getAllByText('舊資料').length).toBeGreaterThan(0);
+    // UI-R2：舊資料收在獨立的低優先區塊，不跟正式 Plan 混排
+    await click(screen.getByRole('button', { name: /舊資料/ }));
+    expect(cardTitles()).toContain('物理');
     noCrash();
   });
 
   it('明細不提供正式計畫才有的管理操作', async () => {
     setApi({ '/plans': [], '/tasks': fx.tasks });
     await goPlans();
+    await click(screen.getByRole('button', { name: /舊資料/ }));
     await click(cardByName('物理'));
-    // 沒有「管理」入口，也就沒有改名／期限／完成／封存
-    expect(screen.queryByRole('button', { name: /管理/ })).not.toBeInTheDocument();
-    expect(screen.queryByRole('button', { name: '標記完成' })).not.toBeInTheDocument();
-    expect(screen.queryByRole('button', { name: '封存' })).not.toBeInTheDocument();
+    // 沒有「計畫選項」入口，也就沒有改名／期限／完成／封存
+    expect(screen.queryByRole('button', { name: '計畫選項' })).not.toBeInTheDocument();
+    expect(screen.queryByText('標記完成')).not.toBeInTheDocument();
     expect(screen.queryByLabelText('計畫名稱')).not.toBeInTheDocument();
     expect(screen.queryByRole('button', { name: /新增任務/ }), 'legacy 不該有正式 Plan 的新增任務入口').not.toBeInTheDocument();
-    expect(screen.getByText(/不能改名、改期限或封存/)).toBeInTheDocument();
+    // 是中性說明，不是錯誤警告
+    expect(screen.getByText(/尚未轉成正式計畫/)).toBeInTheDocument();
     noCrash();
   });
 
   it('對 legacy 計畫完全不會打 /plans 的寫入 API', async () => {
     setApi({ '/plans': [], '/tasks': fx.tasks });
     await goPlans();
+    await click(screen.getByRole('button', { name: /舊資料/ }));
     await click(cardByName('物理'));
     expect(sent('PATCH', '/plans/')).toEqual([]);
     expect(sent('POST', '/plans')).toEqual([]);

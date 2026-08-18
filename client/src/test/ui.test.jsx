@@ -187,3 +187,122 @@ describe('UI-R1：視覺重構後功能沒有退化', () => {
     noCrash();
   });
 });
+
+// ============================================================
+// UI-R2：Plans / PlanDetail 換成 Design System v1 之後，
+// 互動與資訊層級沒有退化。
+// ============================================================
+describe('UI-R2：Plans 與 Plan Detail', () => {
+  const goPlans = async () => {
+    await click(navButton('計畫'));
+    await flush();
+  };
+  const cardByName = name => [...document.querySelectorAll('.main .plan-card')]
+    .find(el => el.querySelector('b')?.textContent === name);
+  const panel = () => document.querySelector('.sheet-panel');
+
+  it('12. 首頁只放進行中的卡片，其餘收成一行', async () => {
+    await mountShell({ '/plans': [PLAN, { ...PLAN, id: 14, name: '第一次段考', status: 'completed' }] });
+    await goPlans();
+    // 進行中直接是卡片，已完成的不在首頁展開
+    expect(cardByName('第二次段考')).toBeTruthy();
+    expect(cardByName('第一次段考')).toBeFalsy();
+    // 次要區塊是低權重的一行，不是一堆展開的卡
+    const rows = [...document.querySelectorAll('.plan-section-row')].map(r => r.textContent);
+    expect(rows.length).toBeGreaterThan(0);
+    noCrash();
+  });
+
+  it('13. 建立計畫走 BottomSheet，AI 是主要動作', async () => {
+    await mountShell();
+    await goPlans();
+    await click(screen.getByRole('button', { name: '建立計畫' }));
+    const dlg = screen.getByRole('dialog');
+    const ai = within(dlg).getByRole('button', { name: /AI 幫我安排/ });
+    expect(ai.className).toContain('ui-btn--primary');
+    // 空白計畫是次要入口（ListRow，不是同等份量的實心鈕）
+    expect(within(dlg).getByText('建立空白計畫').closest('.ui-row')).toBeTruthy();
+    noCrash();
+  });
+
+  it('14. 沒有任何計畫時給 EmptyState，而不是一行灰字', async () => {
+    await mountShell({ '/tasks': [], '/plans': [] });
+    await goPlans();
+    expect(screen.getByText('還沒有計畫')).toBeInTheDocument();
+    expect(screen.getByText(/讓 AI 幫你把內容安排到每天/)).toBeInTheDocument();
+    expect(within(document.querySelector('.ui-empty')).getByRole('button', { name: '建立計畫' })).toBeInTheDocument();
+    noCrash();
+  });
+
+  it('15. Plan Detail：進度是主角，管理收在右上', async () => {
+    await mountShell();
+    await goPlans();
+    await click(cardByName('第二次段考'));
+    expect(within(document.querySelector('.main')).getByRole('heading', { name: '第二次段考' })).toBeInTheDocument();
+    expect(screen.getByRole('progressbar')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: '計畫選項' })).toBeInTheDocument();
+    // 舊版那一排 tile／btn 已經不在
+    expect(document.querySelectorAll('.main .tile').length).toBe(0);
+    noCrash();
+  });
+
+  it('16. 完成計畫的確認不再用 window.confirm', async () => {
+    const confirmSpy = vi.spyOn(window, 'confirm');
+    await mountShell({ '/plans/12/complete': { needs_confirm: true, unresolved: [{ id: 1 }] } });
+    await goPlans();
+    await click(cardByName('第二次段考'));
+    await click(screen.getByRole('button', { name: '計畫選項' }));
+    await click(within(panel()).getByText('標記完成').closest('.ui-row'));
+    await flush();
+    expect(screen.getByText('完成這個計畫？')).toBeInTheDocument();
+    expect(confirmSpy, '★ 不得再用瀏覽器原生 confirm').not.toHaveBeenCalled();
+    noCrash();
+  });
+
+  it('17. 新增任務走 BottomSheet，成功後留在明細', async () => {
+    await mountShell();
+    await goPlans();
+    await click(cardByName('第二次段考'));
+    await click(screen.getByRole('button', { name: /新增任務/ }));
+    expect(screen.getByRole('dialog')).toBeInTheDocument();
+    expect(screen.getByLabelText('任務名稱')).toBeInTheDocument();
+    await click(screen.getByRole('button', { name: '取消' }));
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+    expect(within(document.querySelector('.main')).getByRole('heading', { name: '第二次段考' })).toBeInTheDocument();
+    noCrash();
+  });
+
+  it('18. 調整計畫的 deep-link 沒有退化', async () => {
+    saveConfirmedConditions(12, { timed: false, perDay: 2, pace: 'front' });
+    await mountShell();
+    await goPlans();
+    await click(cardByName('第二次段考'));
+    await click(screen.getByRole('button', { name: /調整計畫/ }));
+    await click(within(panel()).getByText('排程條件').closest('.ui-row'));
+    await flush();
+    expect(screen.getByRole('heading', { name: '調整「第二次段考」' })).toBeInTheDocument();
+    noCrash();
+  });
+
+  it('19. 尚未安排是獨立區塊，不是塞在任務列上的小標籤', async () => {
+    await mountShell({ '/tasks': [OVERDUE, { ...mk(23), due_date: null, title: '物理｜講義｜還沒排的' }] });
+    await goPlans();
+    await click(cardByName('第二次段考'));
+    const sec = [...document.querySelectorAll('.ui-section')]
+      .find(s => s.querySelector('.ui-section-title')?.textContent.includes('尚未安排'));
+    expect(sec, '應該有獨立的「尚未安排」區塊').toBeTruthy();
+    expect(within(sec).getByText('還沒排的')).toBeInTheDocument();
+    noCrash();
+  });
+
+  it('20. Plans 與 Plan Detail 都不再使用舊的 .btn / .chip 堆疊', async () => {
+    await mountShell();
+    await goPlans();
+    const main = document.querySelector('.main');
+    expect(main.querySelectorAll('.btn').length, 'Plans 應已完成 primitives 遷移').toBe(0);
+    await click(cardByName('第二次段考'));
+    expect(document.querySelector('.main').querySelectorAll('.btn').length,
+      'Plan Detail 應已完成 primitives 遷移').toBe(0);
+    noCrash();
+  });
+});
