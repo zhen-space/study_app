@@ -96,6 +96,16 @@ router.post('/preview', async (req, res) => {
   }
   for (const d of confirmedConstraints.exclude_dates || []) if (!excludeDates.includes(d)) excludeDates.push(d);
   for (const d of confirmedConstraints.exclude_weekdays || []) if (!excludeWeekdays.includes(d)) excludeWeekdays.push(d);
+  // date_window 是 Plan-level hard window，不覆寫 task 自己更窄的 deadline。
+  // 兩者取交集；無交集時保留不合法範圍，讓後續明確回報沒有可排日期，不能
+  // 為了「排得出來」偷偷放寬使用者確認過的限制。
+  const dateWindow = confirmedConstraints.date_window;
+  if (dateWindow?.start_date && dateWindow?.end_date) {
+    for (const item of items) {
+      item.start = item.start > dateWindow.start_date ? item.start : dateWindow.start_date;
+      item.end = item.end < dateWindow.end_date ? item.end : dateWindow.end_date;
+    }
+  }
 
   // 科目先後順序（2C-P6-B）。結構化欄位，不是自然語言——之後 AI 也是映射成
   // 這個形狀送進來，不會再長出第二套語意。

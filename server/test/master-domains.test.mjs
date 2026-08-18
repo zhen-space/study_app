@@ -53,6 +53,19 @@ test('Master C：只有確認後的 supported constraint 會保存，unsupported
   assert.equal(saved.body.unsupported[0].key, 'strict_dependency');
 });
 
+test('Master C：確認過的 date_window 是 scheduler 的 hard window，不會覆寫 task deadline', async () => {
+  const plan = await api('/plans', { method: 'POST', body: { name: '日期窗計畫' } });
+  const saved = await api(`/plans/${plan.body.id}/constraints`, { method: 'PUT', body: { intent: { date_window: { start_date: '2099-01-12', end_date: '2099-01-14' } } } });
+  assert.deepEqual(saved.body.supported.date_window, { start_date: '2099-01-12', end_date: '2099-01-14' });
+  const preview = await api('/schedule/preview', { method: 'POST', body: {
+    plan_id: plan.body.id, timed: false, perDay: 3, startDate: '2099-01-01', endDate: '2099-01-20',
+    items: [{ subject_id: 1, title: '日期窗任務', spread: false, start: '2099-01-01', end: '2099-01-13' }],
+  } });
+  assert.equal(preview.status, 200);
+  assert.ok(preview.body.blocks.length, JSON.stringify(preview.body));
+  assert.equal(preview.body.blocks[0].date >= '2099-01-12' && preview.body.blocks[0].date <= '2099-01-13', true);
+});
+
 test('Master A：Plan Task 的明確工作量會進入正式 health gap，舊資料不猜分鐘', async () => {
   const plan = await api('/plans', { method: 'POST', body: { name: '工作量計畫' } });
   const task = await api('/tasks', { method: 'POST', body: { title: '需要兩小時', plan_id: plan.body.id, estimated_minutes: 120 } });
