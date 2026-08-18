@@ -2,6 +2,7 @@ import { Router } from 'express';
 import { q } from '../db/init.js';
 import { requireAuth } from '../middleware/auth.js';
 import { addDays, dayOfWeek, todayTW } from '../util/date.js';
+import * as sched from '../schedule/persistence.js';
 
 const router = Router();
 router.use(requireAuth);
@@ -862,6 +863,42 @@ router.post('/preview', async (req, res) => {
     blocks, check, unplaced: failed.length > 0,
     message: failed.length ? `空檔不足，排不進去：${[...new Set(failed)].slice(0, 5).join('、')}${failed.length > 5 ? '…' : ''}（請延長日期或減少內容）` : undefined,
   });
+});
+
+/* ============================================================
+   Phase 2C-P1：排程持久化的讀取端
+   ------------------------------------------------------------
+   全部 user scoped。別人的 version 一律 404——不是 403，
+   403 等於承認「這個 id 存在」。
+   寫入一律經過 schedule/persistence.js，routes 不自己拼 SQL。
+   ============================================================ */
+
+// 目前生效的排程。active_version_id 為 NULL 時回 active:false，
+// 呼叫端據此走 legacy（due_date）路徑——這是過渡期的正式判斷依據。
+router.get('/active', async (req, res) => {
+  res.json(await sched.getActiveSchedule(req.userId));
+});
+
+// 版本列表（只有 metadata，不含 blocks）
+router.get('/versions', async (req, res) => {
+  res.json(await sched.listVersions(req.userId));
+});
+
+// 單一版本 ＋ 它的 blocks
+router.get('/versions/:id', async (req, res) => {
+  const r = await sched.getVersionWithBlocks(req.userId, Number(req.params.id));
+  if (!r) return res.status(404).json({ error: '找不到這個版本' });
+  res.json(r);
+});
+
+// 第一次進入 2C persistence：把既有排定日期收成 V1。
+// 已經有 active version 就直接回傳，不會重複建立。
+router.post('/bootstrap', async (req, res) => {
+  try {
+    res.json(await sched.bootstrapScheduleIfNeeded(req.userId, todayTW()));
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
 });
 
 export default router;

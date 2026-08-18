@@ -239,13 +239,23 @@ describe('Plan-scoped 刪除（跨 Plan 防誤刪）', () => {
     const del = await api(`/plans/${A.id}/tasks?incomplete=1`, { method: 'DELETE' });
     assert.equal(del.body.removed, 1);
 
+    // 2C 前置條件：改成軟刪除。任務仍在資料庫（進垃圾桶、救得回來），
+    // 歷史 ScheduleVersion 的 block 也不會因此變成 orphan。
     const all = (await api('/tasks')).body;
-    const ids = new Set(all.map(t => t.id));
-    assert.equal(ids.has(a1.body.id), false, 'A 的未完成任務應該被刪掉');
-    assert.equal(ids.has(a2.body.id), true, 'A 的已完成任務要保留當紀錄');
-    assert.equal(ids.has(b1.body.id), true, '★ 計畫B 的任務不得被誤刪');
-    assert.equal(ids.has(b2.body.id), true, '★ 計畫B 的任務不得被誤刪');
-    assert.equal(ids.has(loose.body.id), true, '★ 沒有 Plan 的一般任務不得被誤刪');
+    const byId = new Map(all.map(t => [t.id, t]));
+    const live = id => byId.has(id) && !byId.get(id).deleted;
+
+    assert.equal(!!byId.get(a1.body.id)?.deleted, true, 'A 的未完成任務應該被軟刪除');
+    assert.equal(byId.has(a1.body.id), true, '★ 必須是軟刪除，資料不得真的消失');
+    assert.equal(live(a2.body.id), true, 'A 的已完成任務要保留當紀錄');
+    assert.equal(live(b1.body.id), true, '★ 計畫B 的任務不得被誤刪');
+    assert.equal(live(b2.body.id), true, '★ 計畫B 的任務不得被誤刪');
+    assert.equal(live(loose.body.id), true, '★ 沒有 Plan 的一般任務不得被誤刪');
+
+    // 軟刪除的意義就是救得回來
+    await api(`/tasks/${a1.body.id}`, { method: 'PATCH', body: { deleted: false } });
+    const after = (await api('/tasks')).body.find(t => t.id === a1.body.id);
+    assert.equal(!!after && !after.deleted, true, '軟刪除的任務必須救得回來');
   });
 
   test('沒帶 incomplete=1 要拒絕，不做任何事', async () => {

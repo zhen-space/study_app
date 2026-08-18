@@ -177,8 +177,13 @@ router.delete('/plans/:id/tasks', async (req, res) => {
   if (!req.query.incomplete) {
     return res.status(400).json({ error: '目前只支援 ?incomplete=1（只刪未完成的）' });
   }
+  // 2C 前置條件（契約 §5.2／§5.3）：一律軟刪除，不得 hard delete。
+  //
+  // 硬刪除會讓歷史 ScheduleVersion 裡的 block 指向一個不存在的 task，
+  // 變成 orphan——而 ScheduledBlock 是 immutable snapshot，事後補不回來。
+  // 軟刪除同時保住「垃圾桶救得回來」與「歷史版本仍看得懂」兩件事。
   const r = await q.run(
-    'DELETE FROM tasks WHERE user_id=? AND plan_id=? AND completed=0',
+    'UPDATE tasks SET deleted=1 WHERE user_id=? AND plan_id=? AND completed=0 AND COALESCE(deleted,0)=0',
     [req.userId, plan.id]);
   res.json({ removed: r.changes ?? 0 });
 });

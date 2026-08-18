@@ -7,14 +7,15 @@ on:
 jobs:
   server:
     # 排程演算法的 26 項回歸測試。
-    # 跑兩種時區：Render 上是 UTC，開發機（和 Codex）多半是 Asia/Taipei。
+    # 跑三種時區：Render 上是 UTC，開發機多半是 Asia/Taipei，
+    # America/New_York 可抓出另一側 UTC offset 的日期邊界問題。
     # 以前踩過「本機時區解析 + UTC 輸出差一天」的坑，這裡就是在守這件事。
     name: 後端測試（TZ=${{ matrix.tz }}）
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false          # 一個時區壞掉，另一個也要跑完才知道是不是時區問題
       matrix:
-        tz: [UTC, Asia/Taipei]
+        tz: [UTC, Asia/Taipei, America/New_York]
     env:
       TZ: ${{ matrix.tz }}
     steps:

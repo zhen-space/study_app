@@ -29,6 +29,37 @@ export const q = {
   async batch(stmts) {
     if (stmts.length) await client.batch(stmts.map(s => ({ sql: s[0], args: s[1] || [] })), 'write');
   },
+  // 真正的互動式交易：中途讀得到上一句的結果（lastInsertRowid、rowsAffected）。
+  //
+  // batch() 雖然也是單一交易，但它把整批語句一次送出，拿不到中間結果——
+  // 「先寫 version、再用它的 id 寫一堆 block」這種相依寫入用 batch 做不到。
+  // 2C 的 ScheduleVersion 建立就是這種情況，所以需要這一支。
+  //
+  // fn 丟出任何例外都會 rollback，呼叫端拿到原本的例外。
+  async tx(fn) {
+    const t = await client.transaction('write');
+    try {
+      const out = await fn({
+        async all(sql, args = []) {
+          const r = await t.execute({ sql, args });
+          return r.rows.map(row => toObj(row, r.columns));
+        },
+        async get(sql, args = []) {
+          const r = await t.execute({ sql, args });
+          return r.rows[0] ? toObj(r.rows[0], r.columns) : undefined;
+        },
+        async run(sql, args = []) {
+          const r = await t.execute({ sql, args });
+          return { changes: r.rowsAffected, lastInsertRowid: Number(r.lastInsertRowid ?? 0) };
+        },
+      });
+      await t.commit();
+      return out;
+    } catch (e) {
+      try { await t.rollback(); } catch {}
+      throw e;
+    }
+  },
 };
 
 const SCHEMA = `
@@ -205,6 +236,15 @@ CREATE TABLE IF NOT EXISTS scheduled_blocks (
   end_time TEXT,
   planned_minutes INTEGER
 );
+-- active version 的唯一來源。不做 MAX(version_no) 之類的 fallback 推導——
+-- restore 之後最大號不等於現在生效的那一版，推導會直接錯。
+-- active_version_id 為 NULL ＝ 這個使用者還沒進入 2C persistence，讀取端走 legacy。
+CREATE TABLE IF NOT EXISTS user_schedule_state (
+  user_id INTEGER PRIMARY KEY,
+  active_version_id INTEGER,
+  last_replan_at TEXT,
+  updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+);
 -- 鎖是硬約束：排程引擎與 AI 永遠不得自動刪除或繞過。
 -- time/day 鎖限制的是整體排程，不屬於任何 Plan。
 CREATE TABLE IF NOT EXISTS schedule_locks (
@@ -244,6 +284,24 @@ export async function initSchema() {
   try { await client.execute("ALTER TABLE tasks ADD COLUMN plan_id INTEGER"); } catch {}
   // Phase 2A：正式截止日。跟 due_date（排定日期）分開，NULL＝沒有硬性截止
   try { await client.execute("ALTER TABLE tasks ADD COLUMN deadline_date TEXT"); } catch {}
+  // Phase 2C-P1：排程持久化。契約見 docs/phase2c-schedule-persistence.md §2
+  // effective_from：這一版涵蓋哪一天起（過去不進 snapshot）
+  try { await client.execute("ALTER TABLE schedule_versions ADD COLUMN effective_from TEXT"); } catch {}
+  // block_count：刻意的冗餘。版本列表要顯示「這一版有幾項」，不該為此逐版 count。
+  // 它是 immutable snapshot 的屬性，寫入後永不改變，所以不會不同步（§2.1）
+  try { await client.execute("ALTER TABLE schedule_versions ADD COLUMN block_count INTEGER DEFAULT 0"); } catch {}
+  // restored_from_version_id：模板來源，跟 parent_version_id（血緣）是兩件事（§12.1）
+  try { await client.execute("ALTER TABLE schedule_versions ADD COLUMN restored_from_version_id INTEGER"); } catch {}
+  // 顯示留影：任務被刪掉之後歷史版本仍看得懂。只作顯示，不是 identity（§2.2）
+  try { await client.execute("ALTER TABLE scheduled_blocks ADD COLUMN task_title_snapshot TEXT"); } catch {}
+  try { await client.execute("ALTER TABLE scheduled_blocks ADD COLUMN subject_name_snapshot TEXT"); } catch {}
+  // 版本號在同一個使用者底下唯一；併發時靠這個唯一鍵擋，再 bounded retry（§7.2）
+  try { await client.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_sv_user_no ON schedule_versions(user_id, version_no)"); } catch {}
+  try { await client.execute("CREATE INDEX IF NOT EXISTS idx_sb_version_date ON scheduled_blocks(schedule_version_id, date)"); } catch {}
+  try { await client.execute("CREATE INDEX IF NOT EXISTS idx_sb_task ON scheduled_blocks(task_id)"); } catch {}
+  // 刻意不加 UNIQUE(schedule_version_id, task_id)：目前生成器保證一個任務一版一個
+  // block，但那是生成器的不變式、不是 schema 的。未來要支援「一個任務拆兩段」時
+  // schema 不該擋路（§2.2）。這條由測試守。
   try { await client.execute("CREATE INDEX IF NOT EXISTS idx_tasks_plan ON tasks(plan_id)"); } catch {}
   try { await client.execute("CREATE INDEX IF NOT EXISTS idx_plans_user ON plans(user_id, status)"); } catch {}
   // 舊資料的分類補進「記住的分類」清單，之後直接用選的
