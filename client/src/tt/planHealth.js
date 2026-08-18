@@ -43,13 +43,17 @@ export function planHealth(plan, raw) {
     if (late.length) reasons.push({ type: 'past_target', count: late.length, message: REASON_TEXT.past_target(late.length) });
   }
 
+  const needsAdjustment = reasons.length > 0 && pending.length > 0;
   return {
     planId: plan.planId,
     planKey: plan.key,
     name: plan.name,
     pending: pending.length,
     // 沒有剩下的未完成項目就沒有東西可以重排
-    needsAdjustment: reasons.length > 0 && pending.length > 0,
+    // 只在 health endpoint 尚未可用時使用；形狀仍對齊正式 normalized model，
+    // 讓 Today 不會因離線 fallback 而走到另一套判斷分支。
+    status: needsAdjustment ? 'needs_replan' : 'healthy',
+    needsAdjustment,
     reasons,
   };
 }
