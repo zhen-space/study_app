@@ -7,6 +7,7 @@ import { usePlanScheduleHealth } from './planHealth';
 import { useActiveSchedule, blocksForTask } from './scheduleAdjust';
 import AdjustBlockSheet from './AdjustBlockSheet';
 import ReplanSheet from './ReplanSheet';
+import ConstraintSheet from './ConstraintSheet';
 import { Button, IconButton, PageHeader, SurfaceCard, ProgressBar, ListRow, BottomSheet, EmptyState } from './ui';
 
 // 單一計畫的內容。
@@ -301,6 +302,8 @@ export default function PlanDetailView({ planKey, tasks, lists, apiPlans = [], r
             <ListRow title="編輯計畫資訊" subtitle="名稱、說明、開始日、目標日"
               trailing={<Icon name="chevron" size={16} />} role="button" tabIndex={0} style={{ cursor: 'pointer' }}
               onClick={() => { setEdit({ name: plan.name, description: raw?.description || '', start_date: raw?.start_date || '', target_date: raw?.target_date || '' }); setSheet('edit'); }} />
+            <ListRow title="AI 排程條件" subtitle="先確認 AI 解讀，再交給排程器"
+              role="button" tabIndex={0} style={{ cursor: 'pointer' }} onClick={() => setSheet('constraints')} />
             {plan.status === 'completed' && <ListRow title="重新開始" subtitle="回到進行中，保留全部任務"
               role="button" tabIndex={0} style={{ cursor: 'pointer' }} onClick={restart} />}
             {plan.status !== 'completed' && plan.status !== 'archived' && (
@@ -350,6 +353,7 @@ export default function PlanDetailView({ planKey, tasks, lists, apiPlans = [], r
           </div>
         </BottomSheet>
       )}
+      {sheet === 'constraints' && <ConstraintSheet planId={plan.planId} onClose={close} />}
 
       {/* ---------- 完成確認：後端 needs_confirm 語意完全不變 ---------- */}
       {sheet === 'confirmComplete' && (
