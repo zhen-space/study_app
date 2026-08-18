@@ -38,6 +38,26 @@ export class ScheduleInputError extends Error {
   }
 }
 
+// 資料完整性最後一道防線：preview 是 UX 層，不能假設所有 caller 都經過它。
+// 只有同日、同時帶 start/end 的 block 才佔用實際時段；待辦模式的 date-only
+// block 可以同日並存，絕不能被這裡誤判為碰撞。
+export function validateTimedBlockOverlaps(blocks) {
+  const timed = blocks
+    .filter(b => b.date && b.start_time && b.end_time)
+    .slice()
+    .sort((a, b) => a.date.localeCompare(b.date)
+      || a.start_time.localeCompare(b.start_time)
+      || a.end_time.localeCompare(b.end_time));
+  let previous = null;
+  for (const block of timed) {
+    if (previous && previous.date === block.date && block.start_time < previous.end_time) {
+      throw new ScheduleInputError(`排程時段重疊：${block.date} ${block.start_time}–${block.end_time}`);
+    }
+    // 按 start_time 排序後，只需保留結束最晚的區塊，才能抓到巢狀 overlap。
+    if (!previous || previous.date !== block.date || block.end_time > previous.end_time) previous = block;
+  }
+}
+
 // 版本號競爭最多重試幾次（§7.2）
 const VERSION_NO_RETRIES = 3;
 
@@ -133,7 +153,22 @@ export async function createScheduleVersion(userId, {
   blocks = [], setActive = true, onlyIfNoActive = false,
 }) {
   const effFrom = effectiveFrom || todayTW();
-  return serializeWrite(() => withVersionNoRetry(() => q.tx(async tx => {
+  return serializeWrite(() => withVersionNoRetry(() => q.tx(tx =>
+    createScheduleVersionInTx(tx, userId, {
+      source, reason, effectiveFrom: effFrom, parentVersionId, restoredFromVersionId,
+      blocks, setActive, onlyIfNoActive,
+    })
+  )));
+}
+
+// 給 P2 的「任務身分異動＋新版排程」共用。呼叫端已經握有同一筆 transaction
+// 時，不能再開巢狀交易；版本本體仍然只由這個檔案寫入。
+async function createScheduleVersionInTx(tx, userId, {
+  source, reason = '', effectiveFrom = null,
+  parentVersionId = null, restoredFromVersionId = null,
+  blocks = [], setActive = true, onlyIfNoActive = false,
+}) {
+    const effFrom = effectiveFrom || todayTW();
     // bootstrap 的正確性不能依賴 transaction 外的預讀或同程序 writeQueue。
     // 多個 instance 同時進來時，只有看見 active_version_id 仍為 NULL 的那一筆
     // transaction 可以建立 V1；其他 caller 必須拿同一個既有 active version 回去。
@@ -193,6 +228,99 @@ export async function createScheduleVersion(userId, {
     }
 
     return { version_id: versionId, version_no: versionNo, block_count: blocks.length };
+}
+
+// Wizard 初次建立與 AI Replan 的正式套用入口。任務的身分／內容變動與
+// ScheduleVersion、active pointer、due mirror 必須同生共死；尤其不能先把
+// Task 改到新日期、卻在建立版本失敗時留下半套資料。
+//
+// task_creates 的 client_key 只在本次 request 內用來把 preview block 對到新任務，
+// 不落庫。既有任務一律以 task_id 指向，所有操作都強制限在同一 plan_id。
+export async function applySchedule(userId, {
+  planId, source, reason = '', effectiveFrom = null,
+  taskUpdates = [], taskCreates = [], taskDeleteIds = [], blocks = [],
+}) {
+  if (!Number.isInteger(Number(planId))) throw new ScheduleInputError('缺少有效的計畫 id');
+  if (![SOURCE.INITIAL, SOURCE.AI_REPLAN, SOURCE.MANUAL].includes(source)) {
+    throw new ScheduleInputError('排程來源不正確');
+  }
+  return serializeWrite(() => withVersionNoRetry(() => q.tx(async tx => {
+    const plan = await tx.get('SELECT id FROM plans WHERE id=? AND user_id=?', [planId, userId]);
+    if (!plan) throw new ScheduleInputError('找不到這個計畫');
+
+    const assertLivePlanTask = async taskId => {
+      const task = await tx.get(
+        `SELECT id, plan_id, deleted, completed FROM tasks WHERE id=? AND user_id=?`,
+        [taskId, userId]);
+      if (!task || Number(task.plan_id) !== Number(planId) || task.deleted || task.completed) {
+        throw new ScheduleInputError(`任務不屬於這個可排程的計畫：${taskId}`);
+      }
+      return task;
+    };
+
+    for (const u of taskUpdates) {
+      await assertLivePlanTask(u.task_id);
+      const fields = [];
+      const args = [];
+      for (const key of ['notes', 'deadline_date']) {
+        if (key in u) { fields.push(`${key}=?`); args.push(u[key] || null); }
+      }
+      if (fields.length) {
+        args.push(u.task_id, userId);
+        await tx.run(`UPDATE tasks SET ${fields.join(',')} WHERE id=? AND user_id=?`, args);
+      }
+    }
+
+    const created = new Map();
+    for (const c of taskCreates) {
+      if (!c.client_key || created.has(c.client_key) || !String(c.title || '').trim()) {
+        throw new ScheduleInputError('新任務資料不正確');
+      }
+      const r = await tx.run(
+        `INSERT INTO tasks (user_id,list_id,title,notes,priority,tags,subtasks,recurring,miss_policy,plan_id,deadline_date)
+         VALUES (?,?,?,?,?,?,?,?,?,?,?)`,
+        [userId, c.list_id || null, String(c.title).trim(), c.notes || '', c.priority || 0,
+          JSON.stringify(c.tags || []), JSON.stringify(c.subtasks || []), c.recurring || null,
+          c.miss_policy || 'keep', planId, c.deadline_date || null]);
+      created.set(c.client_key, r.lastInsertRowid);
+    }
+
+    for (const taskId of taskDeleteIds) {
+      await assertLivePlanTask(taskId);
+      await tx.run('UPDATE tasks SET deleted=1 WHERE id=? AND user_id=?', [taskId, userId]);
+    }
+
+    const resolvedBlocks = blocks.map(b => {
+      const taskId = b.task_id ?? created.get(b.client_key);
+      if (taskId == null) throw new ScheduleInputError('排程區塊找不到對應任務');
+      return { ...b, task_id: taskId };
+    });
+    const active = await tx.get('SELECT active_version_id FROM user_schedule_state WHERE user_id=?', [userId]);
+    const effFrom = effectiveFrom || todayTW();
+    // ScheduleVersion 是 user-level 全域 snapshot，不是單一 Plan 的 snapshot。
+    // 本次只替 current Plan 換 block；其他 Plan 仍有效的 future placement 必須從
+    // active version 原封不動帶進 candidate，不然 mirror 會把它們誤判成 unplaced。
+    const carryForwardBlocks = active?.active_version_id == null
+      ? []
+      : await tx.all(
+        `SELECT b.task_id, b.date, b.start_time, b.end_time, b.planned_minutes
+           FROM scheduled_blocks b
+           JOIN tasks t ON t.id=b.task_id AND t.user_id=b.user_id
+          WHERE b.schedule_version_id=? AND b.user_id=?
+            AND t.plan_id IS NOT NULL AND t.plan_id<>?
+            AND COALESCE(t.deleted,0)=0 AND t.completed=0
+            AND b.date>=?
+          ORDER BY b.date, COALESCE(b.start_time,''), b.id`,
+        [active.active_version_id, userId, planId, effFrom]);
+    const candidateBlocks = [...carryForwardBlocks, ...resolvedBlocks];
+    // 即使 caller 繞過 preview，也不得把有重疊的全域 snapshot 寫進資料庫。
+    // 這一步仍在 transaction 內，失敗時前面的 Task 異動會一併 rollback。
+    validateTimedBlockOverlaps(candidateBlocks);
+    const version = await createScheduleVersionInTx(tx, userId, {
+      source, reason, effectiveFrom: effFrom, parentVersionId: active?.active_version_id ?? null,
+      blocks: candidateBlocks,
+    });
+    return { ...version, created: [...created.entries()].map(([client_key, id]) => ({ client_key, id })) };
   })));
 }
 

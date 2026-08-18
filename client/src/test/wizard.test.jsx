@@ -5,7 +5,7 @@
 //   ・Edit Mode 絕對不 POST /plans（會多生一個計畫）
 //   ・Edit Mode 絕對不呼叫 legacy DELETE /plan-tasks（那支是全域的）
 //   ・Edit Mode 的預覽在按下「套用新版安排」之前不寫任何東西
-//   ・任務身分要保住：還在的 PATCH、新增的 POST、拿掉的軟刪除、完成的一律不動
+//   ・任務身分要保住：全部交給 schedule/apply 的同一筆交易，完成的一律不動
 //
 // 排程演算法本身不在這裡測（那是 server/test/schedule.test.mjs 的事），
 // 這一輪只重排前端流程，演算法沒有改。
@@ -175,10 +175,11 @@ describe('Create Mode', () => {
     await click(btn(/加入待辦/));
     await flush();
     expect(sent('/plans', 'POST').length).toBe(1);
-    const bulk = sent('/tasks/bulk', 'POST');
-    expect(bulk.length).toBe(1);
-    expect(bulk[0][1].body.tasks.length).toBe(fx.previewBlocks.length);
-    expect(bulk[0][1].body.tasks[0].plan_id).toBe(99);
+    const apply = sent('/schedule/apply', 'POST');
+    expect(apply).toHaveLength(1);
+    expect(apply[0][1].body.plan_id).toBe(99);
+    expect(apply[0][1].body.task_creates).toHaveLength(fx.previewBlocks.length);
+    expect(apply[0][1].body.blocks).toHaveLength(fx.previewBlocks.length);
     noCrash();
   });
 });
@@ -347,7 +348,7 @@ describe('Edit Mode', () => {
     noCrash();
   });
 
-  it('18. 套用時保住任務身分：既有的 PATCH、新增的 POST、拿掉的軟刪除，完成的不動', async () => {
+  it('18. 套用時保住任務身分：既有、新增、軟刪除都走同一個 schedule/apply，完成的不動', async () => {
     setApi({ '/schedule/preview': editPreview });
     await mountEdit();
     await click(btn(/產生排程/));
@@ -355,20 +356,18 @@ describe('Edit Mode', () => {
     await click(btn(/套用新版安排/));
     await flush();
 
-    // 既有的那筆沿用原本的 id，只改排定日期
-    const patches = sentPrefix('/tasks/', 'PATCH');
-    expect(patches.map(([p]) => p)).toEqual(['/tasks/21']);
-    expect(patches[0][1].body.due_date).toBe(addDays(today(), 3));
-    // 新的走 bulk，掛在同一個計畫底下
-    const bulk = sent('/tasks/bulk', 'POST');
-    expect(bulk.length).toBe(1);
-    expect(bulk[0][1].body.tasks.map(t => t.title)).toEqual(['物理｜段考範圍｜全新的一章']);
-    expect(bulk[0][1].body.tasks[0].plan_id).toBe(12);
-    // 這次沒排到的未完成任務軟刪除；已完成的（24）絕對不能被碰
-    const dels = sentPrefix('/tasks/', 'DELETE').map(([p]) => p).sort();
-    expect(dels).toEqual(['/tasks/22', '/tasks/23']);
-    expect(dels).not.toContain('/tasks/24');
-    expect(patches.map(([p]) => p)).not.toContain('/tasks/24');
+    const apply = sent('/schedule/apply', 'POST');
+    expect(apply).toHaveLength(1);
+    const body = apply[0][1].body;
+    expect(body.task_updates.map(t => t.task_id)).toEqual([21]);
+    expect(body.task_creates.map(t => t.title)).toEqual(['物理｜段考範圍｜全新的一章']);
+    expect(body.task_delete_ids).toEqual([22, 23]);
+    expect(body.blocks.map(b => b.date)).toEqual([addDays(today(), 3), addDays(today(), 4)]);
+    expect(body.blocks.some(b => b.task_id === 24)).toBe(false);
+    expect(body.blocks.some(b => 'due_date' in b || 'due_time' in b)).toBe(false);
+    expect(sentPrefix('/tasks/', 'PATCH')).toHaveLength(0);
+    expect(sent('/tasks/bulk', 'POST')).toHaveLength(0);
+    expect(sentPrefix('/tasks/', 'DELETE')).toHaveLength(0);
     noCrash();
   });
 

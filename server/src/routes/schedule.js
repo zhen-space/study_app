@@ -83,6 +83,26 @@ router.post('/preview', async (req, res) => {
   if (req.body.sleep_start) settings.sleep_start = req.body.sleep_start;
   if (req.body.sleep_end) settings.sleep_end = req.body.sleep_end;
   const events = await q.all('SELECT * FROM fixed_events WHERE user_id=?', [req.userId]);
+  // 全域排程：其他 Plan 已經生效的「有明確起迄時間」block 必須佔住時段。
+  // 本次正在重排的 Plan 可釋出自己的舊 block，讓演算法重新安插；建立新 Plan
+  // 沒有 plan_id 時則不排除任何既有 block。untimed block 不代表特定時段，不能
+  // 在這裡把整天封死。
+  if (timed) {
+    const activeVersionId = await sched.getActiveVersionId(req.userId);
+    if (activeVersionId != null) {
+      const currentPlanId = req.body.plan_id ?? null;
+      const scheduledBusy = await q.all(
+        `SELECT b.date, b.start_time, b.end_time
+           FROM scheduled_blocks b
+           JOIN tasks t ON t.id=b.task_id AND t.user_id=b.user_id
+          WHERE b.schedule_version_id=? AND b.user_id=?
+            AND t.plan_id IS NOT NULL AND COALESCE(t.deleted,0)=0 AND t.completed=0
+            AND b.date>=? AND b.start_time IS NOT NULL AND b.end_time IS NOT NULL
+            AND (? IS NULL OR t.plan_id<>?)`,
+        [activeVersionId, req.userId, today, currentPlanId, currentPlanId]);
+      events.push(...scheduledBusy.map(b => ({ ...b, recurring: null, _scheduled: true })));
+    }
+  }
 
   const days = [];
   for (let ds = minD; ds <= maxD; ds = addDays(ds, 1)) {
@@ -889,6 +909,27 @@ router.get('/versions/:id', async (req, res) => {
   const r = await sched.getVersionWithBlocks(req.userId, Number(req.params.id));
   if (!r) return res.status(404).json({ error: '找不到這個版本' });
   res.json(r);
+});
+
+// Wizard 建立與 AI 重排的正式寫入點。Task 的內容異動、軟刪除、版本、
+// active pointer 與 due mirror 都由 persistence service 包進同一筆交易；
+// route 不得直接寫 tasks.due_date / due_time。
+router.post('/apply', async (req, res) => {
+  try {
+    const b = req.body || {};
+    res.json(await sched.applySchedule(req.userId, {
+      planId: b.plan_id,
+      source: b.source,
+      reason: b.reason || '',
+      effectiveFrom: b.effective_from || null,
+      taskUpdates: b.task_updates || [],
+      taskCreates: b.task_creates || [],
+      taskDeleteIds: b.task_delete_ids || [],
+      blocks: b.blocks || [],
+    }));
+  } catch (e) {
+    res.status(e.status || 500).json({ error: e.message });
+  }
 });
 
 // 第一次進入 2C persistence：把既有排定日期收成 V1。

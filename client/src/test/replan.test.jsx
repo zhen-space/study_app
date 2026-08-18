@@ -218,9 +218,11 @@ describe('重排範圍與寫入時機', () => {
     await openPreview();
     await click(screen.getByRole('button', { name: '套用新版安排' }));
     await flush();
-    const patched = calls.filter(([p, o]) => p.startsWith('/tasks/') && o?.method === 'PATCH').map(([p]) => p);
-    expect(patched.sort()).toEqual(['/tasks/21', '/tasks/22']);
-    // 重排不建立任務，也不搬計畫
+    const apply = sent('/schedule/apply', 'POST');
+    expect(apply).toHaveLength(1);
+    expect(apply[0][1].body.plan_id).toBe(12);
+    expect(apply[0][1].body.source).toBe('ai_replan');
+    expect(apply[0][1].body.task_updates.map(t => t.task_id).sort()).toEqual([21, 22]);
     expect(sent('/tasks/bulk', 'POST').length).toBe(0);
     noCrash();
   });

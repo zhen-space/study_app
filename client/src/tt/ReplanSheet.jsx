@@ -42,7 +42,8 @@ export default function ReplanSheet({ plan, health, raw, lists = [], reload, onC
     try {
       const pv = await api('/schedule/preview', {
         method: 'POST',
-        body: buildSchedulePreviewRequest({
+        body: {
+          ...buildSchedulePreviewRequest({
           items: pending.map(t => ({
             subject_id: t.list_id,
             title: t.title,
@@ -53,7 +54,11 @@ export default function ReplanSheet({ plan, health, raw, lists = [], reload, onC
             end: t.deadline_date && t.deadline_date >= start ? t.deadline_date : end,
           })),
           startDate: start, endDate: end, conditions,
-        }),
+          }),
+          // 這次就是重排此 Plan：後端 preview 會釋出它自己的舊 block，
+          // 但仍把其他 Plan 的 active block 視為 busy interval。
+          plan_id: plan.planId,
+        },
       });
       pv.blocks = [...pv.blocks].sort((a, b) => a.date.localeCompare(b.date));
       setPreview(pv);

@@ -21,6 +21,17 @@
 - 該 task 沒有 active block 即正式 unplaced，清除 `due_date`／`due_time`。
 - completed Plan Task 不被 mirror 清除，保留歷史顯示相容資料。
 
+## 3.1 P2：Wizard／Replan 接線
+
+- `POST /api/schedule/apply` 是 Wizard 初次建立與 AI Replan 的正式套用入口。
+- 同一筆 `q.tx()` 內完成未完成 Plan Task 的建立／非時間欄位更新／軟刪除、
+  新 ScheduleVersion、ScheduledBlocks、active pointer 與 due mirror；任一 block
+  對應失敗時全部 rollback。
+- Wizard create 使用 `source=initial`；Replan 使用 `source=ai_replan`，並在交易內
+  讀取當前 active version 作為 `parent_version_id`。
+- 前端不得在這兩條新流程呼叫 `/tasks/bulk`，也不得 PATCH `due_date`／`due_time`；
+  時間只以 preview block 傳給 persistence service。
+
 ## 4. Restore preview / apply
 
 - 新增 restore preview / apply service 與 `/versions/:id/restore-preview`、`/restore`。
