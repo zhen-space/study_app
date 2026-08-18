@@ -2,6 +2,15 @@ import { q } from '../db/init.js';
 import { dayOfWeek, todayTW } from '../util/date.js';
 import { checkLocks } from './locks.js';
 import { calculateScheduleDiff } from './diff.js';
+import { classifyPlacement, findSelfCollisions, timedOverlap } from './feasibility.js';
+
+// 手動調整的說法：使用者是「現在正要放」，不是「想恢復舊安排」。
+const MANUAL_MESSAGES = {
+  task_constraint: '這個任務已不屬於任何計畫，不能安排時間',
+  past: '不能安排到已經過去的時間',
+  deadline: '這一天已經超過這個任務的截止日',
+  fixed_event: title => `這個時段與固定行程「${title}」重疊`,
+};
 
 // Phase 2C-P1：排程持久化。
 //
@@ -198,17 +207,6 @@ const twNowHM = () => new Intl.DateTimeFormat('en-GB', {
   timeZone: 'Asia/Taipei', hour: '2-digit', minute: '2-digit', hourCycle: 'h23',
 }).format(new Date());
 
-function fixedEventApplies(event, date) {
-  return event.recurring === 'weekly'
-    ? dayOfWeek(event.date) === dayOfWeek(date) && event.date <= date
-    : event.date === date;
-}
-
-function timedOverlap(a, b) {
-  return a.date === b.date && a.start_time && a.end_time && b.start_time && b.end_time
-    && a.start_time < b.end_time && b.start_time < a.end_time;
-}
-
 const lockNow = () => ({ day: todayTW(), time: twNowHM() });
 async function assertCandidateLocks(tx, userId, activeVersionId, candidate) {
   if (activeVersionId == null) return;
@@ -244,28 +242,22 @@ async function getRestorePreviewFrom(db, userId, sourceVersionId, {
   const skipped = [];
 
   for (const block of sourceBlocks) {
-    const task = tasks.get(Number(block.task_id));
-    if (!task || task.deleted) { skipped.push({ task_id: block.task_id, reason: 'deleted' }); continue; }
-    if (task.completed) { skipped.push({ task_id: block.task_id, reason: 'completed' }); continue; }
-    if (task.plan_id == null) { conflicts.push({ task_id: block.task_id, block_id: block.id, type: 'task_constraint', message: '任務已不屬於計畫，無法恢復', block }); continue; }
-    const isPast = block.date < planningDay
-      || (block.date === planningDay && block.end_time && block.end_time <= nowHM);
-    if (isPast) { conflicts.push({ task_id: block.task_id, block_id: block.id, type: 'past', message: '原安排時間已過去，無法恢復', block }); continue; }
-    if (task.deadline_date && block.date > task.deadline_date) {
-      conflicts.push({ task_id: block.task_id, block_id: block.id, type: 'deadline', message: '目前期限早於原安排日期，無法恢復', block, deadline_date: task.deadline_date });
+    // 規則本身在 schedule/feasibility.js，跟手動調整共用同一份判定。
+    const verdict = classifyPlacement(block, {
+      task: tasks.get(Number(block.task_id)), events, planningDay, nowHM, dayOfWeek,
+    });
+    if (verdict?.kind === 'skip') { skipped.push({ task_id: block.task_id, reason: verdict.type }); continue; }
+    if (verdict) {
+      const { kind, ...rest } = verdict;
+      conflicts.push({ task_id: block.task_id, block_id: block.id, ...rest, block });
       continue;
     }
-    const fixed = events.find(event => fixedEventApplies(event, block.date) && timedOverlap(block, event));
-    if (fixed) { conflicts.push({ task_id: block.task_id, block_id: block.id, type: 'fixed_event', message: `與固定行程「${fixed.title}」衝突`, block, event_title: fixed.title }); continue; }
     candidates.push({ id: block.id, task_id: block.task_id, date: block.date, start_time: block.start_time, end_time: block.end_time, planned_minutes: block.planned_minutes, task_title_snapshot: block.task_title_snapshot });
   }
 
   // 舊版若本身有 timed overlap，也不能因為它曾經存在就重新寫回 active snapshot。
   // 每一個撞到的 placement 都列出，讓 UI 明確告知無法恢復的原因。
-  const collided = new Set();
-  for (let i = 0; i < candidates.length; i++) for (let j = i + 1; j < candidates.length; j++) {
-    if (timedOverlap(candidates[i], candidates[j])) { collided.add(i); collided.add(j); }
-  }
+  const collided = findSelfCollisions(candidates);
   const restorableBlocks = candidates.filter((block, i) => {
     if (!collided.has(i)) return true;
     conflicts.push({ task_id: block.task_id, block_id: block.id, type: 'schedule_collision', message: '這個版本內有重疊時段，無法原位恢復', block });
@@ -372,6 +364,156 @@ export async function applyRestore(userId, sourceVersionId, { baseVersionId, con
     });
     return { applied: true, version, preview };
   })));
+}
+
+/* ============================================================
+   手動調整（2C-P6-A）
+   ============================================================ */
+
+// 使用者自己把某個 block 拖到別的日期／時段。
+//
+// 語意：這**不是**在編輯現在那一版，而是以現在的 active snapshot 為底，
+// 換掉指定 block 的位置，產生一個全新的 source='manual' 版本。
+// immutable snapshot 的不變式在這裡完全不打折。
+//
+// moves 以 block_id 指定，不是 task_id：一個任務可能被切成好幾個 block
+// （timed 模式的 chunk），用 task_id 會把使用者沒碰的那幾塊一起弄掉。
+//
+// 刻意沒有 force / bypass 參數。手動調整不能繞過可行性——會撞固定行程、
+// 超過硬性截止日、撞到別的 Plan、或違反鎖定的位置，就是不能放，
+// 不是「使用者說了算」。要放得下就得先把擋路的東西改掉。
+export class ScheduleManualConflictError extends Error {
+  constructor(conflicts) {
+    super('這個時間放不下，請看衝突原因');
+    this.name = 'ScheduleManualConflictError';
+    this.status = 409;
+    this.conflicts = conflicts;
+  }
+}
+
+const HM = /^\d\d:\d\d$/;
+const YMD = /^\d{4}-\d{2}-\d{2}$/;
+
+// 單筆 move 的形狀檢查。時間要嘛兩個都給、要嘛兩個都不給（＝只排到某一天）。
+function normalizeMove(move) {
+  const blockId = Number(move?.block_id);
+  if (!Number.isInteger(blockId)) throw new ScheduleInputError('缺少要調整的排程區塊');
+  if (!YMD.test(move.date || '')) throw new ScheduleInputError('請指定有效的日期');
+  const start = move.start_time || null;
+  const end = move.end_time || null;
+  if ((start == null) !== (end == null)) throw new ScheduleInputError('請同時指定開始與結束時間');
+  if (start != null) {
+    if (!HM.test(start) || !HM.test(end)) throw new ScheduleInputError('時間格式不正確');
+    if (start >= end) throw new ScheduleInputError('結束時間必須晚於開始時間');
+  }
+  return { block_id: blockId, date: move.date, start_time: start, end_time: end };
+}
+
+async function buildManualCandidate(db, userId, activeVersionId, moves, { planningDay, nowHM }) {
+  const normalized = moves.map(normalizeMove);
+  if (!normalized.length) throw new ScheduleInputError('沒有要調整的內容');
+  const seen = new Set();
+  for (const m of normalized) {
+    if (seen.has(m.block_id)) throw new ScheduleInputError('同一個排程區塊不能重複調整');
+    seen.add(m.block_id);
+  }
+
+  const [activeBlocks, liveTasks, events] = await Promise.all([
+    db.all(`SELECT id, task_id, date, start_time, end_time, planned_minutes
+              FROM scheduled_blocks WHERE schedule_version_id=? AND user_id=?
+             ORDER BY date, COALESCE(start_time,''), id`, [activeVersionId, userId]),
+    db.all('SELECT id, title, plan_id, deadline_date, deleted, completed FROM tasks WHERE user_id=?', [userId]),
+    db.all('SELECT date,start_time,end_time,recurring,title FROM fixed_events WHERE user_id=?', [userId]),
+  ]);
+  const byId = new Map(activeBlocks.map(b => [Number(b.id), b]));
+  const tasks = new Map(liveTasks.map(t => [Number(t.id), t]));
+  for (const m of normalized) {
+    if (!byId.has(m.block_id)) throw new ScheduleInputError(`這個排程區塊不在目前生效的排程裡：${m.block_id}`);
+  }
+
+  // candidate＝整份 active snapshot，只有被調整的那幾個換位置。
+  // 其他 Plan 的 block 原封不動留在裡面，所以跨 Plan 碰撞是結構上就擋掉的，
+  // 不需要另外一條規則去記得檢查。
+  const moveById = new Map(normalized.map(m => [m.block_id, m]));
+  const candidate = activeBlocks.map(block => {
+    const m = moveById.get(Number(block.id));
+    return m
+      ? { ...block, date: m.date, start_time: m.start_time, end_time: m.end_time }
+      : block;
+  });
+
+  // 只檢查被動到的那幾個。沒被碰的 block 若本來就已經過去，那是既成事實，
+  // 不該因為使用者調了別的東西就整份排程都排不出來。
+  const conflicts = [];
+  for (const block of candidate) {
+    if (!moveById.has(Number(block.id))) continue;
+    const verdict = classifyPlacement(block, {
+      task: tasks.get(Number(block.task_id)), events, planningDay, nowHM, dayOfWeek,
+      messages: MANUAL_MESSAGES,
+    });
+    if (!verdict) continue;
+    const { kind, ...rest } = verdict;
+    // 已完成／已刪除的任務在 Restore 是「略過」，但手動調整是使用者指名要動它，
+    // 靜靜略過等於按了沒反應，所以這裡一律當成衝突回報。
+    const message = kind === 'skip'
+      ? (rest.type === 'completed' ? '這個任務已完成，不需要再安排' : '這個任務已刪除')
+      : rest.message;
+    conflicts.push({ block_id: block.id, task_id: block.task_id, ...rest, message });
+  }
+
+  // 跟排程裡任何其他 block 撞在一起（含其他 Plan、以及本次其他 move）
+  const collided = findSelfCollisions(candidate);
+  for (const index of collided) {
+    const block = candidate[index];
+    if (!moveById.has(Number(block.id))) continue;
+    const other = candidate.find((x, i) => i !== index && timedOverlap(x, block));
+    conflicts.push({
+      block_id: block.id, task_id: block.task_id, type: 'schedule_collision',
+      message: other ? `與「${tasks.get(Number(other.task_id))?.title || '另一個安排'}」時段重疊` : '時段重疊',
+    });
+  }
+  return { candidate, conflicts };
+}
+
+export async function applyManualAdjustment(userId, { baseVersionId, moves = [], dryRun = false } = {}) {
+  const planningDay = todayTW();
+  const nowHM = twNowHM();
+  const run = async db => {
+    const state = await db.get('SELECT active_version_id FROM user_schedule_state WHERE user_id=?', [userId]);
+    const activeId = state?.active_version_id ?? null;
+    // 手動調整以「使用者現在看到的那一版」為底。底變了就不能寫，
+    // 也絕對不能重試——重試等於把他沒看過的排程默默改掉。
+    if (activeId == null) throw new ScheduleInputError('目前沒有生效的排程，無法手動調整');
+    if (Number(baseVersionId ?? -1) !== Number(activeId)) throw new ScheduleRestoreStaleError();
+
+    const { candidate, conflicts } = await buildManualCandidate(
+      db, userId, activeId, moves, { planningDay, nowHM });
+    // Lock 的檢查對象是整份 candidate，不是單一 block（鎖住的那一天不能有任何
+    // 變動，即使變動的是別人的 block）。
+    const lockConflicts = activeId == null ? [] : checkLocks(
+      candidate,
+      await db.all('SELECT task_id,date,start_time,end_time,planned_minutes FROM scheduled_blocks WHERE user_id=? AND schedule_version_id=?', [userId, activeId]),
+      await db.all('SELECT * FROM schedule_locks WHERE user_id=? AND released_at IS NULL', [userId]),
+      await db.all('SELECT id,deleted,completed FROM tasks WHERE user_id=?', [userId]),
+      { day: planningDay, time: nowHM });
+    const all = [...conflicts, ...lockConflicts.map(c => ({ ...c, message: '這個位置已鎖定，請先解除鎖定' }))];
+    if (dryRun) return { ok: all.length === 0, conflicts: all, base_version_id: activeId, blocks: candidate };
+    if (all.length) throw new ScheduleManualConflictError(all);
+
+    validateTimedBlockOverlaps(candidate);
+    const version = await createScheduleVersionInTx(db, userId, {
+      source: SOURCE.MANUAL,
+      reason: `手動調整 ${moves.length} 項`,
+      effectiveFrom: planningDay,
+      parentVersionId: activeId,
+      blocks: candidate,
+      expectedActiveVersionId: activeId,
+    });
+    return { ok: true, conflicts: [], ...version };
+  };
+  // dry run 不寫任何東西，就不必佔用寫入佇列，也不需要 version_no 重試。
+  if (dryRun) return run(q);
+  return serializeWrite(() => withVersionNoRetry(() => q.tx(run)));
 }
 
 /* ============================================================
