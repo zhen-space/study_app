@@ -1728,3 +1728,173 @@ Diff preview 本身**不改任何資料**。
 
 2C-4 排最後，因為它依賴前三者的資料結構全部就位；但它的**契約**必須在
 2C-1 開工前就定案——`effective_from` 的裁切規則會影響 schema 的使用方式。
+
+---
+
+# Part 5：2C-P6-A — 手動調整 AI 排程
+
+## 50. 為什麼手動調整必須是一個新版本
+
+「AI 排完可以自己改」在資料上不是編輯，是**再排一次**，只是這次的決策者
+是使用者而不是演算法。
+
+ScheduleVersion 是 immutable snapshot（§7.1）。如果手動調整就地改 active 那一版：
+
+- 版本歷史會出現一段沒人負責的變化（V5 現在的內容不是當初存進去的 V5）
+- §41 的歷史 diff 會失真：child ↔ parent 比出來的東西不再對應任何一次決策
+- Restore 會恢復到一個「曾經存在但沒被記錄過」的狀態
+
+所以手動調整一律建立 `source='manual'` 的新版本，parent 指向調整前的 active。
+使用者在版本紀錄上看得到「這一版是我自己改的」，也隨時可以恢復回去。
+
+## 51. 以 block 為單位，不是以 task 為單位
+
+`moves` 用 `block_id` 指定要調整的對象。
+
+timed 模式下一個任務可能被切成好幾個 chunk block。如果用 `task_id` 當單位，
+「把星期三那 40 分鐘挪到星期五」就會連帶把使用者沒碰到的其他 chunk 一起重置。
+block_id 是使用者在畫面上真正點到的那一格。
+
+## 52. candidate 是整份 snapshot
+
+手動調整的 candidate ＝ 目前 active version 的**全部** block，其中被指定的那幾個
+換上新位置。其餘 block（含其他 Plan 的）原封不動。
+
+這個形狀讓幾件事變成結構上的必然，而不是要靠記得寫檢查：
+
+- **跨 Plan 碰撞**：其他 Plan 的 block 就在 candidate 裡，撞到就是撞到
+- **其他 Plan 不會變 unplaced**：§4.3 的鏡射是照整份 active 算的，
+  candidate 少帶誰，誰的 due_date 就會被清成 NULL
+- **Lock**：`checkLocks` 比對的是整份 candidate 對整份 active，
+  它本來就需要看到全貌
+
+## 52.1 🔴 candidate 是「完整的未來」，不是 active 的影本
+
+ScheduleVersion 是 **future**-schedule snapshot。active version 會隨時間老化：
+三天前建立的 V10 裡有已經過去的 block。
+
+```
+V10（三天前建立）        今天是 8/18
+├─ 8/15 數學  ← 已經過去
+├─ 8/18 英文
+└─ 8/20 化學
+```
+
+如果手動調整把整份 active 原封不動抄進新版本，只換掉化學的位置：
+
+- 8/15 的 block 會被**重新宣告成未來的安排**，違反 §7.1
+- §4.3 的 `mirrorDueDates` 取該 Task 最早的 block，那個數學任務若還沒完成，
+  它的 `due_date` 會被鏡射回 **8/15**——一個已經過去的日期
+
+所以 carry-forward 只帶 `date >= planningDay` 的 block，與 `applySchedule`
+replan 的 carry-forward（`b.date >= effective_from`）是**同一條不變式**。
+不能因為「manual 的 candidate 是整份 snapshot」就自己放寬。
+
+**邊界是 `>=` 不是 `>`**：今天的安排屬於未來。用 `>` 會把使用者今天稍晚
+要做的事整批洗掉，而他只是想動別的東西。
+
+### 指名要動一個已經過去的 block
+
+明確拒絕（400，訊息說「時間已經過去」），**不可以**因為 filtering 而退化成
+「找不到這個 block」。歷史 placement 不能透過手動編輯復活，而且兩種情況
+要講清楚——否則使用者只會看到一句莫名其妙的「找不到」。
+
+### Lock 基準維持不變
+
+Lock 比對仍以**完整的 active** 為基準，與 `assertCandidateLocks` 一致，
+不因為 manual 就換一套語意。
+
+副作用要講清楚：一個只剩過去 placement 的 Task Lock，會讓所有新版本都判成
+`LOCKED_TASK_UNPLACED`，必須先解鎖。這是 §39 既有的 standing-requirement
+語意（replan 對其他 Plan 的過期鎖定任務也是同樣結果），不是手動調整新增的。
+
+## 53. 沒有 force：手動不代表可以違法
+
+手動調整**沒有** `force` / `bypass` 參數。以下一律擋下（409），不提供
+「我知道，還是要放」的出口：
+
+| 情況 | type | 理由 |
+|---|---|---|
+| 搬到已經過去的時間 | `past` | 未來排程不能包含過去 |
+| 超過任務的 `deadline_date` | `deadline` | 硬性截止日不是排程可以覆寫的東西（§2） |
+| 撞到固定行程 | `fixed_event` | 那個時段學生本來就不在 |
+| 撞到任何其他安排 | `schedule_collision` | 含其他 Plan、含本次其他 move |
+| 違反 Lock | `LOCKED_*` | §39：Lock 是 hard constraint，對所有寫入路徑一致 |
+| 任務已完成／已刪除 | `completed` / `deleted` | 已經退出未來排程 |
+
+要放得下，就得先把擋路的東西改掉（改期限、刪固定行程、解鎖）。
+讓使用者繞過去，等於讓 App 產生一份它自己知道做不到的計畫。
+
+**Restore 與手動調整共用同一份規則**（`schedule/feasibility.js`）。
+兩邊各寫一份遲早會分岔，變成「恢復擋得住、手動繞得過」。
+判定共用，但**文案不共用**：Restore 說「無法恢復」，手動說「不能放在這裡」。
+
+## 54. Stale：`base_version_id` 對不上一律 409
+
+跟 §38 完全相同的規則，理由也相同：使用者是對著他當下看到的那一版做調整。
+底變了就表示他沒看過現在的排程，此時寫下去等於把別的變更靜默蓋掉。
+
+**這不是可重試的衝突**，不得進入 `withVersionNoRetry` 的 retry 分支。
+
+## 55. `dry_run`
+
+`POST /api/schedule/manual` 帶 `dry_run: true` 時只回 `{ ok, conflicts, blocks }`，
+不寫任何東西、不佔用寫入佇列、不建立版本。
+
+用途是讓 UI 在使用者按下確定之前就說得出「這裡放不下，因為…」。
+
+**preview 是 UX，不是防線。** 正式套用時後端會在 transaction 內用同一份規則
+重算一次，`dry_run` 通過不代表套用一定會成功（中間可能有別的變更）。
+
+## 56. 契約測試矩陣（2C-P6-A）
+
+| # | 測項 | 守什麼 |
+|---|---|---|
+| 1 | 調整產生新的 `manual` 版本，parent 指向原 active | §50 |
+| 2 | 舊版本內容不變 | immutable snapshot |
+| 3 | 未被碰到的 block（含其他 Plan）原封不動帶過去 | §52 |
+| 4 | `due_date` / `due_time` 鏡射到新位置 | §4.3 |
+| 5 | 只調日期不給時間也可以 | 純待辦模式 |
+| 6 | 過去 / deadline / 固定行程 / 跨 Plan 碰撞 / 本次內部碰撞 → 409 | §53 |
+| 7 | Task Lock、Day Lock 都擋得住手動調整 | §39 |
+| 8 | `base_version_id` 對不上 → 409，且不留下新版本 | §54 |
+| 9 | 別人的 block_id、格式錯誤、重複 block → 400 | 輸入驗證 |
+| 10 | `dry_run` 不建立版本，判定與正式套用一致 | §55 |
+| 11 | diff 認得出手動搬動是 `moved` | §36 |
+| 12 | 昨天的 block 不得被複製進新版本；明天的照舊 | §52.1 |
+| 13 | 昨天那個未完成任務變 unplaced，`due_date` 不得再鏡射成昨天 | §52.1 |
+| 14 | 今天的 block 屬於未來，不可以被一起丟掉（`>=` 邊界） | §52.1 |
+| 15 | 其他計畫的未來 block 仍然完整保留 | §52 |
+| 16 | 指名調整已過去的 block → 400，且訊息不是「找不到」 | §52.1 |
+| 17 | 只剩過去 placement 的鎖定任務會擋住調整，解鎖後才做得到 | §52.1 |
+
+## 57. 已修正：`checkLocks` 的整列比對
+
+`locks.js` 的 `slice()` 原本把 DB row 整列 `JSON.stringify` 起來比較。
+呼叫端只要多帶一個欄位（例如 restorable block 帶著 `id` 與 snapshot），
+或順序不同，**沒有變動的位置也會被判成違反鎖定**。
+
+已改為先投影成 placement（date / start / end / minutes / task_id）再排序後比較。
+
+這個 bug 讓 §46 的一條 restore 測試在錯誤的理由下通過：它斷言
+「恢復當前 active 的同一份內容會違反 day lock」，但那其實不是變更，
+本來就不該衝突。該測試已改寫成真正會違反鎖定的情境，並新增一條
+反向斷言，確保「位置沒變」永遠不會被報成鎖定衝突。
+
+## 58. UI 入口（P6-A）
+
+兩個入口，共用同一個 `AdjustBlockSheet`：
+
+- **Today「接下來」** — 每一段已排定的讀書時段右側一個安靜的「調整」。
+  固定行程沒有這個入口：那不是 AI 排的，要改得去行事曆改。
+- **計畫明細** — 日期本身就是入口（虛線底線），不再多長一顆按鈕出來擠版面。
+  已完成的項目不給調整：它已經退出未來排程，那個日期是歷史紀錄。
+
+還沒有 active version（尚未進入 2C）時，兩處都不長出調整入口，畫面照常。
+
+面板行為：日期／時間一停下來就打一次 `dry_run`（debounce 400ms），
+放不下時直接說原因並停用「儲存新安排」。**沒有「還是要放」的按鈕。**
+Lock 的 `LOCKED_*` 機器碼在前端翻成人話，其餘原因一律照後端的訊息顯示，
+前端不自己重算一套可行性。
+
+`due_date` / `due_time` 由後端鏡射，前端任何路徑都不得直接寫這兩個欄位。

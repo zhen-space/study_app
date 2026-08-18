@@ -1032,6 +1032,26 @@ router.post('/apply', async (req, res) => {
   }
 });
 
+// 手動調整：使用者自己把某個 block 換到別的日期／時段。
+//
+// dry_run=true 只回衝突、不寫任何東西，讓 UI 在使用者按下確定之前就能說出
+// 「這裡放不下，因為…」。真正套用時後端會用同一份規則再算一次——preview
+// 是 UX，不是防線。
+//
+// base_version_id 必須是使用者當下看到的那一版；對不上一律 409，不重試。
+router.post('/manual', async (req, res) => {
+  try {
+    const b = req.body || {};
+    res.json(await sched.applyManualAdjustment(req.userId, {
+      baseVersionId: b.base_version_id,
+      moves: b.moves || [],
+      dryRun: b.dry_run === true,
+    }));
+  } catch (e) {
+    res.status(e.status || 500).json({ error: e.message, conflicts: e.conflicts });
+  }
+});
+
 // 第一次進入 2C persistence：把既有排定日期收成 V1。
 // 已經有 active version 就直接回傳，不會重複建立。
 router.post('/bootstrap', async (req, res) => {

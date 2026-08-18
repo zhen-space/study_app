@@ -16,9 +16,14 @@ export function blockSignature(taskId, blocks, tasks = null) {
     .sort((a,b) => JSON.stringify(a).localeCompare(JSON.stringify(b)));
 }
 const same = (a,b) => JSON.stringify(a) === JSON.stringify(b);
+// 比較的是「這段時間裡排了什麼」，不是資料列長什麼樣子。
+// 一定要先投影成 placement 再排序：呼叫端傳進來的 row 可能多帶 id 之類的欄位，
+// 順序也可能不同，直接 JSON 比整列會把「其實沒變」誤判成違反鎖定。
+const placement = b => [b.date, b.start_time || null, b.end_time || null, b.planned_minutes ?? null, Number(b.task_id)];
 const slice = (blocks, lock, tasks) => blocks.filter(b => live(b.task_id, tasks) && (lock.type === 'day'
   ? b.date === lock.date
-  : b.date === lock.date && b.start_time && b.end_time && b.start_time < lock.end_time && lock.start_time < b.end_time));
+  : b.date === lock.date && b.start_time && b.end_time && b.start_time < lock.end_time && lock.start_time < b.end_time))
+  .map(placement).sort((a,b) => JSON.stringify(a).localeCompare(JSON.stringify(b)));
 export function checkLocks(candidate, active, locks, tasks, now) {
   const out = [];
   for (const l of effectiveLocks(locks, tasks, now)) {

@@ -325,6 +325,18 @@ describe('P4 Lock integration：preview/apply/restore 共用 hard constraint', (
     await assert.rejects(()=>sched.applySchedule(userId,{planId:p.lastInsertRowid,source:sched.SOURCE.AI_REPLAN,blocks:[{task_id:taskId,date:'2099-09-01',start_time:'19:00',end_time:'20:00'}]}),e=>e.status===409);
     await assert.rejects(()=>sched.applySchedule(userId,{planId:p.lastInsertRowid,source:sched.SOURCE.AI_REPLAN,blocks:[{task_id:taskId,date:'2099-09-02'}]}),e=>e.status===409);
     assert.deepEqual(await countsFor(userId),before,'★ slice/day conflict 不得留下 version');
+    // 恢復「跟現在完全一樣的位置」不是變更，不可以報成違反鎖定。
+    // （舊實作把整列 row 拿去 JSON 比對，restorable block 多帶 id／snapshot
+    //  欄位就被判成 LOCKED_DAY_CHANGED——測試因此在錯誤的理由下通過。）
+    const noop=await sched.getRestorePreview(userId,seed.version_id);
+    assert.equal(noop.conflicts.filter(c=>String(c.type).startsWith('LOCKED_')).length,0,
+      '★ 位置沒變就不該報鎖定衝突，不能靠欄位形狀差異誤判');
+
+    // 真的違反鎖定的情境：把 A 搬到別的日子並鎖住那一天，
+    // 這時恢復舊版會把 A 從鎖定的那天搬走，必須擋下來。
+    await q.run("UPDATE schedule_locks SET released_at=CURRENT_TIMESTAMP WHERE user_id=? AND type='day' AND date='2099-09-01'",[userId]);
+    await sched.applySchedule(userId,{planId:p.lastInsertRowid,source:sched.SOURCE.AI_REPLAN,blocks:[{task_id:taskId,date:'2099-09-05',start_time:'18:00',end_time:'19:00'}]});
+    await q.run("INSERT INTO schedule_locks (user_id,type,date) VALUES (?,?,?)",[userId,'day','2099-09-05']);
     const preview=await sched.getRestorePreview(userId,seed.version_id);
     assert.ok(preview.conflicts.some(c=>String(c.type).startsWith('LOCKED_')),'restore 必須使用現在的 Lock');
   });

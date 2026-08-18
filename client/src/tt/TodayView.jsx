@@ -7,6 +7,8 @@ import { usePlans, shortTitle } from './plans';
 import { usePlansNeedingAdjustment } from './planHealth';
 import ReplanSheet from './ReplanSheet';
 import { Button, SurfaceCard, ProgressBar } from './ui';
+import { useActiveSchedule, blocksForTask } from './scheduleAdjust';
+import AdjustBlockSheet from './AdjustBlockSheet';
 
 // 「今天」＝執行頁：回答「我現在該做什麼」。
 //
@@ -96,9 +98,14 @@ function AdjustBanner({ tasks, lists, apiPlans, reload, goWizardEdit }) {
 //   實心圓點＝已排定的讀書時段（用科目色）
 //   空心圓點＝固定行程（中性色，不是「我的任務」）
 // Lock 上線後會在右側加一個小鎖，不會因此換整張卡的顏色。
-function NextUp({ tasks, lists }) {
+function NextUp({ tasks, lists, reload }) {
   const [events, setEvents] = useState([]);
   useEffect(() => { api('/events').then(setEvents).catch(() => {}); }, []);
+
+  // 排定時間的真相在 ScheduledBlock，不在 due_date。要讓使用者自己改時間，
+  // 就得知道那一格到底是哪一個 block（一個任務可能被切成好幾塊）。
+  const sched = useActiveSchedule();
+  const [adjust, setAdjust] = useState(null);   // { block, task }
 
   const td = today();
   const dow = new Date(td + 'T00:00:00Z').getUTCDay();
@@ -112,10 +119,15 @@ function NextUp({ tasks, lists }) {
     ...tasks.filter(t => !t.deleted && !t.completed && t.due_date === td && t.due_time && t.plan_id != null)
       .map(t => {
         const l = lists.find(x => String(x.id) === String(t.list_id));
+        // 這一格對應到的 block。due_date / due_time 就是鏡射自這個任務的第一個
+        // block（persistence 的 mirror 取最早那一筆），所以時間軸上的這一列
+        // 對到的一定是 blocksForTask 排序後的第一個。
+        // 找不到就只是不能調整，畫面照樣顯示。
+        const block = blocksForTask(sched.blocks, t.id)[0];
         // 標題＝實際要做的事（去掉「科目｜書名｜」前綴），科目退成下面一行的 meta。
         // 原本把科目名當標題、副標又整串重複一次，同一個詞會出現兩次。
         return { key: 't' + t.id, time: HM(t.due_time), kind: 'task', color: l?.color,
-          title: shortTitle(t.title), sub: l?.name || '讀書' };
+          title: shortTitle(t.title), sub: l?.name || '讀書', task: t, block };
       }),
     ...todayEv.map(e => ({ key: 'e' + e.id, time: HM(e.start_time), kind: 'event', title: e.title,
       sub: e.location ? `固定行程・${e.location}` : '固定行程' })),
@@ -123,6 +135,7 @@ function NextUp({ tasks, lists }) {
 
   if (!rows.length) return null;
   return (
+    <>
     <section className="ui-section">
       <div className="ui-section-title">接下來</div>
       {rows.map(r => (
@@ -136,9 +149,25 @@ function NextUp({ tasks, lists }) {
             <div className="tl-title">{r.title}</div>
             {r.sub && <div className="tl-sub">{r.sub}</div>}
           </div>
+          {/* 固定行程不是 AI 排的，改它要去行事曆改；這裡只讓讀書時段可以調。 */}
+          {r.block && (
+            <button className="tl-adjust" aria-label={`調整「${r.title}」的時間`}
+              onClick={() => setAdjust({ block: r.block, task: r.task })}>
+              調整
+            </button>
+          )}
         </div>
       ))}
     </section>
+    {/* 放在 section 外面：時間軸靠 .tl-row:last-child 收掉最後一段軸線，
+        在裡面多一個兄弟節點會讓最後一列多出一截線。 */}
+    {adjust && (
+      <AdjustBlockSheet block={adjust.block} task={adjust.task} lists={lists}
+        versionId={sched.version?.id}
+        reload={async () => { await reload?.(); await sched.reload(); }}
+        onClose={() => setAdjust(null)} />
+    )}
+    </>
   );
 }
 
@@ -187,7 +216,7 @@ export default function TodayView({ tasks, lists, filters, habits, apiPlans = []
         <div style={{ marginTop: 'var(--sp-5)' }}>
           <AdjustBanner tasks={tasks} lists={lists} apiPlans={apiPlans} reload={reload} goWizardEdit={goWizardEdit} />
         </div>
-        <NextUp tasks={tasks} lists={lists} />
+        <NextUp tasks={tasks} lists={lists} reload={reload} />
       </>}
     />
   );
