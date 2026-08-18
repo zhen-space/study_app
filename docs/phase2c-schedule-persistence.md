@@ -1768,6 +1768,46 @@ block_id 是使用者在畫面上真正點到的那一格。
 - **Lock**：`checkLocks` 比對的是整份 candidate 對整份 active，
   它本來就需要看到全貌
 
+## 52.1 🔴 candidate 是「完整的未來」，不是 active 的影本
+
+ScheduleVersion 是 **future**-schedule snapshot。active version 會隨時間老化：
+三天前建立的 V10 裡有已經過去的 block。
+
+```
+V10（三天前建立）        今天是 8/18
+├─ 8/15 數學  ← 已經過去
+├─ 8/18 英文
+└─ 8/20 化學
+```
+
+如果手動調整把整份 active 原封不動抄進新版本，只換掉化學的位置：
+
+- 8/15 的 block 會被**重新宣告成未來的安排**，違反 §7.1
+- §4.3 的 `mirrorDueDates` 取該 Task 最早的 block，那個數學任務若還沒完成，
+  它的 `due_date` 會被鏡射回 **8/15**——一個已經過去的日期
+
+所以 carry-forward 只帶 `date >= planningDay` 的 block，與 `applySchedule`
+replan 的 carry-forward（`b.date >= effective_from`）是**同一條不變式**。
+不能因為「manual 的 candidate 是整份 snapshot」就自己放寬。
+
+**邊界是 `>=` 不是 `>`**：今天的安排屬於未來。用 `>` 會把使用者今天稍晚
+要做的事整批洗掉，而他只是想動別的東西。
+
+### 指名要動一個已經過去的 block
+
+明確拒絕（400，訊息說「時間已經過去」），**不可以**因為 filtering 而退化成
+「找不到這個 block」。歷史 placement 不能透過手動編輯復活，而且兩種情況
+要講清楚——否則使用者只會看到一句莫名其妙的「找不到」。
+
+### Lock 基準維持不變
+
+Lock 比對仍以**完整的 active** 為基準，與 `assertCandidateLocks` 一致，
+不因為 manual 就換一套語意。
+
+副作用要講清楚：一個只剩過去 placement 的 Task Lock，會讓所有新版本都判成
+`LOCKED_TASK_UNPLACED`，必須先解鎖。這是 §39 既有的 standing-requirement
+語意（replan 對其他 Plan 的過期鎖定任務也是同樣結果），不是手動調整新增的。
+
 ## 53. 沒有 force：手動不代表可以違法
 
 手動調整**沒有** `force` / `bypass` 參數。以下一律擋下（409），不提供
@@ -1821,6 +1861,12 @@ block_id 是使用者在畫面上真正點到的那一格。
 | 9 | 別人的 block_id、格式錯誤、重複 block → 400 | 輸入驗證 |
 | 10 | `dry_run` 不建立版本，判定與正式套用一致 | §55 |
 | 11 | diff 認得出手動搬動是 `moved` | §36 |
+| 12 | 昨天的 block 不得被複製進新版本；明天的照舊 | §52.1 |
+| 13 | 昨天那個未完成任務變 unplaced，`due_date` 不得再鏡射成昨天 | §52.1 |
+| 14 | 今天的 block 屬於未來，不可以被一起丟掉（`>=` 邊界） | §52.1 |
+| 15 | 其他計畫的未來 block 仍然完整保留 | §52 |
+| 16 | 指名調整已過去的 block → 400，且訊息不是「找不到」 | §52.1 |
+| 17 | 只剩過去 placement 的鎖定任務會擋住調整，解鎖後才做得到 | §52.1 |
 
 ## 57. 已修正：`checkLocks` 的整列比對
 

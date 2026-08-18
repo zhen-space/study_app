@@ -329,3 +329,137 @@ describe('手動調整：版本紀錄', () => {
     assert.equal(diff.body.items[0].change_flags.date_changed, true);
   });
 });
+
+// ScheduleVersion 是 future-schedule snapshot，不是「active 那一版的影本」。
+// active version 會隨時間老化：三天前建立的版本裡有已經過去的 block。
+// 手動調整若把整份原封不動抄過去，等於每調一次時間就把歷史重新宣告成未來，
+// 而且 mirrorDueDates 取最早的 block，會把未完成任務的 due_date 鏡射回過去。
+describe('手動調整：新版本只帶未來，不把歷史複製進來', () => {
+  test('昨天的 block 不會被帶進新版本，明天的照舊', async () => {
+    const { tasks, state } = await seed([
+      { title: '昨天沒做完的', date: day(-1) },
+      { title: '明天的', date: day(1) },
+      { title: '要搬的', date: day(2) },
+    ]);
+    assert.ok(blockOf(state, tasks[0].id), '前置：舊版本裡確實有昨天那一段');
+
+    const r = await manual({
+      base_version_id: state.version.id,
+      moves: [{ block_id: blockOf(state, tasks[2].id).id, date: day(6) }],
+    });
+    assert.equal(r.status, 200);
+
+    const { body: after } = await active();
+    assert.equal(blockOf(after, tasks[0].id), undefined,
+      '★ 已經過去的 block 不得被複製進新的 manual 版本');
+    assert.equal(blockOf(after, tasks[1].id).date, day(1), '未來的 block 要原封不動留著');
+    assert.equal(blockOf(after, tasks[2].id).date, day(6));
+  });
+
+  test('昨天那個未完成任務變成 unplaced，due_date 不得再被鏡射成昨天', async () => {
+    const { tasks, state } = await seed([
+      { title: '昨天沒做完的', date: day(-1) },
+      { title: '要搬的', date: day(2) },
+    ]);
+    await manual({
+      base_version_id: state.version.id,
+      moves: [{ block_id: blockOf(state, tasks[1].id).id, date: day(6) }],
+    });
+
+    const { body: all } = await api('/tasks');
+    const stale = all.find(x => Number(x.id) === Number(tasks[0].id));
+    assert.equal(stale.due_date, null,
+      '★ 未完成任務的 due_date 不可以被新版本鏡射回過去的日期');
+
+    const { body: after } = await active();
+    const unplacedIds = after.unplaced.map(t => Number(t.id));
+    assert.ok(unplacedIds.includes(Number(tasks[0].id)), '它應該成為正式的 unplaced');
+  });
+
+  test('今天的 block 屬於未來，不可以被一起丟掉', async () => {
+    // 邊界就在 planningDay 這一天：用 > 而不是 >= 會把今天整天的安排洗掉，
+    // 而使用者只是想動別的東西。
+    const { tasks, state } = await seed([
+      { title: '今天稍晚要做的', date: day(0), start_time: '21:00', end_time: '22:00' },
+      { title: '要搬的', date: day(3) },
+    ]);
+    assert.ok(blockOf(state, tasks[0].id), '前置：今天那一段確實在這一版裡');
+
+    const r = await manual({
+      base_version_id: state.version.id,
+      moves: [{ block_id: blockOf(state, tasks[1].id).id, date: day(7) }],
+    });
+    assert.equal(r.status, 200);
+
+    const { body: after } = await active();
+    const kept = blockOf(after, tasks[0].id);
+    assert.ok(kept, '★ 今天的 block 必須留在新版本裡');
+    assert.equal(kept.date, day(0));
+    assert.equal(kept.start_time, '21:00');
+  });
+
+  test('其他計畫的未來 block 仍然完整保留', async () => {
+    const other = await seed([
+      { title: '別的計畫・過去', date: day(-2) },
+      { title: '別的計畫・未來', date: day(8), start_time: '10:00', end_time: '11:00' },
+    ]);
+    const { tasks, state } = await seed([{ title: '本計畫要搬的', date: day(2) }]);
+
+    await manual({
+      base_version_id: state.version.id,
+      moves: [{ block_id: blockOf(state, tasks[0].id).id, date: day(6) }],
+    });
+
+    const { body: after } = await active();
+    const kept = blockOf(after, other.tasks[1].id);
+    assert.ok(kept, '★ 其他計畫的未來 block 必須保留');
+    assert.equal(kept.date, day(8));
+    assert.equal(kept.start_time, '10:00');
+  });
+
+  test('直接指定已經過去的 block 做調整 → 明確拒絕，不是「找不到」', async () => {
+    const { tasks, state } = await seed([
+      { title: '昨天的', date: day(-1) },
+      { title: '未來的', date: day(2) },
+    ]);
+    const pastBlock = blockOf(state, tasks[0].id);
+    assert.ok(pastBlock, '前置：這一版裡確實有昨天那一段');
+
+    const r = await manual({
+      base_version_id: state.version.id,
+      moves: [{ block_id: pastBlock.id, date: day(5) }],
+    });
+    assert.equal(r.status, 400, '★ 不能用手動調整修改歷史');
+    assert.match(r.body.error, /已經過去/, '要說清楚是「時間已經過去」，不是「找不到」');
+    assert.doesNotMatch(r.body.error, /不在目前生效的排程裡/);
+
+    const { body: after } = await active();
+    assert.equal(after.version.id, state.version.id, '被擋下來時不可以留下新版本');
+  });
+
+  // Lock 語意跟 replan 完全一致，不因為 manual 就自己換一套：
+  // Task Lock 是「這個任務必須維持排定」的常設要求（P4 §39）。任務只剩過去的
+  // placement 時，新版本必然帶不進它，所以會擋下來要求先解鎖。
+  // 這不是本支新增的行為——replan 對其他 Plan 的過期鎖定任務也是同樣結果。
+  test('只排在過去的鎖定任務會擋住手動調整，直到解鎖為止（與 replan 一致）', async () => {
+    const { tasks, state } = await seed([
+      { title: '只排在過去而且被鎖住', date: day(-1) },
+      { title: '要搬的', date: day(2) },
+    ]);
+    const lock = await api('/schedule/locks', { method: 'POST', body: { type: 'task', task_id: tasks[0].id } });
+    assert.equal(lock.status, 201);
+
+    const move = { block_id: blockOf(state, tasks[1].id).id, date: day(6) };
+    const blocked = await manual({ base_version_id: state.version.id, moves: [move] });
+    assert.equal(blocked.status, 409, 'Task Lock 是常設要求，帶不進去就要擋下來');
+    assert.ok(blocked.body.conflicts.some(c => c.type === 'LOCKED_TASK_UNPLACED'));
+
+    // 解鎖之後就做得到，而且過去那一段仍然不會被複製進新版本
+    await api(`/schedule/locks/${lock.body.id}`, { method: 'DELETE' });
+    const ok = await manual({ base_version_id: state.version.id, moves: [move] });
+    assert.equal(ok.status, 200);
+    const { body: after } = await active();
+    assert.equal(blockOf(after, tasks[0].id), undefined, '過去那一段仍然不得復活');
+    assert.equal(blockOf(after, tasks[1].id).date, day(6));
+  });
+});

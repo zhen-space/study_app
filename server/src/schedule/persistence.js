@@ -425,25 +425,42 @@ async function buildManualCandidate(db, userId, activeVersionId, moves, { planni
     db.all('SELECT id, title, plan_id, deadline_date, deleted, completed FROM tasks WHERE user_id=?', [userId]),
     db.all('SELECT date,start_time,end_time,recurring,title FROM fixed_events WHERE user_id=?', [userId]),
   ]);
-  const byId = new Map(activeBlocks.map(b => [Number(b.id), b]));
   const tasks = new Map(liveTasks.map(t => [Number(t.id), t]));
+
+  // ScheduleVersion 是 **future**-schedule snapshot（§7.1）。active version 會隨
+  // 時間老化：三天前建立的 V10 裡有已經過去的 block。把整份原封不動抄進新版本，
+  // 等於每調一次時間就把歷史重新宣告成「未來的安排」，而且 mirrorDueDates 取
+  // 該 Task 最早的 block，會把還沒完成的任務的 due_date 又鏡射回過去那天。
+  //
+  // 所以 carry-forward 只帶 date >= planningDay 的 block —— 跟 applySchedule 的
+  // replan carry-forward（b.date>=effFrom）同一條不變式，不能因為「manual 的
+  // candidate 是整份 snapshot」就自己放寬。
+  const futureBlocks = activeBlocks.filter(b => b.date >= planningDay);
+  const byId = new Map(futureBlocks.map(b => [Number(b.id), b]));
+  const anyId = new Map(activeBlocks.map(b => [Number(b.id), b]));
   for (const m of normalized) {
-    if (!byId.has(m.block_id)) throw new ScheduleInputError(`這個排程區塊不在目前生效的排程裡：${m.block_id}`);
+    if (byId.has(m.block_id)) continue;
+    // 指名要動一個已經過去的 block：這不是「找不到」，是「不能改歷史」。
+    // 兩者要講清楚，否則使用者只會看到一句莫名其妙的「找不到」。
+    if (anyId.has(m.block_id)) {
+      throw new ScheduleInputError(`這一段的時間已經過去，不能再調整：${m.block_id}`);
+    }
+    throw new ScheduleInputError(`這個排程區塊不在目前生效的排程裡：${m.block_id}`);
   }
 
-  // candidate＝整份 active snapshot，只有被調整的那幾個換位置。
-  // 其他 Plan 的 block 原封不動留在裡面，所以跨 Plan 碰撞是結構上就擋掉的，
+  // candidate＝整份「目前的未來」snapshot，只有被調整的那幾個換位置。
+  // 其他 Plan 的未來 block 原封不動留在裡面，所以跨 Plan 碰撞是結構上就擋掉的，
   // 不需要另外一條規則去記得檢查。
   const moveById = new Map(normalized.map(m => [m.block_id, m]));
-  const candidate = activeBlocks.map(block => {
+  const candidate = futureBlocks.map(block => {
     const m = moveById.get(Number(block.id));
     return m
       ? { ...block, date: m.date, start_time: m.start_time, end_time: m.end_time }
       : block;
   });
 
-  // 只檢查被動到的那幾個。沒被碰的 block 若本來就已經過去，那是既成事實，
-  // 不該因為使用者調了別的東西就整份排程都排不出來。
+  // 只檢查被動到的那幾個。其餘 future block 是既有安排，不該因為使用者
+  // 調了別的東西就被重新審一次、害整份排程都送不出去。
   const conflicts = [];
   for (const block of candidate) {
     if (!moveById.has(Number(block.id))) continue;
@@ -490,7 +507,13 @@ export async function applyManualAdjustment(userId, { baseVersionId, moves = [],
       db, userId, activeId, moves, { planningDay, nowHM });
     // Lock 的檢查對象是整份 candidate，不是單一 block（鎖住的那一天不能有任何
     // 變動，即使變動的是別人的 block）。
-    const lockConflicts = activeId == null ? [] : checkLocks(
+    //
+    // 基準刻意用「完整的 active」，跟 applySchedule / applyRestore 的
+    // assertCandidateLocks 一模一樣，不因為 manual 就自己換一套 Lock 語意。
+    // 副作用是：一個只排在過去的鎖定任務，會讓所有新版本都判成
+    // LOCKED_TASK_UNPLACED，必須先解鎖。這是 P4 既有的 standing-requirement
+    // 語意（replan 對其他 Plan 的過期鎖定任務也是同樣結果），不是本支新增的。
+    const lockConflicts = checkLocks(
       candidate,
       await db.all('SELECT task_id,date,start_time,end_time,planned_minutes FROM scheduled_blocks WHERE user_id=? AND schedule_version_id=?', [userId, activeId]),
       await db.all('SELECT * FROM schedule_locks WHERE user_id=? AND released_at IS NULL', [userId]),
