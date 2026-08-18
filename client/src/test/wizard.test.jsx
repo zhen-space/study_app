@@ -141,6 +141,19 @@ describe('三步驟結構', () => {
     noCrash();
   });
 
+  it('P3：日期或規則造成的零分鐘 gap 仍顯示可理解的限制說明', async () => {
+    setApi({ '/schedule/preview': {
+      ...fx.preview,
+      unplaced: true,
+      feasibility: { gap_minutes: 0, reason: 'date_capacity_or_rule', recommendations: [] },
+    } });
+    await mountWizard();
+    await toResult();
+    expect(screen.getByText(/目前受日期範圍、每日規則或其他硬性限制影響/)).toBeInTheDocument();
+    expect(screen.queryByText(/目前還缺約/)).not.toBeInTheDocument();
+    noCrash();
+  });
+
   it('6. 第 2 步分成可用時間／排程條件／完成期限三段', async () => {
     await mountWizard();
     await toStep2();

@@ -3,6 +3,7 @@ import { dayOfWeek, todayTW } from '../util/date.js';
 import { checkLocks } from './locks.js';
 import { calculateScheduleDiff } from './diff.js';
 import { classifyPlacement, findSelfCollisions, timedOverlap } from './feasibility.js';
+import { canonicalizeBlockTiming, timingProblem } from './timing.js';
 
 // 手動調整的說法：使用者是「現在正要放」，不是「想恢復舊安排」。
 const MANUAL_MESSAGES = {
@@ -127,13 +128,16 @@ export async function getVersion(userId, versionId) {
 }
 
 export async function getBlocks(userId, versionId) {
-  return q.all(
+  const rows = await q.all(
     `SELECT id, task_id, date, start_time, end_time, planned_minutes,
             task_title_snapshot, subject_name_snapshot
        FROM scheduled_blocks
       WHERE schedule_version_id=? AND user_id=?
       ORDER BY date, COALESCE(start_time,''), id`,
     [versionId, userId]);
+  // init repair 會持久化修好；這一層則是 runtime safety net，確保極少數尚未經過
+  // repair 的 historical row 不會在 Lock／manual path 以第三種 shape 流動。
+  return rows.map(canonicalizeBlockTiming);
 }
 
 export async function getVersionWithBlocks(userId, versionId) {
@@ -391,8 +395,17 @@ export class ScheduleManualConflictError extends Error {
   }
 }
 
-const HM = /^\d\d:\d\d$/;
 const YMD = /^\d{4}-\d{2}-\d{2}$/;
+
+// ScheduledBlock 的分鐘數不是 caller 可以自由指定的 metadata，而是 placement
+// 本身的導出值。把這個規則放在 persistence 唯一寫入閘門，Wizard／Restore／
+// Manual adjustment 都不會各自漂移；尤其 manual resize 不得沿用舊分鐘數。
+export function normalizeBlockTiming(block) {
+  const normalized = canonicalizeBlockTiming(block, { invalid: 'reject' });
+  if (normalized) return normalized;
+  if (timingProblem(block) === 'incomplete') throw new ScheduleInputError('請同時指定開始與結束時間');
+  throw new ScheduleInputError('結束時間必須晚於開始時間');
+}
 
 // 單筆 move 的形狀檢查。時間要嘛兩個都給、要嘛兩個都不給（＝只排到某一天）。
 function normalizeMove(move) {
@@ -403,8 +416,9 @@ function normalizeMove(move) {
   const end = move.end_time || null;
   if ((start == null) !== (end == null)) throw new ScheduleInputError('請同時指定開始與結束時間');
   if (start != null) {
-    if (!HM.test(start) || !HM.test(end)) throw new ScheduleInputError('時間格式不正確');
-    if (start >= end) throw new ScheduleInputError('結束時間必須晚於開始時間');
+    if (!canonicalizeBlockTiming({ start_time: start, end_time: end }, { invalid: 'reject' })) {
+      throw new ScheduleInputError('結束時間必須晚於開始時間');
+    }
   }
   return { block_id: blockId, date: move.date, start_time: start, end_time: end };
 }
@@ -435,7 +449,10 @@ async function buildManualCandidate(db, userId, activeVersionId, moves, { planni
   // 所以 carry-forward 只帶 date >= planningDay 的 block —— 跟 applySchedule 的
   // replan carry-forward（b.date>=effFrom）同一條不變式，不能因為「manual 的
   // candidate 是整份 snapshot」就自己放寬。
-  const futureBlocks = activeBlocks.filter(b => b.date >= planningDay);
+  // Stored rows may predate the canonical write gate. Read them with the same
+  // conservative canonicalizer as Lock baseline: malformed/half-timed means
+  // date-only, never a fabricated duration and never a poisoned manual flow.
+  const futureBlocks = activeBlocks.filter(b => b.date >= planningDay).map(canonicalizeBlockTiming);
   const byId = new Map(futureBlocks.map(b => [Number(b.id), b]));
   const anyId = new Map(activeBlocks.map(b => [Number(b.id), b]));
   for (const m of normalized) {
@@ -454,9 +471,9 @@ async function buildManualCandidate(db, userId, activeVersionId, moves, { planni
   const moveById = new Map(normalized.map(m => [m.block_id, m]));
   const candidate = futureBlocks.map(block => {
     const m = moveById.get(Number(block.id));
-    return m
+    return normalizeBlockTiming(m
       ? { ...block, date: m.date, start_time: m.start_time, end_time: m.end_time }
-      : block;
+      : block);
   });
 
   // 只檢查被動到的那幾個。其餘 future block 是既有安排，不該因為使用者
@@ -576,6 +593,9 @@ async function createScheduleVersionInTx(tx, userId, {
   blocks = [], setActive = true, onlyIfNoActive = false, expectedActiveVersionId = undefined,
 }) {
     const effFrom = effectiveFrom || todayTW();
+    // 所有版本來源都先正規化 timing；不允許任何 reachable ScheduledBlock
+    // 出現「timed 卻沒有分鐘數」或「date-only 卻殘留分鐘數」。
+    const normalizedBlocks = blocks.map(normalizeBlockTiming);
     // bootstrap 的正確性不能依賴 transaction 外的預讀或同程序 writeQueue。
     // 多個 instance 同時進來時，只有看見 active_version_id 仍為 NULL 的那一筆
     // transaction 可以建立 V1；其他 caller 必須拿同一個既有 active version 回去。
@@ -598,13 +618,13 @@ async function createScheduleVersionInTx(tx, userId, {
           reason, source, effective_from, block_count)
        VALUES (?,?,?,?,?,?,?,?)`,
       [userId, versionNo, parentVersionId, restoredFromVersionId,
-        reason, source, effFrom, blocks.length]);
+        reason, source, effFrom, normalizedBlocks.length]);
     const versionId = v.lastInsertRowid;
 
     // ② blocks。每一個都必須是這位使用者有效、未完成的 Plan Task；不得寫入
     // orphan、別人的任務、一般待辦、已刪除或已完成任務。任何一筆不合法都使
     // 整個 transaction rollback，不能 silently skip 或留下 partial version。
-    for (const b of blocks) {
+    for (const b of normalizedBlocks) {
       const t = await tx.get(
         `SELECT t.id, t.title, t.plan_id, t.deleted, t.completed, l.name AS subject
            FROM tasks t LEFT JOIN lists l ON l.id = t.list_id
@@ -644,7 +664,7 @@ async function createScheduleVersionInTx(tx, userId, {
       await mirrorDueDates(tx, userId, versionId);
     }
 
-    return { version_id: versionId, version_no: versionNo, block_count: blocks.length };
+    return { version_id: versionId, version_no: versionNo, block_count: normalizedBlocks.length };
 }
 
 // Wizard 初次建立與 AI Replan 的正式套用入口。任務的身分／內容變動與
@@ -855,13 +875,9 @@ export async function bootstrapScheduleIfNeeded(userId, planningDay = todayTW())
       ORDER BY due_date, COALESCE(due_time,''), id`,
     [userId, planningDay]);
 
-  const blocks = rows.map(t => ({
-    task_id: t.id,
-    date: t.due_date,
-    start_time: t.due_time ?? null,
-    end_time: null,
-    planned_minutes: null,
-  }));
+  // legacy Task 只有 due_time，沒有可證實的 duration；不能杜撰 60 分鐘工作量。
+  // 收成 date-only block，讓它仍是正式 placement、卻不假裝有 timed window。
+  const blocks = rows.map(t => ({ task_id: t.id, date: t.due_date }));
 
   const r = await createScheduleVersion(userId, {
     source: SOURCE.BOOTSTRAP,

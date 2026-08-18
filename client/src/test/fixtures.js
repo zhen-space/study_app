@@ -84,15 +84,14 @@ export const habits = [
 
 export const pet = { pet: { name: '小福', level: 2, exp: 30, coins: 120, skin: 'default' }, coins: 120 };
 export const settings = { sleep_start: '23:30', sleep_end: '07:00', meal_windows: [['12:00', '13:00']], custom_tags: ['複習'] };
-export const pomo = [{ id: 1, task_title: '物理', date: TODAY, minutes: 25 }];
 // 形狀比照 GET /tstats 實際回傳
 export const tstats = {
   total: tasks.length,
   done: tasks.filter(t => t.completed).length,
   completedByDay: { [iso(-3)]: 1 },
-  focusByDay: { [TODAY]: 25 },
-  focusTotal: 25,
-  year: { byMonth: Array(12).fill(0), focusByMonth: Array(12).fill(0), topLists: [] },
+  actualByDay: { [TODAY]: 25 },
+  actualTotal: 25,
+  year: { byMonth: Array(12).fill(0), actualByMonth: Array(12).fill(0), topLists: [] },
 };
 
 // 路徑 → 回傳值。沒列到的一律回空陣列，避免任何一支沒 mock 到就整個測試爆掉。
@@ -105,7 +104,6 @@ export const responses = {
   '/pet': pet,
   '/settings': settings,
   '/events': events,
-  '/pomo': pomo,
   '/tstats': tstats,
   '/memos': [],
   '/memo-cats': [],

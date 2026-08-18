@@ -28,7 +28,7 @@ export default function StatsView() {
           <div className="tile"><div className="muted">已完成任務</div><div className="num">{s.done}</div><div className="muted">共 {s.total} 項</div></div>
           <div className="tile"><div className="muted">完成率</div><div className="num">{s.total ? Math.round(s.done / s.total * 100) : 0}%</div></div>
           <div className="tile"><div className="muted">連續完成天數</div><div className="num">🔥 {streak}</div></div>
-          <div className="tile"><div className="muted">總專注時間</div><div className="num">{(s.focusTotal / 60).toFixed(1)}h</div></div>
+          <div className="tile"><div className="muted">總實際讀書時間</div><div className="num">{((s.actualTotal || 0) / 60).toFixed(1)}h</div></div>
           <div className="tile"><div className="muted">原定／實際</div><div className="num">{(s.plannedMinutes / 60).toFixed(1)} / {(s.actualTotal / 60).toFixed(1)}h</div></div>
           <div className="tile"><div className="muted">近 30 天調整</div><div className="num">{s.movedLast30 || 0}</div><div className="muted">次任務移動</div></div>
         </div>
@@ -64,10 +64,10 @@ export default function StatsView() {
                 );
               })}
             </div>
-            <div className="muted" style={{ marginTop: 10 }}>每月專注時數</div>
+            <div className="muted" style={{ marginTop: 10 }}>每月實際讀書時數</div>
             <div style={{ display: 'flex', alignItems: 'flex-end', gap: 4, height: 70, marginTop: 6 }}>
-              {s.year.focusByMonth.map((m, i) => {
-                const mx = Math.max(1, ...s.year.focusByMonth);
+              {(s.year.actualByMonth || []).map((m, i) => {
+                const mx = Math.max(1, ...(s.year.actualByMonth || []));
                 return (
                   <div key={i} style={{ flex: 1, textAlign: 'center' }} title={`${i + 1}月：${(m / 60).toFixed(1)} 小時`}>
                     <div style={{ height: Math.max(2, m / mx * 52), background: 'var(--orange)', opacity: m ? 1 : .15, borderRadius: 4 }} />
