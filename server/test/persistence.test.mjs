@@ -316,6 +316,6 @@ describe('schedule version restore API', () => {
     assert.equal((await api('/schedule/versions/999999/restore-preview')).status, 404);
     assert.equal((await api('/schedule/versions/999999/restore', {
       method: 'POST', body: { base_version_id: 1 },
-    })).status, 400);
+    })).status, 404);
   });
 });
