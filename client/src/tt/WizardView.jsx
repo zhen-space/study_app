@@ -594,6 +594,9 @@ export default function WizardView({
         // 「這次調整作息」是一次性的，只影響這次預覽，不進條件快照
         conditions: { ...conditions, ...(follow ? {} : { sleep_start: shift.sleep_start, sleep_end: shift.sleep_end }) },
       });
+      // Edit Mode 需要釋出自己舊的 block；Create Mode 沒有既有 Plan，會把所有
+      // active Plan 的 timed block 都當作 busy interval。
+      if (isEdit) body.plan_id = planId;
       const pv = await api('/schedule/preview', { method: 'POST', body });
       // 同一天之內：同科目排在一起（照科目清單順序），同科目內保持原本順序
       // （原本是「全科的範例組→全科的練習組」，同一科會被其他科隔開）

@@ -183,3 +183,107 @@ describe('active version 沒有 fallback 推導', () => {
     await q.run('UPDATE user_schedule_state SET active_version_id=? WHERE user_id=?', [had, USER]);
   });
 });
+
+describe('P2 Wizard／Replan 套用交易', () => {
+  test('新任務、ScheduledBlock、active 與 due mirror 只會一起成功', async () => {
+    const userId = 3;
+    await q.run('INSERT INTO users (id,email,password_hash) VALUES (?,?,?)', [userId, 'p2@test', 'x']);
+    const p = await q.run('INSERT INTO plans (user_id,name,status) VALUES (?,?,?)', [userId, 'P2 計畫', 'active']);
+    const r = await sched.applySchedule(userId, {
+      planId: p.lastInsertRowid,
+      source: sched.SOURCE.INITIAL,
+      taskCreates: [{ client_key: 'new-a', title: '新任務' }],
+      blocks: [{ client_key: 'new-a', date: '2026-09-15', start_time: '19:00' }],
+    });
+    const taskId = r.created[0].id;
+    const task = await q.get('SELECT due_date,due_time FROM tasks WHERE id=?', [taskId]);
+    assert.equal(task.due_date, '2026-09-15');
+    assert.equal(task.due_time, '19:00');
+    assert.equal(await sched.getActiveVersionId(userId), r.version_id);
+
+    const before = await countsFor(userId);
+    await assert.rejects(() => sched.applySchedule(userId, {
+      planId: p.lastInsertRowid,
+      source: sched.SOURCE.AI_REPLAN,
+      taskCreates: [{ client_key: 'rollback', title: '不該留下' }],
+      blocks: [{ client_key: 'missing', date: '2026-09-16' }],
+    }), /找不到對應任務/);
+    assert.deepEqual(await countsFor(userId), before, '失敗不可留下 Task 或 version');
+  });
+
+  // 這是全域 snapshot 的 mutation guard：若移除 applySchedule 內的
+  // carryForwardBlocks，Plan B 會從新版消失、due_date 被 mirror 清空，本測試必紅。
+  test('重排 Plan A 必須完整保留 Plan B 的 active blocks 與 due mirror', async () => {
+    const userId = 4;
+    await q.run('INSERT INTO users (id,email,password_hash) VALUES (?,?,?)', [userId, 'global@test', 'x']);
+    const pa = await q.run('INSERT INTO plans (user_id,name,status) VALUES (?,?,?)', [userId, 'Plan A', 'active']);
+    const pb = await q.run('INSERT INTO plans (user_id,name,status) VALUES (?,?,?)', [userId, 'Plan B', 'active']);
+
+    const a1 = await sched.applySchedule(userId, {
+      planId: pa.lastInsertRowid, source: sched.SOURCE.INITIAL,
+      taskCreates: [{ client_key: 'a', title: 'A 任務' }],
+      blocks: [{ client_key: 'a', date: '2026-09-10', start_time: '18:00' }],
+    });
+    const aTask = a1.created[0].id;
+    const b1 = await sched.applySchedule(userId, {
+      planId: pb.lastInsertRowid, source: sched.SOURCE.INITIAL,
+      taskCreates: [{ client_key: 'b', title: 'B 任務' }],
+      blocks: [{ client_key: 'b', date: '2026-09-11', start_time: '19:00', end_time: '20:00' }],
+    });
+    const bTask = b1.created[0].id;
+    const before = await sched.getVersionWithBlocks(userId, b1.version_id);
+
+    const replan = await sched.applySchedule(userId, {
+      planId: pa.lastInsertRowid, source: sched.SOURCE.AI_REPLAN,
+      taskUpdates: [{ task_id: aTask, notes: '新版安排' }],
+      blocks: [{ task_id: aTask, date: '2026-09-12', start_time: '20:00' }],
+    });
+    const now = await sched.getVersionWithBlocks(userId, replan.version_id);
+    assert.equal(now.version.parent_version_id, b1.version_id);
+    assert.deepEqual(now.blocks.map(b => [b.task_id, b.date, b.start_time]), [
+      [bTask, '2026-09-11', '19:00'],
+      [aTask, '2026-09-12', '20:00'],
+    ]);
+    assert.equal((await q.get('SELECT due_date FROM tasks WHERE id=?', [bTask])).due_date, '2026-09-11',
+      '★ Plan B 不能因為重排 A 被 mirror 清成 unplaced');
+    assert.deepEqual((await sched.getVersionWithBlocks(userId, b1.version_id)).blocks, before.blocks,
+      '★ 舊版必須 immutable');
+
+    // mutation guard：若移除 apply 的 overlap validator，這筆會把 A 新 block 與
+    // carry-forward 的 B block 一起寫進全域 version，測試必紅。
+    const beforeCollision = await countsFor(userId);
+    await assert.rejects(() => sched.applySchedule(userId, {
+      planId: pa.lastInsertRowid, source: sched.SOURCE.AI_REPLAN,
+      taskCreates: [{ client_key: 'collision', title: '撞時段任務' }],
+      blocks: [{ client_key: 'collision', date: '2026-09-11', start_time: '19:00', end_time: '20:00' }],
+    }), /時段重疊/);
+    assert.deepEqual(await countsFor(userId), beforeCollision,
+      '★ 撞時段時 Task、version、active 都必須 rollback');
+    assert.equal((await q.get('SELECT due_date FROM tasks WHERE id=?', [bTask])).due_date, '2026-09-11',
+      '★ rollback 後其他 Plan 的 mirror 不得改變');
+  });
+
+  test('同一天的兩個 untimed block 合法，不可誤判為時段重疊', async () => {
+    const userId = 5;
+    await q.run('INSERT INTO users (id,email,password_hash) VALUES (?,?,?)', [userId, 'untimed@test', 'x']);
+    const a = await q.run('INSERT INTO plans (user_id,name,status) VALUES (?,?,?)', [userId, '未計時 A', 'active']);
+    const b = await q.run('INSERT INTO plans (user_id,name,status) VALUES (?,?,?)', [userId, '未計時 B', 'active']);
+    await sched.applySchedule(userId, {
+      planId: a.lastInsertRowid, source: sched.SOURCE.INITIAL,
+      taskCreates: [{ client_key: 'a', title: 'A' }], blocks: [{ client_key: 'a', date: '2026-09-20' }],
+    });
+    const r = await sched.applySchedule(userId, {
+      planId: b.lastInsertRowid, source: sched.SOURCE.INITIAL,
+      taskCreates: [{ client_key: 'b', title: 'B' }], blocks: [{ client_key: 'b', date: '2026-09-20' }],
+    });
+    assert.equal(r.block_count, 2);
+  });
+});
+
+async function countsFor(userId) {
+  return {
+    tasks: (await q.get('SELECT COUNT(*) c FROM tasks WHERE user_id=?', [userId])).c,
+    versions: (await q.get('SELECT COUNT(*) c FROM schedule_versions WHERE user_id=?', [userId])).c,
+    activeId: await sched.getActiveVersionId(userId),
+  };
+}

@@ -183,3 +183,101 @@ describe('使用者隔離', () => {
     } finally { other.stop(); }
   });
 });
+
+/* ---------- P2：Wizard / Replan 正式套用 ---------- */
+
+describe('schedule/apply（Wizard 與 Replan 的唯一寫入入口）', () => {
+  test('建立計畫時，Task、active version、block 與 due mirror 一起建立', async () => {
+    const { body: plan } = await mkPlan({ name: 'P2 初次建立' });
+    const r = await api('/schedule/apply', {
+      method: 'POST',
+      body: {
+        plan_id: plan.id,
+        source: 'initial',
+        task_creates: [{ client_key: 'a', title: '第一章', list_id: null, tags: ['讀書計劃'] }],
+        blocks: [{ client_key: 'a', date: day(4), start_time: '19:00', end_time: '20:00', planned_minutes: 60 }],
+      },
+    });
+    assert.equal(r.status, 200);
+    assert.ok(r.body.block_count >= 1,
+      '新版除本次 block 外，還可帶入其他 Plan 的 active block');
+    const taskId = r.body.created[0].id;
+    const t = (await api('/tasks')).body.find(x => x.id === taskId);
+    assert.equal(t.due_date, day(4));
+    assert.equal(t.due_time, '19:00');
+    const now = await active();
+    assert.equal(now.body.version.id, r.body.version_id);
+    assert.equal(now.body.version.source, 'initial');
+    assert.ok(now.body.blocks.some(b => b.task_id === taskId),
+      '本次 Plan 的 block 必須存在；其他既有 Plan block 也會被全域 snapshot 保留');
+  });
+
+  test('Replan 建立新版本並以原 active 當 parent，Task 不直接寫 due_date', async () => {
+    const before = (await active()).body.version;
+    const taskId = (await api('/tasks')).body.find(t => t.title === '第一章').id;
+    const r = await api('/schedule/apply', {
+      method: 'POST',
+      body: {
+        plan_id: (await api('/plans')).body.find(p => p.name === 'P2 初次建立').id,
+        source: 'ai_replan',
+        task_updates: [{ task_id: taskId, notes: '讀書時段 20:00–21:30' }],
+        blocks: [{ task_id: taskId, date: day(5), start_time: '20:00', end_time: '21:30', planned_minutes: 90 }],
+      },
+    });
+    assert.equal(r.status, 200);
+    const now = await active();
+    assert.equal(now.body.version.parent_version_id, before.id);
+    assert.equal(now.body.version.source, 'ai_replan');
+    const t = (await api('/tasks')).body.find(x => x.id === taskId);
+    assert.equal(t.due_date, day(5));
+    assert.equal(t.due_time, '20:00');
+    assert.equal(t.notes, '讀書時段 20:00–21:30');
+  });
+
+  test('找不到 block 對應的新任務時，Task 與新版排程都必須 rollback', async () => {
+    const planId = (await api('/plans')).body.find(p => p.name === 'P2 初次建立').id;
+    const versionsBefore = (await api('/schedule/versions')).body.length;
+    const tasksBefore = (await api('/tasks')).body.filter(t => t.plan_id === planId).length;
+    const r = await api('/schedule/apply', {
+      method: 'POST',
+      body: {
+        plan_id: planId,
+        source: 'ai_replan',
+        task_creates: [{ client_key: 'will-rollback', title: '不該留下' }],
+        blocks: [{ client_key: 'missing', date: day(6) }],
+      },
+    });
+    assert.equal(r.status, 400);
+    assert.equal((await api('/schedule/versions')).body.length, versionsBefore);
+    assert.equal((await api('/tasks')).body.filter(t => t.plan_id === planId).length, tasksBefore);
+  });
+
+  // mutation guard：若 preview 不把 other-Plan active block 加進 busy intervals，
+  // 這裡會把唯一可用的 19:00–20:00 再排給 Plan A。
+  test('timed preview 會把其他 Plan 的 active block 視為 busy，但釋出 current Plan', async () => {
+    const { body: planA } = await mkPlan({ name: 'Preview A' });
+    const { body: planB } = await mkPlan({ name: 'Preview B' });
+    const busy = await api('/schedule/apply', {
+      method: 'POST',
+      body: {
+        plan_id: planB.id, source: 'initial',
+        task_creates: [{ client_key: 'b', title: 'B 既有安排' }],
+        blocks: [{ client_key: 'b', date: day(7), start_time: '19:00', end_time: '20:00', planned_minutes: 60 }],
+      },
+    });
+    assert.equal(busy.status, 200);
+    const preview = await api('/schedule/preview', {
+      method: 'POST',
+      body: {
+        plan_id: planA.id, timed: true, perDay: 0, pace: 'even',
+        sleep_start: '21:00', sleep_end: '19:00',
+        startDate: day(7), endDate: day(7), items: [{
+          subject_id: 1, title: 'A 新安排', minutes: 60, start: day(7), end: day(7),
+        }],
+      },
+    });
+    assert.equal(preview.status, 200);
+    assert.equal(preview.body.blocks[0].start_time, '20:00');
+    assert.equal(preview.body.blocks[0].end_time, '21:00');
+  });
+});
