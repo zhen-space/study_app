@@ -245,7 +245,11 @@ async function getRestorePreviewFrom(db, userId, sourceVersionId, {
   const conflicts = [];
   const skipped = [];
 
-  for (const block of sourceBlocks) {
+  for (const rawBlock of sourceBlocks) {
+    // 舊版 snapshot 可能早於 timing write gate。Restore 是把歷史 placement
+    // 帶進新的版本，先以與 Lock / manual 相同的保守 canonical shape 讀取；
+    // 這不放寬新 caller 的輸入驗證，而是不讓 Class A 半時段 row 毒化 restore。
+    const block = canonicalizeBlockTiming(rawBlock);
     // 規則本身在 schedule/feasibility.js，跟手動調整共用同一份判定。
     const verdict = classifyPlacement(block, {
       task: tasks.get(Number(block.task_id)), events, planningDay, nowHM, dayOfWeek,
@@ -741,7 +745,7 @@ export async function applySchedule(userId, {
     // active version 原封不動帶進 candidate，不然 mirror 會把它們誤判成 unplaced。
     const carryForwardBlocks = active?.active_version_id == null
       ? []
-      : await tx.all(
+      : (await tx.all(
         `SELECT b.task_id, b.date, b.start_time, b.end_time, b.planned_minutes
            FROM scheduled_blocks b
            JOIN tasks t ON t.id=b.task_id AND t.user_id=b.user_id
@@ -750,7 +754,7 @@ export async function applySchedule(userId, {
             AND COALESCE(t.deleted,0)=0 AND t.completed=0
             AND b.date>=?
           ORDER BY b.date, COALESCE(b.start_time,''), b.id`,
-        [active.active_version_id, userId, planId, effFrom]);
+        [active.active_version_id, userId, planId, effFrom])).map(canonicalizeBlockTiming);
     const candidateBlocks = [...carryForwardBlocks, ...resolvedBlocks];
     // 即使 caller 繞過 preview，也不得把有重疊的全域 snapshot 寫進資料庫。
     // 這一步仍在 transaction 內，失敗時前面的 Task 異動會一併 rollback。

@@ -13,7 +13,7 @@
 7. `GET /api/tasks` 的 recurring drop roll-forward 只作用於一般 Task；Plan Task 的 mirror 不會被 read path 改寫。`capacity_gap_minutes` 僅以 timed placement 計算，date-only placement 不會因缺少 `planned_minutes` 被誤判。
 8. Plan health 的 Lock/collision reason 均為 plan-scoped；其他 Plan 的有效 Lock 不會使本 Plan 進入 Today「計畫需要調整」。
 9. StudySession 是現役實際讀書時間唯一來源；Today 與 Calendar 從 ScheduledBlock 開始讀書時會寫入該 `scheduled_block_id`，統計可回到對應的 block。已完成或已刪除的 Task 不能開始新的 StudySession。
-10. ScheduledBlock timing 僅有兩種 canonical shape：timed block 同時具有 `start_time`、`end_time`，且 `planned_minutes` 等於兩者的分鐘差；date-only block 的三欄皆為 `null`。persistence write gate、manual candidate、Lock baseline 與 bootstrap 都使用同一 canonicalizer，零／負／不完整時間窗不會成為新的 timed placement。
+10. ScheduledBlock timing 僅有兩種 canonical shape：timed block 同時具有 `start_time`、`end_time`，且 `planned_minutes` 等於兩者的分鐘差；date-only block 的三欄皆為 `null`。persistence write gate、stored-data repair、manual candidate、Lock baseline、Replan carry-forward、Restore template 與 bootstrap 都以同一保守 canonicalizer 收斂舊 row；零／負／不完整時間窗不會成為新的 timed placement。
 
 ## 已處理的遺留狀態
 

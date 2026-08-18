@@ -75,6 +75,8 @@ async function seedLegacyVersion(userId, shapes) {
 }
 
 describe('Round-3：pre-PR ScheduledBlock canonical repair 與 runtime 相容', () => {
+  // mutation guard：若 baseline 沒經 canonicalizer，raw NULL minutes 會和
+  // candidate 的 60 分鐘不一致，調整另一段也會被誤判 LOCKED_TASK_MOVED。
   test('Class B Task Lock baseline 與 manual candidate 同形，不移動 locked block 也不會假衝突', async () => {
     const legacy = await seedLegacyVersion(31, [
       { title: 'Class B 鎖定', date: '2026-09-10', start_time: '19:00', end_time: '20:00', planned_minutes: null },
@@ -89,6 +91,22 @@ describe('Round-3：pre-PR ScheduledBlock canonical repair 與 runtime 相容', 
     const active = await sched.getActiveSchedule(31);
     const locked = active.blocks.find(b => b.task_id === legacy.taskIds[0]);
     assert.deepEqual([locked.start_time, locked.end_time, locked.planned_minutes], ['19:00', '20:00', 60]);
+  });
+
+  test('Class B 的 Task Lock 真被移動時仍是 hard conflict，舊版本維持 immutable', async () => {
+    const legacy = await seedLegacyVersion(35, [
+      { title: 'Class B 不可移', date: '2026-09-10', start_time: '19:00', end_time: '20:00', planned_minutes: null },
+      { title: '其他任務', date: '2026-09-11' },
+    ]);
+    await q.run('INSERT INTO schedule_locks (user_id,type,task_id) VALUES (?,?,?)', [35, 'task', legacy.taskIds[0]]);
+    await assert.rejects(() => sched.applyManualAdjustment(35, {
+      baseVersionId: legacy.versionId,
+      moves: [{ block_id: legacy.blocks[0].id, date: '2026-09-12', start_time: '20:00', end_time: '21:00' }],
+    }), error => error instanceof sched.ScheduleManualConflictError
+      && error.conflicts.some(c => c.type === 'LOCKED_TASK_MOVED'));
+    assert.equal(await sched.getActiveVersionId(35), legacy.versionId, 'Lock hard conflict 不得切換 active version');
+    const original = await q.get('SELECT start_time,end_time,planned_minutes FROM scheduled_blocks WHERE id=?', [legacy.blocks[0].id]);
+    assert.deepEqual(original, { start_time: '19:00', end_time: '20:00', planned_minutes: null }, '舊版 raw legacy row 不得被 manual path 就地改寫');
   });
 
   test('Class B 沒有 Lock 時仍可走完整 manual API path，且新版本帶回真實分鐘數', async () => {
@@ -116,11 +134,41 @@ describe('Round-3：pre-PR ScheduledBlock canonical repair 與 runtime 相容', 
     assert.equal((await sched.applyManualAdjustment(33, { baseVersionId: legacy.versionId, moves: [move] })).ok, true);
   });
 
+  test('Class A 不會 poison AI replan 的 cross-Plan carry-forward，寫入新版時會 canonicalize', async () => {
+    const legacy = await seedLegacyVersion(36, [
+      { title: 'Class A carry-forward', date: '2026-09-10', start_time: '19:00', end_time: null, planned_minutes: null },
+    ]);
+    const planB = await q.run('INSERT INTO plans (user_id,name,status) VALUES (?,?,?)', [36, '另一個 Plan', 'active']);
+    const taskB = await q.run('INSERT INTO tasks (user_id,title,plan_id) VALUES (?,?,?)', [36, 'AI 重排任務', planB.lastInsertRowid]);
+    const replan = await sched.applySchedule(36, {
+      planId: planB.lastInsertRowid, source: sched.SOURCE.AI_REPLAN,
+      blocks: [{ task_id: taskB.lastInsertRowid, date: '2026-09-11', start_time: '14:00', end_time: '15:00' }],
+    });
+    assert.ok(replan.version_id);
+    const active = await sched.getActiveSchedule(36);
+    const carried = active.blocks.find(b => b.task_id === legacy.taskIds[0]);
+    assert.deepEqual([carried.start_time, carried.end_time, carried.planned_minutes], [null, null, null]);
+  });
+
+  test('Class A 不會 poison restore：template 與 restore result 都收斂為 date-only', async () => {
+    const legacy = await seedLegacyVersion(37, [
+      { title: 'Class A restore', date: '2026-09-10', start_time: '19:00', end_time: null, planned_minutes: null },
+    ]);
+    const preview = await sched.getRestorePreview(37, legacy.versionId);
+    assert.equal(preview.status, 'full');
+    const restored = await sched.applyRestore(37, legacy.versionId, { baseVersionId: legacy.versionId });
+    assert.equal(restored.applied, true);
+    const active = await sched.getActiveSchedule(37);
+    assert.deepEqual([active.blocks[0].start_time, active.blocks[0].end_time, active.blocks[0].planned_minutes], [null, null, null]);
+  });
+
   test('stored-data repair backfill Class B、demote Class A/invalid，重跑不 double count', async () => {
     const legacy = await seedLegacyVersion(34, [
       { title: 'Class B repair', start_time: '18:30', end_time: '20:00', planned_minutes: null },
       { title: 'Class A repair', start_time: '21:00', end_time: null, planned_minutes: null },
       { title: 'invalid repair', start_time: '20:00', end_time: '19:00', planned_minutes: null },
+      { title: 'valid timed stays', start_time: '10:00', end_time: '11:00', planned_minutes: 60 },
+      { title: 'date-only stays' },
     ]);
     const first = await repairScheduledBlockTiming();
     assert.ok(first.backfilled >= 1 && first.demoted >= 2,
@@ -129,6 +177,8 @@ describe('Round-3：pre-PR ScheduledBlock canonical repair 與 runtime 相容', 
     assert.deepEqual(rows, [
       { start_time: '18:30', end_time: '20:00', planned_minutes: 90 },
       { start_time: null, end_time: null, planned_minutes: null },
+      { start_time: null, end_time: null, planned_minutes: null },
+      { start_time: '10:00', end_time: '11:00', planned_minutes: 60 },
       { start_time: null, end_time: null, planned_minutes: null },
     ]);
     assert.deepEqual(await repairScheduledBlockTiming(), { backfilled: 0, demoted: 0 }, 'repair 必須 idempotent，不能重複加分鐘');
