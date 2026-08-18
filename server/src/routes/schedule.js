@@ -10,6 +10,15 @@ router.use(requireAuth);
 
 const toMin = t => { const [h, m] = t.split(':').map(Number); return h * 60 + m; };
 const toHM = m => `${String(Math.floor(m / 60)).padStart(2, '0')}:${String(m % 60).padStart(2, '0')}`;
+function intersectSlots(slots, allowed) {
+  if (!allowed?.length) return slots;
+  const out = [];
+  for (const [a, b] of slots) for (const [x, y] of allowed) {
+    const start = Math.max(a, x), end = Math.min(b, y);
+    if (end - start >= 30) out.push([start, end]);
+  }
+  return out;
+}
 
 function freeSlotsForDay(dateStr, events, settings, availability = null) {
   const busy = [];
@@ -46,12 +55,7 @@ function freeSlotsForDay(dateStr, events, settings, availability = null) {
   // 則維持舊流程的全天（扣睡眠／行程）語意，確保既有資料不會突然沒空檔。
   if (!availability) return free;
   const allowed = [...availability].sort((a, b) => a[0] - b[0]);
-  const intersected = [];
-  for (const [a, b] of free) for (const [x, y] of allowed) {
-    const start = Math.max(a, x), end = Math.min(b, y);
-    if (end - start >= 30) intersected.push([start, end]);
-  }
-  return intersected;
+  return intersectSlots(free, allowed);
 }
 
 // POST /api/schedule/preview
@@ -106,6 +110,20 @@ router.post('/preview', async (req, res) => {
       item.end = item.end < dateWindow.end_date ? item.end : dateWindow.end_date;
     }
   }
+  // 其他已確認的 C constraint 同樣先落在 item／日期範圍上；AI 只提供 intent，
+  // 這裡才是正式 scheduler input。
+  if (confirmedConstraints.deadline) {
+    for (const item of items) item.end = item.end < confirmedConstraints.deadline ? item.end : confirmedConstraints.deadline;
+  }
+  if (typeof confirmedConstraints.spread === 'boolean') {
+    for (const item of items) item.spread = confirmedConstraints.spread;
+  }
+  if (confirmedConstraints.sequential_within_subject) {
+    for (const item of items) item.spread = false;
+  }
+  if (confirmedConstraints.one_per_day) {
+    for (const item of items) { item.onePerDay = true; item._strictOnePerDay = true; }
+  }
 
   // 科目先後順序（2C-P6-B）。結構化欄位，不是自然語言——之後 AI 也是映射成
   // 這個形狀送進來，不會再長出第二套語意。
@@ -134,6 +152,7 @@ router.post('/preview', async (req, res) => {
   const routines = await q.all('SELECT * FROM availability_routines WHERE user_id=? AND enabled=1', [req.userId]);
   const exceptions = await q.all('SELECT * FROM routine_exceptions WHERE user_id=?', [req.userId]);
   const availabilityByDate = new Map();
+  const availabilityOverrideByDate = new Map();
   const hasAvailabilityRoutine = routines.some(r => r.type === 'availability');
   const addAvailability = (date, start, end) => {
     if (!start || !end) return;
@@ -156,6 +175,13 @@ router.post('/preview', async (req, res) => {
   }
   for (const exception of exceptions.filter(x => x.kind === 'unavailable' && x.start_time && x.end_time)) {
     events.push({ title: exception.title || '例外日', date: exception.date, start_time: exception.start_time, end_time: exception.end_time, recurring: null, _exception: true });
+  }
+  // C 的 availability_override 只對本 Plan 本次排程生效，指定日期時取代 Routine
+  // 的可用時間白名單；它不會寫入／改掉可重用作息資料。
+  for (const override of confirmedConstraints.availability_override || []) {
+    const windows = availabilityOverrideByDate.get(override.date) || [];
+    windows.push([toMin(override.start_time), toMin(override.end_time)]);
+    availabilityOverrideByDate.set(override.date, windows);
   }
   // available 是一次性可讀書時間覆寫。只要有固定 availability，它就是白名單的一部分；
   // 沒有設定固定 availability 時仍採既有全天可排的相容語意。
@@ -231,15 +257,21 @@ router.post('/preview', async (req, res) => {
     if (excludeDates.includes(ds)) continue;                      // 指定不排的日期
     if (excludeWeekdays.includes(dayOfWeek(ds))) continue;        // 不排的星期
     if (skipIfBusyHours > 0 && busyMinutesForDay(ds, events) >= skipIfBusyHours * 60) continue; // 既定行程太滿
-    days.push({ date: ds, slots: freeSlotsForDay(ds, events, settings,
-      hasAvailabilityRoutine ? (availabilityByDate.get(ds) || []) : null), slotIdx: 0 });
+    const override = availabilityOverrideByDate.get(ds);
+    const availability = override || (hasAvailabilityRoutine ? (availabilityByDate.get(ds) || []) : null);
+    let slots = freeSlotsForDay(ds, events, settings, availability);
+    if (confirmedConstraints.preferred_time_ranges?.length) {
+      slots = intersectSlots(slots, confirmedConstraints.preferred_time_ranges.map(x => [toMin(x.start_time), toMin(x.end_time)]));
+    }
+    days.push({ date: ds, slots, slotIdx: 0 });
   }
   if (!days.length) return res.status(400).json({ error: '沒有可排的日期' });
   days.forEach(d => { d.pos = d.slots[0]?.[0] ?? null; });
 
   // 已確認的單次最長讀書時間是 scheduler 的正式 input，不是讓 AI 直接挑日期。
   // 下限 30 / 上限 240 已由 constraint contract 驗證；未設定保留既有 90 分鐘。
-  const CHUNK = confirmedConstraints.max_session_minutes || 90, BREAK = 10;
+  const MIN_CHUNK = confirmedConstraints.min_session_minutes || 0;
+  const CHUNK = confirmedConstraints.max_session_minutes || Math.max(90, MIN_CHUNK), BREAK = 10;
   // 純題目（單元練習／歷屆試題）同一天同一科最多幾份：
   // 理想是 1，範圍真的不夠時退讓到 2（使用者：「就一天兩單元吧」），不會有第 3 份
   const ONE_CAP = 2;
@@ -247,7 +279,17 @@ router.post('/preview', async (req, res) => {
     const out = [];
     for (const it of list) {
       if (!timed) { out.push({ ...it, chunk: 0 }); continue; } // 不計時：一項就是一個單位
-      let rem = it.minutes || 120;
+      const total = it.minutes || 120;
+      // 有設定最短單次時間時，精確切成每段都落在 [min,max] 的組合；沒有
+      // 合法分割就保持為 unplaced，而不是偷偷塞一段過短／過長的 session。
+      if (MIN_CHUNK) {
+        const minCount = Math.ceil(total / CHUNK), maxCount = Math.floor(total / MIN_CHUNK);
+        if (minCount > maxCount) { out.push({ ...it, chunk: total, _sessionConstraintImpossible: true }); continue; }
+        const count = minCount, base = Math.floor(total / count), extra = total % count;
+        for (let i = 0; i < count; i++) out.push({ ...it, chunk: base + (i < extra ? 1 : 0) });
+        continue;
+      }
+      let rem = total;
       while (rem > 0) {
         const c = Math.min(CHUNK, rem);
         out.push({ ...it, chunk: rem - c > 0 && rem - c < 30 ? rem : c });
@@ -307,6 +349,7 @@ router.post('/preview', async (req, res) => {
 
   // 這一天塞不塞得下這個 chunk（timed 才需要判斷時間）
   function fits(day, w) {
+    if (w._sessionConstraintImpossible) return false;
     if (!timed) return day.slots.length > 0;
     let idx = day.slotIdx, pos = day.pos;
     while (idx < day.slots.length) {
@@ -318,6 +361,7 @@ router.post('/preview', async (req, res) => {
   // 真的排進去（_bk/_ws/_we 供產出前的平衡搬移用，回傳前會清掉）
   function put(day, w) {
     if (constraintMaxPerDay != null && day.count >= constraintMaxPerDay) return false;
+    if (w._strictOnePerDay && blocks.some(b => b.date === day.date && b.subject_id === w.subject_id)) return false;
     if (!timed) {
       if (!day.slots.length) return false;
       blocks.push({ subject_id: w.subject_id, title: w.title, date: day.date, _bk: w._bk, _ws: w.start, _we: w.end, _fin: !!w.final, _one: !!w.onePerDay });

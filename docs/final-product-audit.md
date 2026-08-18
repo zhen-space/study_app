@@ -9,11 +9,13 @@
 3. Plan 與 List/Subject 分離：schema、Plan API 與 Plan Detail 都以 `plan_id` 作工作容器，`list_id` 僅為科目分類。
 4. legacy heuristic 只保留於 compatibility/preview 路徑；新版 Wizard 不呼叫 legacy `/api/plan-tasks`。
 5. ScheduleVersion、ScheduledBlock、Lock、Restore、Diff 與 manual adjustment 均以 user-level active version 為邊界。
+6. 已確認的 structured constraint 只由 scheduler 讀取：不支援的 strict dependency 明示為 unsupported；時間窗、日期／截止範圍、單次時長、每日上限、節奏與可用時間覆寫皆有 server-side hard enforcement，不能只靠 AI 或前端提示。
 
 ## 已處理的遺留狀態
 
 - Wizard 的 confirmed schedule profile 已有正式 `plan_schedule_profiles` persistence；localStorage 僅保留離線與舊資料 fallback。
 - Task 有 `estimated_minutes`，健康度與 replan 都優先採用它；舊資料仍可從舊 notes 相容還原，絕不猜 60 分鐘。
+- 已確認的 `max_per_day` 會在 `put()` 最後寫入關卡再次驗證，補位／修復流程不得藉由舊版舒適性 fallback 繞過硬限制；超額結果明確回報為 unplaced。
 
 ## 正式 gate
 

@@ -120,6 +120,56 @@ test('Master C：max_per_day 在最後補位路徑仍是硬限制，超出的項
   assert.match(preview.body.message, /唯一可排日第二項/);
 });
 
+test('Master C：確認過的時間窗、最短單次與 deadline 都真的進 scheduler', async () => {
+  const plan = await api('/plans', { method: 'POST', body: { name: '完整條件計畫' } });
+  await api(`/plans/${plan.body.id}/constraints`, { method: 'PUT', body: { intent: {
+    preferred_time_ranges: [{ start_time: '19:00', end_time: '21:00' }],
+    min_session_minutes: 60, max_session_minutes: 90, deadline: '2099-01-13',
+  } } });
+  const preview = await api('/schedule/preview', { method: 'POST', body: {
+    plan_id: plan.body.id, timed: true, startDate: '2099-01-12', endDate: '2099-01-16',
+    items: [{ subject_id: 1, title: '完整條件任務', minutes: 150, spread: false, start: '2099-01-12', end: '2099-01-16' }],
+  } });
+  assert.equal(preview.status, 200);
+  assert.equal(preview.body.blocks.every(b => b.date >= '2099-01-12' && b.date <= '2099-01-13'), true);
+  assert.equal(preview.body.blocks.every(b => b.start_time >= '19:00' && b.end_time <= '21:00'), true);
+  assert.equal(preview.body.blocks.every(b => {
+    const [sh, sm] = b.start_time.split(':').map(Number); const [eh, em] = b.end_time.split(':').map(Number);
+    const minutes = eh * 60 + em - sh * 60 - sm;
+    return minutes >= 60 && minutes <= 90;
+  }), true);
+});
+
+test('Master C：one_per_day 是硬限制，寧可 unplaced 也不在同一日偷塞', async () => {
+  const plan = await api('/plans', { method: 'POST', body: { name: '每日一項計畫' } });
+  await api(`/plans/${plan.body.id}/constraints`, { method: 'PUT', body: { intent: { one_per_day: true } } });
+  const preview = await api('/schedule/preview', { method: 'POST', body: {
+    plan_id: plan.body.id, timed: false, startDate: '2099-01-12', endDate: '2099-01-12',
+    items: [
+      { subject_id: 1, title: '每日一項甲', spread: false, start: '2099-01-12', end: '2099-01-12' },
+      { subject_id: 1, title: '每日一項乙', spread: false, start: '2099-01-12', end: '2099-01-12' },
+    ],
+  } });
+  assert.equal(preview.status, 200);
+  assert.equal(preview.body.blocks.length, 1);
+  assert.equal(preview.body.unplaced, true);
+});
+
+test('Master C：指定日期 availability override 不改 Routine，卻會限制本 Plan 的候選時段', async () => {
+  const plan = await api('/plans', { method: 'POST', body: { name: '例外可用時間計畫' } });
+  await api(`/plans/${plan.body.id}/constraints`, { method: 'PUT', body: { intent: {
+    availability_override: [{ date: '2099-01-12', start_time: '16:00', end_time: '17:00' }],
+  } } });
+  const preview = await api('/schedule/preview', { method: 'POST', body: {
+    plan_id: plan.body.id, timed: true, startDate: '2099-01-12', endDate: '2099-01-12',
+    items: [{ subject_id: 1, title: '例外時段任務', minutes: 60, spread: false, start: '2099-01-12', end: '2099-01-12' }],
+  } });
+  assert.equal(preview.status, 200);
+  assert.equal(preview.body.blocks.length, 1);
+  assert.equal(preview.body.blocks[0].start_time, '16:00');
+  assert.equal(preview.body.blocks[0].end_time, '17:00');
+});
+
 test('Master A：Plan Task 的明確工作量會進入正式 health gap，舊資料不猜分鐘', async () => {
   const plan = await api('/plans', { method: 'POST', body: { name: '工作量計畫' } });
   const task = await api('/tasks', { method: 'POST', body: { title: '需要兩小時', plan_id: plan.body.id, estimated_minutes: 120 } });
