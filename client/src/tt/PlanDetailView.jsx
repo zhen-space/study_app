@@ -44,7 +44,7 @@ export default function PlanDetailView({ planKey, tasks, lists, apiPlans = [], r
   // 排定時間的真相在 ScheduledBlock；要讓使用者自己改，就得知道是哪一格。
   const sched = useActiveSchedule();
   // 必須在早退前呼叫，避免資料刷新瞬間找不到 Plan 時違反 React Hook 順序。
-  const health = usePlanScheduleHealth(plan);
+  const health = usePlanScheduleHealth(plan, apiPlans.find(p => p.id === plan?.planId));
 
   if (!plan) {
     return (

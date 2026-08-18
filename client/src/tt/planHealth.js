@@ -69,14 +69,18 @@ export function usePlansNeedingAdjustment(plans) {
     const byId = new Map(rows.map(r => [Number(r.plan_id), r]));
     return plans.map(plan => {
       const health = byId.get(Number(plan.planId));
-      if (!health || health.status === 'healthy' || !health.pending) return null;
-      return { ...health, planId: plan.planId, planKey: plan.key, name: plan.name, needsAdjustment: true };
+      // 網路尚未回來、或舊測試／離線狀態沒有 health endpoint 時，保留只讀的
+      // legacy-compatible fallback；一旦正式 health 到達就會完整取代它。
+      const fallback = planHealth(plan);
+      const effective = health || fallback;
+      if (!effective || effective.status === 'healthy' || effective.needsAdjustment === false || !effective.pending) return null;
+      return { ...effective, planId: plan.planId, planKey: plan.key, name: plan.name, needsAdjustment: true };
     }).filter(Boolean).sort((a, b) => b.pending - a.pending);
   }, [plans, rows]);
 }
 
 // 單一計畫明細也讀同一支正式 health API，不能在 Today 與 Detail 各自猜一次。
-export function usePlanScheduleHealth(plan) {
+export function usePlanScheduleHealth(plan, raw) {
   const id = plan?.isLegacy || plan?.planId == null ? null : plan.planId;
   const [health, setHealth] = useState(null);
   useEffect(() => {
@@ -85,6 +89,7 @@ export function usePlanScheduleHealth(plan) {
     api(`/plans/${id}/health`).then(x => { if (alive) setHealth(x); }).catch(() => { if (alive) setHealth(null); });
     return () => { alive = false; };
   }, [id]);
-  if (!health || health.status === 'healthy' || !health.pending) return null;
+  if (!health) return planHealth(plan, raw);
+  if (health.status === 'healthy' || !health.pending) return null;
   return { ...health, planId: id, planKey: plan?.key, name: plan?.name, needsAdjustment: true };
 }
