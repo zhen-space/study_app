@@ -287,3 +287,98 @@ async function countsFor(userId) {
     activeId: await sched.getActiveVersionId(userId),
   };
 }
+
+describe('P3 Restore：版本是 template，套用永遠建立新版本', () => {
+  test('full restore 建立新版本、保留舊版 immutable，且不在 template 的新 Task 變 unplaced', async () => {
+    const userId = 6;
+    await q.run('INSERT INTO users (id,email,password_hash) VALUES (?,?,?)', [userId, 'restore-full@test', 'x']);
+    const plan = await q.run('INSERT INTO plans (user_id,name,status) VALUES (?,?,?)', [userId, '恢復計畫', 'active']);
+    const task = await q.run('INSERT INTO tasks (user_id,title,plan_id) VALUES (?,?,?)', [userId, '原任務', plan.lastInsertRowid]);
+    const original = await sched.createScheduleVersion(userId, {
+      source: sched.SOURCE.INITIAL, effectiveFrom: '2099-01-01',
+      blocks: [{ task_id: task.lastInsertRowid, date: '2099-02-01', start_time: '19:00', end_time: '20:00' }],
+    });
+    const later = await q.run('INSERT INTO tasks (user_id,title,plan_id,due_date) VALUES (?,?,?,?)',
+      [userId, '後來新增', plan.lastInsertRowid, '2099-02-03']);
+    const current = await sched.createScheduleVersion(userId, {
+      source: sched.SOURCE.AI_REPLAN, effectiveFrom: '2099-01-01',
+      parentVersionId: original.version_id,
+      blocks: [{ task_id: task.lastInsertRowid, date: '2099-02-02', start_time: '19:00', end_time: '20:00' }, { task_id: later.lastInsertRowid, date: '2099-02-03' }],
+    });
+    const preview = await sched.getRestorePreview(userId, original.version_id);
+    assert.equal(preview.status, 'full');
+    assert.equal(preview.base_version_id, current.version_id);
+    assert.deepEqual(preview.unplaced_task_ids, [later.lastInsertRowid]);
+    const restored = await sched.applyRestore(userId, original.version_id, { baseVersionId: preview.base_version_id });
+    assert.equal(restored.applied, true);
+    const restoredVersion = await sched.getVersionWithBlocks(userId, restored.version.version_id);
+    assert.equal(restoredVersion.version.source, 'restore');
+    assert.equal(restoredVersion.version.parent_version_id, current.version_id);
+    assert.equal(restoredVersion.version.restored_from_version_id, original.version_id);
+    assert.deepEqual(restoredVersion.blocks.map(b => [b.task_id, b.date]), [[task.lastInsertRowid, '2099-02-01']]);
+    assert.equal((await q.get('SELECT due_date FROM tasks WHERE id=?', [later.lastInsertRowid])).due_date, null,
+      '★ template 內不存在的 live Plan Task 必須正式變 unplaced');
+    assert.equal((await sched.getBlocks(userId, original.version_id))[0].date, '2099-02-01', '★ template 不可被修改');
+  });
+
+  test('partial restore 需要明確確認；固定行程衝突的任務留 unplaced', async () => {
+    const userId = 7;
+    await q.run('INSERT INTO users (id,email,password_hash) VALUES (?,?,?)', [userId, 'restore-partial@test', 'x']);
+    const plan = await q.run('INSERT INTO plans (user_id,name,status) VALUES (?,?,?)', [userId, '部分恢復', 'active']);
+    const a = await q.run('INSERT INTO tasks (user_id,title,plan_id) VALUES (?,?,?)', [userId, '可恢復', plan.lastInsertRowid]);
+    const b = await q.run('INSERT INTO tasks (user_id,title,plan_id) VALUES (?,?,?)', [userId, '撞固定行程', plan.lastInsertRowid]);
+    const source = await sched.createScheduleVersion(userId, { source: sched.SOURCE.INITIAL, effectiveFrom: '2099-01-01', blocks: [
+      { task_id: a.lastInsertRowid, date: '2099-03-01', start_time: '18:00', end_time: '19:00' },
+      { task_id: b.lastInsertRowid, date: '2099-03-01', start_time: '19:00', end_time: '20:00' },
+    ] });
+    const active = await sched.createScheduleVersion(userId, { source: sched.SOURCE.AI_REPLAN, effectiveFrom: '2099-01-01', parentVersionId: source.version_id, blocks: [] });
+    await q.run('INSERT INTO fixed_events (user_id,title,date,start_time,end_time) VALUES (?,?,?,?,?)',
+      [userId, '社團', '2099-03-01', '19:00', '20:00']);
+    const preview = await sched.getRestorePreview(userId, source.version_id);
+    assert.equal(preview.status, 'partial');
+    assert.equal(preview.conflicts[0].type, 'fixed_event');
+    const before = await countsFor(userId);
+    await assert.rejects(() => sched.applyRestore(userId, source.version_id, { baseVersionId: active.version_id }), /確認/);
+    assert.deepEqual(await countsFor(userId), before, '★ 未確認 partial 不得建立版本');
+    const applied = await sched.applyRestore(userId, source.version_id, { baseVersionId: active.version_id, confirmPartial: true });
+    assert.equal(applied.applied, true);
+    assert.deepEqual((await sched.getBlocks(userId, applied.version.version_id)).map(b => b.task_id), [a.lastInsertRowid]);
+    assert.equal((await q.get('SELECT due_date FROM tasks WHERE id=?', [b.lastInsertRowid])).due_date, null);
+  });
+
+  test('過期 preview 回 409，且不留下新版或 mirror 變動', async () => {
+    const userId = 8;
+    await q.run('INSERT INTO users (id,email,password_hash) VALUES (?,?,?)', [userId, 'restore-stale@test', 'x']);
+    const plan = await q.run('INSERT INTO plans (user_id,name,status) VALUES (?,?,?)', [userId, '過期預覽', 'active']);
+    const task = await q.run('INSERT INTO tasks (user_id,title,plan_id) VALUES (?,?,?)', [userId, '任務', plan.lastInsertRowid]);
+    const source = await sched.createScheduleVersion(userId, { source: sched.SOURCE.INITIAL, effectiveFrom: '2099-01-01', blocks: [{ task_id: task.lastInsertRowid, date: '2099-04-01' }] });
+    const preview = await sched.getRestorePreview(userId, source.version_id);
+    await sched.createScheduleVersion(userId, { source: sched.SOURCE.MANUAL, effectiveFrom: '2099-01-01', parentVersionId: source.version_id, blocks: [{ task_id: task.lastInsertRowid, date: '2099-04-02' }] });
+    const before = await countsFor(userId);
+    await assert.rejects(() => sched.applyRestore(userId, source.version_id, { baseVersionId: preview.base_version_id }), err => err.status === 409);
+    assert.deepEqual(await countsFor(userId), before, '★ stale 不得重試或另建 restore version');
+    assert.equal((await q.get('SELECT due_date FROM tasks WHERE id=?', [task.lastInsertRowid])).due_date, '2099-04-02');
+  });
+
+  test('impossible 與 nothing_to_restore 都不建立新版本', async () => {
+    const userId = 9;
+    await q.run('INSERT INTO users (id,email,password_hash) VALUES (?,?,?)', [userId, 'restore-none@test', 'x']);
+    const plan = await q.run('INSERT INTO plans (user_id,name,status) VALUES (?,?,?)', [userId, '無法恢復', 'active']);
+    const past = await q.run('INSERT INTO tasks (user_id,title,plan_id) VALUES (?,?,?)', [userId, '過去任務', plan.lastInsertRowid]);
+    const vPast = await sched.createScheduleVersion(userId, { source: sched.SOURCE.INITIAL, effectiveFrom: '2000-01-01', blocks: [{ task_id: past.lastInsertRowid, date: '2000-01-02' }] });
+    const impossible = await sched.getRestorePreview(userId, vPast.version_id);
+    assert.equal(impossible.status, 'impossible');
+    const beforeImpossible = await countsFor(userId);
+    assert.equal((await sched.applyRestore(userId, vPast.version_id, { baseVersionId: impossible.base_version_id })).applied, false);
+    assert.deepEqual(await countsFor(userId), beforeImpossible);
+
+    const future = await q.run('INSERT INTO tasks (user_id,title,plan_id) VALUES (?,?,?)', [userId, '已完成任務', plan.lastInsertRowid]);
+    const vDone = await sched.createScheduleVersion(userId, { source: sched.SOURCE.MANUAL, effectiveFrom: '2099-01-01', blocks: [{ task_id: future.lastInsertRowid, date: '2099-05-01' }] });
+    await q.run('UPDATE tasks SET completed=1 WHERE id=?', [future.lastInsertRowid]);
+    const nothing = await sched.getRestorePreview(userId, vDone.version_id);
+    assert.equal(nothing.status, 'nothing_to_restore');
+    const beforeNothing = await countsFor(userId);
+    assert.equal((await sched.applyRestore(userId, vDone.version_id, { baseVersionId: nothing.base_version_id })).applied, false);
+    assert.deepEqual(await countsFor(userId), beforeNothing);
+  });
+});

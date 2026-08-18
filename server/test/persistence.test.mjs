@@ -281,3 +281,41 @@ describe('schedule/apply（Wizard 與 Replan 的唯一寫入入口）', () => {
     assert.equal(preview.body.blocks[0].end_time, '21:00');
   });
 });
+
+/* ---------- P3：Schedule History / Restore API ---------- */
+
+describe('schedule version restore API', () => {
+  test('版本可讀、preview 帶 base_version_id，restore 建立新的 immutable version', async () => {
+    const current = (await active()).body.version;
+    const detail = await api(`/schedule/versions/${current.id}`);
+    assert.equal(detail.status, 200);
+    assert.equal(detail.body.version.id, current.id);
+
+    const preview = await api(`/schedule/versions/${current.id}/restore-preview`);
+    assert.equal(preview.status, 200);
+    assert.equal(preview.body.source_version_id, current.id);
+    assert.equal(preview.body.base_version_id, current.id);
+    assert.ok(['full', 'partial', 'impossible', 'nothing_to_restore'].includes(preview.body.status));
+    if (preview.body.status === 'full') {
+      const restored = await api(`/schedule/versions/${current.id}/restore`, {
+        method: 'POST', body: { base_version_id: preview.body.base_version_id },
+      });
+      assert.equal(restored.status, 200);
+      assert.equal(restored.body.applied, true);
+      assert.notEqual(restored.body.version.version_id, current.id);
+      const now = (await active()).body.version;
+      assert.equal(now.id, restored.body.version.version_id);
+      assert.equal(now.parent_version_id, current.id);
+      assert.equal(now.restored_from_version_id, current.id);
+      assert.equal((await api(`/schedule/versions/${current.id}`)).body.version.id, current.id,
+        '★ restore 不得修改 template version');
+    }
+  });
+
+  test('不存在或不屬於使用者的 restore 版本一律 404', async () => {
+    assert.equal((await api('/schedule/versions/999999/restore-preview')).status, 404);
+    assert.equal((await api('/schedule/versions/999999/restore', {
+      method: 'POST', body: { base_version_id: 1 },
+    })).status, 404);
+  });
+});

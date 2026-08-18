@@ -911,6 +911,27 @@ router.get('/versions/:id', async (req, res) => {
   res.json(r);
 });
 
+// Restore preview：舊版只是一份 template；結果以「現在」的 Task／期限／固定行程
+// 重新判斷。UI 必須把 base_version_id 原樣送回 POST，避免過期 preview 覆蓋新排程。
+router.get('/versions/:id/restore-preview', async (req, res) => {
+  const preview = await sched.getRestorePreview(req.userId, Number(req.params.id));
+  if (!preview) return res.status(404).json({ error: '找不到這個版本' });
+  res.json(preview);
+});
+
+// Restore 永遠建立新的 immutable ScheduleVersion，絕不把舊 row 重新設 active。
+router.post('/versions/:id/restore', async (req, res) => {
+  try {
+    const b = req.body || {};
+    res.json(await sched.applyRestore(req.userId, Number(req.params.id), {
+      baseVersionId: b.base_version_id,
+      confirmPartial: b.confirm_partial === true,
+    }));
+  } catch (e) {
+    res.status(e.status || 500).json({ error: e.message });
+  }
+});
+
 // Wizard 建立與 AI 重排的正式寫入點。Task 的內容異動、軟刪除、版本、
 // active pointer 與 due mirror 都由 persistence service 包進同一筆交易；
 // route 不得直接寫 tasks.due_date / due_time。

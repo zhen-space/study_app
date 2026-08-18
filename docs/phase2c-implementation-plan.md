@@ -35,9 +35,11 @@
 ## 4. Restore preview / apply
 
 - 新增 restore preview / apply service 與 `/versions/:id/restore-preview`、`/restore`。
-- preview 以來源版本作模板、現在 active 作 base，套用現在的 task、fixed event 與 Lock constraints。
+- preview 以來源版本作模板、現在 active 作 base，套用現在的 task、deadline 與 fixed event constraints。
 - apply 必須在 transaction 內以 `base_version_id` 條件更新 active pointer；stale 時回 409，不進 retry。
 - restore 永遠產生新 version，新增 task 保持 unplaced，從不直接重啟舊版。
+- P3 提供版本列表、版本內容與 restore preview 的最小 UI；partial 必須由使用者明確確認。
+- Lock constraint 將在 P4 接入同一條 feasibility 路徑；本批不新增 Lock CRUD 或 UI。
 
 ## 5. Feasibility 與 Lock
 

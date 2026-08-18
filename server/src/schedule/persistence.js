@@ -1,5 +1,5 @@
 import { q } from '../db/init.js';
-import { todayTW } from '../util/date.js';
+import { dayOfWeek, todayTW } from '../util/date.js';
 
 // Phase 2C-P1：排程持久化。
 //
@@ -35,6 +35,33 @@ export class ScheduleInputError extends Error {
     super(message);
     this.name = 'ScheduleInputError';
     this.status = 400;
+  }
+}
+
+// Restore 的 preview 只是一份「以當下資料推導出的提案」。真正套用前必須在
+// transaction 內再算一次，並確認使用者看到的 active version 沒有變；這不是
+// 可重試的 version_no 衝突，否則會靜默覆蓋使用者未看過的新排程。
+export class ScheduleRestoreStaleError extends Error {
+  constructor() {
+    super('目前生效的排程已更新，請重新檢視恢復內容');
+    this.name = 'ScheduleRestoreStaleError';
+    this.status = 409;
+  }
+}
+
+export class ScheduleRestoreConfirmationError extends Error {
+  constructor() {
+    super('此版本只能部分恢復，請確認後再套用');
+    this.name = 'ScheduleRestoreConfirmationError';
+    this.status = 409;
+  }
+}
+
+export class ScheduleVersionNotFoundError extends Error {
+  constructor() {
+    super('找不到這個版本');
+    this.name = 'ScheduleVersionNotFoundError';
+    this.status = 404;
   }
 }
 
@@ -133,6 +160,140 @@ export async function getActiveSchedule(userId) {
 }
 
 /* ============================================================
+   Restore preview / apply（2C-P3）
+   ============================================================ */
+
+const twNowHM = () => new Intl.DateTimeFormat('en-GB', {
+  timeZone: 'Asia/Taipei', hour: '2-digit', minute: '2-digit', hourCycle: 'h23',
+}).format(new Date());
+
+function fixedEventApplies(event, date) {
+  return event.recurring === 'weekly'
+    ? dayOfWeek(event.date) === dayOfWeek(date) && event.date <= date
+    : event.date === date;
+}
+
+function timedOverlap(a, b) {
+  return a.date === b.date && a.start_time && a.end_time && b.start_time && b.end_time
+    && a.start_time < b.end_time && b.start_time < a.end_time;
+}
+
+async function getRestorePreviewFrom(db, userId, sourceVersionId, {
+  planningDay = todayTW(), nowHM = twNowHM(),
+} = {}) {
+  const source = await db.get(
+    'SELECT * FROM schedule_versions WHERE id=? AND user_id=?', [sourceVersionId, userId]);
+  if (!source) return null;
+
+  const [sourceBlocks, liveTasks, events, state] = await Promise.all([
+    db.all(`SELECT id, task_id, date, start_time, end_time, planned_minutes, task_title_snapshot
+              FROM scheduled_blocks WHERE schedule_version_id=? AND user_id=?
+             ORDER BY date, COALESCE(start_time,''), id`, [sourceVersionId, userId]),
+    db.all(`SELECT id, title, plan_id, deadline_date, deleted, completed
+              FROM tasks WHERE user_id=?`, [userId]),
+    db.all('SELECT date,start_time,end_time,recurring,title FROM fixed_events WHERE user_id=?', [userId]),
+    db.get('SELECT active_version_id FROM user_schedule_state WHERE user_id=?', [userId]),
+  ]);
+  const tasks = new Map(liveTasks.map(t => [Number(t.id), t]));
+  const candidates = [];
+  const conflicts = [];
+  const skipped = [];
+
+  for (const block of sourceBlocks) {
+    const task = tasks.get(Number(block.task_id));
+    if (!task || task.deleted) { skipped.push({ task_id: block.task_id, reason: 'deleted' }); continue; }
+    if (task.completed) { skipped.push({ task_id: block.task_id, reason: 'completed' }); continue; }
+    if (task.plan_id == null) { conflicts.push({ task_id: block.task_id, block_id: block.id, type: 'task_constraint', message: '任務已不屬於計畫，無法恢復', block }); continue; }
+    const isPast = block.date < planningDay
+      || (block.date === planningDay && block.end_time && block.end_time <= nowHM);
+    if (isPast) { conflicts.push({ task_id: block.task_id, block_id: block.id, type: 'past', message: '原安排時間已過去，無法恢復', block }); continue; }
+    if (task.deadline_date && block.date > task.deadline_date) {
+      conflicts.push({ task_id: block.task_id, block_id: block.id, type: 'deadline', message: '目前期限早於原安排日期，無法恢復', block, deadline_date: task.deadline_date });
+      continue;
+    }
+    const fixed = events.find(event => fixedEventApplies(event, block.date) && timedOverlap(block, event));
+    if (fixed) { conflicts.push({ task_id: block.task_id, block_id: block.id, type: 'fixed_event', message: `與固定行程「${fixed.title}」衝突`, block, event_title: fixed.title }); continue; }
+    candidates.push({ id: block.id, task_id: block.task_id, date: block.date, start_time: block.start_time, end_time: block.end_time, planned_minutes: block.planned_minutes, task_title_snapshot: block.task_title_snapshot });
+  }
+
+  // 舊版若本身有 timed overlap，也不能因為它曾經存在就重新寫回 active snapshot。
+  // 每一個撞到的 placement 都列出，讓 UI 明確告知無法恢復的原因。
+  const collided = new Set();
+  for (let i = 0; i < candidates.length; i++) for (let j = i + 1; j < candidates.length; j++) {
+    if (timedOverlap(candidates[i], candidates[j])) { collided.add(i); collided.add(j); }
+  }
+  const restorableBlocks = candidates.filter((block, i) => {
+    if (!collided.has(i)) return true;
+    conflicts.push({ task_id: block.task_id, block_id: block.id, type: 'schedule_collision', message: '這個版本內有重疊時段，無法原位恢復', block });
+    return false;
+  });
+
+  const scheduledIds = new Set(restorableBlocks.map(b => Number(b.task_id)));
+  const conflictIds = new Set(conflicts.map(c => Number(c.task_id)));
+  // Restore 不 overlay active：template 中沒有的新任務，以及無法恢復的有效任務，
+  // 都會是新版本的 unplaced。completed/deleted 已退出 future schedule，不列入。
+  const unplacedTaskIds = liveTasks.filter(t => t.plan_id != null && !t.deleted && !t.completed && !scheduledIds.has(Number(t.id)))
+    .map(t => Number(t.id));
+  const status = restorableBlocks.length === 0
+    ? (conflicts.length ? 'impossible' : 'nothing_to_restore')
+    : (conflicts.length ? 'partial' : 'full');
+  return {
+    source_version_id: source.id,
+    source_version: source,
+    base_version_id: state?.active_version_id ?? null,
+    planning_day: planningDay,
+    status,
+    restorable_blocks: restorableBlocks,
+    conflicts,
+    skipped,
+    skipped_completed: skipped.filter(s => s.reason === 'completed').map(s => s.task_id),
+    skipped_deleted: skipped.filter(s => s.reason === 'deleted').map(s => s.task_id),
+    unplaced_task_ids: unplacedTaskIds,
+    summary: {
+      source_block_count: sourceBlocks.length,
+      restorable_count: restorableBlocks.length,
+      conflict_count: conflicts.length,
+      skipped_count: skipped.length,
+      unplaced_count: unplacedTaskIds.length,
+      conflict_task_ids: [...conflictIds],
+    },
+  };
+}
+
+export async function getRestorePreview(userId, sourceVersionId) {
+  return getRestorePreviewFrom(q, userId, sourceVersionId);
+}
+
+// `confirmPartial` 只允許使用者明確接受「衝突任務變 unplaced」時才建立 partial
+// restore version。full 不需要二次確認；impossible/nothing 都不會寫任何資料。
+export async function applyRestore(userId, sourceVersionId, { baseVersionId, confirmPartial = false } = {}) {
+  if (!Number.isInteger(Number(sourceVersionId))) throw new ScheduleInputError('恢復版本不正確');
+  return serializeWrite(() => withVersionNoRetry(() => q.tx(async tx => {
+    const state = await tx.get('SELECT active_version_id FROM user_schedule_state WHERE user_id=?', [userId]);
+    const preview = await getRestorePreviewFrom(tx, userId, Number(sourceVersionId));
+    if (!preview) throw new ScheduleVersionNotFoundError();
+    if (Number(state?.active_version_id ?? -1) !== Number(baseVersionId ?? -1)) throw new ScheduleRestoreStaleError();
+    // getRestorePreviewFrom 會讀現在的 state；上面的 stale 檢查與這裡必須一致。
+    if (Number(preview.base_version_id ?? -1) !== Number(baseVersionId ?? -1)) throw new ScheduleRestoreStaleError();
+    if (preview.status === 'nothing_to_restore' || preview.status === 'impossible') {
+      return { applied: false, preview };
+    }
+    if (preview.status === 'partial' && !confirmPartial) throw new ScheduleRestoreConfirmationError();
+    validateTimedBlockOverlaps(preview.restorable_blocks);
+    const version = await createScheduleVersionInTx(tx, userId, {
+      source: SOURCE.RESTORE,
+      reason: `恢復版本 V${preview.source_version.version_no}`,
+      effectiveFrom: preview.planning_day,
+      parentVersionId: state?.active_version_id ?? null,
+      restoredFromVersionId: preview.source_version.id,
+      blocks: preview.restorable_blocks,
+      expectedActiveVersionId: state?.active_version_id ?? null,
+    });
+    return { applied: true, version, preview };
+  })));
+}
+
+/* ============================================================
    建立版本（atomic）
    ============================================================ */
 
@@ -166,7 +327,7 @@ export async function createScheduleVersion(userId, {
 async function createScheduleVersionInTx(tx, userId, {
   source, reason = '', effectiveFrom = null,
   parentVersionId = null, restoredFromVersionId = null,
-  blocks = [], setActive = true, onlyIfNoActive = false,
+  blocks = [], setActive = true, onlyIfNoActive = false, expectedActiveVersionId = undefined,
 }) {
     const effFrom = effectiveFrom || todayTW();
     // bootstrap 的正確性不能依賴 transaction 外的預讀或同程序 writeQueue。
@@ -217,12 +378,22 @@ async function createScheduleVersionInTx(tx, userId, {
 
     // ③ active 切換
     if (setActive) {
-      await tx.run(
-        `INSERT INTO user_schedule_state (user_id, active_version_id, updated_at)
-         VALUES (?,?,CURRENT_TIMESTAMP)
-         ON CONFLICT(user_id) DO UPDATE SET active_version_id=excluded.active_version_id,
-                                            updated_at=CURRENT_TIMESTAMP`,
-        [userId, versionId]);
+      if (expectedActiveVersionId !== undefined) {
+        // Restore 的 optimistic lock：transaction 開頭檢查只是早期失敗訊息；真正
+        // 切 active 時還要以條件式 UPDATE 保證 base 沒變。stale 不能 retry。
+        const swapped = await tx.run(
+          `UPDATE user_schedule_state SET active_version_id=?, updated_at=CURRENT_TIMESTAMP
+            WHERE user_id=? AND active_version_id IS ?`,
+          [versionId, userId, expectedActiveVersionId]);
+        if (swapped.changes !== 1) throw new ScheduleRestoreStaleError();
+      } else {
+        await tx.run(
+          `INSERT INTO user_schedule_state (user_id, active_version_id, updated_at)
+           VALUES (?,?,CURRENT_TIMESTAMP)
+           ON CONFLICT(user_id) DO UPDATE SET active_version_id=excluded.active_version_id,
+                                              updated_at=CURRENT_TIMESTAMP`,
+          [userId, versionId]);
+      }
       // ④ 鏡射
       await mirrorDueDates(tx, userId, versionId);
     }

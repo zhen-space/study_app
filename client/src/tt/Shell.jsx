@@ -14,6 +14,7 @@ import PetView from './PetView';
 import WizardView from './WizardView';
 import VocabView from './VocabView';
 import MemoView from './MemoView';
+import ScheduleHistoryView from './ScheduleHistoryView';
 import Companion from './Companion';
 import Icon, { LIST_ICONS, LIST_COLORS } from './Icons';
 
@@ -163,7 +164,7 @@ export default function Shell({ onLogout }) {
   // 主導航（桌面側邊欄也照同一套 IA）
   const mainNav = [['today', 'today', '今天'], ['plans', 'wizard', '計畫'], ['study', 'pomo', '讀書'], ['tasks', 'all', '任務'], ['calendar', 'calendar', '行事曆']];
   // 不屬於五大主導航的既有功能：一個都沒刪，收在「更多」
-  const pages = [['wizard', 'wizard', '排程精靈'], ['vocab', 'book', '單字本'], ['memo', 'note', '備忘錄'], ['matrix', 'matrix', '矩陣'], ['habits', 'habit', '習慣'], ['pet', 'paw', '寵物'], ['stats', 'stats', '統計']];
+  const pages = [['wizard', 'wizard', '排程精靈'], ['schedule-history', 'calendar', '排程紀錄'], ['vocab', 'book', '單字本'], ['memo', 'note', '備忘錄'], ['matrix', 'matrix', '矩陣'], ['habits', 'habit', '習慣'], ['pet', 'paw', '寵物'], ['stats', 'stats', '統計']];
 
   const is = v => JSON.stringify(view) === JSON.stringify(v);
   const titleOf = () => {
@@ -272,6 +273,7 @@ export default function Shell({ onLogout }) {
             adjustPlan={(planId, section) => setView({ type: 'wizard', mode: 'edit', planId, section, from: view.key })} />
         : view.type === 'study' || view.type === 'pomo' ? <StudyView tasks={tasks.filter(t => !t.deleted)} />
         : view.type === 'calendar' ? <CalendarView tasks={tasks.filter(t => !t.deleted)} reload={reload} />
+        : view.type === 'schedule-history' ? <ScheduleHistoryView onRestored={() => reload('tasks')} />
         : view.type === 'matrix' ? <MatrixView tasks={tasks.filter(t => !t.deleted)} reload={reload} />
         : view.type === 'habits' ? <HabitsView habits={habits} reload={reload} />
         : view.type === 'stats' ? <StatsView />
