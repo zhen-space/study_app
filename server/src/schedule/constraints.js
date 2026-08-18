@@ -1,8 +1,8 @@
 // C：structured constraint contract。這裡是唯一的 allowlist；不在清單內的條件
 // 絕不偷偷丟進 scheduler，也不會假裝已生效。
-const SUPPORTED = new Set(['subject_order', 'exclude_weekdays', 'exclude_dates', 'date_window']);
+const SUPPORTED = new Set(['subject_order', 'exclude_weekdays', 'exclude_dates', 'date_window', 'max_session_minutes']);
 const KNOWN_UNSUPPORTED = new Set([
-  'preferred_time_ranges', 'min_session_minutes', 'max_session_minutes', 'max_per_day',
+  'preferred_time_ranges', 'min_session_minutes', 'max_per_day',
   'deadline', 'spread', 'sequential_within_subject', 'one_per_day',
   'availability_override', 'strict_dependency',
 ]);
@@ -18,6 +18,9 @@ export function normalizeConstraints(input = {}) {
         && /^\d{4}-\d\d-\d\d$/.test(value.start_date || '') && /^\d{4}-\d\d-\d\d$/.test(value.end_date || '')
         && value.start_date <= value.end_date) {
         supported[key] = { start_date: value.start_date, end_date: value.end_date }; accepted = true;
+      }
+      if (key === 'max_session_minutes' && Number.isInteger(value) && value >= 30 && value <= 240) {
+        supported[key] = value; accepted = true;
       }
       if (!accepted) unsupported.push({ key, value, reason: '排程條件格式不正確' });
     } else {

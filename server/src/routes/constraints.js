@@ -30,7 +30,7 @@ router.post('/plans/:id/constraints/parse', async (req, res) => {
   try {
     const response = await new Anthropic().messages.create({
       model: 'claude-opus-4-8', max_tokens: 1000,
-      system: `把學生的排程自然語言轉成 JSON。只能輸出 JSON，不可臆測。支援欄位：subject_order（科目 id 陣列）、exclude_weekdays（0=週日..6）、exclude_dates（YYYY-MM-DD）、date_window（{start_date,end_date}）。其他需求一律照原 key 放在 JSON，但不得假稱生效。科目：${JSON.stringify(lists)}。`,
+      system: `把學生的排程自然語言轉成 JSON。只能輸出 JSON，不可臆測。支援欄位：subject_order（科目 id 陣列）、exclude_weekdays（0=週日..6）、exclude_dates（YYYY-MM-DD）、date_window（{start_date,end_date}）、max_session_minutes（30 到 240 的整數）。其他需求一律照原 key 放在 JSON，但不得假稱生效。科目：${JSON.stringify(lists)}。`,
       messages: [{ role: 'user', content: source }],
     });
     const text = response.content.find(x => x.type === 'text')?.text || '{}';

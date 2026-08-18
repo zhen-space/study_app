@@ -237,7 +237,9 @@ router.post('/preview', async (req, res) => {
   if (!days.length) return res.status(400).json({ error: '沒有可排的日期' });
   days.forEach(d => { d.pos = d.slots[0]?.[0] ?? null; });
 
-  const CHUNK = 90, BREAK = 10;
+  // 已確認的單次最長讀書時間是 scheduler 的正式 input，不是讓 AI 直接挑日期。
+  // 下限 30 / 上限 240 已由 constraint contract 驗證；未設定保留既有 90 分鐘。
+  const CHUNK = confirmedConstraints.max_session_minutes || 90, BREAK = 10;
   // 純題目（單元練習／歷屆試題）同一天同一科最多幾份：
   // 理想是 1，範圍真的不夠時退讓到 2（使用者：「就一天兩單元吧」），不會有第 3 份
   const ONE_CAP = 2;

@@ -66,6 +66,22 @@ test('Master C：確認過的 date_window 是 scheduler 的 hard window，不會
   assert.equal(preview.body.blocks[0].date >= '2099-01-12' && preview.body.blocks[0].date <= '2099-01-13', true);
 });
 
+test('Master C：確認過的 max_session_minutes 會限制 timed placement 的每一段', async () => {
+  const plan = await api('/plans', { method: 'POST', body: { name: '單次長度計畫' } });
+  const saved = await api(`/plans/${plan.body.id}/constraints`, { method: 'PUT', body: { intent: { max_session_minutes: 60 } } });
+  assert.equal(saved.body.supported.max_session_minutes, 60);
+  const preview = await api('/schedule/preview', { method: 'POST', body: {
+    plan_id: plan.body.id, timed: true, startDate: '2099-01-12', endDate: '2099-01-14',
+    items: [{ subject_id: 1, title: '長任務', minutes: 120, spread: false, start: '2099-01-12', end: '2099-01-14' }],
+  } });
+  assert.equal(preview.status, 200);
+  assert.equal(preview.body.blocks.length, 2);
+  assert.equal(preview.body.blocks.every(b => {
+    const [sh, sm] = b.start_time.split(':').map(Number); const [eh, em] = b.end_time.split(':').map(Number);
+    return (eh * 60 + em) - (sh * 60 + sm) <= 60;
+  }), true);
+});
+
 test('Master A：Plan Task 的明確工作量會進入正式 health gap，舊資料不猜分鐘', async () => {
   const plan = await api('/plans', { method: 'POST', body: { name: '工作量計畫' } });
   const task = await api('/tasks', { method: 'POST', body: { title: '需要兩小時', plan_id: plan.body.id, estimated_minutes: 120 } });
