@@ -9,6 +9,30 @@ const REASON = {
   fixed_event: '與目前的固定行程衝突', schedule_collision: '版本內有重疊時段',
 };
 const fmt = v => v ? String(v).replace('T', ' ').slice(0, 16) : '';
+const placement = blocks => (blocks || []).map(b => `${b.date}${b.start_time ? ` ${b.start_time}${b.end_time ? `–${b.end_time}` : ''}` : ''}`).join('、');
+
+function VersionDiff({ diff }) {
+  if (!diff) return null;
+  if (diff.is_initial) return <SurfaceCard style={{ marginTop: 'var(--sp-3)' }}>
+    <b>初次建立排程</b><div className="ui-meta" style={{ marginTop: 4 }}>此版本建立了 {diff.summary.added} 個安排。</div>
+  </SurfaceCard>;
+  const items = diff.items.filter(item => item.type !== 'unchanged');
+  const label = { moved: '時間有調整', added: '新安排', removed: '移出目前安排' };
+  return <SurfaceCard style={{ marginTop: 'var(--sp-3)' }}>
+    <b>這次改了什麼</b>
+    {!items.length && <div className="ui-meta" style={{ marginTop: 6 }}>排程位置沒有變動。</div>}
+    <div style={{ marginTop: 'var(--sp-3)', display: 'grid', gap: 8 }}>
+      {items.map(item => <div key={item.task_id}>
+        <div className="row"><span>{item.task_title_snapshot || `任務 #${item.task_id}`}</span><span className="chip" style={{ marginLeft: 'auto' }}>{label[item.type] || item.type}</span></div>
+        <div className="ui-meta" style={{ marginTop: 3 }}>
+          {item.type === 'moved' && `${placement(item.before_blocks)} → ${placement(item.after_blocks)}`}
+          {item.type === 'added' && `新增到 ${placement(item.after_blocks)}`}
+          {item.type === 'removed' && `從 ${placement(item.before_blocks)} 移出排程`}
+        </div>
+      </div>)}
+    </div>
+  </SurfaceCard>;
+}
 
 function VersionBlocks({ version }) {
   if (!version) return null;
@@ -30,6 +54,7 @@ function VersionBlocks({ version }) {
 export default function ScheduleHistoryView({ onRestored }) {
   const [versions, setVersions] = useState([]);
   const [selected, setSelected] = useState(null);
+  const [diff, setDiff] = useState(null);
   const [preview, setPreview] = useState(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
@@ -39,7 +64,12 @@ export default function ScheduleHistoryView({ onRestored }) {
   useEffect(() => { load(); }, []);
   async function openVersion(id) {
     setError('');
-    try { setSelected(await api(`/schedule/versions/${id}`)); } catch (e) { setError(e.message); }
+    try {
+      const [version, versionDiff] = await Promise.all([
+        api(`/schedule/versions/${id}`), api(`/schedule/versions/${id}/diff?include_unchanged=0`),
+      ]);
+      setSelected(version); setDiff(versionDiff);
+    } catch (e) { setError(e.message); }
   }
   async function openRestore() {
     if (!selected) return;
@@ -71,6 +101,7 @@ export default function ScheduleHistoryView({ onRestored }) {
           <div className="ui-meta" style={{ marginTop: 5 }}>{v.reason || '未填寫說明'} · {v.block_count} 個安排 · {fmt(v.created_at)}</div>
         </SurfaceCard>)}
         <VersionBlocks version={selected} />
+        <VersionDiff diff={diff} />
         {selected && <Button variant="primary" block size="lg" style={{ marginTop: 'var(--sp-4)' }} onClick={openRestore} disabled={busy}>恢復這個版本</Button>}
       </div>
       {preview && <BottomSheet onClose={() => setPreview(null)} label="恢復排程版本">

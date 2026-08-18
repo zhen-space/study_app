@@ -1,6 +1,7 @@
 import { q } from '../db/init.js';
 import { dayOfWeek, todayTW } from '../util/date.js';
 import { checkLocks } from './locks.js';
+import { calculateScheduleDiff } from './diff.js';
 
 // Phase 2C-P1：排程持久化。
 //
@@ -130,6 +131,31 @@ export async function getVersionWithBlocks(userId, versionId) {
   const version = await getVersion(userId, versionId);
   if (!version) return null;
   return { version, blocks: await getBlocks(userId, version.id) };
+}
+
+// 歷史 diff 一律 child → parent，使用 child.effective_from 排除已經成為歷史的
+// base blocks。沒有 parent 的初版只回初次建立摘要，不把整份初始排程假裝成變更。
+export async function getVersionDiff(userId, versionId, { includeUnchanged = true } = {}) {
+  const candidate = await getVersion(userId, versionId);
+  if (!candidate) return null;
+  const after = await getBlocks(userId, candidate.id);
+  if (candidate.parent_version_id == null) {
+    return calculateScheduleDiff([], after, {
+      comparisonFrom: candidate.effective_from,
+      candidateVersionId: candidate.id,
+      isInitial: true,
+    });
+  }
+  const base = await getVersion(userId, candidate.parent_version_id);
+  // 正常資料不會發生，但 parent 缺失時不能拿別人的 version 作 baseline。
+  if (!base) return null;
+  const before = await getBlocks(userId, base.id);
+  return calculateScheduleDiff(before, after, {
+    comparisonFrom: candidate.effective_from,
+    baseVersionId: base.id,
+    candidateVersionId: candidate.id,
+    includeUnchanged,
+  });
 }
 
 export async function listVersions(userId, limit = 30) {

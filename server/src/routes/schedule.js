@@ -945,6 +945,16 @@ router.get('/versions', async (req, res) => {
   res.json(await sched.listVersions(req.userId));
 });
 
+// 版本 diff 由 immutable snapshot 即時計算，絕不新增 schedule_diffs table。
+// include_unchanged=0 讓版本紀錄 UI 預設不搬運大量沒有變化的項目。
+router.get('/versions/:id/diff', async (req, res) => {
+  const diff = await sched.getVersionDiff(req.userId, Number(req.params.id), {
+    includeUnchanged: req.query.include_unchanged !== '0',
+  });
+  if (!diff) return res.status(404).json({ error: '找不到這個版本' });
+  res.json(diff);
+});
+
 const twHM = () => new Intl.DateTimeFormat('en-GB', { timeZone: 'Asia/Taipei', hour: '2-digit', minute: '2-digit', hourCycle: 'h23' }).format(new Date());
 router.get('/locks', async (req, res) => {
   const includeExpired = req.query.includeExpired === '1';
