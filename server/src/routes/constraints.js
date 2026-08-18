@@ -5,6 +5,22 @@ import { normalizeConstraints, constraintContract } from '../schedule/constraint
 import Anthropic from '@anthropic-ai/sdk';
 const router = Router(); router.use(requireAuth);
 async function ownPlan(id, userId) { return q.get('SELECT id FROM plans WHERE id=? AND user_id=?', [id, userId]); }
+const PROFILE_KEYS = ['timed','limitPerDay','perDay','pace','excludeWeekdays','excludeDates','skipIfBusyHours','subjectOrder'];
+const profile = input => Object.fromEntries(PROFILE_KEYS.filter(k => input?.[k] !== undefined).map(k => [k, input[k]]));
+router.get('/plans/:id/schedule-profile', async (req, res) => {
+  if (!await ownPlan(req.params.id, req.userId)) return res.status(404).json({ error: '找不到這個計畫' });
+  const row = await q.get('SELECT profile_json FROM plan_schedule_profiles WHERE plan_id=? AND user_id=?', [req.params.id, req.userId]);
+  res.json(row ? JSON.parse(row.profile_json || '{}') : {});
+});
+router.put('/plans/:id/schedule-profile', async (req, res) => {
+  if (!await ownPlan(req.params.id, req.userId)) return res.status(404).json({ error: '找不到這個計畫' });
+  const value = profile(req.body);
+  if (value.pace && !['even','front'].includes(value.pace)) return res.status(400).json({ error: '排程節奏不正確' });
+  if (value.perDay != null && (!Number.isInteger(value.perDay) || value.perDay < 0 || value.perDay > 99)) return res.status(400).json({ error: '每日數量不正確' });
+  await q.run(`INSERT INTO plan_schedule_profiles (plan_id,user_id,profile_json,updated_at) VALUES (?,?,?,CURRENT_TIMESTAMP)
+    ON CONFLICT(plan_id) DO UPDATE SET profile_json=excluded.profile_json,updated_at=CURRENT_TIMESTAMP`, [req.params.id, req.userId, JSON.stringify(value)]);
+  res.json(value);
+});
 router.get('/plans/:id/constraints', async (req, res) => {
   if (!await ownPlan(req.params.id, req.userId)) return res.status(404).json({ error: '找不到這個計畫' });
   const row = await q.get('SELECT * FROM plan_constraints WHERE plan_id=? AND user_id=?', [req.params.id, req.userId]);

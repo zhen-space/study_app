@@ -1,4 +1,5 @@
 // 產生 /schedule/preview request 的唯一一處 mapping。
+import { api } from '../api';
 //
 // 排程精靈（建立／調整）與 Today 的 AI 重排都走這裡，兩邊不各組一份 body，
 // 免得同一個計畫在不同入口被用不同的語意排一次。
@@ -99,6 +100,14 @@ export function saveConfirmedConditions(planId, conditions) {
   for (const k of CONDITION_FIELDS) if (conditions?.[k] !== undefined) out[k] = conditions[k];
   try { localStorage.setItem(CONFIRMED_KEY(planId), JSON.stringify(out)); } catch {}
   return out;
+}
+
+// localStorage 僅作離線／既有資料 fallback；新成功排程同步寫入後端，讓跨裝置
+// 重排能拿到相同 profile，不能把它當正式 source of truth。
+export async function persistConfirmedConditions(planId, conditions) {
+  const value = saveConfirmedConditions(planId, conditions);
+  if (planId != null) await api(`/plans/${planId}/schedule-profile`, { method: 'PUT', body: value || {} });
+  return value;
 }
 
 export function readConfirmedConditions(planId) {

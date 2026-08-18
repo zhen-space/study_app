@@ -53,6 +53,13 @@ test('Master C：只有確認後的 supported constraint 會保存，unsupported
   assert.equal(saved.body.unsupported[0].key, 'strict_dependency');
 });
 
+test('Master C：排程 profile 屬於正式 Plan，跨裝置不依賴 localStorage', async () => {
+  const plan = await api('/plans', { method: 'POST', body: { name: '排程設定計畫' } });
+  const put = await api(`/plans/${plan.body.id}/schedule-profile`, { method: 'PUT', body: { timed: true, perDay: 3, pace: 'even' } });
+  assert.equal(put.status, 200);
+  assert.deepEqual((await api(`/plans/${plan.body.id}/schedule-profile`)).body, { timed: true, perDay: 3, pace: 'even' });
+});
+
 test('Master C：確認過的 date_window 是 scheduler 的 hard window，不會覆寫 task deadline', async () => {
   const plan = await api('/plans', { method: 'POST', body: { name: '日期窗計畫' } });
   const saved = await api(`/plans/${plan.body.id}/constraints`, { method: 'PUT', body: { intent: { date_window: { start_date: '2099-01-12', end_date: '2099-01-14' } } } });

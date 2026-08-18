@@ -233,6 +233,12 @@ CREATE TABLE IF NOT EXISTS plan_constraints (
   confirmed_at TEXT,
   updated_at TEXT DEFAULT CURRENT_TIMESTAMP
 );
+CREATE TABLE IF NOT EXISTS plan_schedule_profiles (
+  plan_id INTEGER PRIMARY KEY,
+  user_id INTEGER NOT NULL,
+  profile_json TEXT NOT NULL DEFAULT '{}',
+  updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+);
 -- ↓ 以下三張表 Phase 2A 只建不寫。排程持久化是 Phase 2C；
 -- 先建好是為了避免之後又動一次 schema。
 -- 注意：version 屬於「使用者的排程」而不是某一個 Plan——同一天可能同時在排
