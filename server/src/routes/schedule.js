@@ -98,6 +98,22 @@ router.post('/preview', async (req, res) => {
   if (req.body.sleep_start) settings.sleep_start = req.body.sleep_start;
   if (req.body.sleep_end) settings.sleep_end = req.body.sleep_end;
   const events = await q.all('SELECT * FROM fixed_events WHERE user_id=?', [req.userId]);
+  // Master Plan B：新 routine 與舊 fixed_events 並存。舊資料不搬、不刪；
+  // scheduler 直接讀結構化 routine，class/fixed_event/sleep/meal 都視為 busy。
+  const routines = await q.all('SELECT * FROM availability_routines WHERE user_id=? AND enabled=1', [req.userId]);
+  const exceptions = await q.all('SELECT * FROM routine_exceptions WHERE user_id=?', [req.userId]);
+  for (const routine of routines) {
+    if (!routine.start_time || !routine.end_time || routine.type === 'availability') continue;
+    let weekdays = []; try { weekdays = JSON.parse(routine.weekdays || '[]'); } catch {}
+    for (let date = minD; date <= maxD; date = addDays(date, 1)) {
+      if (!weekdays.includes(dayOfWeek(date))) continue;
+      if (exceptions.some(x => Number(x.routine_id) === Number(routine.id) && x.date === date && x.kind === 'cancel')) continue;
+      events.push({ title: routine.title || routine.type, date, start_time: routine.start_time, end_time: routine.end_time, recurring: null, _routine: true });
+    }
+  }
+  for (const exception of exceptions.filter(x => x.kind === 'unavailable' && x.start_time && x.end_time)) {
+    events.push({ title: exception.title || '例外日', date: exception.date, start_time: exception.start_time, end_time: exception.end_time, recurring: null, _exception: true });
+  }
   // P4 preview 第一層防線：Lock 不只扣掉空間，還要 freeze active placement。
   // apply 仍會在 transaction 用 pure validator 再驗一次，不能只信 preview。
   const lockRows = await q.all(`SELECT l.*, t.deleted, t.completed FROM schedule_locks l
