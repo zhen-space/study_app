@@ -303,6 +303,12 @@ export async function initSchema() {
   // block，但那是生成器的不變式、不是 schema 的。未來要支援「一個任務拆兩段」時
   // schema 不該擋路（§2.2）。這條由測試守。
   try { await client.execute("CREATE INDEX IF NOT EXISTS idx_tasks_plan ON tasks(plan_id)"); } catch {}
+  // 2C-P4：Lock 是 current-state constraint；主動解鎖採 soft release，過期由讀取推導。
+  try { await client.execute("ALTER TABLE schedule_locks ADD COLUMN released_at TEXT"); } catch {}
+  try { await client.execute("ALTER TABLE schedule_locks ADD COLUMN release_reason TEXT"); } catch {}
+  try { await client.execute("CREATE INDEX IF NOT EXISTS idx_locks_user_live ON schedule_locks(user_id, released_at)"); } catch {}
+  try { await client.execute("CREATE INDEX IF NOT EXISTS idx_locks_task ON schedule_locks(task_id)"); } catch {}
+  try { await client.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_locks_task_one ON schedule_locks(user_id, task_id) WHERE type='task' AND released_at IS NULL"); } catch {}
   try { await client.execute("CREATE INDEX IF NOT EXISTS idx_plans_user ON plans(user_id, status)"); } catch {}
   // 舊資料的分類補進「記住的分類」清單，之後直接用選的
   try { await client.execute("INSERT INTO memo_categories (user_id,name,order_index) SELECT DISTINCT user_id,category,0 FROM memos WHERE category<>'' AND category IS NOT NULL AND NOT EXISTS (SELECT 1 FROM memo_categories c WHERE c.user_id=memos.user_id AND c.name=memos.category)"); } catch {}

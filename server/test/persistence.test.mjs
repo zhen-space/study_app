@@ -280,6 +280,103 @@ describe('schedule/apply（Wizard 與 Replan 的唯一寫入入口）', () => {
     assert.equal(preview.body.blocks[0].start_time, '20:00');
     assert.equal(preview.body.blocks[0].end_time, '21:00');
   });
+
+  // mutation guard：Task Lock 的原 block 若沒有同時進入 busy intervals，
+  // preview 會把另一個 current-Plan 任務塞到 19:00–20:00，最後才在 apply 撞牆。
+  test('Task Lock 在 preview 釘住完整 block set，也占用對其他候選任務的時段', async () => {
+    const { body: plan } = await mkPlan({ name: 'Preview Task Lock' });
+    const date = day(20);
+    const initial = await api('/schedule/apply', {
+      method: 'POST', body: {
+        plan_id: plan.id, source: 'initial',
+        task_creates: [{ client_key: 'locked', title: '已鎖定任務' }],
+        blocks: [{ client_key: 'locked', date, start_time: '19:00', end_time: '20:00', planned_minutes: 60 }],
+      },
+    });
+    const taskId = initial.body.created[0].id;
+    assert.equal((await api('/schedule/locks', { method: 'POST', body: { type: 'task', task_id: taskId } })).status, 201);
+    const preview = await api('/schedule/preview', {
+      method: 'POST', body: {
+        plan_id: plan.id, timed: true, perDay: 0, pace: 'even',
+        sleep_start: '21:00', sleep_end: '19:00', startDate: date, endDate: date,
+        items: [
+          { task_id: taskId, subject_id: 1, title: '已鎖定任務', minutes: 60, start: date, end: date },
+          { subject_id: 2, title: '另一個任務', minutes: 60, start: date, end: date },
+        ],
+      },
+    });
+    assert.equal(preview.status, 200);
+    assert.deepEqual(preview.body.blocks.map(b => [b.task_id ?? null, b.title, b.start_time, b.end_time]), [
+      [taskId, '已鎖定任務', '19:00', '20:00'],
+      [null, '另一個任務', '20:00', '21:00'],
+    ]);
+  });
+
+  // mutation guard：Time Lock 不是只有「19:00–20:00 不可排」，而是要連同
+  // 原 placement 一起 freeze。移除 Time/Day pinned 邏輯時，已排任務會從候選消失。
+  test('Time Lock 保留重疊的完整 active block，空白鎖定區仍不可新增任務', async () => {
+    const { body: plan } = await mkPlan({ name: 'Preview Time Lock' });
+    const date = day(21);
+    const initial = await api('/schedule/apply', {
+      method: 'POST', body: {
+        plan_id: plan.id, source: 'initial',
+        task_creates: [{ client_key: 'partial', title: '部分重疊任務' }],
+        blocks: [{ client_key: 'partial', date, start_time: '18:30', end_time: '19:30', planned_minutes: 60 }],
+      },
+    });
+    const taskId = initial.body.created[0].id;
+    assert.equal((await api('/schedule/locks', { method: 'POST', body: {
+      type: 'time', date, start_time: '19:00', end_time: '20:00',
+    } })).status, 201);
+    const preview = await api('/schedule/preview', {
+      method: 'POST', body: {
+        plan_id: plan.id, timed: true, perDay: 0, pace: 'even',
+        sleep_start: '21:00', sleep_end: '18:00', startDate: date, endDate: date,
+        items: [
+          { task_id: taskId, subject_id: 1, title: '部分重疊任務', minutes: 60, start: date, end: date },
+          { subject_id: 2, title: '鎖定區外的新任務', minutes: 60, start: date, end: date },
+        ],
+      },
+    });
+    assert.equal(preview.status, 200);
+    assert.deepEqual(preview.body.blocks.map(b => [b.task_id ?? null, b.title, b.start_time, b.end_time]), [
+      [taskId, '部分重疊任務', '18:30', '19:30'],
+      [null, '鎖定區外的新任務', '20:00', '21:00'],
+    ]);
+  });
+
+  test('Day Lock 保留當天 timed 與 date-only block，且新增任務必須排到別天', async () => {
+    const { body: plan } = await mkPlan({ name: 'Preview Day Lock' });
+    const date = day(22), tomorrow = day(23);
+    const initial = await api('/schedule/apply', {
+      method: 'POST', body: {
+        plan_id: plan.id, source: 'initial',
+        task_creates: [{ client_key: 'timed', title: '當天計時' }, { client_key: 'untimed', title: '當天日期任務' }],
+        blocks: [
+          { client_key: 'timed', date, start_time: '18:00', end_time: '19:00', planned_minutes: 60 },
+          { client_key: 'untimed', date },
+        ],
+      },
+    });
+    const [timedId, untimedId] = initial.body.created.map(x => x.id);
+    assert.equal((await api('/schedule/locks', { method: 'POST', body: { type: 'day', date } })).status, 201);
+    const preview = await api('/schedule/preview', {
+      method: 'POST', body: {
+        plan_id: plan.id, timed: false, perDay: 0, pace: 'even', startDate: date, endDate: tomorrow,
+        items: [
+          { task_id: timedId, subject_id: 1, title: '當天計時', minutes: 60, start: date, end: tomorrow },
+          { task_id: untimedId, subject_id: 1, title: '當天日期任務', minutes: 60, start: date, end: tomorrow },
+          { subject_id: 2, title: '必須明天的新任務', minutes: 60, start: date, end: tomorrow },
+        ],
+      },
+    });
+    assert.equal(preview.status, 200);
+    assert.ok(preview.body.blocks.some(b => b.task_id === timedId && b.date === date && b.start_time === '18:00'));
+    assert.ok(preview.body.blocks.some(b => b.task_id === untimedId && b.date === date && !b.start_time));
+    assert.ok(preview.body.blocks.some(b => b.title === '必須明天的新任務' && b.date === tomorrow));
+    assert.equal(preview.body.blocks.filter(b => b.date === date).length, 2,
+      '★ Day Lock 當天只能保留原 block，不能新增');
+  });
 });
 
 /* ---------- P3：Schedule History / Restore API ---------- */

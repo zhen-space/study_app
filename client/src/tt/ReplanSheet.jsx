@@ -45,6 +45,7 @@ export default function ReplanSheet({ plan, health, raw, lists = [], reload, onC
         body: {
           ...buildSchedulePreviewRequest({
           items: pending.map(t => ({
+            task_id: t.id,
             subject_id: t.list_id,
             title: t.title,
             // 只排進度時排程器不看 minutes，就不要生一個假數字出來
