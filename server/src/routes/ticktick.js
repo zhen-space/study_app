@@ -5,6 +5,9 @@ import { calculateScheduleDiff } from '../schedule/diff.js';
 import { todayTW } from '../util/date.js';
 
 const router = Router();
+// 僅供 server-side migration/cutover 呼叫；一般 JWT client 不能靠 body 欄位繞過。
+const trustedMigration = req => !!process.env.INTERNAL_MIGRATION_TOKEN
+  && req.get('x-internal-migration-token') === process.env.INTERNAL_MIGRATION_TOKEN;
 router.use(requireAuth);
 
 // tags/subtasks 一定回傳陣列（曾有存成字串的髒資料，前端 flatMap 會拆成單一字母）
@@ -106,7 +109,7 @@ router.get('/tasks', async (req, res) => {
   // miss_policy=drop 的重複任務：過期沒做就自動滾到下一次（不留逾期）
   const todayStr = new Date(Date.now() + 8 * 3600e3).toISOString().slice(0, 10); // 台灣時區
   for (const t of rows) {
-    if (t.user_id === req.userId && t.recurring && !t.completed && !t.deleted && t.miss_policy === 'drop' && t.due_date && t.due_date < todayStr) {
+    if (t.user_id === req.userId && t.plan_id == null && t.recurring && !t.completed && !t.deleted && t.miss_policy === 'drop' && t.due_date && t.due_date < todayStr) {
       let nd = t.due_date, guard = 0;
       while (nd && nd < todayStr && guard++ < 400) nd = nextDate(nd, t.recurring);
       if (nd) { await q.run('UPDATE tasks SET due_date=? WHERE id=?', [nd, t.id]); t.due_date = nd; }
@@ -123,7 +126,7 @@ router.post('/tasks', async (req, res) => {
   if (planErr) return res.status(400).json({ error: planErr });
   // Plan Task 的未來時間只能由 ScheduleVersion mirror 寫入。deadline_date 是使用者
   // 的硬期限，due_date/due_time 則是排程結果；不能混成一般 Task API 的欄位。
-  if (plan_id != null && (due_date != null || due_time != null) && req.body.legacy_due_compat !== true) {
+  if (plan_id != null && (due_date != null || due_time != null) && !trustedMigration(req)) {
     return res.status(409).json({ error: '計畫任務的排定時間必須透過排程器建立' });
   }
   const estimated = estimate(estimated_minutes);
@@ -228,7 +231,7 @@ router.patch('/tasks/:id', async (req, res) => {
     const planErr = await checkPlan(b.plan_id, req.userId);
     if (planErr) return res.status(400).json({ error: planErr });
   }
-  if ((t.plan_id != null || b.plan_id != null) && (b.due_date !== undefined || b.due_time !== undefined) && b.legacy_due_compat !== true) {
+  if ((t.plan_id != null || b.plan_id != null) && (b.due_date !== undefined || b.due_time !== undefined) && !trustedMigration(req)) {
     return res.status(409).json({ error: '計畫任務的排定時間必須透過排程器調整' });
   }
   const f = {
@@ -302,7 +305,7 @@ router.post('/tasks/bulk', async (req, res) => {
     const planErr = await checkPlan(pid, req.userId);
     if (planErr) return res.status(400).json({ error: planErr });
   }
-  if (list.some(t => t.plan_id != null && (t.due_date != null || t.due_time != null) && t.legacy_due_compat !== true)) {
+  if (list.some(t => t.plan_id != null && (t.due_date != null || t.due_time != null)) && !trustedMigration(req)) {
     return res.status(409).json({ error: '計畫任務的排定時間必須透過排程器建立' });
   }
   if (list.some(t => estimate(t.estimated_minutes) === undefined)) return res.status(400).json({ error: '預估時間需介於 1 到 1440 分鐘' });
@@ -377,7 +380,7 @@ router.get('/plan-tasks', async (req, res) => {
 // 只作用在該計畫自己的任務上。這支保留只為了還沒 migrate 的舊資料。
 router.delete('/plan-tasks', async (req, res) => {
   // 標籤比對＋標題含全形「｜」（排程精靈專用的分隔符）：涵蓋先前標籤遺失 bug 建立的舊排程
-  const r = await q.run(`DELETE FROM tasks WHERE user_id=? AND completed=0 AND (tags LIKE '%讀書計劃%' OR title LIKE '%｜%')`, [req.userId]);
+  const r = await q.run(`DELETE FROM tasks WHERE user_id=? AND plan_id IS NULL AND completed=0 AND (tags LIKE '%讀書計劃%' OR title LIKE '%｜%')`, [req.userId]);
   res.json({ removed: r.rowsAffected ?? 0 });
 });
 
@@ -477,8 +480,8 @@ router.get('/tstats', async (req, res) => {
   const pomo = await q.all('SELECT date, SUM(minutes) m FROM pomo_sessions WHERE user_id=? GROUP BY date', [req.userId]);
   // StudySession 是實際學習的正式來源；pomo 留作舊資料相容，兩者不互相覆寫。
   const sessions = await q.all(`SELECT s.*, t.list_id, t.plan_id, l.name AS list_name, p.name AS plan_name
-    FROM study_sessions s JOIN tasks t ON t.id=s.task_id
-    LEFT JOIN lists l ON l.id=t.list_id LEFT JOIN plans p ON p.id=t.plan_id
+    FROM study_sessions s JOIN tasks t ON t.id=s.task_id AND t.user_id=s.user_id
+    LEFT JOIN lists l ON l.id=t.list_id AND l.user_id=t.user_id LEFT JOIN plans p ON p.id=t.plan_id AND p.user_id=t.user_id
     WHERE s.user_id=? AND s.status='completed'`, [req.userId]);
   const days = {};
   for (const t of tasks) {
@@ -504,7 +507,7 @@ router.get('/tstats', async (req, res) => {
   }
   const active = await q.get('SELECT active_version_id FROM user_schedule_state WHERE user_id=?', [req.userId]);
   const planned = active?.active_version_id == null ? [] : await q.all(`SELECT b.planned_minutes, b.date, t.list_id, t.plan_id, l.name AS list_name, p.name AS plan_name
-    FROM scheduled_blocks b JOIN tasks t ON t.id=b.task_id LEFT JOIN lists l ON l.id=t.list_id LEFT JOIN plans p ON p.id=t.plan_id
+    FROM scheduled_blocks b JOIN tasks t ON t.id=b.task_id AND t.user_id=b.user_id LEFT JOIN lists l ON l.id=t.list_id AND l.user_id=t.user_id LEFT JOIN plans p ON p.id=t.plan_id AND p.user_id=t.user_id
     WHERE b.user_id=? AND b.schedule_version_id=? AND t.completed=0 AND COALESCE(t.deleted,0)=0`, [req.userId, active.active_version_id]);
   const plannedMinutes = planned.reduce((n, b) => n + (b.planned_minutes || 0), 0);
   // 統計不再只看 Task checkbox：原定時間來自 active ScheduleVersion，實際時間
@@ -522,11 +525,19 @@ router.get('/tstats', async (req, res) => {
   const recentVersions = await q.all(`SELECT id,parent_version_id FROM schedule_versions
     WHERE user_id=? AND parent_version_id IS NOT NULL AND created_at >= datetime('now','-30 days')`, [req.userId]);
   let movedLast30 = 0;
+  const versionIds = [...new Set(recentVersions.flatMap(v => [v.id, v.parent_version_id]))];
+  const blocksByVersion = new Map();
+  if (versionIds.length) {
+    const marks = versionIds.map(() => '?').join(',');
+    const rows = await q.all(`SELECT * FROM scheduled_blocks WHERE user_id=? AND schedule_version_id IN (${marks})`, [req.userId, ...versionIds]);
+    for (const block of rows) {
+      if (!blocksByVersion.has(block.schedule_version_id)) blocksByVersion.set(block.schedule_version_id, []);
+      blocksByVersion.get(block.schedule_version_id).push(block);
+    }
+  }
   for (const version of recentVersions) {
-    const [before, after] = await Promise.all([
-      q.all('SELECT * FROM scheduled_blocks WHERE user_id=? AND schedule_version_id=?', [req.userId, version.parent_version_id]),
-      q.all('SELECT * FROM scheduled_blocks WHERE user_id=? AND schedule_version_id=?', [req.userId, version.id]),
-    ]);
+    const before = blocksByVersion.get(version.parent_version_id) || [];
+    const after = blocksByVersion.get(version.id) || [];
     movedLast30 += calculateScheduleDiff(before, after, { comparisonFrom: todayTW(), includeUnchanged: false }).summary.moved;
   }
   res.json({

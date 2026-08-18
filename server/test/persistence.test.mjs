@@ -17,9 +17,12 @@ let S, api;
 before(async () => {
   S = await startServer();
   api = async (path, opts = {}) => {
+    const internal = opts.body?.legacy_due_compat === true;
+    const body = internal ? { ...opts.body } : opts.body;
+    if (internal) delete body.legacy_due_compat;
     const r = await fetch(S.base + path, {
-      ...opts, headers: S.H,
-      body: opts.body ? JSON.stringify(opts.body) : undefined,
+      ...opts, headers: { ...S.H, ...(internal ? { 'x-internal-migration-token': 'test-internal-migration-token' } : {}) },
+      body: body ? JSON.stringify(body) : undefined,
     });
     return { status: r.status, body: await r.json().catch(() => null) };
   };

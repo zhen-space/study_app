@@ -10,9 +10,12 @@ import { startServer, today, day } from './helpers.mjs';
 
 let S, H, base;
 const api = async (path, opts = {}) => {
+  const internal = opts.body?.legacy_due_compat === true;
+  const body = internal ? { ...opts.body } : opts.body;
+  if (internal) delete body.legacy_due_compat;
   const r = await fetch(base + path, {
-    ...opts, headers: H,
-    body: opts.body ? JSON.stringify(opts.body) : undefined,
+    ...opts, headers: { ...H, ...(internal ? { 'x-internal-migration-token': 'test-internal-migration-token' } : {}) },
+    body: body ? JSON.stringify(body) : undefined,
   });
   const j = await r.json().catch(() => ({}));
   return { status: r.status, body: j };
@@ -46,7 +49,7 @@ describe('Plan CRUD', () => {
 
   test('GET /plans/:id 回 plan + tasks + summary', async () => {
     const { body: p } = await mkPlan({ name: '明細測試' });
-    await mkTask({ title: '未完成', plan_id: p.id, due_date: day(-2), legacy_due_compat: true });   // legacy 相容資料的逾期
+    await mkTask({ title: '未完成', plan_id: p.id, due_date: day(-2), legacy_due_compat: true });
     const done = await mkTask({ title: '完成', plan_id: p.id });
     await api(`/tasks/${done.body.id}`, { method: 'PATCH', body: { completed: true } });
 
@@ -305,5 +308,33 @@ describe('舊端點相容', () => {
       assert.equal(r.status, 200);
       assert.deepEqual(await r.json(), []);
     } finally { fresh.stop(); }
+  });
+
+  test('legacy DELETE 不得碰 modern Plan Task，client 也不能用 legacy_due_compat 繞過 mirror', async () => {
+    const { body: p } = await mkPlan({ name: '安全邊界' });
+    const modern = await mkTask({ title: '現代｜計畫任務', plan_id: p.id });
+    const bypassRaw = await fetch(base + `/tasks/${modern.body.id}`, { method: 'PATCH', headers: H, body: JSON.stringify({ due_date: day(2), legacy_due_compat: true }) });
+    assert.equal(bypassRaw.status, 409);
+    await mkTask({ title: '舊資料｜任務', tags: ['讀書計劃'] });
+    await api('/plan-tasks', { method: 'DELETE' });
+    const detail = await api(`/plans/${p.id}`);
+    assert.equal(detail.body.tasks.some(t => t.id === modern.body.id), true);
+  });
+
+  test('mutation guard：GET /tasks 的 recurring drop 不得改寫 Plan Task 的 ScheduledBlock mirror', async () => {
+    const { body: p } = await mkPlan({ name: '唯讀不改排程', status: 'active' });
+    const { body: task } = await mkTask({
+      title: '有排程的週期任務', plan_id: p.id, recurring: 'daily', miss_policy: 'drop', due_date: day(-2), legacy_due_compat: true,
+    });
+    const applied = await api('/schedule/apply', { method: 'POST', body: {
+      plan_id: p.id, source: 'initial', blocks: [{ task_id: task.id, date: day(3), start_time: '19:00', end_time: '20:00' }],
+    } });
+    assert.equal(applied.status, 200);
+    const before = (await api('/tasks')).body.find(t => t.id === task.id);
+    await api('/tasks'); // 若拿掉 ticktick.js 的 plan_id == null，這個 read 就會把日期 roll-forward。
+    const after = (await api('/tasks')).body.find(t => t.id === task.id);
+    assert.equal(before.due_date, day(3));
+    assert.equal(after.due_date, day(3));
+    assert.equal(after.due_time, '19:00');
   });
 });

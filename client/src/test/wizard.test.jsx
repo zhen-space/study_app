@@ -121,6 +121,26 @@ describe('三步驟結構', () => {
     noCrash();
   });
 
+  it('P2-1：第一次建立計畫的排程不足，直接顯示後端 deterministic feasibility gap', async () => {
+    setApi({ '/schedule/preview': {
+      ...fx.preview,
+      unplaced: true,
+      feasibility: {
+        gap_minutes: 240, gap_hours: 4,
+        recommendations: [
+          { type: 'extend_days', min_days: 2 },
+          { type: 'add_daily_time', minutes_per_day: 60 },
+        ],
+      },
+    } });
+    await mountWizard();
+    await toResult();
+    expect(screen.getByText(/目前還缺約 4 小時/)).toBeInTheDocument();
+    expect(screen.getByText(/最少需延後 2 天/)).toBeInTheDocument();
+    expect(screen.getByText(/每天約需多 60 分鐘/)).toBeInTheDocument();
+    noCrash();
+  });
+
   it('6. 第 2 步分成可用時間／排程條件／完成期限三段', async () => {
     await mountWizard();
     await toStep2();

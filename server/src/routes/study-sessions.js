@@ -8,6 +8,8 @@ const STATUS = new Set(['running', 'paused', 'completed', 'cancelled']);
 const SOURCE = new Set(['manual', 'scheduled_block', 'pomo']);
 const isoNow = () => new Date().toISOString();
 const elapsedMinutes = (start, end = isoNow()) => Math.max(0, Math.round((Date.parse(end) - Date.parse(start)) / 60000));
+const readSession = (id, userId) => q.get(`SELECT s.*, t.title AS task_title FROM study_sessions s
+  JOIN tasks t ON t.id=s.task_id AND t.user_id=s.user_id WHERE s.id=? AND s.user_id=?`, [id, userId]);
 
 async function ownTask(userId, taskId) {
   return q.get('SELECT id,plan_id,deleted FROM tasks WHERE id=? AND user_id=?', [taskId, userId]);
@@ -18,7 +20,7 @@ router.get('/study-sessions', async (req, res) => {
   const where = ['user_id=?']; const args = [req.userId];
   if (/^\d{4}-\d\d-\d\d$/.test(req.query.from || '')) { where.push('started_at>=?'); args.push(`${req.query.from}T00:00:00.000Z`); }
   if (/^\d{4}-\d\d-\d\d$/.test(req.query.to || '')) { where.push('started_at<?'); args.push(`${req.query.to}T23:59:59.999Z`); }
-  res.json(await q.all(`SELECT * FROM study_sessions WHERE ${where.join(' AND ')} ORDER BY started_at DESC`, args));
+  res.json(await q.all(`SELECT s.*, t.title AS task_title FROM study_sessions s JOIN tasks t ON t.id=s.task_id AND t.user_id=s.user_id WHERE s.${where.join(' AND s.')} ORDER BY s.started_at DESC`, args));
 });
 
 // 一個任務同時只能有一個 running session；這是執行中的狀態，不影響歷史 block。
@@ -35,7 +37,7 @@ router.post('/study-sessions', async (req, res) => {
   const began = isoNow();
   const r = await q.run(`INSERT INTO study_sessions (user_id,task_id,scheduled_block_id,started_at,running_since,status,source)
     VALUES (?,?,?,?,?,?,?)`, [req.userId, task.id, b.scheduled_block_id ?? null, began, began, 'running', SOURCE.has(b.source) ? b.source : 'manual']);
-  res.status(201).json(await q.get('SELECT * FROM study_sessions WHERE id=?', [r.lastInsertRowid]));
+  res.status(201).json(await readSession(r.lastInsertRowid, req.userId));
 });
 
 // PATCH /api/study-sessions/:id：pause/resume/complete/cancel。完成時才固定 actual_minutes。
@@ -58,7 +60,7 @@ router.patch('/study-sessions/:id', async (req, res) => {
   const end = ends ? isoNow() : null;
   const runningSince = status === 'running' ? isoNow() : null;
   await q.run('UPDATE study_sessions SET status=?,ended_at=?,actual_minutes=?,running_since=?,updated_at=CURRENT_TIMESTAMP WHERE id=?', [status, end, actual, runningSince, session.id]);
-  res.json(await q.get('SELECT * FROM study_sessions WHERE id=?', [session.id]));
+  res.json(await readSession(session.id, req.userId));
 });
 
 export default router;

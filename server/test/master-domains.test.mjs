@@ -170,13 +170,85 @@ test('Master C：指定日期 availability override 不改 Routine，卻會限�
   assert.equal(preview.body.blocks[0].end_time, '17:00');
 });
 
-test('Master A：Plan Task 的明確工作量會進入正式 health gap，舊資料不猜分鐘', async () => {
+test('Master A：untimed / 未安排 Plan Task 不把估時誤判成分鐘 capacity gap', async () => {
   const plan = await api('/plans', { method: 'POST', body: { name: '工作量計畫' } });
   const task = await api('/tasks', { method: 'POST', body: { title: '需要兩小時', plan_id: plan.body.id, estimated_minutes: 120 } });
   assert.equal(task.status, 200);
   const health = await api(`/plans/${plan.body.id}/health`);
   assert.equal(health.status, 200);
   assert.equal(health.body.estimated_workload_minutes, 120);
-  assert.equal(health.body.capacity_gap_minutes, 120);
-  assert.equal(health.body.reasons.some(r => r.type === 'capacity_gap'), true);
+  assert.equal(health.body.capacity_gap_minutes, 0);
+  assert.equal(health.body.reasons.some(r => r.type === 'unplaced'), true);
+});
+
+test('P1-2 regression：timed / untimed / mixed Plan 的 capacity gap 只以 timed placement 分鐘計算', async () => {
+  const untimedPlan = await api('/plans', { method: 'POST', body: { name: '純日期全排入', status: 'active' } });
+  const untimedTask = await api('/tasks', { method: 'POST', body: { title: '純日期任務', plan_id: untimedPlan.body.id, estimated_minutes: 120 } });
+  const untimedApply = await api('/schedule/apply', { method: 'POST', body: {
+    plan_id: untimedPlan.body.id, source: 'initial', blocks: [{ task_id: untimedTask.body.id, date: '2099-02-01' }],
+  } });
+  assert.equal(untimedApply.status, 200);
+  const untimedHealth = await api(`/plans/${untimedPlan.body.id}/health`);
+  assert.equal(untimedHealth.body.capacity_gap_minutes, 0, 'date-only block 沒有 planned_minutes，不得誤報分鐘缺口');
+  assert.equal(untimedHealth.body.status, 'healthy');
+
+  const timedPlan = await api('/plans', { method: 'POST', body: { name: '計時缺口', status: 'active' } });
+  const timedTask = await api('/tasks', { method: 'POST', body: { title: '計時任務', plan_id: timedPlan.body.id, estimated_minutes: 120 } });
+  const timedApply = await api('/schedule/apply', { method: 'POST', body: {
+    plan_id: timedPlan.body.id, source: 'initial', blocks: [{ task_id: timedTask.body.id, date: '2099-02-02', start_time: '19:00', end_time: '20:00', planned_minutes: 60 }],
+  } });
+  assert.equal(timedApply.status, 200);
+  const timedHealth = await api(`/plans/${timedPlan.body.id}/health`);
+  assert.equal(timedHealth.body.capacity_gap_minutes, 60);
+  assert.equal(timedHealth.body.reasons.some(r => r.type === 'capacity_gap'), true);
+
+  const mixedPlan = await api('/plans', { method: 'POST', body: { name: '混合排程', status: 'active' } });
+  const timed = await api('/tasks', { method: 'POST', body: { title: '有時段', plan_id: mixedPlan.body.id, estimated_minutes: 120 } });
+  const dateOnly = await api('/tasks', { method: 'POST', body: { title: '只排日期', plan_id: mixedPlan.body.id, estimated_minutes: 180 } });
+  const mixedApply = await api('/schedule/apply', { method: 'POST', body: {
+    plan_id: mixedPlan.body.id, source: 'initial', blocks: [
+      { task_id: timed.body.id, date: '2099-02-03', start_time: '19:00', end_time: '20:00', planned_minutes: 60 },
+      { task_id: dateOnly.body.id, date: '2099-02-03' },
+    ],
+  } });
+  assert.equal(mixedApply.status, 200);
+  const mixedHealth = await api(`/plans/${mixedPlan.body.id}/health`);
+  assert.equal(mixedHealth.body.capacity_gap_minutes, 60, 'mixed mode 不得把 date-only estimate 算進分鐘 gap');
+
+  const unplacedPlan = await api('/plans', { method: 'POST', body: { name: '真正未安排', status: 'active' } });
+  await api('/tasks', { method: 'POST', body: { title: '尚未安排', plan_id: unplacedPlan.body.id, estimated_minutes: 90 } });
+  const unplacedHealth = await api(`/plans/${unplacedPlan.body.id}/health`);
+  assert.equal(unplacedHealth.body.reasons.some(r => r.type === 'unplaced'), true);
+  assert.equal(unplacedHealth.body.status, 'needs_replan');
+});
+
+test('P1-3 regression：其他 Plan 的 Task／Time／Day Lock 不得污染本 Plan health', async () => {
+  const a = await api('/plans', { method: 'POST', body: { name: '有鎖定的計畫', status: 'active' } });
+  const b = await api('/plans', { method: 'POST', body: { name: '不受影響的計畫', status: 'active' } });
+  const ta = await api('/tasks', { method: 'POST', body: { title: 'A 任務', plan_id: a.body.id } });
+  const tb = await api('/tasks', { method: 'POST', body: { title: 'B 任務', plan_id: b.body.id } });
+  assert.equal((await api('/schedule/apply', { method: 'POST', body: { plan_id: a.body.id, source: 'initial', blocks: [{ task_id: ta.body.id, date: '2099-03-01', start_time: '19:00', end_time: '20:00' }] } })).status, 200);
+  assert.equal((await api('/schedule/apply', { method: 'POST', body: { plan_id: b.body.id, source: 'initial', blocks: [{ task_id: tb.body.id, date: '2099-03-02', start_time: '19:00', end_time: '20:00' }] } })).status, 200);
+  assert.equal((await api('/schedule/locks', { method: 'POST', body: { type: 'task', task_id: ta.body.id } })).status, 201);
+  assert.equal((await api('/schedule/locks', { method: 'POST', body: { type: 'time', date: '2099-03-01', start_time: '18:00', end_time: '21:00' } })).status, 201);
+  assert.equal((await api('/schedule/locks', { method: 'POST', body: { type: 'day', date: '2099-03-01' } })).status, 201);
+  const other = await api(`/plans/${b.body.id}/health`);
+  assert.equal(other.body.reasons.some(r => r.type === 'active_locks'), false);
+  assert.equal(other.body.status, 'healthy');
+});
+
+test('P2 regression：從 ScheduledBlock 開始讀書會保留 block 關聯與 task title', async () => {
+  const plan = await api('/plans', { method: 'POST', body: { name: '排程開始讀書', status: 'active' } });
+  const task = await api('/tasks', { method: 'POST', body: { title: '區塊指定任務', plan_id: plan.body.id } });
+  const applied = await api('/schedule/apply', { method: 'POST', body: { plan_id: plan.body.id, source: 'initial', blocks: [{ task_id: task.body.id, date: '2099-04-01', start_time: '19:00', end_time: '20:00' }] } });
+  assert.equal(applied.status, 200);
+  const active = await api('/schedule/active');
+  const block = active.body.blocks.find(b => b.task_id === task.body.id);
+  const session = await api('/study-sessions', { method: 'POST', body: { task_id: task.body.id, scheduled_block_id: block.id, source: 'scheduled_block' } });
+  assert.equal(session.status, 201);
+  assert.equal(session.body.scheduled_block_id, block.id);
+  assert.equal(session.body.task_title, '區塊指定任務');
+  const listed = await api('/study-sessions');
+  assert.equal(listed.body.some(s => s.id === session.body.id && s.task_title === '區塊指定任務'), true);
+  await api(`/study-sessions/${session.body.id}`, { method: 'PATCH', body: { status: 'completed', actual_minutes: 30 } });
 });

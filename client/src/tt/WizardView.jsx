@@ -6,6 +6,7 @@ import { buildSchedulePreviewRequest, persistConfirmedConditions } from './sched
 import { today, addDays } from './helpers';
 import { parseICS } from './ics';
 import { fileToPayload } from './vocabImport';
+import FeasibilityGap from './FeasibilityGap';
 
 const LIST_COLORS = ['#0086CC', '#e03131', '#16a34a', '#f59f00', '#9333ea', '#0891b2'];
 const TYPE_OPTIONS = ['範例', '例題', '單元練習', '歷屆試題'];
@@ -1560,6 +1561,7 @@ export default function WizardView({
               <div style={{ border: '1px solid var(--red)', borderRadius: 8, padding: 10, marginBottom: 10 }}>
                 <div className="error"><b>空檔不足，有內容排不進去</b></div>
                 <div className="muted" style={{ margin: '4px 0 8px' }}>{preview.message}</div>
+                <FeasibilityGap feasibility={preview.feasibility} />
                 <div className="muted">想怎麼處理？</div>
                 <div className="row" style={{ marginTop: 6, flexWrap: 'wrap' }}>
                   <button className="btn sm" onClick={() => setStep(0)}>刪掉一些內容</button>

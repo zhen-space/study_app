@@ -43,13 +43,17 @@ export function planHealth(plan, raw) {
     if (late.length) reasons.push({ type: 'past_target', count: late.length, message: REASON_TEXT.past_target(late.length) });
   }
 
+  const needsAdjustment = reasons.length > 0 && pending.length > 0;
   return {
     planId: plan.planId,
     planKey: plan.key,
     name: plan.name,
     pending: pending.length,
     // 沒有剩下的未完成項目就沒有東西可以重排
-    needsAdjustment: reasons.length > 0 && pending.length > 0,
+    // 只在 health endpoint 尚未可用時使用；形狀仍對齊正式 normalized model，
+    // 讓 Today 不會因離線 fallback 而走到另一套判斷分支。
+    status: needsAdjustment ? 'needs_replan' : 'healthy',
+    needsAdjustment,
     reasons,
   };
 }
@@ -61,19 +65,26 @@ export function usePlansNeedingAdjustment(plans) {
   const [rows, setRows] = useState([]);
   useEffect(() => {
     let alive = true;
-    Promise.all(ids.map(id => api(`/plans/${id}/health`).catch(() => null)))
-      .then(result => { if (alive) setRows(result.filter(Boolean)); });
+    Promise.all(ids.map(async id => {
+      try {
+        const health = await api(`/plans/${id}/health`);
+        return typeof health?.status === 'string' ? { id, health } : { id, unavailable: true };
+      } catch { return { id, unavailable: true }; }
+    })).then(result => { if (alive) setRows(result); });
     return () => { alive = false; };
   }, [key]);
   return useMemo(() => {
-    const byId = new Map(rows.map(r => [Number(r.plan_id), r]));
+    const byId = new Map(rows.filter(r => r.health).map(r => [Number(r.id), r.health]));
+    const unavailable = new Set(rows.filter(r => r.unavailable).map(r => Number(r.id)));
+    const pending = new Set(ids.filter(id => !rows.some(r => Number(r.id) === Number(id))));
     return plans.map(plan => {
       const health = byId.get(Number(plan.planId));
       // 網路尚未回來、或舊測試／離線狀態沒有 health endpoint 時，保留只讀的
       // legacy-compatible fallback；一旦正式 health 到達就會完整取代它。
-      const fallback = planHealth(plan);
-      const effective = health || fallback;
-      if (!effective || effective.status === 'healthy' || effective.needsAdjustment === false || !effective.pending) return null;
+      // 正常連線時唯一正式來源是 server health；只有 endpoint 不可用／離線時
+      // 才以舊資料做只讀 fallback，避免兩套健康規則在線上漂移。
+      const effective = health || (unavailable.has(Number(plan.planId)) || pending.has(Number(plan.planId)) ? planHealth(plan) : null);
+      if (!effective || !['needs_replan', 'blocked'].includes(effective.status) || effective.needsAdjustment === false || !effective.pending) return null;
       return { ...effective, planId: plan.planId, planKey: plan.key, name: plan.name, needsAdjustment: true };
     }).filter(Boolean).sort((a, b) => b.pending - a.pending);
   }, [plans, rows]);
@@ -90,6 +101,6 @@ export function usePlanScheduleHealth(plan, raw) {
     return () => { alive = false; };
   }, [id]);
   if (!health || typeof health.status !== 'string') return planHealth(plan, raw);
-  if (health.status === 'healthy' || !health.pending) return null;
+  if (!['needs_replan', 'blocked'].includes(health.status) || !health.pending) return null;
   return { ...health, planId: id, planKey: plan?.key, name: plan?.name, needsAdjustment: true };
 }
