@@ -89,6 +89,21 @@ test('Master C：確認過的 max_session_minutes 會限制 timed placement 的�
   }), true);
 });
 
+test('Master C：max_per_day 是 scheduler hard cap，不會被 timed mode 忽略', async () => {
+  const plan = await api('/plans', { method: 'POST', body: { name: '每日上限計畫' } });
+  await api(`/plans/${plan.body.id}/constraints`, { method: 'PUT', body: { intent: { max_per_day: 1 } } });
+  const preview = await api('/schedule/preview', { method: 'POST', body: {
+    plan_id: plan.body.id, timed: true, startDate: '2099-01-12', endDate: '2099-01-14',
+    items: [
+      { subject_id: 1, title: '第一項', minutes: 60, spread: false, start: '2099-01-12', end: '2099-01-14' },
+      { subject_id: 1, title: '第二項', minutes: 60, spread: false, start: '2099-01-12', end: '2099-01-14' },
+    ],
+  } });
+  assert.equal(preview.status, 200);
+  const counts = Object.values(preview.body.blocks.reduce((m, b) => ({ ...m, [b.date]: (m[b.date] || 0) + 1 }), {}));
+  assert.equal(counts.every(n => n <= 1), true);
+});
+
 test('Master A：Plan Task 的明確工作量會進入正式 health gap，舊資料不猜分鐘', async () => {
   const plan = await api('/plans', { method: 'POST', body: { name: '工作量計畫' } });
   const task = await api('/tasks', { method: 'POST', body: { title: '需要兩小時', plan_id: plan.body.id, estimated_minutes: 120 } });

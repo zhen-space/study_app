@@ -354,12 +354,16 @@ router.post('/preview', async (req, res) => {
   // 某天塞不下就之後立刻補回，不會整串往後推、擠在最後面。
   // pace='front' 盡早排完：速率加快（約 6 成天數消化），前面多排、後面留空。
   const front = pace === 'front';
+  // max_per_day 是已確認 intent 的硬上限；不設定時沿用既有模式：timed
+  // 不以 session 數量限縮、untimed 才看 Wizard 的 perDay。
+  const constraintMaxPerDay = confirmedConstraints.max_per_day || null;
   let bkSeq = 0; // 每次 distribute 遞增，避免不同批（一般/壓軸）同鍵誤連
   // minDate / maxDate 可以是函式（依科目不同）：收到桶的第一個項目，回傳該桶的界線
   function distribute(queue, minDate, maxDate) {
     if (!queue.length) return;
     bkSeq++;
-    const capOk = day => timed ? true : (perDay > 0 ? day.count < perDay : true);
+    const capOk = day => constraintMaxPerDay != null ? day.count < constraintMaxPerDay
+      : (timed ? true : (perDay > 0 ? day.count < perDay : true));
     const buckets = [];
     const byKey = {};
     queue.forEach(w => {
