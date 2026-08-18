@@ -148,11 +148,12 @@ describe('PlansView / PlanDetailView', () => {
   it('5. PlansView 能 render，舊資料照科目列出', async () => {
     await mountShell();
     await click(navButton('計畫'));
-    // 卡片標題（legacy 的名稱就是科目名）
-    const titles = [...main().querySelectorAll('.tile b')].map(b => b.textContent);
+    // UI-R2：舊資料收在獨立區塊，點開才看得到
+    await click(screen.getByRole('button', { name: /舊資料/ }));
+    const titles = [...main().querySelectorAll('.plan-card b')].map(b => b.textContent);
     expect(titles).toContain('物理');
     expect(titles).toContain('地科');
-    expect(screen.getByRole('button', { name: /建立計畫/ })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: '建立計畫' })).toBeInTheDocument();
     noCrash();
   });
 
@@ -168,7 +169,8 @@ describe('PlansView / PlanDetailView', () => {
   it('6a. 有效 planKey：點計畫卡進得了明細，同科多本書再分小段', async () => {
     await mountShell();
     await click(navButton('計畫'));
-    await click([...main().querySelectorAll('.tile')].find(el => el.querySelector('b')?.textContent === '物理'));
+    await click(screen.getByRole('button', { name: /舊資料/ }));
+    await click([...main().querySelectorAll('.plan-card')].find(el => el.querySelector('b')?.textContent === '物理'));
     expect(within(main()).getByRole('heading', { name: '物理' })).toBeInTheDocument();
     expect(screen.getByText(/新大滿貫/)).toBeInTheDocument();
     expect(screen.getByText(/週攻略/)).toBeInTheDocument();

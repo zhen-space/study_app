@@ -61,7 +61,7 @@ describe('正式 Plan（API）', () => {
     setApi({ '/plans': fx.plans, '/tasks': [...fx.tasks, ...fx.planTasks] });
     render(<Shell onLogout={() => {}} />);
     await goPlans();
-    await click(within(main()).getByText('第二次段考準備').closest('.tile'));
+    await click(within(main()).getByText('第二次段考準備').closest('.plan-card'));
     expect(within(main()).getByText(/力學複習/)).toBeInTheDocument();
     expect(within(main()).getByText(/大氣複習/)).toBeInTheDocument();
     noCrash();
@@ -83,7 +83,9 @@ describe('Legacy 相容', () => {
     setApi({ '/plans': [], '/tasks': fx.tasks });
     render(<Shell onLogout={() => {}} />);
     await goPlans();
-    const titles = [...main().querySelectorAll('.tile b')].map(b => b.textContent);
+    // UI-R2：舊資料收在獨立的低優先區塊，不跟正式 Plan 混排
+    await click(screen.getByRole('button', { name: /舊資料/ }));
+    const titles = [...main().querySelectorAll('.plan-card b')].map(b => b.textContent);
     expect(titles).toContain('物理');
     expect(within(main()).getAllByText('舊資料').length).toBeGreaterThan(0);
     noCrash();

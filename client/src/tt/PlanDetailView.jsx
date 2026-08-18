@@ -5,10 +5,12 @@ import { today } from './helpers';
 import { usePlans, bookOf, shortTitle, md, byLesson } from './plans';
 import { planHealth } from './planHealth';
 import ReplanSheet from './ReplanSheet';
+import { Button, IconButton, PageHeader, SurfaceCard, ProgressBar, ListRow, BottomSheet, EmptyState } from './ui';
 
 // 單一計畫的內容。
 //
-// 分組主軸是「科目」而不是「書」——一個 Plan 可以跨科，書只是標題裡的一段，
+// UI-R2 起改用 Design System v1：Plan 本身是主角，管理動作收進右上「•••」。
+// 分組主軸仍然是「科目」而不是「書」——一個 Plan 可以跨科，書只是標題裡的一段，
 // 不是 Plan 的身分。同一科底下有多本書時才再用書名分小段。
 //
 // 正式 Plan（有 planId）才有改名／改期限／完成／封存；
@@ -29,34 +31,34 @@ const ADJUST = [
 export default function PlanDetailView({ planKey, tasks, lists, apiPlans = [], reload, onBack, goWizard, adjustPlan }) {
   const plan = usePlans(tasks, lists, apiPlans).find(p => p.key === planKey);
   const [showDone, setShowDone] = useState(false);
-  const [manage, setManage] = useState(false);
-  const [adjust, setAdjust] = useState(false);
-  const [replan, setReplan] = useState(false);
+  const [sheet, setSheet] = useState(null);   // manage | edit | add | adjust | confirmComplete
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState('');
-  // 新增任務：空白計畫建立後總得有辦法往裡面加第一件事，
-  // 不然使用者會停在一個什麼都不能做的頁面
-  const [adding, setAdding] = useState(false);
+  const [replan, setReplan] = useState(false);
+  const [unresolved, setUnresolved] = useState(0);
   const [nt, setNt] = useState({ title: '', list_id: '', deadline_date: '' });
+  const [edit, setEdit] = useState(null);     // 編輯計畫資訊的暫存（按儲存才送出）
 
   if (!plan) {
     return (
       <div className="main">
-        <div className="main-head"><h2>計畫</h2></div>
+        <PageHeader title="計畫" />
         <div className="main-body">
-          <button className="btn sm ghost" onClick={onBack}>← 回計畫列表</button>
-          <div className="muted" style={{ marginTop: 20 }}>找不到這個計畫（可能已經全部刪除了）</div>
+          <Button onClick={onBack}>← 回計畫列表</Button>
+          <div className="ui-meta" style={{ marginTop: 'var(--sp-5)' }}>找不到這個計畫（可能已經全部刪除了）</div>
         </div>
       </div>
     );
   }
 
   const isReal = !plan.isLegacy && plan.planId != null;
-  // 只有正式且還在進行的計畫能調整；封存的先恢復再說
+  const raw = apiPlans.find(p => p.id === plan.planId);
   const showAdjust = isReal && plan.status !== 'archived' && !!adjustPlan;
   // 跟 Today 用同一套判斷、同一套重排流程，不寫第二份
-  const health = planHealth(plan, apiPlans.find(p => p.id === plan.planId));
-  const raw = apiPlans.find(p => p.id === plan.planId);   // 正式 Plan 的原始欄位（日期等）
+  const health = planHealth(plan, raw);
+  const pct = plan.total ? Math.round(plan.done / plan.total * 100) : 0;
+
+  const close = () => { setSheet(null); setErr(''); };
 
   // 完成任務走既有的 PATCH /tasks/:id，沒有第二套完成邏輯
   const toggle = t =>
@@ -69,9 +71,13 @@ export default function PlanDetailView({ planKey, tasks, lists, apiPlans = [], r
     try { await fn(); await reload(); } catch (e) { setErr(e.message); }
     setBusy(false);
   };
-  const patch = body => run(() => api(`/plans/${plan.planId}`, { method: 'PATCH', body }));
-  const archive = () => run(() => api(`/plans/${plan.planId}/archive`, { method: 'POST', body: {} }));
-  const restore = () => run(() => api(`/plans/${plan.planId}/restore`, { method: 'POST', body: {} }));
+  const archive = () => run(async () => {
+    await api(`/plans/${plan.planId}/archive`, { method: 'POST', body: {} }); close();
+  });
+  const restore = () => run(async () => {
+    await api(`/plans/${plan.planId}/restore`, { method: 'POST', body: {} }); close();
+  });
+
   // 走既有的 POST /tasks，自動帶上目前的 plan_id——使用者不用再選一次計畫。
   // 不給 due_date：加進計畫不等於已經排好時間，所以它會出現在「尚未安排」。
   const addTask = () => run(async () => {
@@ -87,16 +93,29 @@ export default function PlanDetailView({ planKey, tasks, lists, apiPlans = [], r
       },
     });
     setNt({ title: '', list_id: nt.list_id, deadline_date: '' });   // 科目留著，連續加同一科比較順
+    close();
   });
 
+  // 後端會先回未解決的任務讓使用者確認，force 才真的完成。
+  // 用 BottomSheet 問，不用 window.confirm——backend 語意完全不變。
   const complete = () => run(async () => {
-    // 後端會先回未解決的任務讓使用者確認，force 才真的完成
     const r = await api(`/plans/${plan.planId}/complete`, { method: 'POST', body: {} });
-    if (r.needs_confirm) {
-      const ok = window.confirm(`還有 ${r.unresolved.length} 項沒有完成，仍要把整個計畫標記為完成嗎？`);
-      if (!ok) return;
-      await api(`/plans/${plan.planId}/complete`, { method: 'POST', body: { force: true } });
-    }
+    if (r.needs_confirm) { setUnresolved(r.unresolved.length); setSheet('confirmComplete'); return; }
+    close();
+  });
+  const completeForce = () => run(async () => {
+    await api(`/plans/${plan.planId}/complete`, { method: 'POST', body: { force: true } });
+    close();
+  });
+
+  const saveInfo = () => run(async () => {
+    const body = {};
+    const name = (edit.name || '').trim();
+    if (name && name !== plan.name) body.name = name;
+    if ((edit.start_date || null) !== (raw?.start_date || null)) body.start_date = edit.start_date || null;
+    if ((edit.target_date || null) !== (raw?.target_date || null)) body.target_date = edit.target_date || null;
+    if (Object.keys(body).length) await api(`/plans/${plan.planId}`, { method: 'PATCH', body });
+    close();
   });
 
   // 依科目分組；同一科有多本書時再分小段。
@@ -115,156 +134,108 @@ export default function PlanDetailView({ planKey, tasks, lists, apiPlans = [], r
   const Row = t => {
     const late = !t.completed && t.due_date && t.due_date < today();
     return (
-      <div key={t.id} className="trow" style={{ cursor: 'default' }}>
-        <input type="checkbox" checked={!!t.completed} onChange={() => toggle(t)} />
-        <span className="title" style={t.completed ? { textDecoration: 'line-through', color: 'var(--muted)' } : {}}>
-          {shortTitle(t.title)}
-        </span>
-        {t.due_date
-          ? <span className="muted" style={late ? { color: 'var(--red)' } : {}}>{md(t.due_date)}</span>
-          : <span className="chip">尚未安排</span>}
-      </div>
+      <ListRow key={t.id} muted={!!t.completed}
+        leading={<input type="checkbox" aria-label={t.title} checked={!!t.completed} onChange={() => toggle(t)} />}
+        title={shortTitle(t.title)}
+        trailing={t.due_date
+          ? <span style={late ? { color: 'var(--danger)' } : undefined}>{md(t.due_date)}</span>
+          : <span className="ui-meta">尚未安排</span>}
+      />
     );
   };
 
   return (
     <div className="main">
-      <div className="main-head">
-        <h2>{plan.name}</h2>
-        {plan.isLegacy && <span className="chip" title="還沒轉成正式計畫的舊資料">舊資料</span>}
-        {isReal && plan.status !== 'active' && <span className="chip">{STATUS_LABEL[plan.status] || plan.status}</span>}
-        <span className="muted">{plan.done}／{plan.total}</span>
-      </div>
+      <PageHeader
+        back={<button className="page-back" onClick={onBack}>← 計畫列表</button>}
+        title={plan.name}
+        subtitle={plan.start ? `${md(plan.start)} – ${md(plan.end)}` : ''}
+        actions={<>
+          {isReal && (
+            <IconButton label="計畫選項" onClick={() => setSheet('manage')}><Icon name="more" size={20} /></IconButton>
+          )}
+        </>}
+      />
       <div className="main-body">
         <div className="row">
-          <button className="btn sm ghost" onClick={onBack}>← 計畫列表</button>
-          {showAdjust && (
-            <button className="btn sm" style={{ marginLeft: 'auto' }} onClick={() => setAdjust(true)}>
-              <Icon name="wizard" size={14} /> 調整計畫
-            </button>
-          )}
-          {isReal && (
-            <button className="btn sm ghost" style={showAdjust ? undefined : { marginLeft: 'auto' }} onClick={() => setManage(v => !v)}>
-              <Icon name="pencil" size={14} /> {manage ? '完成' : '管理'}
-            </button>
-          )}
           {!isReal && (
-            <button className="btn sm ghost" style={{ marginLeft: 'auto' }} onClick={goWizard}>
+            <Button size="sm" style={{ marginLeft: 'auto' }} onClick={goWizard}>
               <Icon name="wizard" size={14} /> 重新安排
-            </button>
+            </Button>
+          )}
+          {isReal && plan.status !== 'active' && (
+            <span className="chip" style={{ marginLeft: 'auto' }}>{STATUS_LABEL[plan.status] || plan.status}</span>
           )}
         </div>
 
-        <div className="row" style={{ marginTop: 8, fontSize: 13, flexWrap: 'wrap' }}>
-          {plan.start && <span className="muted">{md(plan.start)}–{md(plan.end)}</span>}
-          {plan.overdue > 0 && <span style={{ color: 'var(--red)' }}>逾期 {plan.overdue} 項</span>}
-          {plan.subjects.length > 1 && <span className="muted">{plan.subjects.length} 個科目</span>}
+        {/* 首屏：進度就是主角，不做成儀表板 */}
+        <div style={{ marginTop: 'var(--sp-5)' }}>
+          <div className="row" style={{ alignItems: 'baseline' }}>
+            <span style={{ fontSize: 30, fontWeight: 700, letterSpacing: '-.03em' }}>{pct}%</span>
+            <span className="ui-meta">{plan.done} / {plan.total} 已完成</span>
+          </div>
+          <div style={{ marginTop: 'var(--sp-2)' }}>
+            <ProgressBar value={plan.done} max={plan.total} label={`${plan.name}：${plan.total} 項中已完成 ${plan.done} 項`} />
+          </div>
+          <div className="row" style={{ marginTop: 'var(--sp-2)' }}>
+            {plan.end && <span className="ui-meta">目標 {md(plan.end)}</span>}
+            {plan.subjects.length > 1 && <span className="ui-meta">{plan.subjects.length} 個科目</span>}
+            {plan.overdue > 0 && <span className="ui-meta" style={{ color: 'var(--danger)' }}>逾期 {plan.overdue} 項</span>}
+          </div>
         </div>
 
-        {/* 需要調整時才出現；正常的計畫看不到這一段 */}
+        {/* 需要調整時才出現；跟 Today 用同一套 accent 語意，不是紅色警告 */}
         {health?.needsAdjustment && (
-          <div className="tile" style={{ padding: '10px 12px', marginTop: 10, borderLeft: '3px solid var(--orange, #C46A22)' }}>
-            <b>目前安排需要調整</b>
-            <div className="muted" style={{ fontSize: 13, marginTop: 2 }}>{health.reasons[0].message}</div>
-            <div className="row" style={{ marginTop: 8 }}>
-              <button className="btn sm" onClick={() => setReplan(true)}>讓 AI 重新安排</button>
+          <SurfaceCard tone="accent" style={{ marginTop: 'var(--sp-5)' }}>
+            <div className="row" style={{ gap: 'var(--sp-2)' }}>
+              <Icon name="wizard" size={15} style={{ color: 'var(--accent)' }} />
+              <b>目前安排需要調整</b>
             </div>
-          </div>
+            <div className="ui-meta" style={{ marginTop: 2 }}>{health.reasons[0].message}。</div>
+            <div className="row" style={{ marginTop: 'var(--sp-3)' }}>
+              <Button variant="primary" size="sm" onClick={() => setReplan(true)}>讓 AI 重新安排</Button>
+            </div>
+          </SurfaceCard>
         )}
-        {replan && health && (
-          <ReplanSheet plan={plan} health={health} raw={raw} lists={lists} reload={reload}
-            onClose={() => setReplan(false)}
-            onEditConditions={sec => { setReplan(false); adjustPlan?.(plan.planId, sec); }} />
+
+        {/* 調整計畫：contextual CTA。需要調整時，上面那張卡的「讓 AI 重新安排」
+            才是主要動作，這裡再放一顆同樣重的實心鈕會變成兩個主要動作互搶 */}
+        {showAdjust && (
+          <Button variant={health?.needsAdjustment ? 'secondary' : 'primary'} size="md" block
+            style={{ marginTop: 'var(--sp-4)' }} onClick={() => setSheet('adjust')}>
+            <Icon name="wizard" size={16} /> 調整計畫
+          </Button>
         )}
 
         {plan.isLegacy && (
-          <div className="muted" style={{ fontSize: 12, marginTop: 6 }}>
-            這是還沒轉成正式計畫的舊資料，只能查看與打勾，不能改名、改期限或封存
-          </div>
-        )}
-
-        {/* 管理操作：全部直接打 Phase 2A 的 /plans API */}
-        {isReal && manage && (
-          <div className="tile" style={{ marginTop: 10, padding: '12px 14px', background: 'var(--fill)' }}>
-            <div className="muted" style={{ fontSize: 12 }}>計畫名稱</div>
-            <input defaultValue={plan.name} style={{ width: '100%', marginTop: 2 }}
-              aria-label="計畫名稱"
-              onBlur={e => { const v = e.target.value.trim(); if (v && v !== plan.name) patch({ name: v }); }}
-              onKeyDown={e => e.key === 'Enter' && e.target.blur()} />
-            <div className="row" style={{ marginTop: 10 }}>
-              <span className="muted" style={{ fontSize: 12 }}>開始</span>
-              <input type="date" aria-label="開始日期" value={raw?.start_date || ''}
-                onChange={e => patch({ start_date: e.target.value || null })} />
-              <span className="muted" style={{ fontSize: 12 }}>目標</span>
-              <input type="date" aria-label="目標日期" value={raw?.target_date || ''}
-                onChange={e => patch({ target_date: e.target.value || null })} />
+          <SurfaceCard style={{ marginTop: 'var(--sp-4)' }}>
+            <b>舊資料</b>
+            <div className="ui-meta" style={{ marginTop: 2 }}>
+              這份計畫尚未轉成正式計畫，目前只能查看與完成任務。
             </div>
-            <div className="row" style={{ marginTop: 12, flexWrap: 'wrap' }}>
-              {plan.status !== 'completed' && plan.status !== 'archived' && (
-                <button className="btn sm" disabled={busy} onClick={complete}>標記完成</button>
-              )}
-              {plan.status !== 'archived'
-                ? <button className="btn sm ghost" disabled={busy} onClick={archive}>封存</button>
-                : <button className="btn sm" disabled={busy} onClick={restore}>恢復</button>}
-            </div>
-            <div className="muted" style={{ fontSize: 12, marginTop: 8 }}>封存不會刪掉任何任務</div>
-            {err && <div className="error" style={{ marginTop: 8 }}>{err}</div>}
-          </div>
+          </SurfaceCard>
         )}
 
-        {/* 新增任務：正式 Plan 才有。legacy 沒有 plan id，加了也掛不上去 */}
-        {isReal && plan.status !== 'archived' && (
-          <div style={{ marginTop: 12 }}>
-            {!adding
-              ? <button className="btn ghost" style={{ width: '100%' }} onClick={() => setAdding(true)}>
-                  <Icon name="plus" size={16} style={{ verticalAlign: '-3px', marginRight: 6 }} />新增任務
-                </button>
-              : (
-                <div className="tile" style={{ padding: '12px 14px', background: 'var(--fill)' }}>
-                  <div className="row">
-                    <b>新增任務到這個計畫</b>
-                    <button className="icon-btn" style={{ marginLeft: 'auto' }} onClick={() => { setAdding(false); setErr(''); }}>
-                      <Icon name="x" size={14} />
-                    </button>
-                  </div>
-                  <input aria-label="任務名稱" placeholder="要做什麼？" value={nt.title} style={{ width: '100%', marginTop: 8 }}
-                    onChange={e => setNt({ ...nt, title: e.target.value })}
-                    onKeyDown={e => e.key === 'Enter' && addTask()} />
-                  <div className="row" style={{ marginTop: 8, flexWrap: 'wrap' }}>
-                    <span className="muted" style={{ fontSize: 12 }}>科目</span>
-                    <select aria-label="科目" value={nt.list_id} onChange={e => setNt({ ...nt, list_id: e.target.value })}>
-                      <option value="">未分科目</option>
-                      {lists.filter(l => !l.shared_in).map(l => <option key={l.id} value={l.id}>{l.name}</option>)}
-                    </select>
-                    <span className="muted" style={{ fontSize: 12 }}>截止日</span>
-                    <input type="date" aria-label="截止日" value={nt.deadline_date}
-                      onChange={e => setNt({ ...nt, deadline_date: e.target.value })} />
-                  </div>
-                  <div className="row" style={{ marginTop: 10 }}>
-                    <span className="muted" style={{ fontSize: 12 }}>加進來的任務會先放在「尚未安排」</span>
-                    <button className="btn sm" style={{ marginLeft: 'auto' }} disabled={busy || !nt.title.trim()} onClick={addTask}>
-                      {busy ? '新增中…' : '新增'}
-                    </button>
-                  </div>
-                  {err && <div className="error" style={{ marginTop: 8 }}>{err}</div>}
-                </div>
-              )}
-          </div>
-        )}
-
-        {/* 尚未安排：在計畫裡 ≠ 已經排到日期 */}
+        {/* 尚未安排：在計畫裡 ≠ 已經排到日期，這是正式狀態 */}
         {plan.unplaced.length > 0 && (
-          <div className="tgroup" style={{ marginTop: 12 }}>
-            <div className="glabel">尚未安排 <span className="muted" style={{ fontWeight: 400 }}>{plan.unplaced.length} 項</span></div>
-            <div className="muted" style={{ fontSize: 12, padding: '0 0 4px' }}>這些還沒排進行事曆</div>
+          <section className="ui-section">
+            <div className="row" style={{ marginBottom: 'var(--sp-1)' }}>
+              <div className="ui-section-title" style={{ marginBottom: 0 }}>尚未安排</div>
+              <span className="ui-meta">{plan.unplaced.length} 項</span>
+            </div>
+            <div className="ui-meta" style={{ marginBottom: 'var(--sp-2)' }}>這些還沒排進行事曆</div>
             {plan.unplaced.sort((a, b) => byLesson(a.title, b.title)).map(Row)}
-          </div>
+          </section>
         )}
 
         {plan.total === 0 && (
-          <div className="muted" style={{ marginTop: 24, textAlign: 'center' }}>
-            這個計畫還沒有任務{isReal && plan.status !== 'archived' ? '——用上面的「新增任務」加第一件事吧' : ''}
-          </div>
+          <EmptyState
+            title="這個計畫還沒有任務"
+            description={isReal && plan.status !== 'archived' ? '加入第一個任務，之後可以讓 AI 幫你安排到每一天。' : ''}
+            action={isReal && plan.status !== 'archived'
+              ? <Button variant="primary" size="lg" onClick={() => setSheet('add')}>新增第一個任務</Button>
+              : null}
+          />
         )}
 
         {/* 主分組＝科目。同一科有多本書時，才再用書名分小段 */}
@@ -274,59 +245,168 @@ export default function PlanDetailView({ planKey, tasks, lists, apiPlans = [], r
           const undone = items.filter(t => !t.completed).length;
           const books = [...new Set(list.map(t => bookOf(t.title)))];
           return (
-            <div key={String(subject?.id ?? 'none')} className="tgroup" style={{ marginTop: 12 }}>
-              <div className="glabel">
-                {subject && <Icon name={subject.icon} size={14} style={{ color: subject.color, verticalAlign: '-2px', marginRight: 4 }} />}
-                {subject?.name || '未分科目'}
-                <span className="muted" style={{ fontWeight: 400 }}> 剩 {undone} 項</span>
+            <section key={String(subject?.id ?? 'none')} className="ui-section">
+              <div className="row" style={{ marginBottom: 'var(--sp-1)' }}>
+                {subject && <span className="dot" style={{ width: 8, height: 8, background: subject.color }} />}
+                <div className="ui-section-title" style={{ marginBottom: 0 }}>{subject?.name || '未分科目'}</div>
+                <span className="ui-meta" style={{ marginLeft: 'auto' }}>{items.length - undone} / {items.length}</span>
               </div>
               {books.length > 1
                 ? books.map(b => (
                     <div key={b}>
-                      <div className="muted" style={{ fontSize: 12, padding: '6px 0 2px' }}>{b}</div>
+                      <div className="ui-meta" style={{ padding: 'var(--sp-2) 0 0' }}>{b}</div>
                       {list.filter(t => bookOf(t.title) === b).map(Row)}
                     </div>
                   ))
                 : list.map(Row)}
-            </div>
+            </section>
           );
         })}
 
-        {/* 調整計畫：先問要調哪一段，再跳到排程精靈對應的位置 */}
-        {adjust && (
-          <div className="cal-modal-back" onClick={() => setAdjust(false)}>
-            <div className="ev-sheet tile" style={{ padding: '14px 16px' }} onClick={e => e.stopPropagation()}>
-              <div className="row">
-                <b>要調整什麼？</b>
-                <button className="icon-btn" style={{ marginLeft: 'auto' }} onClick={() => setAdjust(false)}>
-                  <Icon name="x" size={14} />
-                </button>
-              </div>
-              <div className="muted" style={{ fontSize: 12, marginTop: 2 }}>
-                調整的是「{plan.name}」，不會建立新的計畫
-              </div>
-              {ADJUST.map(([sec, label, hint]) => (
-                <button key={sec} className="btn ghost" style={{ width: '100%', marginTop: 8, textAlign: 'left' }}
-                  onClick={() => { setAdjust(false); adjustPlan(plan.planId, sec); }}>
-                  <b>{label}</b>
-                  <span className="muted" style={{ fontSize: 12, marginLeft: 8 }}>{hint}</span>
-                </button>
-              ))}
-              {/* 鎖定還沒有地方存（要等 2C 的 Task Lock），先顯示成之後才有的功能 */}
-              <button className="btn ghost" style={{ width: '100%', marginTop: 8, textAlign: 'left' }} disabled title="還沒開放">
-                <b>鎖定內容</b>
-                <span className="muted" style={{ fontSize: 12, marginLeft: 8 }}>把某幾項釘在原本的日子（之後才有）</span>
-              </button>
-            </div>
-          </div>
+        {plan.total > 0 && isReal && plan.status !== 'archived' && (
+          <Button block style={{ marginTop: 'var(--sp-4)' }} onClick={() => setSheet('add')}>
+            <Icon name="plus" size={16} /> 新增任務
+          </Button>
         )}
 
         {plan.done > 0 && (
-          <button className="btn sm ghost" style={{ marginTop: 12 }} onClick={() => setShowDone(s => !s)}>
-            {showDone ? '隱藏已完成' : `顯示已完成（${plan.done}）`}
+          <button className="plan-section-row" aria-expanded={showDone} onClick={() => setShowDone(s => !s)}>
+            <span>已完成</span>
+            <span className="ui-meta">{plan.done}</span>
+            <Icon name="chevron" size={16} style={{ transform: showDone ? 'rotate(90deg)' : 'none' }} />
           </button>
         )}
       </div>
+
+      {/* ---------- 管理：右上 ••• ---------- */}
+      {sheet === 'manage' && (
+        <BottomSheet onClose={close} label="計畫選項">
+          <b style={{ fontSize: 17 }}>計畫選項</b>
+          <div style={{ marginTop: 'var(--sp-3)' }}>
+            <ListRow title="編輯計畫資訊" subtitle="名稱、開始日、目標日"
+              trailing={<Icon name="chevron" size={16} />} role="button" tabIndex={0} style={{ cursor: 'pointer' }}
+              onClick={() => { setEdit({ name: plan.name, start_date: raw?.start_date || '', target_date: raw?.target_date || '' }); setSheet('edit'); }} />
+            {plan.status !== 'completed' && plan.status !== 'archived' && (
+              <ListRow title="標記完成" subtitle="整個計畫做完了"
+                role="button" tabIndex={0} style={{ cursor: 'pointer' }} onClick={complete} />
+            )}
+            {plan.status !== 'archived'
+              ? <ListRow title="封存" subtitle="收起來，不會刪掉任何任務"
+                  role="button" tabIndex={0} style={{ cursor: 'pointer' }} onClick={archive} />
+              : <ListRow title="恢復計畫" subtitle="放回進行中"
+                  role="button" tabIndex={0} style={{ cursor: 'pointer' }} onClick={restore} />}
+          </div>
+          {err && <div className="error" style={{ marginTop: 'var(--sp-3)' }}>{err}</div>}
+        </BottomSheet>
+      )}
+
+      {/* ---------- 編輯計畫資訊：按儲存才送出，不做離焦即更新 ---------- */}
+      {sheet === 'edit' && edit && (
+        <BottomSheet onClose={close} label="編輯計畫資訊">
+          <b style={{ fontSize: 17 }}>編輯計畫資訊</b>
+          <div style={{ marginTop: 'var(--sp-4)' }}>
+            <label className="ui-meta" htmlFor="plan-name">計畫名稱</label>
+            <input id="plan-name" aria-label="計畫名稱" value={edit.name} style={{ width: '100%', marginTop: 'var(--sp-1)' }}
+              onChange={e => setEdit(v => ({ ...v, name: e.target.value }))} />
+            <div className="row" style={{ marginTop: 'var(--sp-4)' }}>
+              <span style={{ flex: 1 }}>
+                <label className="ui-meta" htmlFor="plan-start">開始日期</label>
+                <input id="plan-start" type="date" aria-label="開始日期" value={edit.start_date}
+                  style={{ width: '100%', marginTop: 'var(--sp-1)' }}
+                  onChange={e => setEdit(v => ({ ...v, start_date: e.target.value }))} />
+              </span>
+              <span style={{ flex: 1 }}>
+                <label className="ui-meta" htmlFor="plan-target">目標日期</label>
+                <input id="plan-target" type="date" aria-label="目標日期" value={edit.target_date}
+                  style={{ width: '100%', marginTop: 'var(--sp-1)' }}
+                  onChange={e => setEdit(v => ({ ...v, target_date: e.target.value }))} />
+              </span>
+            </div>
+          </div>
+          {err && <div className="error" style={{ marginTop: 'var(--sp-3)' }}>{err}</div>}
+          <div className="row" style={{ marginTop: 'var(--sp-5)' }}>
+            <Button onClick={close}>取消</Button>
+            <Button variant="primary" style={{ marginLeft: 'auto' }} disabled={busy} onClick={saveInfo}>儲存</Button>
+          </div>
+        </BottomSheet>
+      )}
+
+      {/* ---------- 完成確認：後端 needs_confirm 語意完全不變 ---------- */}
+      {sheet === 'confirmComplete' && (
+        <BottomSheet onClose={close} label="完成這個計畫">
+          <b style={{ fontSize: 17 }}>完成這個計畫？</b>
+          <div className="ui-meta" style={{ marginTop: 'var(--sp-2)' }}>
+            還有 {unresolved} 項尚未完成。仍要把整個計畫標記為完成嗎？
+          </div>
+          <div className="row" style={{ marginTop: 'var(--sp-5)' }}>
+            <Button onClick={close}>取消</Button>
+            <Button variant="primary" style={{ marginLeft: 'auto' }} disabled={busy} onClick={completeForce}>仍然完成</Button>
+          </div>
+        </BottomSheet>
+      )}
+
+      {/* ---------- 新增任務 ---------- */}
+      {sheet === 'add' && (
+        <BottomSheet onClose={close} label="新增任務">
+          <b style={{ fontSize: 17 }}>新增任務到這個計畫</b>
+          <div style={{ marginTop: 'var(--sp-4)' }}>
+            <label className="ui-meta" htmlFor="nt-title">要做什麼？</label>
+            <input id="nt-title" aria-label="任務名稱" autoFocus value={nt.title} placeholder="例如：整理第一章筆記"
+              style={{ width: '100%', marginTop: 'var(--sp-1)' }}
+              onChange={e => setNt({ ...nt, title: e.target.value })}
+              onKeyDown={e => e.key === 'Enter' && addTask()} />
+            <div className="row" style={{ marginTop: 'var(--sp-4)' }}>
+              <span style={{ flex: 1 }}>
+                <label className="ui-meta" htmlFor="nt-subject">科目</label>
+                <select id="nt-subject" aria-label="科目" value={nt.list_id} style={{ width: '100%', marginTop: 'var(--sp-1)' }}
+                  onChange={e => setNt({ ...nt, list_id: e.target.value })}>
+                  <option value="">未分科目</option>
+                  {lists.filter(l => !l.shared_in).map(l => <option key={l.id} value={l.id}>{l.name}</option>)}
+                </select>
+              </span>
+              <span style={{ flex: 1 }}>
+                <label className="ui-meta" htmlFor="nt-deadline">截止日</label>
+                <input id="nt-deadline" type="date" aria-label="截止日" value={nt.deadline_date}
+                  style={{ width: '100%', marginTop: 'var(--sp-1)' }}
+                  onChange={e => setNt({ ...nt, deadline_date: e.target.value })} />
+              </span>
+            </div>
+          </div>
+          <div className="ui-meta" style={{ marginTop: 'var(--sp-3)' }}>加進來的任務會先放在「尚未安排」</div>
+          {err && <div className="error" style={{ marginTop: 'var(--sp-3)' }}>{err}</div>}
+          <div className="row" style={{ marginTop: 'var(--sp-4)' }}>
+            <Button onClick={close}>取消</Button>
+            <Button variant="primary" style={{ marginLeft: 'auto' }} disabled={busy || !nt.title.trim()} onClick={addTask}>
+              {busy ? '新增中…' : '新增'}
+            </Button>
+          </div>
+        </BottomSheet>
+      )}
+
+      {/* ---------- 調整計畫：深連結到精靈對應的位置 ---------- */}
+      {sheet === 'adjust' && (
+        <BottomSheet onClose={close} label="調整計畫">
+          <b style={{ fontSize: 17 }}>想調整什麼？</b>
+          <div className="ui-meta" style={{ marginTop: 2 }}>調整的是「{plan.name}」，不會建立新的計畫</div>
+          <div style={{ marginTop: 'var(--sp-3)' }}>
+            {ADJUST.map(([sec, label, hint]) => (
+              <ListRow key={sec} title={label} subtitle={hint}
+                trailing={<Icon name="chevron" size={16} />} role="button" tabIndex={0} style={{ cursor: 'pointer' }}
+                onClick={() => { close(); adjustPlan(plan.planId, sec); }}
+                onKeyDown={e => { if (e.key === 'Enter') { close(); adjustPlan(plan.planId, sec); } }} />
+            ))}
+            {/* 鎖定還沒有地方存（要等 2C 的 Task Lock），先顯示成之後才有的功能 */}
+            <ListRow title="鎖定內容" subtitle="把某幾項釘在原本的日子（之後才有）" muted
+              trailing={<span className="ui-meta">尚未開放</span>} />
+          </div>
+        </BottomSheet>
+      )}
+
+      {replan && health && (
+        <ReplanSheet plan={plan} health={health} raw={raw} lists={lists} reload={reload}
+          onClose={() => setReplan(false)}
+          onEditConditions={sec => { setReplan(false); adjustPlan?.(plan.planId, sec); }} />
+      )}
     </div>
   );
 }

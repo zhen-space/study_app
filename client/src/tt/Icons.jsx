@@ -20,6 +20,8 @@ const P = {
   plus: <><path d="M12 5v14M5 12h14" /></>,
   x: <><path d="M18 6 6 18M6 6l12 12" /></>,
   check: <><path d="M20 6 9 17l-5-5" /></>,
+  chevron: <><path d="m9 18 6-6-6-6" /></>,
+  more: <><circle cx="5" cy="12" r="1" /><circle cx="12" cy="12" r="1" /><circle cx="19" cy="12" r="1" /></>,
   // ↓ 清單可選的圖標
   book: <><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20" /><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z" /></>,
   flask: <><path d="M9 3h6" /><path d="M10 3v6l-5 8.5A2 2 0 0 0 6.7 21h10.6a2 2 0 0 0 1.7-3.5L14 9V3" /><path d="M7.5 15h9" /></>,
