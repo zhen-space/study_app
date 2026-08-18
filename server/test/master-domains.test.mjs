@@ -31,6 +31,10 @@ test('Master F：StudySession 綁 Task，不改動 ScheduledBlock', async () => 
   const task = await api('/tasks', { method: 'POST', body: { title: '讀一章', plan_id: plan.body.id } });
   const session = await api('/study-sessions', { method: 'POST', body: { task_id: task.body.id } });
   assert.equal(session.status, 201);
+  const paused = await api(`/study-sessions/${session.body.id}`, { method: 'PATCH', body: { status: 'paused' } });
+  assert.equal(paused.body.status, 'paused');
+  const resumed = await api(`/study-sessions/${session.body.id}`, { method: 'PATCH', body: { status: 'running' } });
+  assert.equal(resumed.body.status, 'running');
   const done = await api(`/study-sessions/${session.body.id}`, { method: 'PATCH', body: { status: 'completed', actual_minutes: 25 } });
   assert.equal(done.body.actual_minutes, 25);
   assert.equal(done.body.status, 'completed');

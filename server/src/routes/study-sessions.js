@@ -32,8 +32,9 @@ router.post('/study-sessions', async (req, res) => {
   }
   const active = await q.get("SELECT * FROM study_sessions WHERE user_id=? AND status='running'", [req.userId]);
   if (active) return res.status(409).json({ error: '已有進行中的讀書計時', session: active });
-  const r = await q.run(`INSERT INTO study_sessions (user_id,task_id,scheduled_block_id,started_at,status,source)
-    VALUES (?,?,?,?,?,?)`, [req.userId, task.id, b.scheduled_block_id ?? null, isoNow(), 'running', SOURCE.has(b.source) ? b.source : 'manual']);
+  const began = isoNow();
+  const r = await q.run(`INSERT INTO study_sessions (user_id,task_id,scheduled_block_id,started_at,running_since,status,source)
+    VALUES (?,?,?,?,?,?,?)`, [req.userId, task.id, b.scheduled_block_id ?? null, began, began, 'running', SOURCE.has(b.source) ? b.source : 'manual']);
   res.status(201).json(await q.get('SELECT * FROM study_sessions WHERE id=?', [r.lastInsertRowid]));
 });
 
@@ -49,9 +50,14 @@ router.patch('/study-sessions/:id', async (req, res) => {
     if (active) return res.status(409).json({ error: '已有進行中的讀書計時' });
   }
   const ends = status === 'completed' || status === 'cancelled';
-  const actual = ends ? (Number.isInteger(req.body?.actual_minutes) && req.body.actual_minutes >= 0 ? req.body.actual_minutes : elapsedMinutes(session.started_at)) : session.actual_minutes;
+  const runningMinutes = session.status === 'running' ? elapsedMinutes(session.running_since || session.started_at) : 0;
+  const accumulated = (session.actual_minutes || 0) + runningMinutes;
+  // pause 立刻結算該段；resume 重新開一段 running_since，避免把暫停時間算進 actual。
+  const actual = (ends && Number.isInteger(req.body?.actual_minutes) && req.body.actual_minutes >= 0)
+    ? req.body.actual_minutes : (status === 'paused' || ends ? accumulated : session.actual_minutes);
   const end = ends ? isoNow() : null;
-  await q.run('UPDATE study_sessions SET status=?,ended_at=?,actual_minutes=?,updated_at=CURRENT_TIMESTAMP WHERE id=?', [status, end, actual, session.id]);
+  const runningSince = status === 'running' ? isoNow() : null;
+  await q.run('UPDATE study_sessions SET status=?,ended_at=?,actual_minutes=?,running_since=?,updated_at=CURRENT_TIMESTAMP WHERE id=?', [status, end, actual, runningSince, session.id]);
   res.json(await q.get('SELECT * FROM study_sessions WHERE id=?', [session.id]));
 });
 

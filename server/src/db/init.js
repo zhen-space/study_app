@@ -312,6 +312,7 @@ CREATE TABLE IF NOT EXISTS study_sessions (
   started_at TEXT NOT NULL,
   ended_at TEXT,
   actual_minutes INTEGER DEFAULT 0,
+  running_since TEXT,
   status TEXT NOT NULL DEFAULT 'running', -- running | paused | completed | cancelled
   source TEXT NOT NULL DEFAULT 'manual',  -- manual | scheduled_block | pomo
   created_at TEXT DEFAULT CURRENT_TIMESTAMP,
@@ -376,6 +377,7 @@ export async function initSchema() {
   try { await client.execute("CREATE INDEX IF NOT EXISTS idx_routine_exceptions_user_date ON routine_exceptions(user_id, date)"); } catch {}
   try { await client.execute("CREATE INDEX IF NOT EXISTS idx_study_sessions_user_started ON study_sessions(user_id, started_at)"); } catch {}
   try { await client.execute("CREATE INDEX IF NOT EXISTS idx_study_sessions_task ON study_sessions(task_id)"); } catch {}
+  try { await client.execute("ALTER TABLE study_sessions ADD COLUMN running_since TEXT"); } catch {}
   // 舊資料的分類補進「記住的分類」清單，之後直接用選的
   try { await client.execute("INSERT INTO memo_categories (user_id,name,order_index) SELECT DISTINCT user_id,category,0 FROM memos WHERE category<>'' AND category IS NOT NULL AND NOT EXISTS (SELECT 1 FROM memo_categories c WHERE c.user_id=memos.user_id AND c.name=memos.category)"); } catch {}
   // 舊 bug（重複扣款）造成的負金幣歸零
