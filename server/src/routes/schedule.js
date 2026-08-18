@@ -83,6 +83,20 @@ router.post('/preview', async (req, res) => {
   if (req.body.sleep_start) settings.sleep_start = req.body.sleep_start;
   if (req.body.sleep_end) settings.sleep_end = req.body.sleep_end;
   const events = await q.all('SELECT * FROM fixed_events WHERE user_id=?', [req.userId]);
+  // P4 preview 第一層防線：day/time 先扣空間，Task Lock 先把原 block 釘回結果。
+  // apply 仍會在 transaction 用 pure validator 再驗一次，不能只信 preview。
+  const lockRows = await q.all(`SELECT l.*, t.deleted, t.completed FROM schedule_locks l
+    LEFT JOIN tasks t ON t.id=l.task_id WHERE l.user_id=? AND l.released_at IS NULL`, [req.userId]);
+  const nowHM = new Intl.DateTimeFormat('en-GB', { timeZone:'Asia/Taipei', hour:'2-digit', minute:'2-digit', hourCycle:'h23' }).format(new Date());
+  const effectiveLocks = lockRows.filter(l => l.type === 'task' ? !l.deleted && !l.completed : l.type === 'day' ? l.date >= today : l.date > today || (l.date === today && l.end_time > nowHM));
+  const dayLocked = new Set(effectiveLocks.filter(l=>l.type==='day').map(l=>l.date));
+  for (const d of dayLocked) if (!excludeDates.includes(d)) excludeDates.push(d);
+  for (const l of effectiveLocks.filter(l=>l.type==='time')) events.push({ date:l.date,start_time:l.start_time,end_time:l.end_time,recurring:null,_lock:true });
+  const activeForLocks = await sched.getActiveSchedule(req.userId);
+  const pinned = activeForLocks.blocks.filter(b => effectiveLocks.some(l => l.type==='task' && Number(l.task_id)===Number(b.task_id)));
+  const pinnedIds = new Set(pinned.map(b=>Number(b.task_id)));
+  for (let i=items.length-1;i>=0;i--) if (pinnedIds.has(Number(items[i].task_id))) items.splice(i,1);
+  if (!items.length && pinned.length) return res.json({ blocks: pinned.map(b => ({ ...b, _pinned:true })), check:{ tight:[], warnings:[], subjects:[], dailyMin:0, dailyMax:0 }, unplaced:false });
   // 全域排程：其他 Plan 已經生效的「有明確起迄時間」block 必須佔住時段。
   // 本次正在重排的 Plan 可釋出自己的舊 block，讓演算法重新安插；建立新 Plan
   // 沒有 plan_id 時則不排除任何既有 block。untimed block 不代表特定時段，不能
@@ -877,6 +891,7 @@ router.post('/preview', async (req, res) => {
 
   // 每個項目自己的截止日：內部欄位清掉之前，先留一份公開的給前端
   // （Phase 2A 的 tasks.deadline_date 要用。純輸出欄位，不影響排程語意）
+  blocks.push(...pinned.map(b => ({ task_id:b.task_id, title:b.task_title_snapshot, subject_id:null, date:b.date, start_time:b.start_time, end_time:b.end_time, planned_minutes:b.planned_minutes, _pinned:true })));
   blocks.forEach(b => { b.deadline = b._we || null; delete b._bk; delete b._ws; delete b._we; delete b._one; });
   blocks.sort((a, b) => a.date === b.date ? (a.start_time || '').localeCompare(b.start_time || '') : a.date.localeCompare(b.date));
   res.json({
@@ -903,6 +918,34 @@ router.get('/active', async (req, res) => {
 router.get('/versions', async (req, res) => {
   res.json(await sched.listVersions(req.userId));
 });
+
+const twHM = () => new Intl.DateTimeFormat('en-GB', { timeZone: 'Asia/Taipei', hour: '2-digit', minute: '2-digit', hourCycle: 'h23' }).format(new Date());
+router.get('/locks', async (req, res) => {
+  const includeExpired = req.query.includeExpired === '1';
+  const rows = await q.all(`SELECT l.* FROM schedule_locks l LEFT JOIN tasks t ON t.id=l.task_id
+    WHERE l.user_id=? ${includeExpired ? '' : `AND l.released_at IS NULL AND (l.type='task' AND COALESCE(t.deleted,0)=0 AND COALESCE(t.completed,0)=0 OR l.type='day' AND l.date>=? OR l.type='time' AND (l.date>? OR (l.date=? AND l.end_time>?)))`}
+    ORDER BY l.date, l.start_time, l.id`, includeExpired ? [req.userId] : [req.userId, todayTW(), todayTW(), todayTW(), twHM()]);
+  res.json(rows);
+});
+router.post('/locks', async (req, res) => {
+  try {
+    const b = req.body || {}; const type = b.type;
+    if (!['task','day','time'].includes(type)) throw new sched.ScheduleInputError('鎖定類型不正確');
+    if (type === 'task') {
+      if (!Number.isInteger(Number(b.task_id)) || b.date || b.start_time || b.end_time) throw new sched.ScheduleInputError('Task Lock 只能指定 task_id');
+      const active = await sched.getActiveVersionId(req.userId);
+      const task = await q.get('SELECT id,deleted,completed FROM tasks WHERE id=? AND user_id=?', [b.task_id, req.userId]);
+      const block = active == null ? null : await q.get('SELECT 1 FROM scheduled_blocks WHERE schedule_version_id=? AND task_id=?', [active, b.task_id]);
+      if (!task || task.deleted || task.completed || !block) throw new sched.ScheduleInputError('這個任務尚未排入時間，請先安排後再鎖定');
+      const r = await q.run('INSERT INTO schedule_locks (user_id,type,task_id) VALUES (?,?,?)', [req.userId,type,b.task_id]); return res.status(201).json({ id:r.lastInsertRowid, type, task_id:Number(b.task_id) });
+    }
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(b.date || '')) throw new sched.ScheduleInputError('請指定日期');
+    if (type === 'day') { if (b.task_id || b.start_time || b.end_time) throw new sched.ScheduleInputError('Day Lock 只能指定日期'); const r=await q.run('INSERT INTO schedule_locks (user_id,type,date) VALUES (?,?,?)',[req.userId,type,b.date]); return res.status(201).json({id:r.lastInsertRowid,type,date:b.date}); }
+    if (b.task_id || !/^\d\d:\d\d$/.test(b.start_time||'') || !/^\d\d:\d\d$/.test(b.end_time||'') || b.start_time >= b.end_time) throw new sched.ScheduleInputError('Time Lock 需要有效的開始與結束時間');
+    const r=await q.run('INSERT INTO schedule_locks (user_id,type,date,start_time,end_time) VALUES (?,?,?,?,?)',[req.userId,type,b.date,b.start_time,b.end_time]); res.status(201).json({id:r.lastInsertRowid,type,date:b.date,start_time:b.start_time,end_time:b.end_time});
+  } catch(e) { res.status(e.status || 500).json({ error:e.message, conflicts:e.conflicts }); }
+});
+router.delete('/locks/:id', async (req,res) => { const r=await q.run("UPDATE schedule_locks SET released_at=CURRENT_TIMESTAMP, release_reason='user' WHERE id=? AND user_id=? AND released_at IS NULL",[req.params.id,req.userId]); if(!r.changes)return res.status(404).json({error:'找不到這個鎖定'}); res.json({ok:true}); });
 
 // 單一版本 ＋ 它的 blocks
 router.get('/versions/:id', async (req, res) => {

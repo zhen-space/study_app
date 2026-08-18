@@ -1,5 +1,6 @@
 import { q } from '../db/init.js';
 import { dayOfWeek, todayTW } from '../util/date.js';
+import { checkLocks } from './locks.js';
 
 // Phase 2C-P1：排程持久化。
 //
@@ -63,6 +64,10 @@ export class ScheduleVersionNotFoundError extends Error {
     this.name = 'ScheduleVersionNotFoundError';
     this.status = 404;
   }
+}
+
+export class ScheduleLockConflictError extends Error {
+  constructor(conflicts) { super('因鎖定無法重排，請先解鎖後再試'); this.name = 'ScheduleLockConflictError'; this.status = 409; this.conflicts = conflicts; }
 }
 
 // 資料完整性最後一道防線：preview 是 UX 層，不能假設所有 caller 都經過它。
@@ -178,6 +183,18 @@ function timedOverlap(a, b) {
     && a.start_time < b.end_time && b.start_time < a.end_time;
 }
 
+const lockNow = () => ({ day: todayTW(), time: twNowHM() });
+async function assertCandidateLocks(tx, userId, activeVersionId, candidate) {
+  if (activeVersionId == null) return;
+  const [locks, tasks, active] = await Promise.all([
+    tx.all('SELECT * FROM schedule_locks WHERE user_id=? AND released_at IS NULL', [userId]),
+    tx.all('SELECT id,deleted,completed FROM tasks WHERE user_id=?', [userId]),
+    tx.all('SELECT task_id,date,start_time,end_time,planned_minutes FROM scheduled_blocks WHERE user_id=? AND schedule_version_id=?', [userId, activeVersionId]),
+  ]);
+  const conflicts = checkLocks(candidate, active, locks, tasks, lockNow());
+  if (conflicts.length) throw new ScheduleLockConflictError(conflicts);
+}
+
 async function getRestorePreviewFrom(db, userId, sourceVersionId, {
   planningDay = todayTW(), nowHM = twNowHM(),
 } = {}) {
@@ -185,7 +202,7 @@ async function getRestorePreviewFrom(db, userId, sourceVersionId, {
     'SELECT * FROM schedule_versions WHERE id=? AND user_id=?', [sourceVersionId, userId]);
   if (!source) return null;
 
-  const [sourceBlocks, liveTasks, events, state] = await Promise.all([
+  const [sourceBlocks, liveTasks, events, state, locks] = await Promise.all([
     db.all(`SELECT id, task_id, date, start_time, end_time, planned_minutes, task_title_snapshot
               FROM scheduled_blocks WHERE schedule_version_id=? AND user_id=?
              ORDER BY date, COALESCE(start_time,''), id`, [sourceVersionId, userId]),
@@ -193,6 +210,7 @@ async function getRestorePreviewFrom(db, userId, sourceVersionId, {
               FROM tasks WHERE user_id=?`, [userId]),
     db.all('SELECT date,start_time,end_time,recurring,title FROM fixed_events WHERE user_id=?', [userId]),
     db.get('SELECT active_version_id FROM user_schedule_state WHERE user_id=?', [userId]),
+    db.all('SELECT * FROM schedule_locks WHERE user_id=? AND released_at IS NULL', [userId]),
   ]);
   const tasks = new Map(liveTasks.map(t => [Number(t.id), t]));
   const candidates = [];
@@ -227,14 +245,25 @@ async function getRestorePreviewFrom(db, userId, sourceVersionId, {
     conflicts.push({ task_id: block.task_id, block_id: block.id, type: 'schedule_collision', message: '這個版本內有重疊時段，無法原位恢復', block });
     return false;
   });
+  // Restore 的 template 必須服從「現在」的 Lock；不回滾舊版當時 lock。
+  const activeBlocks = state?.active_version_id == null ? [] : await db.all(
+    'SELECT task_id,date,start_time,end_time,planned_minutes FROM scheduled_blocks WHERE user_id=? AND schedule_version_id=?',
+    [userId, state.active_version_id]);
+  const lockConflicts = checkLocks(restorableBlocks, activeBlocks, locks, liveTasks, { day: planningDay, time: nowHM });
+  const lockedIds = new Set(lockConflicts.filter(c => c.task_id != null).map(c => Number(c.task_id)));
+  for (const c of lockConflicts) conflicts.push({ ...c, message: '因目前鎖定無法恢復原安排' });
+  const violatedLocks = new Map(lockConflicts.map(c => [Number(c.lock_id), locks.find(l => Number(l.id) === Number(c.lock_id))]));
+  const lockedRestorable = restorableBlocks.filter(b => !lockedIds.has(Number(b.task_id)) && ![...violatedLocks.values()].some(l => l && (l.type === 'day'
+    ? b.date === l.date
+    : l.type === 'time' && b.date === l.date && b.start_time && b.end_time && b.start_time < l.end_time && l.start_time < b.end_time)));
 
-  const scheduledIds = new Set(restorableBlocks.map(b => Number(b.task_id)));
+  const scheduledIds = new Set(lockedRestorable.map(b => Number(b.task_id)));
   const conflictIds = new Set(conflicts.map(c => Number(c.task_id)));
   // Restore 不 overlay active：template 中沒有的新任務，以及無法恢復的有效任務，
   // 都會是新版本的 unplaced。completed/deleted 已退出 future schedule，不列入。
   const unplacedTaskIds = liveTasks.filter(t => t.plan_id != null && !t.deleted && !t.completed && !scheduledIds.has(Number(t.id)))
     .map(t => Number(t.id));
-  const status = restorableBlocks.length === 0
+  const status = lockedRestorable.length === 0
     ? (conflicts.length ? 'impossible' : 'nothing_to_restore')
     : (conflicts.length ? 'partial' : 'full');
   return {
@@ -243,7 +272,7 @@ async function getRestorePreviewFrom(db, userId, sourceVersionId, {
     base_version_id: state?.active_version_id ?? null,
     planning_day: planningDay,
     status,
-    restorable_blocks: restorableBlocks,
+    restorable_blocks: lockedRestorable,
     conflicts,
     skipped,
     skipped_completed: skipped.filter(s => s.reason === 'completed').map(s => s.task_id),
@@ -487,6 +516,7 @@ export async function applySchedule(userId, {
     // 即使 caller 繞過 preview，也不得把有重疊的全域 snapshot 寫進資料庫。
     // 這一步仍在 transaction 內，失敗時前面的 Task 異動會一併 rollback。
     validateTimedBlockOverlaps(candidateBlocks);
+    await assertCandidateLocks(tx, userId, active?.active_version_id ?? null, candidateBlocks);
     const version = await createScheduleVersionInTx(tx, userId, {
       source, reason, effectiveFrom: effFrom, parentVersionId: active?.active_version_id ?? null,
       blocks: candidateBlocks,

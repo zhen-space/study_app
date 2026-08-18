@@ -1,0 +1,6 @@
+import { test } from 'node:test';
+import assert from 'node:assert/strict';
+import { checkLocks, effectiveLocks } from '../src/schedule/locks.js';
+const tasks=[{id:1,deleted:0,completed:0},{id:2,deleted:0,completed:0}]; const now={day:'2099-01-01',time:'12:00'};
+test('Task Lock 鎖完整 block set，移動或 unplaced 都是 hard conflict',()=>{const active=[{task_id:1,date:'2099-01-02',start_time:'19:00',end_time:'20:00'}];const lock=[{id:1,type:'task',task_id:1}];assert.equal(checkLocks(active,active,lock,tasks,now).length,0);assert.equal(checkLocks([],active,lock,tasks,now)[0].type,'LOCKED_TASK_UNPLACED');assert.equal(checkLocks([{...active[0],start_time:'20:00',end_time:'21:00'}],active,lock,tasks,now)[0].type,'LOCKED_TASK_MOVED');});
+test('空白 Time/Day Lock 也不可被塞入，完成 task 暫時豁免',()=>{const active=[];assert.equal(checkLocks([{task_id:2,date:'2099-01-02',start_time:'19:00',end_time:'20:00'}],active,[{id:1,type:'time',date:'2099-01-02',start_time:'19:00',end_time:'20:00'}],tasks,now)[0].type,'LOCKED_SLICE_CHANGED');assert.equal(checkLocks([{task_id:2,date:'2099-01-03'}],active,[{id:2,type:'day',date:'2099-01-03'}],tasks,now)[0].type,'LOCKED_DAY_CHANGED');assert.equal(effectiveLocks([{type:'task',task_id:1}], [{id:1,completed:1,deleted:0}], now).length,0);});

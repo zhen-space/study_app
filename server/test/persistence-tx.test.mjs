@@ -288,6 +288,44 @@ async function countsFor(userId) {
   };
 }
 
+describe('P4 Lock integration：preview/apply/restore 共用 hard constraint', () => {
+  test('Task Lock 移動或 unplaced 都 rollback；完成後暫停、取消完成後自動恢復', async () => {
+    const userId = 10;
+    await q.run('INSERT INTO users (id,email,password_hash) VALUES (?,?,?)', [userId, 'lock@test', 'x']);
+    const p = await q.run('INSERT INTO plans (user_id,name,status) VALUES (?,?,?)', [userId, '鎖定計畫', 'active']);
+    const first = await sched.applySchedule(userId, { planId:p.lastInsertRowid, source:sched.SOURCE.INITIAL, taskCreates:[{client_key:'a',title:'鎖住'}], blocks:[{client_key:'a',date:'2099-08-01',start_time:'19:00',end_time:'20:00'}] });
+    const taskId = first.created[0].id;
+    await q.run("INSERT INTO schedule_locks (user_id,type,task_id) VALUES (?,?,?)", [userId,'task',taskId]);
+    const before = await countsFor(userId);
+    await assert.rejects(() => sched.applySchedule(userId, { planId:p.lastInsertRowid, source:sched.SOURCE.AI_REPLAN, blocks:[{task_id:taskId,date:'2099-08-02',start_time:'19:00',end_time:'20:00'}] }), e => e.status===409 && /鎖定/.test(e.message));
+    assert.deepEqual(await countsFor(userId), before, '★ locked move 必須整筆 rollback');
+    await assert.rejects(() => sched.applySchedule(userId, { planId:p.lastInsertRowid, source:sched.SOURCE.AI_REPLAN, blocks:[] }), e => e.status===409);
+    await q.run('UPDATE tasks SET completed=1 WHERE id=?', [taskId]);
+    const ok = await sched.applySchedule(userId, { planId:p.lastInsertRowid, source:sched.SOURCE.AI_REPLAN, blocks:[] });
+    assert.ok(ok.version_id, '完成的 Task Lock 不得卡住未來排程');
+    await q.run('UPDATE tasks SET completed=0 WHERE id=?', [taskId]);
+    await assert.rejects(() => sched.applySchedule(userId, { planId:p.lastInsertRowid, source:sched.SOURCE.AI_REPLAN, blocks:[] }), e => e.status===409, '取消完成後同一列 lock 必須恢復效力');
+    assert.equal((await q.get('SELECT released_at FROM schedule_locks WHERE task_id=?', [taskId])).released_at, null);
+  });
+
+  test('Time/Day Lock freeze 空白空間；restore 使用現在的 Lock', async () => {
+    const userId = 11;
+    await q.run('INSERT INTO users (id,email,password_hash) VALUES (?,?,?)', [userId, 'slice@test', 'x']);
+    const p = await q.run('INSERT INTO plans (user_id,name,status) VALUES (?,?,?)', [userId, '空間鎖', 'active']);
+    const seed = await sched.applySchedule(userId, { planId:p.lastInsertRowid, source:sched.SOURCE.INITIAL, taskCreates:[{client_key:'a',title:'A'}], blocks:[{client_key:'a',date:'2099-09-01',start_time:'18:00',end_time:'19:00'}] });
+    const taskId=seed.created[0].id;
+    await q.run("INSERT INTO schedule_locks (user_id,type,date,start_time,end_time) VALUES (?,?,?,?,?)",[userId,'time','2099-09-01','19:00','20:00']);
+    await q.run("INSERT INTO schedule_locks (user_id,type,date) VALUES (?,?,?)",[userId,'day','2099-09-02']);
+    await q.run("INSERT INTO schedule_locks (user_id,type,date) VALUES (?,?,?)",[userId,'day','2099-09-01']);
+    const before=await countsFor(userId);
+    await assert.rejects(()=>sched.applySchedule(userId,{planId:p.lastInsertRowid,source:sched.SOURCE.AI_REPLAN,blocks:[{task_id:taskId,date:'2099-09-01',start_time:'19:00',end_time:'20:00'}]}),e=>e.status===409);
+    await assert.rejects(()=>sched.applySchedule(userId,{planId:p.lastInsertRowid,source:sched.SOURCE.AI_REPLAN,blocks:[{task_id:taskId,date:'2099-09-02'}]}),e=>e.status===409);
+    assert.deepEqual(await countsFor(userId),before,'★ slice/day conflict 不得留下 version');
+    const preview=await sched.getRestorePreview(userId,seed.version_id);
+    assert.ok(preview.conflicts.some(c=>String(c.type).startsWith('LOCKED_')),'restore 必須使用現在的 Lock');
+  });
+});
+
 describe('P3 Restore：版本是 template，套用永遠建立新版本', () => {
   test('full restore 建立新版本、保留舊版 immutable，且不在 template 的新 Task 變 unplaced', async () => {
     const userId = 6;
