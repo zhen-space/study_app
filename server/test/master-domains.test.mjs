@@ -104,6 +104,22 @@ test('Master C：max_per_day 是 scheduler hard cap，不會被 timed mode 忽�
   assert.equal(counts.every(n => n <= 1), true);
 });
 
+test('Master C：max_per_day 在最後補位路徑仍是硬限制，超出的項目明確 unplaced', async () => {
+  const plan = await api('/plans', { method: 'POST', body: { name: '單日硬上限計畫' } });
+  await api(`/plans/${plan.body.id}/constraints`, { method: 'PUT', body: { intent: { max_per_day: 1 } } });
+  const preview = await api('/schedule/preview', { method: 'POST', body: {
+    plan_id: plan.body.id, timed: false, perDay: 9, startDate: '2099-01-12', endDate: '2099-01-12',
+    items: [
+      { subject_id: 1, title: '唯一可排日第一項', spread: false, start: '2099-01-12', end: '2099-01-12' },
+      { subject_id: 1, title: '唯一可排日第二項', spread: false, start: '2099-01-12', end: '2099-01-12' },
+    ],
+  } });
+  assert.equal(preview.status, 200);
+  assert.equal(preview.body.blocks.length, 1);
+  assert.equal(preview.body.unplaced, true);
+  assert.match(preview.body.message, /唯一可排日第二項/);
+});
+
 test('Master A：Plan Task 的明確工作量會進入正式 health gap，舊資料不猜分鐘', async () => {
   const plan = await api('/plans', { method: 'POST', body: { name: '工作量計畫' } });
   const task = await api('/tasks', { method: 'POST', body: { title: '需要兩小時', plan_id: plan.body.id, estimated_minutes: 120 } });

@@ -14,7 +14,7 @@
 
 - A：preview 提供 deterministic feasibility gap；Plan health 使用 normalized model 與明確任務工作量（舊資料不猜分鐘）。
 - B：有 recurring routine、例外日、scheduler mapping 與學生端管理入口。
-- C：有 AI → structured intent → user confirmation 的安全通道；目前 scheduler 正式吃 subject order、排除日期／星期、date window、max session length；其餘（含 strict dependency）明確標記為 unsupported。
+- C：有 AI → structured intent → user confirmation 的安全通道；目前 scheduler 正式吃 subject order、排除日期／星期、date window、max session length、max per day（以 ScheduledBlock／項目數計）；其餘（含 strict dependency）明確標記為 unsupported，絕不靜默忽略。
 - D：Plan Detail 可新增 Task、編輯 description、completed → active。
 - E：Calendar 可顯示 ScheduledBlock 與 Time/Day Lock，並走既有 manual version flow。
 - F/G：StudySession 與 planned vs actual 統計已建立；後續估時調整必須以資料驗證後另行設計。

@@ -300,6 +300,10 @@ router.post('/preview', async (req, res) => {
   const blocks = [];
   const failed = [];
   days.forEach(d => { d.load = 0; d.count = 0; d.subs = new Set(); }); // load=分鐘數 count=項數 subs=當天已排科目
+  // 已確認的 max_per_day 是硬限制。它必須在 put() 這個唯一寫入點
+  // 再檢查一次，因為後段補位會刻意放寬舊版的舒適規則；不能因此放寬
+  // 使用者明確確認過的 constraint。
+  const constraintMaxPerDay = confirmedConstraints.max_per_day || null;
 
   // 這一天塞不塞得下這個 chunk（timed 才需要判斷時間）
   function fits(day, w) {
@@ -313,6 +317,7 @@ router.post('/preview', async (req, res) => {
   }
   // 真的排進去（_bk/_ws/_we 供產出前的平衡搬移用，回傳前會清掉）
   function put(day, w) {
+    if (constraintMaxPerDay != null && day.count >= constraintMaxPerDay) return false;
     if (!timed) {
       if (!day.slots.length) return false;
       blocks.push({ subject_id: w.subject_id, title: w.title, date: day.date, _bk: w._bk, _ws: w.start, _we: w.end, _fin: !!w.final, _one: !!w.onePerDay });
@@ -354,9 +359,7 @@ router.post('/preview', async (req, res) => {
   // 某天塞不下就之後立刻補回，不會整串往後推、擠在最後面。
   // pace='front' 盡早排完：速率加快（約 6 成天數消化），前面多排、後面留空。
   const front = pace === 'front';
-  // max_per_day 是已確認 intent 的硬上限；不設定時沿用既有模式：timed
-  // 不以 session 數量限縮、untimed 才看 Wizard 的 perDay。
-  const constraintMaxPerDay = confirmedConstraints.max_per_day || null;
+  // 未設定 max_per_day 時沿用既有模式：timed 不限項數、untimed 才看 Wizard perDay。
   let bkSeq = 0; // 每次 distribute 遞增，避免不同批（一般/壓軸）同鍵誤連
   // minDate / maxDate 可以是函式（依科目不同）：收到桶的第一個項目，回傳該桶的界線
   function distribute(queue, minDate, maxDate) {
