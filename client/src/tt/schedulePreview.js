@@ -40,6 +40,8 @@ const CONFIRMED_KEY = planId => `scheduleConditions:plan:${planId}`;
 const CONDITION_FIELDS = [
   'timed', 'limitPerDay', 'perDay', 'pace',
   'excludeWeekdays', 'excludeDates', 'skipIfBusyHours',
+  // 科目先後順序（2C-P6-B）。重排時要沿用同一個排法，不能每次重排都換順序。
+  'subjectOrder',
 ];
 
 // 缺哪一項條件就無法忠實重現原本的排法（給 UI 顯示用）
@@ -68,6 +70,9 @@ export function buildSchedulePreviewRequest({ items, startDate, endDate, conditi
     perDay: (c.timed || c.limitPerDay) ? c.perDay : 0,
     pace: c.pace,
   };
+  // 科目先後順序：結構化欄位（科目 id 由前到後）。沒設就整個不送，
+  // 後端看不到這個欄位＝沒指定，行為跟以前一樣。
+  if (Array.isArray(c.subjectOrder) && c.subjectOrder.length) body.subject_order = c.subjectOrder;
   // 「這次調整作息」是一次性的，沒有存起來；有帶才送，沒帶就用帳號的正常作息
   if (c.sleep_start && c.sleep_end) { body.sleep_start = c.sleep_start; body.sleep_end = c.sleep_end; }
   return body;

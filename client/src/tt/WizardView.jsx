@@ -93,6 +93,10 @@ export default function WizardView({
   const [perDay, setPerDay] = useState(3);            // 每天幾項
   const [pace, setPace] = useState('even');           // even=平均分配 front=盡早排完（前面多排）
   const [groupSize, setGroupSize] = useState({});     // 每科：把連續 N 個單位綁成一組（0/1=不綁）
+  // 科目先後順序（2C-P6-B）：使用者排「數學 → 化學 → 英文」。
+  // 語意是 priority 不是 dependency——優先取得排程位置，但不要求前一科排完
+  // 才能開始下一科。存的是科目 id 由前到後。
+  const [subjOrder, setSubjOrder] = useState([]);
   const [bySubject, setBySubject] = useState(false);
   const [byGroup, setByGroup] = useState(false);
   const [dGlobal, setDGlobal] = useState({ start: today(), end: addDays(today(), 6) });
@@ -152,6 +156,7 @@ export default function WizardView({
         d.perDay != null && setPerDay(d.perDay);
         d.pace && setPace(d.pace);
         d.groupSize && setGroupSize(d.groupSize);
+        Array.isArray(d.subjOrder) && setSubjOrder(d.subjOrder);
         d.bySubject != null && setBySubject(d.bySubject);
         d.byGroup != null && setByGroup(d.byGroup);
         // 整體範圍：過期的不還原；開始日一律不早於今天（過去的日期沒意義）
@@ -189,12 +194,12 @@ export default function WizardView({
     try {
       localStorage.setItem(draftKey, JSON.stringify({
         items, subjSpread, typeRef, typesBy, combineBy, typeGroupBy, finals, firstsSel, plainSel, skipTypes,
-        exWd, exDates, levelMin, busyHours, timed, limitPerDay, perDay, pace, groupSize,
+        exWd, exDates, levelMin, busyHours, timed, limitPerDay, perDay, pace, groupSize, subjOrder,
         bySubject, byGroup, dGlobal, dMap, step,
       }));
     } catch {}
   }, [draftKey, items, subjSpread, typeRef, typesBy, combineBy, typeGroupBy, finals, firstsSel, plainSel, skipTypes,
-    exWd, exDates, levelMin, busyHours, timed, limitPerDay, perDay, pace, groupSize,
+    exWd, exDates, levelMin, busyHours, timed, limitPerDay, perDay, pace, groupSize, subjOrder,
     bySubject, byGroup, dGlobal, dMap, step]);
 
   const evGroups = useMemo(() => groupEvents(events), [events]);
@@ -429,12 +434,36 @@ export default function WizardView({
   // 取單位標記（標題第一個詞，如「主題1」「壹」），供合併命名
   const unitTok = title => title.split(/[\s　]/)[0] || title;
 
+  /* ---------- 科目先後順序 ---------- */
+  // 這次真的選到的科目（去重，維持出現順序）
+  const selectedSubjectIds = [...new Set(items.map(i => i.subject_id))];
+  // 畫面上顯示的順序：使用者排過的優先，沒排到的接在後面。
+  // 已經不在這次選取範圍的科目自動消失，不用另外清理。
+  const orderedSubjectIds = [
+    ...subjOrder.filter(sid => selectedSubjectIds.some(x => String(x) === String(sid))),
+    ...selectedSubjectIds.filter(sid => !subjOrder.some(x => String(x) === String(sid))),
+  ];
+  // 上／下移一格。第一次移動時把當下顯示的順序整個定下來——
+  // 在那之前 subjOrder 是空的，代表「使用者沒指定」，後端就維持既有行為。
+  const moveSubject = (sid, delta) => {
+    const cur = [...orderedSubjectIds];
+    const i = cur.findIndex(x => String(x) === String(sid));
+    const j = i + delta;
+    if (i < 0 || j < 0 || j >= cur.length) return;
+    [cur[i], cur[j]] = [cur[j], cur[i]];
+    setSubjOrder(cur);
+  };
+
   /* ---------- 產生排程 ---------- */
   // 使用者設定的「排法」。產生預覽與（成功套用後）存進條件快照都用這一份，
   // 兩邊不會各寫一次、也不會漂移。
   const conditions = {
     timed, limitPerDay, perDay, pace,
     excludeWeekdays: exWd, excludeDates: exDates, skipIfBusyHours: busyHours,
+    // 只送「這次真的有選到的科目」，順序照使用者排的。沒排過就是空的，
+    // 後端收不到這個欄位＝沒指定。
+    // 使用者沒排過就送空的：沒指定 ≠ 照選取順序，後端要維持既有行為
+    subjectOrder: subjOrder.length ? orderedSubjectIds : [],
   };
 
   async function genPreview() {
@@ -1145,8 +1174,42 @@ export default function WizardView({
           return (
             <details className="tile" id="wz-sec-cond" open={initialSection === 'cond'} style={{ marginBottom: 10 }}>
               <summary style={{ cursor: 'pointer', fontWeight: 700 }}>排程條件</summary>
-              <b style={{ display: 'block', marginTop: 8 }}>各科的章節要打散還是照順序？</b>
-              {sids.map(sid => (
+
+              {/* 科目先後順序（2C-P6-B）。用上下移動而不是拖曳：
+                  HTML5 drag 在手機上不可靠，而這一頁主要是在手機上用的。 */}
+              {sids.length > 1 && (
+                <>
+                  <b style={{ display: 'block', marginTop: 8 }}>先讀哪一科？</b>
+                  <Help>
+                    排在前面的科目會優先拿到比較早的排程位置。<br />
+                    這<b>不是</b>「前一科讀完才能開始下一科」——各科還是每天輪流進行，
+                    只是誰先出手照你排的順序。
+                  </Help>
+                  <div style={{ marginTop: 6 }}>
+                    {orderedSubjectIds.map((sid, i) => (
+                      <div className="row" key={sid} style={{ marginTop: 4 }}>
+                        <span className="muted" style={{ width: 20 }}>{i + 1}.</span>
+                        <span className="tag" style={{ background: lists.find(l => String(l.id) === String(sid))?.color, color: '#fff', padding: '2px 8px', borderRadius: 999, fontSize: 12 }}>{sname(sid)}</span>
+                        <span style={{ marginLeft: 'auto' }} />
+                        <button className="btn sm ghost subj-move" aria-label={`把${sname(sid)}往前移`}
+                          disabled={i === 0} onClick={() => moveSubject(sid, -1)}>↑</button>
+                        <button className="btn sm ghost subj-move" aria-label={`把${sname(sid)}往後移`}
+                          disabled={i === orderedSubjectIds.length - 1} onClick={() => moveSubject(sid, 1)}>↓</button>
+                      </div>
+                    ))}
+                  </div>
+                  {subjOrder.length > 0 && (
+                    <button className="btn sm ghost" style={{ marginTop: 6 }} onClick={() => setSubjOrder([])}>
+                      取消指定順序
+                    </button>
+                  )}
+                </>
+              )}
+
+              <b style={{ display: 'block', marginTop: 16 }}>各科的章節要打散還是照順序？</b>
+              {/* 跟著上面排好的順序走：使用者剛把英文移到第一，下面卻還是舊順序，
+                  會讓人以為順序沒生效。 */}
+              {orderedSubjectIds.map(sid => (
                 <div key={sid} style={{ marginTop: 8 }}>
                   <div className="row">
                     <span className="tag" style={{ background: lists.find(l => l.id === sid)?.color, color: '#fff', padding: '2px 8px', borderRadius: 999, fontSize: 12 }}>{sname(sid)}</span>
