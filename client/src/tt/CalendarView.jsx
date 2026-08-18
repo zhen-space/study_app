@@ -55,6 +55,7 @@ function ColorPicker({ value, onPick }) {
 export default function CalendarView({ tasks, reload }) {
   const schedule = useActiveSchedule();
   const [adjustBlock, setAdjustBlock] = useState(null);
+  const [locks, setLocks] = useState([]);
   const scheduledTaskIds = new Set(schedule.blocks.map(b => Number(b.task_id)));
   // 檢視方式記起來（跟任務排序一樣）：選了 3日／1日，下次開還是同一個
   const [view, setViewRaw] = useState(() => {
@@ -76,7 +77,7 @@ export default function CalendarView({ tasks, reload }) {
     setEvents(list);
     try { localStorage.setItem('evCache', JSON.stringify(list)); } catch {}
   }).catch(() => {});
-  useEffect(() => { loadEvents(); setAnchor(today()); }, []); // 每次打開都回到今天那一週
+  useEffect(() => { loadEvents(); api('/schedule/locks').then(setLocks).catch(() => {}); setAnchor(today()); }, []); // 每次打開都回到今天那一週
 
   // 直接在日曆匯入課表/行程（AI 解析 → 編輯 → 加入）
   const [aiBusy, setAiBusy] = useState(false);
@@ -549,6 +550,8 @@ export default function CalendarView({ tasks, reload }) {
                   style={{ position: 'absolute', top: ROW / 2, left: 0, right: 0, height: ROW / 2, borderTop: '1px dashed rgba(120,120,128,.18)', cursor: 'pointer' }} />
               </div>
             ))}
+            {locks.filter(l => l.type === 'day' && l.date === d).map(l => <div key={`ld${l.id}`} title="整天已鎖定" style={{ position: 'absolute', inset: 0, zIndex: 2, pointerEvents: 'none', background: 'repeating-linear-gradient(135deg, rgba(245,158,11,.12) 0 6px, transparent 6px 12px)', border: '1px solid rgba(245,158,11,.5)' }}><span style={{ position: 'sticky', top: 2, fontSize: 10, color: 'var(--warning)' }}>🔒 整天鎖定</span></div>)}
+            {locks.filter(l => l.type === 'time' && l.date === d).map(l => <div key={`lt${l.id}`} title={`時段鎖定 ${l.start_time}–${l.end_time}`} style={{ position: 'absolute', top: yOf(toMin(l.start_time)), height: Math.max(4, yOf(toMin(l.end_time)) - yOf(toMin(l.start_time))), left: 0, right: 0, zIndex: 2, pointerEvents: 'none', background: 'rgba(245,158,11,.16)', borderTop: '1px dashed var(--warning)', borderBottom: '1px dashed var(--warning)' }} />)}
             {/* 既定行程：白底黑字，可點擊編輯、可拖曳到別天，高度＝時長 */}
             {eventsOn(d).map(e => {
               const top = yOf(toMin(e.start_time));
