@@ -447,3 +447,31 @@ describe('P3 Restore：版本是 template，套用永遠建立新版本', () => 
     assert.deepEqual(await countsFor(userId), beforeNothing);
   });
 });
+
+describe('P5 歷史 diff：immutable version 即時計算', () => {
+  test('child 對 parent 比較；restore 一律比較 restore 前 active，不比較 template', async () => {
+    const userId = 13;
+    await q.run('INSERT INTO users (id,email,password_hash) VALUES (?,?,?)', [userId, 'diff@test', 'x']);
+    const plan = await q.run('INSERT INTO plans (user_id,name,status) VALUES (?,?,?)', [userId, 'Diff 計畫', 'active']);
+    const task = await q.run('INSERT INTO tasks (user_id,title,plan_id) VALUES (?,?,?)', [userId, '變動任務', plan.lastInsertRowid]);
+    const initial = await sched.createScheduleVersion(userId, {
+      source: sched.SOURCE.INITIAL, effectiveFrom: '2099-01-01',
+      blocks: [{ task_id: task.lastInsertRowid, date: '2099-01-10', start_time: '19:00', end_time: '20:00', planned_minutes: 60 }],
+    });
+    const initialDiff = await sched.getVersionDiff(userId, initial.version_id);
+    assert.equal(initialDiff.is_initial, true);
+    assert.deepEqual(initialDiff.items, []);
+    const moved = await sched.createScheduleVersion(userId, {
+      source: sched.SOURCE.AI_REPLAN, effectiveFrom: '2099-01-01', parentVersionId: initial.version_id,
+      blocks: [{ task_id: task.lastInsertRowid, date: '2099-01-11', start_time: '20:00', end_time: '21:00', planned_minutes: 60 }],
+    });
+    const movedDiff = await sched.getVersionDiff(userId, moved.version_id, { includeUnchanged: false });
+    assert.equal(movedDiff.base_version_id, initial.version_id);
+    assert.deepEqual(movedDiff.items.map(x => x.type), ['moved']);
+    const restored = await sched.applyRestore(userId, initial.version_id, { baseVersionId: moved.version_id });
+    const restoreDiff = await sched.getVersionDiff(userId, restored.version.version_id);
+    assert.equal(restoreDiff.base_version_id, moved.version_id, '★ restore diff base 必須是 restore 前 active');
+    assert.equal(restoreDiff.candidate_version_id, restored.version.version_id);
+    assert.deepEqual(restoreDiff.items.map(x => x.type), ['moved']);
+  });
+});
