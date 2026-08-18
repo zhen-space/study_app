@@ -38,6 +38,12 @@ test('Master F：StudySession 綁 Task，不改動 ScheduledBlock', async () => 
   const done = await api(`/study-sessions/${session.body.id}`, { method: 'PATCH', body: { status: 'completed', actual_minutes: 25 } });
   assert.equal(done.body.actual_minutes, 25);
   assert.equal(done.body.status, 'completed');
+  const stats = await api('/tstats');
+  assert.equal(stats.status, 200);
+  assert.equal(stats.body.byPlan['讀書紀錄'], 25);
+  assert.equal(stats.body.actualTotal >= 25, true);
+  assert.equal(typeof stats.body.movedLast30, 'number');
+  assert.equal(typeof stats.body.plannedByPlan, 'object');
 });
 
 test('Master C：只有確認後的 supported constraint 會保存，unsupported 不可 silently ignore', async () => {

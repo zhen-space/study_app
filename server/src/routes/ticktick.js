@@ -1,6 +1,8 @@
 import { Router } from 'express';
 import { q } from '../db/init.js';
 import { requireAuth } from '../middleware/auth.js';
+import { calculateScheduleDiff } from '../schedule/diff.js';
+import { todayTW } from '../util/date.js';
 
 const router = Router();
 router.use(requireAuth);
@@ -499,8 +501,28 @@ router.get('/tstats', async (req, res) => {
     FROM scheduled_blocks b JOIN tasks t ON t.id=b.task_id LEFT JOIN lists l ON l.id=t.list_id LEFT JOIN plans p ON p.id=t.plan_id
     WHERE b.user_id=? AND b.schedule_version_id=? AND t.completed=0 AND COALESCE(t.deleted,0)=0`, [req.userId, active.active_version_id]);
   const plannedMinutes = planned.reduce((n, b) => n + (b.planned_minutes || 0), 0);
+  // 統計不再只看 Task checkbox：原定時間來自 active ScheduleVersion，實際時間
+  // 來自 StudySession。兩者各自保留，不能把實際學習反寫進 immutable block。
+  const plannedBySubject = {}, plannedByPlan = {};
+  for (const block of planned) {
+    const minutes = Number(block.planned_minutes) || 0;
+    if (block.list_name) plannedBySubject[block.list_name] = (plannedBySubject[block.list_name] || 0) + minutes;
+    if (block.plan_name) plannedByPlan[block.plan_name] = (plannedByPlan[block.plan_name] || 0) + minutes;
+  }
   const unplaced = active?.active_version_id == null ? 0 : (await q.get(`SELECT COUNT(*) c FROM tasks t WHERE t.user_id=? AND t.plan_id IS NOT NULL AND t.completed=0 AND COALESCE(t.deleted,0)=0
     AND NOT EXISTS (SELECT 1 FROM scheduled_blocks b WHERE b.user_id=t.user_id AND b.schedule_version_id=? AND b.task_id=t.id)`, [req.userId, active.active_version_id]))?.c || 0;
+  // 「移動次數」由 immutable version blocks 即時計算，不另存一份容易失真的
+  // counter。只計未來 placement，避免舊歷史版本讓數字隨時間無限膨脹。
+  const recentVersions = await q.all(`SELECT id,parent_version_id FROM schedule_versions
+    WHERE user_id=? AND parent_version_id IS NOT NULL AND created_at >= datetime('now','-30 days')`, [req.userId]);
+  let movedLast30 = 0;
+  for (const version of recentVersions) {
+    const [before, after] = await Promise.all([
+      q.all('SELECT * FROM scheduled_blocks WHERE user_id=? AND schedule_version_id=?', [req.userId, version.parent_version_id]),
+      q.all('SELECT * FROM scheduled_blocks WHERE user_id=? AND schedule_version_id=?', [req.userId, version.id]),
+    ]);
+    movedLast30 += calculateScheduleDiff(before, after, { comparisonFrom: todayTW(), includeUnchanged: false }).summary.moved;
+  }
   res.json({
     total: tasks.length,
     done: tasks.filter(t => t.completed).length,
@@ -508,7 +530,7 @@ router.get('/tstats', async (req, res) => {
     focusByDay: Object.fromEntries(pomo.map(p => [p.date, p.m])),
     focusTotal: pomo.reduce((a, p) => a + p.m, 0) + sessions.reduce((a, s) => a + s.actual_minutes, 0),
     actualByDay, actualTotal: sessions.reduce((a, s) => a + s.actual_minutes, 0), bySubject, byPlan,
-    plannedMinutes, unplaced,
+    plannedMinutes, plannedBySubject, plannedByPlan, movedLast30, unplaced,
     year: { byMonth, focusByMonth, topLists },
   });
 });
