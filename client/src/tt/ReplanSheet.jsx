@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { api } from '../api';
 import Icon from './Icons';
 import { today, addDays } from './helpers';
@@ -24,13 +24,15 @@ export default function ReplanSheet({ plan, health, raw, lists = [], reload, onC
   const [stage, setStage] = useState('confirm');   // confirm | loading | preview | saving
   const [preview, setPreview] = useState(null);
   const [err, setErr] = useState('');
+  const [profile, setProfile] = useState(null);
+  useEffect(() => { if (plan.planId != null) api(`/plans/${plan.planId}/schedule-profile`).then(setProfile).catch(() => {}); }, [plan.planId]);
 
   // 重排的對象：這個計畫底下還沒完成的任務。完成的連讀都不讀進來。
   const pending = plan.items.filter(t => !t.completed && !t.deleted);
 
   // 重排＝用「原本的排法」重算剩下的內容。條件不齊就不排，
   // 絕對不自己補一組預設值——那等於偷偷換掉學生設定的排法。
-  const { conditions, minutes, missing, complete } = planScheduleConditions(plan.planId, pending);
+  const { conditions, minutes, missing, complete } = planScheduleConditions(plan.planId, pending, profile);
 
   async function run() {
     setStage('loading'); setErr('');
