@@ -277,18 +277,19 @@ describe('PlanDetail 的「調整計畫」入口', () => {
     noCrash();
   });
 
-  it('13. 底部選單列出各段入口，「鎖定內容」先做成之後才有的功能', async () => {
-    mountDetail({ adjustPlan: () => {} });
+  it('13. 底部選單列出各段入口，排程鎖定可進入正式 Lock UI', async () => {
+    const goLocks = vi.fn();
+    mountDetail({ adjustPlan: () => {}, goLocks });
     await click(btn(/調整計畫/));
     const sheet = document.querySelector('.sheet-panel');
     for (const s of ['學習內容', '完成期限', '可用時間', '排程條件', '全部設定']) {
       expect(within(sheet).getByText(s)).toBeInTheDocument();
     }
-    // Lock 尚未實作：顯示成之後才有的功能，而且不可點
-    const lock = within(sheet).getByText('鎖定內容').closest('.ui-row');
+    const lock = within(sheet).getByText('排程鎖定').closest('.ui-row');
     expect(lock).toBeTruthy();
-    expect(within(lock).getByText('尚未開放')).toBeInTheDocument();
-    expect(lock.getAttribute('role')).not.toBe('button');
+    expect(lock.getAttribute('role')).toBe('button');
+    await click(lock);
+    expect(goLocks).toHaveBeenCalledOnce();
     noCrash();
   });
 

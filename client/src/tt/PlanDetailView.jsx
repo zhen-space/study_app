@@ -31,7 +31,7 @@ const ADJUST = [
   ['all', '全部設定', '從頭走一次精靈'],
 ];
 
-export default function PlanDetailView({ planKey, tasks, lists, apiPlans = [], reload, onBack, goWizard, adjustPlan }) {
+export default function PlanDetailView({ planKey, tasks, lists, apiPlans = [], reload, onBack, goWizard, adjustPlan, goLocks }) {
   const plan = usePlans(tasks, lists, apiPlans).find(p => p.key === planKey);
   const [showDone, setShowDone] = useState(false);
   const [sheet, setSheet] = useState(null);   // manage | edit | add | adjust | confirmComplete
@@ -422,9 +422,9 @@ export default function PlanDetailView({ planKey, tasks, lists, apiPlans = [], r
                 onClick={() => { close(); adjustPlan(plan.planId, sec); }}
                 onKeyDown={e => { if (e.key === 'Enter') { close(); adjustPlan(plan.planId, sec); } }} />
             ))}
-            {/* 鎖定還沒有地方存（要等 2C 的 Task Lock），先顯示成之後才有的功能 */}
-            <ListRow title="鎖定內容" subtitle="把某幾項釘在原本的日子（之後才有）" muted
-              trailing={<span className="ui-meta">尚未開放</span>} />
+            <ListRow title="排程鎖定" subtitle="鎖住任務、時段或整天後，重排不會改動它們"
+              trailing={<Icon name="chevron" size={16} />} role="button" tabIndex={0} style={{ cursor: 'pointer' }}
+              onClick={() => { close(); goLocks?.(); }} />
           </div>
         </BottomSheet>
       )}
