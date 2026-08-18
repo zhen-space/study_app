@@ -13,7 +13,7 @@ import path from 'node:path';
 process.env.DB_FILE = path.join(mkdtempSync(path.join(tmpdir(), 'tx-')), 'tx.sqlite');
 process.env.TURSO_DATABASE_URL = '';
 
-const { q, initSchema } = await import('../src/db/init.js');
+const { q, initSchema, repairScheduledBlockTiming } = await import('../src/db/init.js');
 const sched = await import('../src/schedule/persistence.js');
 
 const USER = 1;
@@ -48,6 +48,141 @@ const counts = async () => ({
   versions: (await q.get('SELECT COUNT(*) c FROM schedule_versions'))?.c,
   blocks: (await q.get('SELECT COUNT(*) c FROM scheduled_blocks'))?.c,
   activeId: await sched.getActiveVersionId(USER),
+});
+
+// 直接 INSERT 是刻意的：這些是 PR #23 之前已落庫的 ScheduledBlock shape，不能
+// 假裝它們會經過新的 write gate。每個 user 獨立，讓 legacy runtime 測試互不干擾。
+async function seedLegacyVersion(userId, shapes) {
+  await q.run('INSERT INTO users (id,email,password_hash) VALUES (?,?,?)', [userId, `legacy${userId}@test`, 'x']);
+  const plan = await q.run('INSERT INTO plans (user_id,name,status) VALUES (?,?,?)', [userId, `legacy ${userId}`, 'active']);
+  const tasks = [];
+  for (const shape of shapes) {
+    const task = await q.run('INSERT INTO tasks (user_id,title,plan_id,estimated_minutes) VALUES (?,?,?,?)',
+      [userId, shape.title || 'legacy task', plan.lastInsertRowid, shape.estimated_minutes || null]);
+    tasks.push(task.lastInsertRowid);
+  }
+  const version = await q.run(`INSERT INTO schedule_versions (user_id,version_no,source,effective_from,block_count)
+    VALUES (?,?,?,?,?)`, [userId, 1, 'initial', '2026-09-01', shapes.length]);
+  for (let i = 0; i < shapes.length; i++) {
+    const s = shapes[i];
+    await q.run(`INSERT INTO scheduled_blocks (user_id,schedule_version_id,task_id,date,start_time,end_time,planned_minutes)
+      VALUES (?,?,?,?,?,?,?)`, [userId, version.lastInsertRowid, tasks[i], s.date || '2026-09-10',
+      s.start_time ?? null, s.end_time ?? null, s.planned_minutes ?? null]);
+  }
+  await q.run('INSERT INTO user_schedule_state (user_id,active_version_id) VALUES (?,?)', [userId, version.lastInsertRowid]);
+  const blocks = await q.all('SELECT * FROM scheduled_blocks WHERE schedule_version_id=? ORDER BY id', [version.lastInsertRowid]);
+  return { planId: plan.lastInsertRowid, taskIds: tasks, versionId: version.lastInsertRowid, blocks };
+}
+
+describe('Round-3：pre-PR ScheduledBlock canonical repair 與 runtime 相容', () => {
+  // mutation guard：若 baseline 沒經 canonicalizer，raw NULL minutes 會和
+  // candidate 的 60 分鐘不一致，調整另一段也會被誤判 LOCKED_TASK_MOVED。
+  test('Class B Task Lock baseline 與 manual candidate 同形，不移動 locked block 也不會假衝突', async () => {
+    const legacy = await seedLegacyVersion(31, [
+      { title: 'Class B 鎖定', date: '2026-09-10', start_time: '19:00', end_time: '20:00', planned_minutes: null },
+      { title: '要手動搬動', date: '2026-09-11', start_time: '14:00', end_time: '15:00', planned_minutes: 60 },
+    ]);
+    await q.run(`INSERT INTO schedule_locks (user_id,type,task_id) VALUES (?,?,?)`, [31, 'task', legacy.taskIds[0]]);
+    const result = await sched.applyManualAdjustment(31, {
+      baseVersionId: legacy.versionId,
+      moves: [{ block_id: legacy.blocks[1].id, date: '2026-09-12', start_time: '15:00', end_time: '16:00' }],
+    });
+    assert.equal(result.ok, true, '移除 Lock baseline canonicalization 後此處會誤報 LOCKED_TASK_MOVED');
+    const active = await sched.getActiveSchedule(31);
+    const locked = active.blocks.find(b => b.task_id === legacy.taskIds[0]);
+    assert.deepEqual([locked.start_time, locked.end_time, locked.planned_minutes], ['19:00', '20:00', 60]);
+  });
+
+  test('Class B 的 Task Lock 真被移動時仍是 hard conflict，舊版本維持 immutable', async () => {
+    const legacy = await seedLegacyVersion(35, [
+      { title: 'Class B 不可移', date: '2026-09-10', start_time: '19:00', end_time: '20:00', planned_minutes: null },
+      { title: '其他任務', date: '2026-09-11' },
+    ]);
+    await q.run('INSERT INTO schedule_locks (user_id,type,task_id) VALUES (?,?,?)', [35, 'task', legacy.taskIds[0]]);
+    await assert.rejects(() => sched.applyManualAdjustment(35, {
+      baseVersionId: legacy.versionId,
+      moves: [{ block_id: legacy.blocks[0].id, date: '2026-09-12', start_time: '20:00', end_time: '21:00' }],
+    }), error => error instanceof sched.ScheduleManualConflictError
+      && error.conflicts.some(c => c.type === 'LOCKED_TASK_MOVED'));
+    assert.equal(await sched.getActiveVersionId(35), legacy.versionId, 'Lock hard conflict 不得切換 active version');
+    const original = await q.get('SELECT start_time,end_time,planned_minutes FROM scheduled_blocks WHERE id=?', [legacy.blocks[0].id]);
+    assert.deepEqual(original, { start_time: '19:00', end_time: '20:00', planned_minutes: null }, '舊版 raw legacy row 不得被 manual path 就地改寫');
+  });
+
+  test('Class B 沒有 Lock 時仍可走完整 manual API path，且新版本帶回真實分鐘數', async () => {
+    const legacy = await seedLegacyVersion(32, [
+      { title: 'Class B', date: '2026-09-10', start_time: '18:00', end_time: '19:30', planned_minutes: null },
+      { title: '要搬', date: '2026-09-11' },
+    ]);
+    const result = await sched.applyManualAdjustment(32, {
+      baseVersionId: legacy.versionId, moves: [{ block_id: legacy.blocks[1].id, date: '2026-09-13' }],
+    });
+    assert.equal(result.ok, true);
+    const active = await sched.getActiveSchedule(32);
+    assert.equal(active.blocks.find(b => b.task_id === legacy.taskIds[0]).planned_minutes, 90);
+  });
+
+  test('Class A half-timed row 在 manual dry-run / apply 保守降成 date-only，不 poison 整份排程', async () => {
+    const legacy = await seedLegacyVersion(33, [
+      { title: 'Class A', date: '2026-09-10', start_time: '19:00', end_time: null, planned_minutes: null },
+      { title: '正常任務', date: '2026-09-11' },
+    ]);
+    const move = { block_id: legacy.blocks[1].id, date: '2026-09-12' };
+    const dry = await sched.applyManualAdjustment(33, { baseVersionId: legacy.versionId, moves: [move], dryRun: true });
+    assert.equal(dry.ok, true);
+    assert.deepEqual([dry.blocks[0].start_time, dry.blocks[0].end_time, dry.blocks[0].planned_minutes], [null, null, null]);
+    assert.equal((await sched.applyManualAdjustment(33, { baseVersionId: legacy.versionId, moves: [move] })).ok, true);
+  });
+
+  test('Class A 不會 poison AI replan 的 cross-Plan carry-forward，寫入新版時會 canonicalize', async () => {
+    const legacy = await seedLegacyVersion(36, [
+      { title: 'Class A carry-forward', date: '2026-09-10', start_time: '19:00', end_time: null, planned_minutes: null },
+    ]);
+    const planB = await q.run('INSERT INTO plans (user_id,name,status) VALUES (?,?,?)', [36, '另一個 Plan', 'active']);
+    const taskB = await q.run('INSERT INTO tasks (user_id,title,plan_id) VALUES (?,?,?)', [36, 'AI 重排任務', planB.lastInsertRowid]);
+    const replan = await sched.applySchedule(36, {
+      planId: planB.lastInsertRowid, source: sched.SOURCE.AI_REPLAN,
+      blocks: [{ task_id: taskB.lastInsertRowid, date: '2026-09-11', start_time: '14:00', end_time: '15:00' }],
+    });
+    assert.ok(replan.version_id);
+    const active = await sched.getActiveSchedule(36);
+    const carried = active.blocks.find(b => b.task_id === legacy.taskIds[0]);
+    assert.deepEqual([carried.start_time, carried.end_time, carried.planned_minutes], [null, null, null]);
+  });
+
+  test('Class A 不會 poison restore：template 與 restore result 都收斂為 date-only', async () => {
+    const legacy = await seedLegacyVersion(37, [
+      { title: 'Class A restore', date: '2026-09-10', start_time: '19:00', end_time: null, planned_minutes: null },
+    ]);
+    const preview = await sched.getRestorePreview(37, legacy.versionId);
+    assert.equal(preview.status, 'full');
+    const restored = await sched.applyRestore(37, legacy.versionId, { baseVersionId: legacy.versionId });
+    assert.equal(restored.applied, true);
+    const active = await sched.getActiveSchedule(37);
+    assert.deepEqual([active.blocks[0].start_time, active.blocks[0].end_time, active.blocks[0].planned_minutes], [null, null, null]);
+  });
+
+  test('stored-data repair backfill Class B、demote Class A/invalid，重跑不 double count', async () => {
+    const legacy = await seedLegacyVersion(34, [
+      { title: 'Class B repair', start_time: '18:30', end_time: '20:00', planned_minutes: null },
+      { title: 'Class A repair', start_time: '21:00', end_time: null, planned_minutes: null },
+      { title: 'invalid repair', start_time: '20:00', end_time: '19:00', planned_minutes: null },
+      { title: 'valid timed stays', start_time: '10:00', end_time: '11:00', planned_minutes: 60 },
+      { title: 'date-only stays' },
+    ]);
+    const first = await repairScheduledBlockTiming();
+    assert.ok(first.backfilled >= 1 && first.demoted >= 2,
+      '移除 Class-B backfill 或 Class-A demote 後此 mutation guard 必紅');
+    const rows = await q.all('SELECT start_time,end_time,planned_minutes FROM scheduled_blocks WHERE schedule_version_id=? ORDER BY id', [legacy.versionId]);
+    assert.deepEqual(rows, [
+      { start_time: '18:30', end_time: '20:00', planned_minutes: 90 },
+      { start_time: null, end_time: null, planned_minutes: null },
+      { start_time: null, end_time: null, planned_minutes: null },
+      { start_time: '10:00', end_time: '11:00', planned_minutes: 60 },
+      { start_time: null, end_time: null, planned_minutes: null },
+    ]);
+    assert.deepEqual(await repairScheduledBlockTiming(), { backfilled: 0, demoted: 0 }, 'repair 必須 idempotent，不能重複加分鐘');
+  });
 });
 
 describe('交易邊界：全有或全無', () => {
@@ -95,7 +230,7 @@ describe('交易邊界：全有或全無', () => {
     const v = await sched.createScheduleVersion(USER, {
       source: sched.SOURCE.AI_REPLAN, effectiveFrom: '2026-09-01',
       blocks: [
-        { task_id: taskA, date: '2026-09-10', start_time: '19:00' },
+        { task_id: taskA, date: '2026-09-10', start_time: '19:00', end_time: '20:00' },
         { task_id: taskB, date: '2026-09-11' },
       ],
     });
@@ -193,7 +328,7 @@ describe('P2 Wizard／Replan 套用交易', () => {
       planId: p.lastInsertRowid,
       source: sched.SOURCE.INITIAL,
       taskCreates: [{ client_key: 'new-a', title: '新任務' }],
-      blocks: [{ client_key: 'new-a', date: '2026-09-15', start_time: '19:00' }],
+      blocks: [{ client_key: 'new-a', date: '2026-09-15', start_time: '19:00', end_time: '20:00' }],
     });
     const taskId = r.created[0].id;
     const task = await q.get('SELECT due_date,due_time FROM tasks WHERE id=?', [taskId]);
@@ -222,7 +357,7 @@ describe('P2 Wizard／Replan 套用交易', () => {
     const a1 = await sched.applySchedule(userId, {
       planId: pa.lastInsertRowid, source: sched.SOURCE.INITIAL,
       taskCreates: [{ client_key: 'a', title: 'A 任務' }],
-      blocks: [{ client_key: 'a', date: '2026-09-10', start_time: '18:00' }],
+      blocks: [{ client_key: 'a', date: '2026-09-10', start_time: '18:00', end_time: '19:00' }],
     });
     const aTask = a1.created[0].id;
     const b1 = await sched.applySchedule(userId, {
@@ -236,7 +371,7 @@ describe('P2 Wizard／Replan 套用交易', () => {
     const replan = await sched.applySchedule(userId, {
       planId: pa.lastInsertRowid, source: sched.SOURCE.AI_REPLAN,
       taskUpdates: [{ task_id: aTask, notes: '新版安排' }],
-      blocks: [{ task_id: aTask, date: '2026-09-12', start_time: '20:00' }],
+      blocks: [{ task_id: aTask, date: '2026-09-12', start_time: '20:00', end_time: '21:00' }],
     });
     const now = await sched.getVersionWithBlocks(userId, replan.version_id);
     assert.equal(now.version.parent_version_id, b1.version_id);

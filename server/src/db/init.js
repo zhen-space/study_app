@@ -62,6 +62,31 @@ export const q = {
   },
 };
 
+// Round-3 schema-integrity repair。這不是 legacy Task → Plan clustering migration：
+// 不讀／不寫 tasks.plan_id，只把既有 ScheduledBlock 收斂成既定的兩種 timing
+// shape。可重跑：valid timed row 每次都導出相同分鐘數；不完整／不合法 row 一律
+// demote 為 date-only，絕不憑空補一段 duration。
+export async function repairScheduledBlockTiming() {
+  const valid = `start_time IS NOT NULL AND end_time IS NOT NULL
+    AND start_time GLOB '[0-2][0-9]:[0-5][0-9]'
+    AND end_time GLOB '[0-2][0-9]:[0-5][0-9]'
+    AND CAST(substr(start_time,1,2) AS INTEGER) BETWEEN 0 AND 23
+    AND CAST(substr(end_time,1,2) AS INTEGER) BETWEEN 0 AND 23
+    AND end_time > start_time`;
+  const duration = `(CAST(substr(end_time,1,2) AS INTEGER) * 60 + CAST(substr(end_time,4,2) AS INTEGER)
+    - CAST(substr(start_time,1,2) AS INTEGER) * 60 - CAST(substr(start_time,4,2) AS INTEGER))`;
+  return q.tx(async tx => {
+    // Class B（或舊的錯誤分鐘數）：duration 只從可驗證的 window 導出，不累加。
+    const backfilled = await tx.run(`UPDATE scheduled_blocks SET planned_minutes=${duration}
+      WHERE ${valid} AND (planned_minutes IS NULL OR planned_minutes<>${duration})`);
+    // Class A、反向／零長度與 malformed times 都沒有可信 duration，保守降級。
+    const demoted = await tx.run(`UPDATE scheduled_blocks
+      SET start_time=NULL, end_time=NULL, planned_minutes=NULL
+      WHERE (start_time IS NOT NULL OR end_time IS NOT NULL) AND NOT (${valid})`);
+    return { backfilled: backfilled.changes || 0, demoted: demoted.changes || 0 };
+  });
+}
+
 const SCHEMA = `
 CREATE TABLE IF NOT EXISTS users (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -316,12 +341,13 @@ CREATE TABLE IF NOT EXISTS study_sessions (
   user_id INTEGER NOT NULL,
   task_id INTEGER NOT NULL,
   scheduled_block_id INTEGER,
+  task_title_snapshot TEXT,
   started_at TEXT NOT NULL,
   ended_at TEXT,
   actual_minutes INTEGER DEFAULT 0,
   running_since TEXT,
   status TEXT NOT NULL DEFAULT 'running', -- running | paused | completed | cancelled
-  source TEXT NOT NULL DEFAULT 'manual',  -- manual | scheduled_block | pomo
+  source TEXT NOT NULL DEFAULT 'manual',  -- manual | scheduled_block | pomo（僅保留舊歷史）
   created_at TEXT DEFAULT CURRENT_TIMESTAMP,
   updated_at TEXT DEFAULT CURRENT_TIMESTAMP
 );
@@ -366,6 +392,11 @@ export async function initSchema() {
   // 顯示留影：任務被刪掉之後歷史版本仍看得懂。只作顯示，不是 identity（§2.2）
   try { await client.execute("ALTER TABLE scheduled_blocks ADD COLUMN task_title_snapshot TEXT"); } catch {}
   try { await client.execute("ALTER TABLE scheduled_blocks ADD COLUMN subject_name_snapshot TEXT"); } catch {}
+  // StudySession 是歷史執行紀錄：Task 日後 hard delete 時仍需能顯示這筆紀錄。
+  try { await client.execute("ALTER TABLE study_sessions ADD COLUMN task_title_snapshot TEXT"); } catch {}
+  // 在所有 read/write path 開始前修復舊 ScheduledBlock shape。此 repair 與受
+  // production audit gate 保護的 Task clustering migration 完全無關。
+  await repairScheduledBlockTiming();
   // 版本號在同一個使用者底下唯一；併發時靠這個唯一鍵擋，再 bounded retry（§7.2）
   try { await client.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_sv_user_no ON schedule_versions(user_id, version_no)"); } catch {}
   try { await client.execute("CREATE INDEX IF NOT EXISTS idx_sb_version_date ON scheduled_blocks(schedule_version_id, date)"); } catch {}

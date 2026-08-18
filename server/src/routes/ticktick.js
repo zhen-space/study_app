@@ -421,17 +421,12 @@ router.post('/habits/:id/checkin', async (req, res) => {
   res.json({ ok: true, earned });
 });
 
-// ---- pomodoro ----
+// ---- pomodoro（legacy history only）----
 router.get('/pomo', async (req, res) =>
-  res.json(await q.all(`SELECT p.*, t.title AS task_title FROM pomo_sessions p
-    LEFT JOIN tasks t ON t.id=p.task_id WHERE p.user_id=? ORDER BY p.id DESC LIMIT 50`, [req.userId])));
-router.post('/pomo', async (req, res) => {
-  const { task_id, minutes, date } = req.body;
-  const r = await q.run('INSERT INTO pomo_sessions (user_id,task_id,date,minutes) VALUES (?,?,?,?)',
-    [req.userId, task_id || null, date || new Date(Date.now() + 8 * 3600e3).toISOString().slice(0, 10), minutes || 25]);
-  const earned = await award(req.userId, 'pomo', r.lastInsertRowid, Math.max(2, Math.round((minutes || 25) / 5)));
-  res.json({ ok: true, earned });
-});
+  res.json(await q.all(`SELECT p.*, COALESCE(t.title,'已刪除任務') AS task_title FROM pomo_sessions p
+    LEFT JOIN tasks t ON t.id=p.task_id AND t.user_id=p.user_id WHERE p.user_id=? ORDER BY p.id DESC LIMIT 50`, [req.userId])));
+router.post('/pomo', async (_req, res) =>
+  res.status(410).json({ error: 'Pomodoro 已停用，請改用 StudySession' }));
 
 // ---- pet & shop ----
 router.get('/pet', async (req, res) => {
@@ -477,10 +472,10 @@ router.delete('/filters/:id', async (req, res) => {
 // ---- stats ----
 router.get('/tstats', async (req, res) => {
   const tasks = await q.all('SELECT completed, completed_at FROM tasks WHERE user_id=?', [req.userId]);
-  const pomo = await q.all('SELECT date, SUM(minutes) m FROM pomo_sessions WHERE user_id=? GROUP BY date', [req.userId]);
-  // StudySession 是實際學習的正式來源；pomo 留作舊資料相容，兩者不互相覆寫。
+  // StudySession 是現役實際讀書時間唯一來源。legacy pomo rows 僅留存歷史，
+  // 絕不混進 focus/actual 指標，否則會冒充新的 StudySession 記錄。
   const sessions = await q.all(`SELECT s.*, t.list_id, t.plan_id, l.name AS list_name, p.name AS plan_name
-    FROM study_sessions s JOIN tasks t ON t.id=s.task_id AND t.user_id=s.user_id
+    FROM study_sessions s LEFT JOIN tasks t ON t.id=s.task_id AND t.user_id=s.user_id
     LEFT JOIN lists l ON l.id=t.list_id AND l.user_id=t.user_id LEFT JOIN plans p ON p.id=t.plan_id AND p.user_id=t.user_id
     WHERE s.user_id=? AND s.status='completed'`, [req.userId]);
   const days = {};
@@ -492,10 +487,9 @@ router.get('/tstats', async (req, res) => {
   }
   // 年度回顧：本年度每月完成數/專注分鐘、完成最多的清單
   const year = String(new Date().getFullYear());
-  const byMonth = Array(12).fill(0), focusByMonth = Array(12).fill(0);
+  const byMonth = Array(12).fill(0), actualByMonth = Array(12).fill(0);
   for (const [d, n] of Object.entries(days)) if (d.startsWith(year)) byMonth[+d.slice(5, 7) - 1] += n;
-  for (const p of pomo) if (p.date?.startsWith(year)) focusByMonth[+p.date.slice(5, 7) - 1] += p.m;
-  for (const s of sessions) if (s.ended_at?.startsWith(year)) focusByMonth[+s.ended_at.slice(5, 7) - 1] += s.actual_minutes;
+  for (const s of sessions) if (s.ended_at?.startsWith(year)) actualByMonth[+s.ended_at.slice(5, 7) - 1] += s.actual_minutes;
   const topLists = await q.all(`SELECT l.name, l.color, COUNT(*) c FROM tasks t JOIN lists l ON l.id=t.list_id
     WHERE t.user_id=? AND t.completed=1 GROUP BY l.id ORDER BY c DESC LIMIT 5`, [req.userId]);
   const actualByDay = {}, bySubject = {}, byPlan = {};
@@ -544,11 +538,9 @@ router.get('/tstats', async (req, res) => {
     total: tasks.length,
     done: tasks.filter(t => t.completed).length,
     completedByDay: days,
-    focusByDay: Object.fromEntries(pomo.map(p => [p.date, p.m])),
-    focusTotal: pomo.reduce((a, p) => a + p.m, 0) + sessions.reduce((a, s) => a + s.actual_minutes, 0),
     actualByDay, actualTotal: sessions.reduce((a, s) => a + s.actual_minutes, 0), bySubject, byPlan,
     plannedMinutes, plannedBySubject, plannedByPlan, movedLast30, unplaced,
-    year: { byMonth, focusByMonth, topLists },
+    year: { byMonth, actualByMonth, topLists },
   });
 });
 

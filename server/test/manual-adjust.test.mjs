@@ -58,6 +58,50 @@ async function seed(specs) {
 const blockOf = (state, taskId) => state.blocks.find(b => Number(b.task_id) === Number(taskId));
 
 describe('手動調整：正常路徑', () => {
+  test('mutation guard：manual resize 以新 window 重算 planned_minutes，Stats / health 也立即採用', async () => {
+    const { plan, tasks, state } = await seed([
+      { title: '九十分鐘任務', date: day(3), start_time: '19:00', end_time: '20:30', estimated_minutes: 90 },
+    ]);
+    const original = blockOf(state, tasks[0].id);
+    assert.equal(original.planned_minutes, 90, 'seed 的 timed block 必須由 window 得到 90 分鐘');
+    const beforeStats = await api('/tstats');
+    const adjusted = await manual({
+      base_version_id: state.version.id,
+      moves: [{ block_id: original.id, date: day(3), start_time: '19:00', end_time: '19:30' }],
+    });
+    assert.equal(adjusted.status, 200);
+    const { body: after } = await active();
+    assert.equal(blockOf(after, tasks[0].id).planned_minutes, 30,
+      '拿掉 manual candidate timing normalization 後此斷言必紅');
+    const health = await api(`/plans/${plan.id}/health`);
+    assert.equal(health.body.scheduled_minutes, 30);
+    assert.equal(health.body.capacity_gap_minutes, 60);
+    const afterStats = await api('/tstats');
+    assert.equal(afterStats.body.plannedMinutes, beforeStats.body.plannedMinutes - 60);
+  });
+
+  test('manual adjustment 轉換 untimed ↔ timed 時同步正規化 planned_minutes', async () => {
+    const untimed = await seed([{ title: '純日期轉時段', date: day(3), estimated_minutes: 45 }]);
+    const untimedBlock = blockOf(untimed.state, untimed.tasks[0].id);
+    assert.equal(untimedBlock.planned_minutes, null);
+    assert.equal((await manual({ base_version_id: untimed.state.version.id, moves: [{ block_id: untimedBlock.id, date: day(5), start_time: '14:00', end_time: '14:45' }] })).status, 200);
+    const afterTimed = await active();
+    assert.equal(blockOf(afterTimed.body, untimed.tasks[0].id).planned_minutes, 45);
+    const timedHealth = await api(`/plans/${untimed.plan.id}/health`);
+    assert.equal(timedHealth.body.scheduled_minutes, 45,
+      'reachable path：純日期手動改成時段後，health 必須讀到新 window 的分鐘數');
+    assert.equal(timedHealth.body.capacity_gap_minutes, 0);
+
+    const timed = await seed([{ title: '時段轉純日期', date: day(4), start_time: '15:00', end_time: '16:00' }]);
+    const timedBlock = blockOf(timed.state, timed.tasks[0].id);
+    assert.equal((await manual({ base_version_id: timed.state.version.id, moves: [{ block_id: timedBlock.id, date: day(6) }] })).status, 200);
+    const afterUntimed = await active();
+    const result = blockOf(afterUntimed.body, timed.tasks[0].id);
+    assert.equal(result.start_time, null);
+    assert.equal(result.end_time, null);
+    assert.equal(result.planned_minutes, null);
+  });
+
   test('調整產生新的 manual 版本，未被碰到的 block 原封不動帶過去', async () => {
     const { tasks, state } = await seed([
       { title: '要搬的', date: day(3) },
@@ -121,6 +165,22 @@ describe('手動調整：正常路徑', () => {
     assert.equal(r.status, 200);
     const { body: after } = await active();
     assert.equal(blockOf(after, tasks[0].id).start_time, null);
+    assert.equal(blockOf(after, tasks[0].id).planned_minutes, null);
+  });
+
+  test('同時或倒置的時間窗一律拒絕，不留下 invalid planned_minutes state', async () => {
+    const { tasks, state } = await seed([{ title: '不能零分鐘', date: day(2), start_time: '15:00', end_time: '16:00' }]);
+    const block = blockOf(state, tasks[0].id);
+    for (const [start_time, end_time] of [['19:00', '19:00'], ['20:00', '19:00'], ['25:00', '26:00']]) {
+      const r = await manual({
+        base_version_id: state.version.id,
+        moves: [{ block_id: block.id, date: day(4), start_time, end_time }],
+      });
+      assert.equal(r.status, 400);
+    }
+    const { body: after } = await active();
+    assert.equal(after.version.id, state.version.id, 'invalid window 不得留下新版或部分 block');
+    assert.equal(blockOf(after, tasks[0].id).planned_minutes, 60);
   });
 
   test('同一次可以調多筆', async () => {

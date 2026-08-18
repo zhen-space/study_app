@@ -46,6 +46,45 @@ test('Master F：StudySession 綁 Task，不改動 ScheduledBlock', async () => 
   assert.equal(typeof stats.body.plannedByPlan, 'object');
 });
 
+test('P2 regression：completed Task（包括帶 ScheduledBlock）不得建立 StudySession', async () => {
+  const plan = await api('/plans', { method: 'POST', body: { name: '已完成不可開始', status: 'active' } });
+  const task = await api('/tasks', { method: 'POST', body: { title: '已完成任務', plan_id: plan.body.id } });
+  const applied = await api('/schedule/apply', { method: 'POST', body: {
+    plan_id: plan.body.id, source: 'initial', blocks: [{ task_id: task.body.id, date: '2099-06-01', start_time: '19:00', end_time: '20:00' }],
+  } });
+  assert.equal(applied.status, 200);
+  const block = (await api('/schedule/active')).body.blocks.find(b => b.task_id === task.body.id);
+  assert.equal((await api(`/tasks/${task.body.id}`, { method: 'PATCH', body: { completed: true } })).status, 200);
+  const plain = await api('/study-sessions', { method: 'POST', body: { task_id: task.body.id } });
+  const bound = await api('/study-sessions', { method: 'POST', body: { task_id: task.body.id, scheduled_block_id: block.id, source: 'scheduled_block' } });
+  assert.equal(plain.status, 409);
+  assert.equal(bound.status, 409);
+  assert.match(bound.body.error, /已完成/);
+});
+
+test('P2 regression：legacy pomo 保留歷史端點但不再寫入或污染現役 StudySession 統計', async () => {
+  const deprecated = await api('/pomo', { method: 'POST', body: { minutes: 999 } });
+  assert.equal(deprecated.status, 410);
+  const stats = await api('/tstats');
+  assert.equal(stats.body.actualTotal >= 0, true);
+  assert.equal('focusTotal' in stats.body, false, '現役實際時間不可再混入 legacy pomo');
+  assert.equal('focusByDay' in stats.body, false);
+});
+
+test('P3 regression：Task hard delete 後 StudySession history 仍可讀且保有 user boundary', async () => {
+  const task = await api('/tasks', { method: 'POST', body: { title: '之後會刪除的任務' } });
+  const session = await api('/study-sessions', { method: 'POST', body: { task_id: task.body.id } });
+  assert.equal(session.status, 201);
+  await api(`/study-sessions/${session.body.id}`, { method: 'PATCH', body: { status: 'completed', actual_minutes: 12 } });
+  assert.equal((await api(`/tasks/${task.body.id}?hard=1`, { method: 'DELETE' })).status, 200);
+  const sessions = await api('/study-sessions');
+  const historical = sessions.body.find(s => s.id === session.body.id);
+  assert.equal(historical.actual_minutes, 12);
+  assert.equal(historical.task_title, '之後會刪除的任務');
+  const stats = await api('/tstats');
+  assert.equal(stats.body.actualTotal >= 12, true);
+});
+
 test('Master C：只有確認後的 supported constraint 會保存，unsupported 不可 silently ignore', async () => {
   const plan = await api('/plans', { method: 'POST', body: { name: '條件計畫' } });
   const saved = await api(`/plans/${plan.body.id}/constraints`, { method: 'PUT', body: { intent: { exclude_weekdays: [3], strict_dependency: [{ before: 'A', after: 'B' }] } } });

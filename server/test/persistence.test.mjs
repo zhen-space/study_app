@@ -51,7 +51,7 @@ describe('bootstrap（2A → 2C cutover）', () => {
   test('只把「未來的、屬於計畫的、未完成的」既有排定日期收成 V1', async () => {
     const { body: plan } = await mkPlan({ name: '段考' });
     const future = await mkTask({ title: '未來', plan_id: plan.id, due_date: day(2), legacy_due_compat: true });
-    const today0 = await mkTask({ title: '今天', plan_id: plan.id, due_date: day(0), due_time: '19:00', legacy_due_compat: true });
+    const today0 = await mkTask({ title: '今天', plan_id: plan.id, due_date: day(0), due_time: '19:00', estimated_minutes: 60, legacy_due_compat: true });
     const past = await mkTask({ title: '過去', plan_id: plan.id, due_date: day(-3), legacy_due_compat: true });
     const noDate = await mkTask({ title: '沒排', plan_id: plan.id });
     const done = await mkTask({ title: '已完成', plan_id: plan.id, due_date: day(1), legacy_due_compat: true });
@@ -86,10 +86,17 @@ describe('bootstrap（2A → 2C cutover）', () => {
     assert.ok(!titles.includes('沒有計畫的一般任務'), '非 Plan Task 不算 unplaced');
   });
 
-  test('時間帶得過去：due_time 會變成 block 的 start_time', async () => {
+  test('legacy due_time-only bootstrap 保守降為 date-only，不杜撰 60 分鐘', async () => {
     const { body } = await active();
-    const b = body.blocks.find(x => x.start_time);
-    assert.equal(b.start_time, '19:00');
+    const task = body.blocks.find(x => x.task_title_snapshot === '今天');
+    assert.equal(task.start_time, null);
+    assert.equal(task.end_time, null);
+    assert.equal(task.planned_minutes, null);
+    const plan = (await api('/plans')).body.find(p => p.name === '段考');
+    const health = await api(`/plans/${plan.id}/health`);
+    assert.equal(health.body.scheduled_minutes, 0, '沒有可證實 duration 的舊 due_time 不得污染 planned workload');
+    const stats = await api('/tstats');
+    assert.equal(stats.body.plannedMinutes, 0, '不得在 Stats 憑空增加 60 分鐘');
   });
 
   test('snapshot 標題與科目有填（任務被刪掉之後歷史版本還看得懂）', async () => {

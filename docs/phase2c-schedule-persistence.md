@@ -394,6 +394,10 @@ Plan Tasks
 
 `source='bootstrap'` 讓任何人查版本歷史時一眼看得出「V1 不是真的排程，是搬過來的」。
 
+若 legacy Task 僅有 `due_date + due_time`、沒有可證實的 duration，bootstrap 仍建立
+date-only block，但不保留半套 timed placement、也不得推定 60 分鐘；timed block 必須同時有
+`start_time`、`end_time` 與相符的 `planned_minutes`。
+
 ---
 
 ## 9. 已知的擴充性問題（retention policy pending）
