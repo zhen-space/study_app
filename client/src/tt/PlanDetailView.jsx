@@ -4,6 +4,8 @@ import Icon from './Icons';
 import { today } from './helpers';
 import { usePlans, bookOf, shortTitle, md, byLesson } from './plans';
 import { planHealth } from './planHealth';
+import { useActiveSchedule, blocksForTask } from './scheduleAdjust';
+import AdjustBlockSheet from './AdjustBlockSheet';
 import ReplanSheet from './ReplanSheet';
 import { Button, IconButton, PageHeader, SurfaceCard, ProgressBar, ListRow, BottomSheet, EmptyState } from './ui';
 
@@ -38,6 +40,9 @@ export default function PlanDetailView({ planKey, tasks, lists, apiPlans = [], r
   const [unresolved, setUnresolved] = useState(0);
   const [nt, setNt] = useState({ title: '', list_id: '', deadline_date: '' });
   const [edit, setEdit] = useState(null);     // 編輯計畫資訊的暫存（按儲存才送出）
+  const [adjustBlock, setAdjustBlock] = useState(null);   // { block, task }
+  // 排定時間的真相在 ScheduledBlock；要讓使用者自己改，就得知道是哪一格。
+  const sched = useActiveSchedule();
 
   if (!plan) {
     return (
@@ -133,12 +138,18 @@ export default function PlanDetailView({ planKey, tasks, lists, apiPlans = [], r
 
   const Row = t => {
     const late = !t.completed && t.due_date && t.due_date < today();
+    // 已完成的不給調整：它已經退出未來排程，日期是歷史紀錄。
+    const block = t.completed ? null : blocksForTask(sched.blocks, t.id)[0];
     return (
       <ListRow key={t.id} muted={!!t.completed}
         leading={<input type="checkbox" aria-label={t.title} checked={!!t.completed} onChange={() => toggle(t)} />}
         title={shortTitle(t.title)}
         trailing={t.due_date
-          ? <span style={late ? { color: 'var(--danger)' } : undefined}>{md(t.due_date)}</span>
+          ? (block
+            ? <button className="row-adjust" aria-label={`調整「${shortTitle(t.title)}」的時間`}
+                style={late ? { color: 'var(--danger)' } : undefined}
+                onClick={() => setAdjustBlock({ block, task: t })}>{md(t.due_date)}</button>
+            : <span style={late ? { color: 'var(--danger)' } : undefined}>{md(t.due_date)}</span>)
           : <span className="ui-meta">尚未安排</span>}
       />
     );
@@ -406,6 +417,15 @@ export default function PlanDetailView({ planKey, tasks, lists, apiPlans = [], r
         <ReplanSheet plan={plan} health={health} raw={raw} lists={lists} reload={reload}
           onClose={() => setReplan(false)}
           onEditConditions={sec => { setReplan(false); adjustPlan?.(plan.planId, sec); }} />
+      )}
+
+      {/* 「讓 AI 重新安排」是整份重排；這一支是使用者自己動某一格。
+          兩者都走 2C persistence，只是決策者不同。 */}
+      {adjustBlock && (
+        <AdjustBlockSheet block={adjustBlock.block} task={adjustBlock.task} lists={lists}
+          versionId={sched.version?.id}
+          reload={async () => { await reload(); await sched.reload(); }}
+          onClose={() => setAdjustBlock(null)} />
       )}
     </div>
   );

@@ -469,7 +469,7 @@ select { -webkit-appearance: none; appearance: none; padding-right: 26px;
 .ui-seg--block { display: flex; width: 100%; }
 
 /* ---- Today：Timeline（時間在左、內容在右）---- */
-.tl-row { display: grid; grid-template-columns: 52px 14px 1fr; column-gap: var(--sp-3); align-items: start; }
+.tl-row { display: grid; grid-template-columns: 52px 14px 1fr auto; column-gap: var(--sp-3); align-items: start; }
 .tl-time { font-size: 13px; color: var(--text-2); font-variant-numeric: tabular-nums; padding-top: 1px; }
 .tl-rail { position: relative; display: flex; justify-content: center; align-self: stretch; }
 .tl-rail::before {
@@ -481,6 +481,23 @@ select { -webkit-appearance: none; appearance: none; padding-right: 26px;
 .tl-body { padding-bottom: var(--sp-4); min-width: 0; }
 .tl-title { font-size: 16px; font-weight: 600; }
 .tl-sub { font-size: 13px; color: var(--text-2); }
+/* 「調整」：次要動作，安靜地待在右邊，不跟中央的主要動作搶。
+   長中文標題很容易把它擠掉，所以走 grid 的 auto 欄、並且不允許斷行。 */
+.tl-adjust {
+  align-self: start; margin-top: 1px; padding: 2px 8px; white-space: nowrap;
+  font-size: 13px; color: var(--accent); background: none; border: 0;
+  border-radius: var(--radius-pill); cursor: pointer;
+  transition: background var(--motion-fast) cubic-bezier(.2,.8,.2,1);
+}
+.tl-adjust:hover { background: var(--accent-soft); }
+/* 計畫明細：日期本身就是「調整」的入口，不再多長一顆按鈕出來擠版面。
+   看起來跟原本的日期一樣，只是可以按。 */
+.row-adjust {
+  padding: 0; font: inherit; color: inherit; background: none; border: 0;
+  cursor: pointer; text-decoration: underline; text-decoration-style: dotted;
+  text-underline-offset: 3px; text-decoration-color: var(--text-3);
+}
+.row-adjust:hover { text-decoration-color: var(--accent); }
 
 /* ---- Today：進度 ---- */
 .today-progress { height: 8px; border-radius: var(--radius-pill); background: var(--fill-strong); overflow: hidden; }
