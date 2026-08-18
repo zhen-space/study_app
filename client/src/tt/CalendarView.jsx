@@ -4,6 +4,8 @@ import { today, addDays, localISO } from './helpers';
 import { PALETTE } from './Icons';
 import Icon from './Icons';
 import { fileToPayload } from './vocabImport';
+import { useActiveSchedule } from './scheduleAdjust';
+import AdjustBlockSheet from './AdjustBlockSheet';
 
 const WD = ['一', '二', '三', '四', '五', '六', '日'];
 const HOURS = Array.from({ length: 18 }, (_, i) => i + 6); // 06:00–23:00
@@ -51,6 +53,9 @@ function ColorPicker({ value, onPick }) {
 }
 
 export default function CalendarView({ tasks, reload }) {
+  const schedule = useActiveSchedule();
+  const [adjustBlock, setAdjustBlock] = useState(null);
+  const scheduledTaskIds = new Set(schedule.blocks.map(b => Number(b.task_id)));
   // 檢視方式記起來（跟任務排序一樣）：選了 3日／1日，下次開還是同一個
   const [view, setViewRaw] = useState(() => {
     try { return localStorage.getItem('calView') || 'week'; } catch { return 'week'; }
@@ -456,7 +461,8 @@ export default function CalendarView({ tasks, reload }) {
                 <span className="muted">{e.start_time.slice(0, 5)}–{e.end_time.slice(0, 5)}</span>
               </div>
             ))}
-            {(byDate[d] || []).map(t => (
+            {schedule.blocks.filter(b => b.date === d).map(b => <div key={`b${b.id}`} className="trow" style={{ cursor: 'pointer' }} onClick={() => setAdjustBlock({ block: b, task: tasks.find(t => Number(t.id) === Number(b.task_id)) })}><span>▣</span><span className="title">{b.task_title_snapshot || tasks.find(t => Number(t.id) === Number(b.task_id))?.title || '讀書安排'}</span><span className="muted">{b.start_time ? `${b.start_time}–${b.end_time}` : '當日安排'}</span></div>)}
+            {(byDate[d] || []).filter(t => !scheduledTaskIds.has(Number(t.id))).map(t => (
               <div key={t.id} className={'trow' + (t.completed ? ' done' : '')} style={{ cursor: 'default' }}>
                 <input type="checkbox" checked={!!t.completed} onChange={() => toggle(t)} />
                 <span className="title">{t.title}</span>
@@ -572,6 +578,12 @@ export default function CalendarView({ tasks, reload }) {
                 </div>
               );
             })}
+            {/* ScheduledBlock 是正式時間真相；樣式與既定行程刻意不同，點一下走既有 manual ScheduleVersion 流程。 */}
+            {schedule.blocks.filter(b => b.date === d && b.start_time && b.end_time).map(b => {
+              const top = yOf(toMin(b.start_time)); const height = Math.max(16, yOf(toMin(b.end_time)) - top);
+              const task = tasks.find(t => Number(t.id) === Number(b.task_id));
+              return <div key={`b${b.id}`} onClick={ev => { ev.stopPropagation(); setAdjustBlock({ block: b, task }); }} title="讀書安排：點一下調整" style={{ position: 'absolute', top, height, left: 4, right: 4, zIndex: 3, background: 'var(--primary)', color: '#fff', borderRadius: 6, padding: '2px 5px', fontSize: 11, overflow: 'hidden', cursor: 'pointer' }}><b>{b.task_title_snapshot || task?.title || '讀書安排'}</b></div>;
+            })}
             {/* 拖曳預覽：清楚看到會落在哪一天、哪個時段（半小時一格）。拖曳時直接改樣式 */}
             <div className="drag-prev" style={{
               display: 'none', position: 'absolute', top: 0, height: 20, left: 2, right: 2, zIndex: 6, pointerEvents: 'none',
@@ -585,7 +597,7 @@ export default function CalendarView({ tasks, reload }) {
               </div>
             )}
             {/* 有時間的任務 */}
-            {tasks.filter(t => t.due_date === d && t.due_time).map(t => {
+            {tasks.filter(t => t.due_date === d && t.due_time && !scheduledTaskIds.has(Number(t.id))).map(t => {
               const top = yOf(toMin(t.due_time));
               return (
                 <div key={t.id} className={'cal-task' + (t.completed ? ' done' : '')} onClick={ev => { ev.stopPropagation(); toggle(t); }}
@@ -773,6 +785,7 @@ export default function CalendarView({ tasks, reload }) {
       )}
 
       {/* 編輯行程：同樣是 Apple 日曆式版面 */}
+      {adjustBlock && adjustBlock.task && <AdjustBlockSheet block={adjustBlock.block} task={adjustBlock.task} versionId={schedule.version?.id} reload={async () => { await reload(); await schedule.reload(); }} onClose={() => setAdjustBlock(null)} />}
       {editEv && (
         <div className="cal-modal-back" onClick={() => setEditEv(null)}>
           <div className="ev-sheet" onClick={e => e.stopPropagation()}>
