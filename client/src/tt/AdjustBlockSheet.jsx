@@ -79,6 +79,13 @@ export default function AdjustBlockSheet({ block, task, lists = [], versionId, r
     await reload();
     onClose();
   }
+  async function startStudy() {
+    setSaving(true); setErr('');
+    try {
+      await api('/study-sessions', { method: 'POST', body: { task_id: task.id, scheduled_block_id: block.id, source: 'scheduled_block' } });
+      onClose();
+    } catch (e) { setErr(e.message); setSaving(false); }
+  }
 
   const blocked = conflicts.length > 0 || !!err;
 
@@ -132,7 +139,7 @@ export default function AdjustBlockSheet({ block, task, lists = [], versionId, r
       </div>
 
       <div className="row" style={{ marginTop: 'var(--sp-3)' }}>
-        <Button variant="secondary" disabled={saving} onClick={onClose}>取消</Button>
+        <Button variant="secondary" disabled={saving} onClick={startStudy}>開始讀書</Button>
         <Button variant="primary" style={{ marginLeft: 'auto' }}
           disabled={saving || checking || blocked || !changed} onClick={save}>
           {saving ? '儲存中…' : checking ? '確認中…' : '儲存新安排'}
