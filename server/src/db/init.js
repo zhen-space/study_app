@@ -106,6 +106,7 @@ CREATE TABLE IF NOT EXISTS tasks (
   completed INTEGER DEFAULT 0,
   completed_at TEXT,
   order_index INTEGER DEFAULT 0,
+  estimated_minutes INTEGER,
   created_at TEXT DEFAULT CURRENT_TIMESTAMP
 );
 CREATE TABLE IF NOT EXISTS habits (
@@ -211,6 +212,33 @@ CREATE TABLE IF NOT EXISTS plans (
   completed_at TEXT,
   archived_at TEXT
 );
+-- Master Plan H：Goal 是 Plan 的可選上層目標，不取代 Plan。
+CREATE TABLE IF NOT EXISTS goals (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  user_id INTEGER NOT NULL,
+  name TEXT NOT NULL,
+  description TEXT DEFAULT '',
+  target_date TEXT,
+  created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+  updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+);
+-- Master Plan C：AI 只產生並讓使用者確認 structured intent；原文與未支援項目
+-- 可保留，但排程器只會收到明確標成 supported 的欄位。
+CREATE TABLE IF NOT EXISTS plan_constraints (
+  plan_id INTEGER PRIMARY KEY,
+  user_id INTEGER NOT NULL,
+  intent_json TEXT NOT NULL DEFAULT '{}',
+  unsupported_json TEXT NOT NULL DEFAULT '[]',
+  source_text TEXT DEFAULT '',
+  confirmed_at TEXT,
+  updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+);
+CREATE TABLE IF NOT EXISTS plan_schedule_profiles (
+  plan_id INTEGER PRIMARY KEY,
+  user_id INTEGER NOT NULL,
+  profile_json TEXT NOT NULL DEFAULT '{}',
+  updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+);
 -- ↓ 以下三張表 Phase 2A 只建不寫。排程持久化是 Phase 2C；
 -- 先建好是為了避免之後又動一次 schema。
 -- 注意：version 屬於「使用者的排程」而不是某一個 Plan——同一天可能同時在排
@@ -257,6 +285,46 @@ CREATE TABLE IF NOT EXISTS schedule_locks (
   end_time TEXT,
   created_at TEXT DEFAULT CURRENT_TIMESTAMP
 );
+-- Master Plan B：可重用作息／固定時間；不取代舊 fixed_events，而是逐步映射。
+CREATE TABLE IF NOT EXISTS availability_routines (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  user_id INTEGER NOT NULL,
+  type TEXT NOT NULL, -- class | fixed_event | sleep | meal | availability
+  title TEXT DEFAULT '',
+  weekdays TEXT DEFAULT '[]',
+  start_time TEXT,
+  end_time TEXT,
+  enabled INTEGER DEFAULT 1,
+  created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+  updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+);
+CREATE TABLE IF NOT EXISTS routine_exceptions (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  user_id INTEGER NOT NULL,
+  routine_id INTEGER,
+  date TEXT NOT NULL,
+  kind TEXT NOT NULL, -- unavailable | available | cancel
+  title TEXT DEFAULT '',
+  start_time TEXT,
+  end_time TEXT,
+  created_at TEXT DEFAULT CURRENT_TIMESTAMP
+);
+-- Master Plan F：實際讀書紀錄。排程 block 是不可變的「原定安排」，
+-- 實際花多久則只寫在這裡，透過 task_id 間接歸屬 Plan。
+CREATE TABLE IF NOT EXISTS study_sessions (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  user_id INTEGER NOT NULL,
+  task_id INTEGER NOT NULL,
+  scheduled_block_id INTEGER,
+  started_at TEXT NOT NULL,
+  ended_at TEXT,
+  actual_minutes INTEGER DEFAULT 0,
+  running_since TEXT,
+  status TEXT NOT NULL DEFAULT 'running', -- running | paused | completed | cancelled
+  source TEXT NOT NULL DEFAULT 'manual',  -- manual | scheduled_block | pomo
+  created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+  updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+);
 `;
 
 export async function initSchema() {
@@ -284,6 +352,9 @@ export async function initSchema() {
   try { await client.execute("ALTER TABLE tasks ADD COLUMN plan_id INTEGER"); } catch {}
   // Phase 2A：正式截止日。跟 due_date（排定日期）分開，NULL＝沒有硬性截止
   try { await client.execute("ALTER TABLE tasks ADD COLUMN deadline_date TEXT"); } catch {}
+  // Master A/F：估計時間是工作量的明確輸入；實際時間仍只寫 StudySession。
+  // NULL 表示舊資料尚無估計，不能硬猜成一個看似精確的數字。
+  try { await client.execute("ALTER TABLE tasks ADD COLUMN estimated_minutes INTEGER"); } catch {}
   // Phase 2C-P1：排程持久化。契約見 docs/phase2c-schedule-persistence.md §2
   // effective_from：這一版涵蓋哪一天起（過去不進 snapshot）
   try { await client.execute("ALTER TABLE schedule_versions ADD COLUMN effective_from TEXT"); } catch {}
@@ -310,6 +381,13 @@ export async function initSchema() {
   try { await client.execute("CREATE INDEX IF NOT EXISTS idx_locks_task ON schedule_locks(task_id)"); } catch {}
   try { await client.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_locks_task_one ON schedule_locks(user_id, task_id) WHERE type='task' AND released_at IS NULL"); } catch {}
   try { await client.execute("CREATE INDEX IF NOT EXISTS idx_plans_user ON plans(user_id, status)"); } catch {}
+  try { await client.execute("CREATE INDEX IF NOT EXISTS idx_goals_user ON goals(user_id, target_date)"); } catch {}
+  try { await client.execute("CREATE INDEX IF NOT EXISTS idx_plan_constraints_user ON plan_constraints(user_id)"); } catch {}
+  try { await client.execute("CREATE INDEX IF NOT EXISTS idx_routines_user ON availability_routines(user_id, enabled)"); } catch {}
+  try { await client.execute("CREATE INDEX IF NOT EXISTS idx_routine_exceptions_user_date ON routine_exceptions(user_id, date)"); } catch {}
+  try { await client.execute("CREATE INDEX IF NOT EXISTS idx_study_sessions_user_started ON study_sessions(user_id, started_at)"); } catch {}
+  try { await client.execute("CREATE INDEX IF NOT EXISTS idx_study_sessions_task ON study_sessions(task_id)"); } catch {}
+  try { await client.execute("ALTER TABLE study_sessions ADD COLUMN running_since TEXT"); } catch {}
   // 舊資料的分類補進「記住的分類」清單，之後直接用選的
   try { await client.execute("INSERT INTO memo_categories (user_id,name,order_index) SELECT DISTINCT user_id,category,0 FROM memos WHERE category<>'' AND category IS NOT NULL AND NOT EXISTS (SELECT 1 FROM memo_categories c WHERE c.user_id=memos.user_id AND c.name=memos.category)"); } catch {}
   // 舊 bug（重複扣款）造成的負金幣歸零

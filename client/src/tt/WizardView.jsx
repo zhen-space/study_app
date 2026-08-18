@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { api } from '../api';
 import { planName, isLegacyPlanTask } from './plans';
 import { applyWizardSchedule } from './wizardApply';
-import { buildSchedulePreviewRequest, saveConfirmedConditions } from './schedulePreview';
+import { buildSchedulePreviewRequest, persistConfirmedConditions } from './schedulePreview';
 import { today, addDays } from './helpers';
 import { parseICS } from './ics';
 import { fileToPayload } from './vocabImport';
@@ -668,7 +668,7 @@ export default function WizardView({
       // 先把這次真正用的排法記下來，之後 Today 的 AI 重排才有得依循。
       // 順序很重要：草稿是「操作到一半」，套用成功後就沒有意義了，
       // 但條件必須活得比草稿久——所以一定是先存快照、再清草稿。
-      saveConfirmedConditions(r.planId, conditions);
+      await persistConfirmedConditions(r.planId, conditions);
       localStorage.removeItem(draftKey);
     } catch (e) { setSaving(false); setErr(e.message); return; }
     setSaving(false);

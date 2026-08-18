@@ -3,10 +3,11 @@ import { api } from '../api';
 import Icon from './Icons';
 import { today } from './helpers';
 import { usePlans, bookOf, shortTitle, md, byLesson } from './plans';
-import { planHealth } from './planHealth';
+import { usePlanScheduleHealth } from './planHealth';
 import { useActiveSchedule, blocksForTask } from './scheduleAdjust';
 import AdjustBlockSheet from './AdjustBlockSheet';
 import ReplanSheet from './ReplanSheet';
+import ConstraintSheet from './ConstraintSheet';
 import { Button, IconButton, PageHeader, SurfaceCard, ProgressBar, ListRow, BottomSheet, EmptyState } from './ui';
 
 // 單一計畫的內容。
@@ -30,7 +31,7 @@ const ADJUST = [
   ['all', '全部設定', '從頭走一次精靈'],
 ];
 
-export default function PlanDetailView({ planKey, tasks, lists, apiPlans = [], reload, onBack, goWizard, adjustPlan }) {
+export default function PlanDetailView({ planKey, tasks, lists, apiPlans = [], reload, onBack, goWizard, adjustPlan, goLocks }) {
   const plan = usePlans(tasks, lists, apiPlans).find(p => p.key === planKey);
   const [showDone, setShowDone] = useState(false);
   const [sheet, setSheet] = useState(null);   // manage | edit | add | adjust | confirmComplete
@@ -38,11 +39,14 @@ export default function PlanDetailView({ planKey, tasks, lists, apiPlans = [], r
   const [err, setErr] = useState('');
   const [replan, setReplan] = useState(false);
   const [unresolved, setUnresolved] = useState(0);
-  const [nt, setNt] = useState({ title: '', list_id: '', deadline_date: '' });
+  const [nt, setNt] = useState({ title: '', list_id: '', deadline_date: '', estimated_minutes: '' });
   const [edit, setEdit] = useState(null);     // 編輯計畫資訊的暫存（按儲存才送出）
   const [adjustBlock, setAdjustBlock] = useState(null);   // { block, task }
+  const [legacyPreview, setLegacyPreview] = useState(null);
   // 排定時間的真相在 ScheduledBlock；要讓使用者自己改，就得知道是哪一格。
   const sched = useActiveSchedule();
+  // 必須在早退前呼叫，避免資料刷新瞬間找不到 Plan 時違反 React Hook 順序。
+  const health = usePlanScheduleHealth(plan, apiPlans.find(p => p.id === plan?.planId));
 
   if (!plan) {
     return (
@@ -59,8 +63,6 @@ export default function PlanDetailView({ planKey, tasks, lists, apiPlans = [], r
   const isReal = !plan.isLegacy && plan.planId != null;
   const raw = apiPlans.find(p => p.id === plan.planId);
   const showAdjust = isReal && plan.status !== 'archived' && !!adjustPlan;
-  // 跟 Today 用同一套判斷、同一套重排流程，不寫第二份
-  const health = planHealth(plan, raw);
   const pct = plan.total ? Math.round(plan.done / plan.total * 100) : 0;
 
   const close = () => { setSheet(null); setErr(''); };
@@ -82,6 +84,9 @@ export default function PlanDetailView({ planKey, tasks, lists, apiPlans = [], r
   const restore = () => run(async () => {
     await api(`/plans/${plan.planId}/restore`, { method: 'POST', body: {} }); close();
   });
+  const restart = () => run(async () => {
+    await api(`/plans/${plan.planId}`, { method: 'PATCH', body: { status: 'active' } }); close();
+  });
 
   // 走既有的 POST /tasks，自動帶上目前的 plan_id——使用者不用再選一次計畫。
   // 不給 due_date：加進計畫不等於已經排好時間，所以它會出現在「尚未安排」。
@@ -95,9 +100,10 @@ export default function PlanDetailView({ planKey, tasks, lists, apiPlans = [], r
         plan_id: plan.planId,
         list_id: nt.list_id ? Number(nt.list_id) : null,
         deadline_date: nt.deadline_date || null,
+        estimated_minutes: nt.estimated_minutes ? Number(nt.estimated_minutes) : null,
       },
     });
-    setNt({ title: '', list_id: nt.list_id, deadline_date: '' });   // 科目留著，連續加同一科比較順
+    setNt({ title: '', list_id: nt.list_id, deadline_date: '', estimated_minutes: '' });   // 科目留著，連續加同一科比較順
     close();
   });
 
@@ -119,6 +125,7 @@ export default function PlanDetailView({ planKey, tasks, lists, apiPlans = [], r
     if (name && name !== plan.name) body.name = name;
     if ((edit.start_date || null) !== (raw?.start_date || null)) body.start_date = edit.start_date || null;
     if ((edit.target_date || null) !== (raw?.target_date || null)) body.target_date = edit.target_date || null;
+    if ((edit.description || '') !== (raw?.description || '')) body.description = edit.description || '';
     if (Object.keys(body).length) await api(`/plans/${plan.planId}`, { method: 'PATCH', body });
     close();
   });
@@ -224,6 +231,7 @@ export default function PlanDetailView({ planKey, tasks, lists, apiPlans = [], r
             <div className="ui-meta" style={{ marginTop: 2 }}>
               這份計畫尚未轉成正式計畫，目前只能查看與完成任務。
             </div>
+            <Button size="sm" style={{ marginTop: 10 }} onClick={async () => { try { setLegacyPreview(await api('/legacy-migration/preview')); setSheet('legacy'); } catch (e) { setErr(e.message); } }}>查看安全轉換方式</Button>
           </SurfaceCard>
         )}
 
@@ -294,9 +302,13 @@ export default function PlanDetailView({ planKey, tasks, lists, apiPlans = [], r
         <BottomSheet onClose={close} label="計畫選項">
           <b style={{ fontSize: 17 }}>計畫選項</b>
           <div style={{ marginTop: 'var(--sp-3)' }}>
-            <ListRow title="編輯計畫資訊" subtitle="名稱、開始日、目標日"
+            <ListRow title="編輯計畫資訊" subtitle="名稱、說明、開始日、目標日"
               trailing={<Icon name="chevron" size={16} />} role="button" tabIndex={0} style={{ cursor: 'pointer' }}
-              onClick={() => { setEdit({ name: plan.name, start_date: raw?.start_date || '', target_date: raw?.target_date || '' }); setSheet('edit'); }} />
+              onClick={() => { setEdit({ name: plan.name, description: raw?.description || '', start_date: raw?.start_date || '', target_date: raw?.target_date || '' }); setSheet('edit'); }} />
+            <ListRow title="AI 排程條件" subtitle="先確認 AI 解讀，再交給排程器"
+              role="button" tabIndex={0} style={{ cursor: 'pointer' }} onClick={() => setSheet('constraints')} />
+            {plan.status === 'completed' && <ListRow title="重新開始" subtitle="回到進行中，保留全部任務"
+              role="button" tabIndex={0} style={{ cursor: 'pointer' }} onClick={restart} />}
             {plan.status !== 'completed' && plan.status !== 'archived' && (
               <ListRow title="標記完成" subtitle="整個計畫做完了"
                 role="button" tabIndex={0} style={{ cursor: 'pointer' }} onClick={complete} />
@@ -319,6 +331,9 @@ export default function PlanDetailView({ planKey, tasks, lists, apiPlans = [], r
             <label className="ui-meta" htmlFor="plan-name">計畫名稱</label>
             <input id="plan-name" aria-label="計畫名稱" value={edit.name} style={{ width: '100%', marginTop: 'var(--sp-1)' }}
               onChange={e => setEdit(v => ({ ...v, name: e.target.value }))} />
+            <label className="ui-meta" htmlFor="plan-description" style={{ display: 'block', marginTop: 'var(--sp-4)' }}>計畫說明</label>
+            <textarea id="plan-description" aria-label="計畫說明" value={edit.description} rows="3" style={{ width: '100%', marginTop: 'var(--sp-1)' }}
+              onChange={e => setEdit(v => ({ ...v, description: e.target.value }))} />
             <div className="row" style={{ marginTop: 'var(--sp-4)' }}>
               <span style={{ flex: 1 }}>
                 <label className="ui-meta" htmlFor="plan-start">開始日期</label>
@@ -341,6 +356,8 @@ export default function PlanDetailView({ planKey, tasks, lists, apiPlans = [], r
           </div>
         </BottomSheet>
       )}
+      {sheet === 'constraints' && <ConstraintSheet planId={plan.planId} onClose={close} />}
+      {sheet === 'legacy' && <BottomSheet onClose={close} label="轉成正式計畫"><b>安全轉成正式計畫</b><div className="ui-meta" style={{ marginTop: 8 }}>{legacyPreview?.warning}</div><div className="ui-meta" style={{ marginTop: 8 }}>找到 {legacyPreview?.candidates?.length || 0} 項可人工確認的舊任務。系統不會猜分群，也不會直接搬動資料。</div><div className="row" style={{ marginTop: 16 }}><Button onClick={close}>取消</Button><Button variant="primary" style={{ marginLeft: 'auto' }} onClick={async () => { await api('/plans', { method: 'POST', body: { name: `${plan.name}（正式計畫）`, description: '由舊資料手動轉換；請逐筆確認任務歸屬。', source: 'legacy_migration' } }); await reload(); close(); onBack(); }}>建立正式計畫草稿</Button></div></BottomSheet>}
 
       {/* ---------- 完成確認：後端 needs_confirm 語意完全不變 ---------- */}
       {sheet === 'confirmComplete' && (
@@ -381,6 +398,12 @@ export default function PlanDetailView({ planKey, tasks, lists, apiPlans = [], r
                   style={{ width: '100%', marginTop: 'var(--sp-1)' }}
                   onChange={e => setNt({ ...nt, deadline_date: e.target.value })} />
               </span>
+              <span style={{ flex: 1 }}>
+                <label className="ui-meta" htmlFor="nt-estimate">預估分鐘</label>
+                <input id="nt-estimate" type="number" min="1" max="1440" inputMode="numeric" aria-label="預估分鐘" value={nt.estimated_minutes}
+                  placeholder="例如 60" style={{ width: '100%', marginTop: 'var(--sp-1)' }}
+                  onChange={e => setNt({ ...nt, estimated_minutes: e.target.value })} />
+              </span>
             </div>
           </div>
           <div className="ui-meta" style={{ marginTop: 'var(--sp-3)' }}>加進來的任務會先放在「尚未安排」</div>
@@ -406,9 +429,9 @@ export default function PlanDetailView({ planKey, tasks, lists, apiPlans = [], r
                 onClick={() => { close(); adjustPlan(plan.planId, sec); }}
                 onKeyDown={e => { if (e.key === 'Enter') { close(); adjustPlan(plan.planId, sec); } }} />
             ))}
-            {/* 鎖定還沒有地方存（要等 2C 的 Task Lock），先顯示成之後才有的功能 */}
-            <ListRow title="鎖定內容" subtitle="把某幾項釘在原本的日子（之後才有）" muted
-              trailing={<span className="ui-meta">尚未開放</span>} />
+            <ListRow title="排程鎖定" subtitle="鎖住任務、時段或整天後，重排不會改動它們"
+              trailing={<Icon name="chevron" size={16} />} role="button" tabIndex={0} style={{ cursor: 'pointer' }}
+              onClick={() => { close(); goLocks?.(); }} />
           </div>
         </BottomSheet>
       )}

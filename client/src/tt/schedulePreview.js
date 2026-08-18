@@ -1,4 +1,5 @@
 // 產生 /schedule/preview request 的唯一一處 mapping。
+import { api } from '../api';
 //
 // 排程精靈（建立／調整）與 Today 的 AI 重排都走這裡，兩邊不各組一份 body，
 // 免得同一個計畫在不同入口被用不同的語意排一次。
@@ -15,8 +16,8 @@
 //   限制每天數量、不排的星期／日期、行程太滿就不排的門檻、
 //   章節打散或照順序、幾個單位綁一組、題型分組
 //
-//   Phase 2A 的 plans 表沒有 scheduling profile 欄位，Task 也沒有 workload 欄位。
-//   在 2C 把排程條件正式收進 domain 之前，這裡用一個過渡的前端快照補位：
+//   Phase 2A 的 plans 表沒有完整 scheduling profile；Task 現在有明確的
+//   estimated_minutes，但 pace／daily cap 等條件仍需要過渡的前端快照補位：
 //   使用者「成功套用一次排程」時，把那次真正用的條件記下來。
 //   拿不到就是拿不到 —— 不准猜成 60 分鐘／even／一天 3 項。
 //
@@ -80,9 +81,11 @@ export function buildSchedulePreviewRequest({ items, startDate, endDate, conditi
 
 /* ---------- 重排時要用的原計畫條件 ---------- */
 
-// 時間模式下每一項要排多久：從任務自己身上還原。
-// 精靈排出時段時會寫 notes「讀書時段 08:00–09:30」，那就是當初算出來的時長。
+// 時間模式下每一項要排多久：優先使用正式的 estimated_minutes；舊資料才從
+// notes 的歷史時段相容還原。不能反過來猜 notes，否則新 Task 的工作量會遺失。
 export function taskMinutes(t) {
+  const estimated = Number(t.estimated_minutes);
+  if (Number.isInteger(estimated) && estimated > 0) return estimated;
   const m = String(t.notes || '').match(/(\d{1,2}):(\d{2})[–\-~](\d{1,2}):(\d{2})/);
   if (!m) return null;
   const mins = (+m[3] * 60 + +m[4]) - (+m[1] * 60 + +m[2]);
@@ -99,6 +102,14 @@ export function saveConfirmedConditions(planId, conditions) {
   return out;
 }
 
+// localStorage 僅作離線／既有資料 fallback；新成功排程同步寫入後端，讓跨裝置
+// 重排能拿到相同 profile，不能把它當正式 source of truth。
+export async function persistConfirmedConditions(planId, conditions) {
+  const value = saveConfirmedConditions(planId, conditions);
+  if (planId != null) await api(`/plans/${planId}/schedule-profile`, { method: 'PUT', body: value || {} });
+  return value;
+}
+
 export function readConfirmedConditions(planId) {
   if (planId == null) return null;
   try { return JSON.parse(localStorage.getItem(CONFIRMED_KEY(planId)) || 'null'); } catch { return null; }
@@ -109,8 +120,8 @@ export function readConfirmedConditions(planId) {
 //
 // 只讀「已確認的條件快照」。刻意不讀 wizardDraft：那是操作中的草稿，
 // 可能是使用者改到一半、根本沒套用過的設定，不能當成這個計畫的排法。
-export function planScheduleConditions(planId, pending = []) {
-  const saved = readConfirmedConditions(planId);
+export function planScheduleConditions(planId, pending = [], profile = null) {
+  const saved = profile && profile.timed != null ? profile : readConfirmedConditions(planId);
 
   const missing = [];
   if (!saved || saved.timed == null) missing.push('timed');

@@ -694,11 +694,13 @@ export async function applySchedule(userId, {
         throw new ScheduleInputError('新任務資料不正確');
       }
       const r = await tx.run(
-        `INSERT INTO tasks (user_id,list_id,title,notes,priority,tags,subtasks,recurring,miss_policy,plan_id,deadline_date)
-         VALUES (?,?,?,?,?,?,?,?,?,?,?)`,
+        `INSERT INTO tasks (user_id,list_id,title,notes,priority,tags,subtasks,recurring,miss_policy,plan_id,deadline_date,estimated_minutes)
+         VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`,
         [userId, c.list_id || null, String(c.title).trim(), c.notes || '', c.priority || 0,
           JSON.stringify(c.tags || []), JSON.stringify(c.subtasks || []), c.recurring || null,
-          c.miss_policy || 'keep', planId, c.deadline_date || null]);
+          c.miss_policy || 'keep', planId, c.deadline_date || null,
+          c.estimated_minutes ?? (blocks.filter(b => b.client_key === c.client_key)
+            .reduce((total, b) => total + (Number(b.planned_minutes) || 0), 0) || null)]);
       created.set(c.client_key, r.lastInsertRowid);
     }
 

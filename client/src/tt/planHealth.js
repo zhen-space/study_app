@@ -1,4 +1,5 @@
-import { useMemo } from 'react';
+import { useEffect, useMemo, useState } from 'react';
+import { api } from '../api';
 import { today } from './helpers';
 
 // 「這個計畫需要調整嗎？」的判斷。
@@ -54,9 +55,41 @@ export function planHealth(plan, raw) {
 }
 
 // 需要調整的計畫（依未完成數量多的排前面）
-export function usePlansNeedingAdjustment(plans, apiPlans = []) {
-  return useMemo(() => plans
-    .map(p => planHealth(p, apiPlans.find(x => x.id === p.planId)))
-    .filter(h => h && h.needsAdjustment)
-    .sort((a, b) => b.pending - a.pending), [plans, apiPlans]);
+export function usePlansNeedingAdjustment(plans) {
+  const ids = plans.filter(p => !p.isLegacy && p.planId != null && ['active', 'draft'].includes(p.status)).map(p => p.planId);
+  const key = ids.join(',');
+  const [rows, setRows] = useState([]);
+  useEffect(() => {
+    let alive = true;
+    Promise.all(ids.map(id => api(`/plans/${id}/health`).catch(() => null)))
+      .then(result => { if (alive) setRows(result.filter(Boolean)); });
+    return () => { alive = false; };
+  }, [key]);
+  return useMemo(() => {
+    const byId = new Map(rows.map(r => [Number(r.plan_id), r]));
+    return plans.map(plan => {
+      const health = byId.get(Number(plan.planId));
+      // 網路尚未回來、或舊測試／離線狀態沒有 health endpoint 時，保留只讀的
+      // legacy-compatible fallback；一旦正式 health 到達就會完整取代它。
+      const fallback = planHealth(plan);
+      const effective = health || fallback;
+      if (!effective || effective.status === 'healthy' || effective.needsAdjustment === false || !effective.pending) return null;
+      return { ...effective, planId: plan.planId, planKey: plan.key, name: plan.name, needsAdjustment: true };
+    }).filter(Boolean).sort((a, b) => b.pending - a.pending);
+  }, [plans, rows]);
+}
+
+// 單一計畫明細也讀同一支正式 health API，不能在 Today 與 Detail 各自猜一次。
+export function usePlanScheduleHealth(plan, raw) {
+  const id = plan?.isLegacy || plan?.planId == null ? null : plan.planId;
+  const [health, setHealth] = useState(null);
+  useEffect(() => {
+    let alive = true;
+    if (!id) { setHealth(null); return undefined; }
+    api(`/plans/${id}/health`).then(x => { if (alive) setHealth(x); }).catch(() => { if (alive) setHealth(null); });
+    return () => { alive = false; };
+  }, [id]);
+  if (!health || typeof health.status !== 'string') return planHealth(plan, raw);
+  if (health.status === 'healthy' || !health.pending) return null;
+  return { ...health, planId: id, planKey: plan?.key, name: plan?.name, needsAdjustment: true };
 }

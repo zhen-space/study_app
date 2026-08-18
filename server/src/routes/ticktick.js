@@ -1,6 +1,8 @@
 import { Router } from 'express';
 import { q } from '../db/init.js';
 import { requireAuth } from '../middleware/auth.js';
+import { calculateScheduleDiff } from '../schedule/diff.js';
+import { todayTW } from '../util/date.js';
 
 const router = Router();
 router.use(requireAuth);
@@ -10,6 +12,7 @@ const asArr = s => { if (Array.isArray(s)) return s; try { const v = JSON.parse(
 // 過濾掉舊 bug 產生的碎片標籤（純 1–2 個英文小寫字母，如 ek、ne、l）
 const cleanTags = arr => arr.filter(x => typeof x === 'string' && x.trim() && !/^[a-zA-Z]{1,2}$/.test(x.trim()));
 const parseTask = t => ({ ...t, tags: cleanTags(asArr(t.tags)), subtasks: asArr(t.subtasks) });
+const estimate = value => value == null || value === '' ? null : (Number.isInteger(Number(value)) && Number(value) > 0 && Number(value) <= 1440 ? Number(value) : undefined);
 
 // 任務要掛到某個 Plan 之前的檢查：計畫得是自己的，而且不能是已封存／已完成的
 // （那兩種狀態代表「這件事告一段落了」，再往裡面丟東西沒有意義）。
@@ -114,10 +117,17 @@ router.get('/tasks', async (req, res) => {
 
 router.post('/tasks', async (req, res) => {
   const { title, list_id, notes, due_date, due_time, priority, tags, subtasks, recurring, miss_policy,
-    plan_id, deadline_date } = req.body;
+    plan_id, deadline_date, estimated_minutes } = req.body;
   if (!title) return res.status(400).json({ error: '請輸入標題' });
   const planErr = await checkPlan(plan_id ?? null, req.userId);
   if (planErr) return res.status(400).json({ error: planErr });
+  // Plan Task 的未來時間只能由 ScheduleVersion mirror 寫入。deadline_date 是使用者
+  // 的硬期限，due_date/due_time 則是排程結果；不能混成一般 Task API 的欄位。
+  if (plan_id != null && (due_date != null || due_time != null) && req.body.legacy_due_compat !== true) {
+    return res.status(409).json({ error: '計畫任務的排定時間必須透過排程器建立' });
+  }
+  const estimated = estimate(estimated_minutes);
+  if (estimated === undefined) return res.status(400).json({ error: '預估時間需介於 1 到 1440 分鐘' });
   // 新增到「分享給我的清單」時，任務掛在清單擁有者名下（雙方都看得到）
   let ownerId = req.userId;
   if (list_id) {
@@ -128,11 +138,11 @@ router.post('/tasks', async (req, res) => {
       ownerId = l.user_id;
     }
   }
-  const r = await q.run(`INSERT INTO tasks (user_id,list_id,title,notes,due_date,due_time,priority,tags,subtasks,recurring,miss_policy,plan_id,deadline_date)
-    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+  const r = await q.run(`INSERT INTO tasks (user_id,list_id,title,notes,due_date,due_time,priority,tags,subtasks,recurring,miss_policy,plan_id,deadline_date,estimated_minutes)
+    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
     [ownerId, list_id || null, title, notes || '', due_date || null, due_time || null,
       priority || 0, JSON.stringify(cleanTags(asArr(tags || []))), JSON.stringify(subtasks || []), recurring || null, miss_policy || 'keep',
-      plan_id ?? null, deadline_date || null]);
+      plan_id ?? null, deadline_date || null, estimated]);
   res.json(parseTask(await q.get('SELECT * FROM tasks WHERE id=?', [r.lastInsertRowid])));
 });
 
@@ -218,6 +228,9 @@ router.patch('/tasks/:id', async (req, res) => {
     const planErr = await checkPlan(b.plan_id, req.userId);
     if (planErr) return res.status(400).json({ error: planErr });
   }
+  if ((t.plan_id != null || b.plan_id != null) && (b.due_date !== undefined || b.due_time !== undefined) && b.legacy_due_compat !== true) {
+    return res.status(409).json({ error: '計畫任務的排定時間必須透過排程器調整' });
+  }
   const f = {
     list_id: b.list_id !== undefined ? b.list_id : t.list_id,
     title: b.title ?? t.title,
@@ -235,12 +248,14 @@ router.patch('/tasks/:id', async (req, res) => {
     deleted: b.deleted !== undefined ? (b.deleted ? 1 : 0) : (t.deleted || 0),
     plan_id: b.plan_id !== undefined ? b.plan_id : (t.plan_id ?? null),
     deadline_date: b.deadline_date !== undefined ? (b.deadline_date || null) : (t.deadline_date ?? null),
+    estimated_minutes: b.estimated_minutes !== undefined ? estimate(b.estimated_minutes) : (t.estimated_minutes ?? null),
   };
+  if (f.estimated_minutes === undefined) return res.status(400).json({ error: '預估時間需介於 1 到 1440 分鐘' });
   await q.run(`UPDATE tasks SET list_id=?,title=?,notes=?,due_date=?,due_time=?,priority=?,tags=?,subtasks=?,
-    recurring=?,miss_policy=?,completed=?,completed_at=?,order_index=?,deleted=?,plan_id=?,deadline_date=? WHERE id=?`,
+    recurring=?,miss_policy=?,completed=?,completed_at=?,order_index=?,deleted=?,plan_id=?,deadline_date=?,estimated_minutes=? WHERE id=?`,
     [f.list_id, f.title, f.notes, f.due_date, f.due_time, f.priority, f.tags, f.subtasks,
       f.recurring, f.miss_policy, f.completed, f.completed_at, f.order_index, f.deleted,
-      f.plan_id, f.deadline_date, t.id]);
+      f.plan_id, f.deadline_date, f.estimated_minutes, t.id]);
 
   if (b.completed && !t.completed && t.recurring && t.due_date) {
     let cfg = null;
@@ -287,12 +302,16 @@ router.post('/tasks/bulk', async (req, res) => {
     const planErr = await checkPlan(pid, req.userId);
     if (planErr) return res.status(400).json({ error: planErr });
   }
+  if (list.some(t => t.plan_id != null && (t.due_date != null || t.due_time != null) && t.legacy_due_compat !== true)) {
+    return res.status(409).json({ error: '計畫任務的排定時間必須透過排程器建立' });
+  }
+  if (list.some(t => estimate(t.estimated_minutes) === undefined)) return res.status(400).json({ error: '預估時間需介於 1 到 1440 分鐘' });
   await q.batch(list.map(t => [
-    `INSERT INTO tasks (user_id,list_id,title,notes,due_date,due_time,priority,tags,subtasks,recurring,miss_policy,plan_id,deadline_date)
-     VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+    `INSERT INTO tasks (user_id,list_id,title,notes,due_date,due_time,priority,tags,subtasks,recurring,miss_policy,plan_id,deadline_date,estimated_minutes)
+     VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
     [req.userId, t.list_id || null, t.title, t.notes || '', t.due_date || null, t.due_time || null,
       t.priority || 0, JSON.stringify(cleanTags(asArr(t.tags || []))), JSON.stringify(t.subtasks || []), t.recurring || null, t.miss_policy || 'keep',
-      t.plan_id ?? null, t.deadline_date || null],
+      t.plan_id ?? null, t.deadline_date || null, estimate(t.estimated_minutes)],
   ]));
   res.json({ added: list.length });
 });
@@ -456,6 +475,11 @@ router.delete('/filters/:id', async (req, res) => {
 router.get('/tstats', async (req, res) => {
   const tasks = await q.all('SELECT completed, completed_at FROM tasks WHERE user_id=?', [req.userId]);
   const pomo = await q.all('SELECT date, SUM(minutes) m FROM pomo_sessions WHERE user_id=? GROUP BY date', [req.userId]);
+  // StudySession 是實際學習的正式來源；pomo 留作舊資料相容，兩者不互相覆寫。
+  const sessions = await q.all(`SELECT s.*, t.list_id, t.plan_id, l.name AS list_name, p.name AS plan_name
+    FROM study_sessions s JOIN tasks t ON t.id=s.task_id
+    LEFT JOIN lists l ON l.id=t.list_id LEFT JOIN plans p ON p.id=t.plan_id
+    WHERE s.user_id=? AND s.status='completed'`, [req.userId]);
   const days = {};
   for (const t of tasks) {
     if (t.completed && t.completed_at) {
@@ -468,14 +492,51 @@ router.get('/tstats', async (req, res) => {
   const byMonth = Array(12).fill(0), focusByMonth = Array(12).fill(0);
   for (const [d, n] of Object.entries(days)) if (d.startsWith(year)) byMonth[+d.slice(5, 7) - 1] += n;
   for (const p of pomo) if (p.date?.startsWith(year)) focusByMonth[+p.date.slice(5, 7) - 1] += p.m;
+  for (const s of sessions) if (s.ended_at?.startsWith(year)) focusByMonth[+s.ended_at.slice(5, 7) - 1] += s.actual_minutes;
   const topLists = await q.all(`SELECT l.name, l.color, COUNT(*) c FROM tasks t JOIN lists l ON l.id=t.list_id
     WHERE t.user_id=? AND t.completed=1 GROUP BY l.id ORDER BY c DESC LIMIT 5`, [req.userId]);
+  const actualByDay = {}, bySubject = {}, byPlan = {};
+  for (const s of sessions) {
+    const d = (s.ended_at || s.started_at).slice(0, 10);
+    actualByDay[d] = (actualByDay[d] || 0) + s.actual_minutes;
+    if (s.list_name) bySubject[s.list_name] = (bySubject[s.list_name] || 0) + s.actual_minutes;
+    if (s.plan_name) byPlan[s.plan_name] = (byPlan[s.plan_name] || 0) + s.actual_minutes;
+  }
+  const active = await q.get('SELECT active_version_id FROM user_schedule_state WHERE user_id=?', [req.userId]);
+  const planned = active?.active_version_id == null ? [] : await q.all(`SELECT b.planned_minutes, b.date, t.list_id, t.plan_id, l.name AS list_name, p.name AS plan_name
+    FROM scheduled_blocks b JOIN tasks t ON t.id=b.task_id LEFT JOIN lists l ON l.id=t.list_id LEFT JOIN plans p ON p.id=t.plan_id
+    WHERE b.user_id=? AND b.schedule_version_id=? AND t.completed=0 AND COALESCE(t.deleted,0)=0`, [req.userId, active.active_version_id]);
+  const plannedMinutes = planned.reduce((n, b) => n + (b.planned_minutes || 0), 0);
+  // 統計不再只看 Task checkbox：原定時間來自 active ScheduleVersion，實際時間
+  // 來自 StudySession。兩者各自保留，不能把實際學習反寫進 immutable block。
+  const plannedBySubject = {}, plannedByPlan = {};
+  for (const block of planned) {
+    const minutes = Number(block.planned_minutes) || 0;
+    if (block.list_name) plannedBySubject[block.list_name] = (plannedBySubject[block.list_name] || 0) + minutes;
+    if (block.plan_name) plannedByPlan[block.plan_name] = (plannedByPlan[block.plan_name] || 0) + minutes;
+  }
+  const unplaced = active?.active_version_id == null ? 0 : (await q.get(`SELECT COUNT(*) c FROM tasks t WHERE t.user_id=? AND t.plan_id IS NOT NULL AND t.completed=0 AND COALESCE(t.deleted,0)=0
+    AND NOT EXISTS (SELECT 1 FROM scheduled_blocks b WHERE b.user_id=t.user_id AND b.schedule_version_id=? AND b.task_id=t.id)`, [req.userId, active.active_version_id]))?.c || 0;
+  // 「移動次數」由 immutable version blocks 即時計算，不另存一份容易失真的
+  // counter。只計未來 placement，避免舊歷史版本讓數字隨時間無限膨脹。
+  const recentVersions = await q.all(`SELECT id,parent_version_id FROM schedule_versions
+    WHERE user_id=? AND parent_version_id IS NOT NULL AND created_at >= datetime('now','-30 days')`, [req.userId]);
+  let movedLast30 = 0;
+  for (const version of recentVersions) {
+    const [before, after] = await Promise.all([
+      q.all('SELECT * FROM scheduled_blocks WHERE user_id=? AND schedule_version_id=?', [req.userId, version.parent_version_id]),
+      q.all('SELECT * FROM scheduled_blocks WHERE user_id=? AND schedule_version_id=?', [req.userId, version.id]),
+    ]);
+    movedLast30 += calculateScheduleDiff(before, after, { comparisonFrom: todayTW(), includeUnchanged: false }).summary.moved;
+  }
   res.json({
     total: tasks.length,
     done: tasks.filter(t => t.completed).length,
     completedByDay: days,
     focusByDay: Object.fromEntries(pomo.map(p => [p.date, p.m])),
-    focusTotal: pomo.reduce((a, p) => a + p.m, 0),
+    focusTotal: pomo.reduce((a, p) => a + p.m, 0) + sessions.reduce((a, s) => a + s.actual_minutes, 0),
+    actualByDay, actualTotal: sessions.reduce((a, s) => a + s.actual_minutes, 0), bySubject, byPlan,
+    plannedMinutes, plannedBySubject, plannedByPlan, movedLast30, unplaced,
     year: { byMonth, focusByMonth, topLists },
   });
 });

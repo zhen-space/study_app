@@ -1,6 +1,9 @@
 import { Router } from 'express';
 import { q } from '../db/init.js';
 import { requireAuth } from '../middleware/auth.js';
+import { classifyScheduleHealth } from '../schedule/health.js';
+import { todayTW } from '../util/date.js';
+import { findSelfCollisions } from '../schedule/feasibility.js';
 
 // Plan＝有目標、範圍、期限與生命週期的工作單位。
 // 契約見 docs/phase2-plan-domain.md，動之前先讀。重點：
@@ -29,6 +32,10 @@ async function validate(body, userId, base = {}) {
   if (v.primary_list_id != null) {
     const l = await q.get('SELECT id FROM lists WHERE id=? AND user_id=?', [v.primary_list_id, userId]);
     if (!l) return '找不到這個科目';
+  }
+  if (v.goal_id != null) {
+    const goal = await q.get('SELECT id FROM goals WHERE id=? AND user_id=?', [v.goal_id, userId]);
+    if (!goal) return '找不到這個目標';
   }
   return null;
 }
@@ -72,7 +79,7 @@ router.get('/plans/:id', async (req, res) => {
   const tasks = await q.all(
     'SELECT * FROM tasks WHERE user_id=? AND plan_id=? AND COALESCE(deleted,0)=0 ORDER BY due_date, id',
     [req.userId, plan.id]);
-  const today = new Date(Date.now() + 8 * 3600e3).toISOString().slice(0, 10);
+  const today = todayTW();
   res.json({
     plan,
     tasks,
@@ -83,6 +90,36 @@ router.get('/plans/:id', async (req, res) => {
       overdue_tasks: tasks.filter(t => !t.completed && t.due_date && t.due_date < today).length,
     },
   });
+});
+
+// A2：Today／Replan 的正式 health model。只讀 active ScheduleVersion，不改任何安排。
+router.get('/plans/:id/health', async (req, res) => {
+  const plan = await mine(req.params.id, req.userId);
+  if (!plan) return res.status(404).json({ error: '找不到這個計畫' });
+  const today = todayTW();
+  const [tasks, state, locks] = await Promise.all([
+    q.all('SELECT id,due_date,completed,deleted,estimated_minutes FROM tasks WHERE user_id=? AND plan_id=?', [req.userId, plan.id]),
+    q.get('SELECT active_version_id FROM user_schedule_state WHERE user_id=?', [req.userId]),
+    q.get('SELECT COUNT(*) c FROM schedule_locks WHERE user_id=? AND released_at IS NULL', [req.userId]),
+  ]);
+  const pending = tasks.filter(t => !t.completed && !t.deleted);
+  const activeBlocks = state?.active_version_id == null ? [] : await q.all(
+    'SELECT b.*, t.plan_id,t.deadline_date,t.deleted,t.completed FROM scheduled_blocks b JOIN tasks t ON t.id=b.task_id AND t.user_id=b.user_id WHERE b.user_id=? AND b.schedule_version_id=?', [req.userId, state.active_version_id]);
+  const blockIds = new Set(activeBlocks.map(b => Number(b.task_id)));
+  const overdue = pending.filter(t => t.due_date && t.due_date < today).length;
+  const unplaced = state?.active_version_id == null ? pending.filter(t => !t.due_date).length : pending.filter(t => !blockIds.has(Number(t.id))).length;
+  const lateTarget = plan.target_date ? pending.filter(t => t.due_date && t.due_date > plan.target_date).length : 0;
+  const deadlineViolation = activeBlocks.filter(b => Number(b.plan_id) === Number(plan.id) && b.deadline_date && b.date > b.deadline_date).length;
+  const collision = findSelfCollisions(activeBlocks.filter(b => !b.deleted && !b.completed)).size > 0;
+  const planBlocks = activeBlocks.filter(b => Number(b.plan_id) === Number(plan.id));
+  const estimatedWorkload = pending.reduce((total, task) => total + (Number(task.estimated_minutes) || 0), 0);
+  const scheduledMinutes = planBlocks.reduce((total, block) => total + (Number(block.planned_minutes) || 0), 0);
+  // 沒有估計時間的舊任務不猜分鐘；有明確 estimate 卻尚未得到同等未來 placement
+  // 時，這個 gap 才是 deterministic 的。完整「可用時段不足」仍由 preview 的
+  // feasibility response 計算，兩種數字不能混在一起。
+  const capacityGap = Math.max(0, estimatedWorkload - scheduledMinutes);
+  res.json({ plan_id: plan.id, estimated_workload_minutes: estimatedWorkload, scheduled_minutes: scheduledMinutes,
+    ...classifyScheduleHealth({ pending: pending.length, overdue, unplaced, lateTarget, deadlineViolation, collision, locked: locks?.c || 0, capacityGap }) });
 });
 
 // POST /api/plans

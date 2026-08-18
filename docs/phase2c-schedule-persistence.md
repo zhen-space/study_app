@@ -1,6 +1,6 @@
 # Phase 2C：Schedule Persistence
 
-> 狀態：**2C-1、2C-2、2C-3、2C-4 全部已定案，尚未實作。**
+> 狀態：**2C-1～2C-4 已實作並合併至既定基線。**本文件保留契約與設計理由；實作狀態見 `docs/master-plan-status.md`。
 > Plan domain 契約另見 [`phase2-plan-domain.md`](phase2-plan-domain.md)。
 > 基準 commit：`32fed0e`（Phase 2A 合併後）
 > 最後更新：2026-08-17
@@ -472,7 +472,7 @@ V80 是 restore from V12，但 V12 已經被清掉
 
 # Part 2：2C-2 — Restore ＋ Feasibility
 
-> 狀態：**已定案，尚未實作。**
+> 狀態：**已實作。**Restore 仍須遵循以下契約。
 
 ---
 
@@ -892,7 +892,7 @@ restore 與一般 apply 走同一套保護，沒有例外。
 
 # Part 3：2C-3 — Lock 持久化 ＋ Feasibility 整合
 
-> 狀態：**已定案，尚未實作。**
+> 狀態：**已實作。**Lock persistence 與 preview/apply 雙層驗證皆以以下契約為準。
 
 ---
 
@@ -1228,9 +1228,7 @@ DELETE /api/schedule/locks/:id          使用者主動解鎖 → 寫 released_a
 
 # Part 4：2C-4 — Schedule Diff 契約
 
-> 狀態：**✅ 定案，尚未實作**
->
-> 這一部分只定契約。不實作 production persistence，也不實作 UI。
+> 狀態：**✅ 已實作。**Diff 仍以兩個 immutable ScheduleVersion 的 blocks 即時計算，不建立 `schedule_diffs` table。
 
 ## 33. 為什麼需要正式 diff
 
