@@ -3,6 +3,7 @@ import { q } from '../db/init.js';
 import { requireAuth } from '../middleware/auth.js';
 import { addDays, dayOfWeek, todayTW } from '../util/date.js';
 import * as sched from '../schedule/persistence.js';
+import { feasibilityGap } from '../schedule/feasibility-gap.js';
 
 const router = Router();
 router.use(requireAuth);
@@ -62,6 +63,7 @@ function busyMinutesForDay(dateStr, events) {
 router.post('/preview', async (req, res) => {
   const { items, excludeWeekdays = [], excludeDates = [], skipIfBusyHours = 0, timed = true, perDay = 3, pace = 'even' } = req.body;
   if (!items?.length) return res.status(400).json({ error: '參數不完整' });
+  const requestedItems = items.map(item => ({ ...item }));
   const today = todayTW(); // 台灣時區的今天
   const gStart = req.body.startDate || today, gEnd = req.body.endDate || today;
   for (const it of items) { it.start = it.start || gStart; it.end = it.end || gEnd; }
@@ -947,6 +949,15 @@ router.post('/preview', async (req, res) => {
     warnings: checkWarnings,
     subjects: subjSpan,
   };
+  const feasibility = feasibilityGap({
+    timed, items: requestedItems, blocks, days, failed,
+    hardConstraints: [
+      ...(excludeDates.length ? ['exclude_dates'] : []),
+      ...(excludeWeekdays.length ? ['exclude_weekdays'] : []),
+      ...(effectiveLocks.length ? ['schedule_locks'] : []),
+      ...(events.length ? ['fixed_events_or_routine'] : []),
+    ],
+  });
 
   // 每個項目自己的截止日：內部欄位清掉之前，先留一份公開的給前端
   // （Phase 2A 的 tasks.deadline_date 要用。純輸出欄位，不影響排程語意）
@@ -954,7 +965,7 @@ router.post('/preview', async (req, res) => {
   blocks.forEach(b => { b.deadline = b._we || null; delete b._bk; delete b._ws; delete b._we; delete b._one; });
   blocks.sort((a, b) => a.date === b.date ? (a.start_time || '').localeCompare(b.start_time || '') : a.date.localeCompare(b.date));
   res.json({
-    blocks, check, unplaced: failed.length > 0,
+    blocks, check, feasibility, unplaced: failed.length > 0,
     message: failed.length ? `空檔不足，排不進去：${[...new Set(failed)].slice(0, 5).join('、')}${failed.length > 5 ? '…' : ''}（請延長日期或減少內容）` : undefined,
   });
 });
