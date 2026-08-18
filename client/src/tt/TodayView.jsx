@@ -98,7 +98,7 @@ function AdjustBanner({ tasks, lists, apiPlans, reload, goWizardEdit }) {
 //   實心圓點＝已排定的讀書時段（用科目色）
 //   空心圓點＝固定行程（中性色，不是「我的任務」）
 // Lock 上線後會在右側加一個小鎖，不會因此換整張卡的顏色。
-function NextUp({ tasks, lists, reload }) {
+function NextUp({ tasks, lists, reload, goStudy }) {
   const [events, setEvents] = useState([]);
   useEffect(() => { api('/events').then(setEvents).catch(() => {}); }, []);
 
@@ -106,6 +106,24 @@ function NextUp({ tasks, lists, reload }) {
   // 就得知道那一格到底是哪一個 block（一個任務可能被切成好幾塊）。
   const sched = useActiveSchedule();
   const [adjust, setAdjust] = useState(null);   // { block, task }
+  const [starting, setStarting] = useState(null);
+  const [startError, setStartError] = useState('');
+
+  async function startScheduledStudy(row) {
+    if (!row.block) return;
+    setStarting(row.block.id); setStartError('');
+    try {
+      await api('/study-sessions', {
+        method: 'POST',
+        body: { task_id: row.task.id, scheduled_block_id: row.block.id, source: 'scheduled_block' },
+      });
+      goStudy?.();
+    } catch (err) {
+      setStartError(err.message || '無法開始讀書');
+    } finally {
+      setStarting(null);
+    }
+  }
 
   const td = today();
   const dow = new Date(td + 'T00:00:00Z').getUTCDay();
@@ -151,14 +169,21 @@ function NextUp({ tasks, lists, reload }) {
           </div>
           {/* 固定行程不是 AI 排的，改它要去行事曆改；這裡只讓讀書時段可以調。 */}
           {r.block && (
-            <button className="tl-adjust" aria-label={`調整「${r.title}」的時間`}
-              onClick={() => setAdjust({ block: r.block, task: r.task })}>
-              調整
-            </button>
+            <div className="row" style={{ gap: 4 }}>
+              <button className="tl-adjust" aria-label={`開始讀「${r.title}」`}
+                disabled={starting === r.block.id} onClick={() => startScheduledStudy(r)}>
+                {starting === r.block.id ? '啟動中…' : '開始'}
+              </button>
+              <button className="tl-adjust" aria-label={`調整「${r.title}」的時間`}
+                onClick={() => setAdjust({ block: r.block, task: r.task })}>
+                調整
+              </button>
+            </div>
           )}
         </div>
       ))}
     </section>
+    {startError && <div className="ui-meta" role="alert" style={{ color: 'var(--danger)', marginTop: 'var(--sp-2)' }}>{startError}</div>}
     {/* 放在 section 外面：時間軸靠 .tl-row:last-child 收掉最後一段軸線，
         在裡面多一個兄弟節點會讓最後一列多出一截線。 */}
     {adjust && (
@@ -216,7 +241,7 @@ export default function TodayView({ tasks, lists, filters, habits, apiPlans = []
         <div style={{ marginTop: 'var(--sp-5)' }}>
           <AdjustBanner tasks={tasks} lists={lists} apiPlans={apiPlans} reload={reload} goWizardEdit={goWizardEdit} />
         </div>
-        <NextUp tasks={tasks} lists={lists} reload={reload} />
+        <NextUp tasks={tasks} lists={lists} reload={reload} goStudy={goStudy} />
       </>}
     />
   );

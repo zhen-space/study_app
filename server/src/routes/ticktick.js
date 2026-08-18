@@ -480,8 +480,8 @@ router.get('/tstats', async (req, res) => {
   const pomo = await q.all('SELECT date, SUM(minutes) m FROM pomo_sessions WHERE user_id=? GROUP BY date', [req.userId]);
   // StudySession 是實際學習的正式來源；pomo 留作舊資料相容，兩者不互相覆寫。
   const sessions = await q.all(`SELECT s.*, t.list_id, t.plan_id, l.name AS list_name, p.name AS plan_name
-    FROM study_sessions s JOIN tasks t ON t.id=s.task_id
-    LEFT JOIN lists l ON l.id=t.list_id LEFT JOIN plans p ON p.id=t.plan_id
+    FROM study_sessions s JOIN tasks t ON t.id=s.task_id AND t.user_id=s.user_id
+    LEFT JOIN lists l ON l.id=t.list_id AND l.user_id=t.user_id LEFT JOIN plans p ON p.id=t.plan_id AND p.user_id=t.user_id
     WHERE s.user_id=? AND s.status='completed'`, [req.userId]);
   const days = {};
   for (const t of tasks) {
@@ -507,7 +507,7 @@ router.get('/tstats', async (req, res) => {
   }
   const active = await q.get('SELECT active_version_id FROM user_schedule_state WHERE user_id=?', [req.userId]);
   const planned = active?.active_version_id == null ? [] : await q.all(`SELECT b.planned_minutes, b.date, t.list_id, t.plan_id, l.name AS list_name, p.name AS plan_name
-    FROM scheduled_blocks b JOIN tasks t ON t.id=b.task_id LEFT JOIN lists l ON l.id=t.list_id LEFT JOIN plans p ON p.id=t.plan_id
+    FROM scheduled_blocks b JOIN tasks t ON t.id=b.task_id AND t.user_id=b.user_id LEFT JOIN lists l ON l.id=t.list_id AND l.user_id=t.user_id LEFT JOIN plans p ON p.id=t.plan_id AND p.user_id=t.user_id
     WHERE b.user_id=? AND b.schedule_version_id=? AND t.completed=0 AND COALESCE(t.deleted,0)=0`, [req.userId, active.active_version_id]);
   const plannedMinutes = planned.reduce((n, b) => n + (b.planned_minutes || 0), 0);
   // 統計不再只看 Task checkbox：原定時間來自 active ScheduleVersion，實際時間

@@ -4,11 +4,9 @@ import { Button, PageHeader, SurfaceCard } from './ui';
 
 // 「讀書」＝中央主要動作：現在就開始一段讀書。
 //
-// Phase 1 只重新定位入口，不做完整的 Study Session domain。
-// 既有的番茄鐘能力（絕對時間戳倒數、背景音、綁定任務、/pomo 專注紀錄）
-// 原封不動保留在 PomoView 裡，這層只負責「這是讀書的入口」這件事，
-// 以後 Study Session（開始／暫停／記錄實際讀了哪個 Scheduled Block）
-// 接上來的時候，改這個檔案就好，不用動計時器本身。
+// StudySession 是實際讀書時間的單一來源。從 Today／Calendar 的 ScheduledBlock
+// 啟動時會保留 scheduled_block_id；在這個頁面直接選一般 Task 則是 manual session。
+// 舊 pomo 僅保留歷史相容資料，不再另外提供第二套計時器狀態。
 
 export default function StudyView({ tasks }) {
   const [session, setSession] = useState(null);

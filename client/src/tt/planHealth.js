@@ -61,18 +61,24 @@ export function usePlansNeedingAdjustment(plans) {
   const [rows, setRows] = useState([]);
   useEffect(() => {
     let alive = true;
-    Promise.all(ids.map(id => api(`/plans/${id}/health`).catch(() => null)))
-      .then(result => { if (alive) setRows(result.filter(Boolean)); });
+    Promise.all(ids.map(async id => {
+      try {
+        const health = await api(`/plans/${id}/health`);
+        return typeof health?.status === 'string' ? { id, health } : { id, unavailable: true };
+      } catch { return { id, unavailable: true }; }
+    })).then(result => { if (alive) setRows(result); });
     return () => { alive = false; };
   }, [key]);
   return useMemo(() => {
-    const byId = new Map(rows.map(r => [Number(r.plan_id), r]));
+    const byId = new Map(rows.filter(r => r.health).map(r => [Number(r.id), r.health]));
+    const unavailable = new Set(rows.filter(r => r.unavailable).map(r => Number(r.id)));
     return plans.map(plan => {
       const health = byId.get(Number(plan.planId));
       // 網路尚未回來、或舊測試／離線狀態沒有 health endpoint 時，保留只讀的
       // legacy-compatible fallback；一旦正式 health 到達就會完整取代它。
-      const fallback = planHealth(plan);
-      const effective = health || fallback;
+      // 正常連線時唯一正式來源是 server health；只有 endpoint 不可用／離線時
+      // 才以舊資料做只讀 fallback，避免兩套健康規則在線上漂移。
+      const effective = health || (unavailable.has(Number(plan.planId)) ? planHealth(plan) : null);
       if (!effective || !['needs_replan', 'blocked'].includes(effective.status) || effective.needsAdjustment === false || !effective.pending) return null;
       return { ...effective, planId: plan.planId, planKey: plan.key, name: plan.name, needsAdjustment: true };
     }).filter(Boolean).sort((a, b) => b.pending - a.pending);

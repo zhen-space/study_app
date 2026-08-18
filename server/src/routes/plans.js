@@ -110,7 +110,7 @@ router.get('/plans/:id/health', async (req, res) => {
   const unplaced = state?.active_version_id == null ? pending.filter(t => !t.due_date).length : pending.filter(t => !blockIds.has(Number(t.id))).length;
   const lateTarget = plan.target_date ? pending.filter(t => t.due_date && t.due_date > plan.target_date).length : 0;
   const deadlineViolation = activeBlocks.filter(b => Number(b.plan_id) === Number(plan.id) && b.deadline_date && b.date > b.deadline_date).length;
-  const collision = findSelfCollisions(activeBlocks.filter(b => !b.deleted && !b.completed)).size > 0;
+  const collision = findSelfCollisions(planBlocks.filter(b => !b.deleted && !b.completed)).size > 0;
   const estimatedWorkload = pending.reduce((total, task) => total + (Number(task.estimated_minutes) || 0), 0);
   const timedBlocks = planBlocks.filter(b => b.start_time && b.end_time);
   const timedTaskIds = new Set(timedBlocks.map(b => Number(b.task_id)));

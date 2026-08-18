@@ -7,7 +7,7 @@
 - Plan 與 Subject/List 分離；Task 可選擇歸屬 Plan。
 - ScheduleVersion 是 user-level snapshot；ScheduledBlock 透過 Task 取得 Plan。
 - Restore、Lock、Diff 與手動調整都以 current active schedule 為準。
-- Plan Task 的 `due_date` / `due_time` 僅由 ScheduleVersion persistence mirror 寫入。Task API 對新 Plan Task 直接寫時間會拒絕；`legacy_due_compat` 僅供既有資料 cutover 使用。
+- Plan Task 的 `due_date` / `due_time` 僅由 ScheduleVersion persistence mirror 寫入。Task API 對新 Plan Task 直接寫時間會拒絕；公開 body 的 `legacy_due_compat` 不能繞過，僅 server-controlled migration token path 可供 cutover 使用。
 - Availability routine、exception、StudySession、Goal、constraint intent 都是可獨立演進的 domain。
 
 ## Master Plan 進度
@@ -20,7 +20,7 @@
 - F/G：StudySession 與 planned vs actual 統計已建立；後續估時調整必須以資料驗證後另行設計。
 - H：Goal CRUD、Plan 指派與 aggregate progress 已建立。
 - I：audit、preview 與 UI 安全入口已建立；production apply 仍受 audit gate 保護。
-- Post-Master Audit Fix：Plan Task read path 不再 roll-forward due date；untimed health 不再把 date-only block 誤算成分鐘缺口；health lock reason 改為 plan-scoped。
+- Post-Master Audit Fix：Plan Task read path 不再 roll-forward due date；untimed health 不再把 date-only block 誤算成分鐘缺口；health lock/collision reason 改為 plan-scoped；Today／Calendar 由 ScheduledBlock 開始的 StudySession 會保留 block 關聯；legacy DELETE 與 client `legacy_due_compat` bypass 已封死。
 
 ## 正式 Gate
 

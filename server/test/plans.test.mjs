@@ -320,4 +320,21 @@ describe('舊端點相容', () => {
     const detail = await api(`/plans/${p.id}`);
     assert.equal(detail.body.tasks.some(t => t.id === modern.body.id), true);
   });
+
+  test('mutation guard：GET /tasks 的 recurring drop 不得改寫 Plan Task 的 ScheduledBlock mirror', async () => {
+    const { body: p } = await mkPlan({ name: '唯讀不改排程', status: 'active' });
+    const { body: task } = await mkTask({
+      title: '有排程的週期任務', plan_id: p.id, recurring: 'daily', miss_policy: 'drop', due_date: day(-2), legacy_due_compat: true,
+    });
+    const applied = await api('/schedule/apply', { method: 'POST', body: {
+      plan_id: p.id, source: 'initial', blocks: [{ task_id: task.id, date: day(3), start_time: '19:00', end_time: '20:00' }],
+    } });
+    assert.equal(applied.status, 200);
+    const before = (await api('/tasks')).body.find(t => t.id === task.id);
+    await api('/tasks'); // 若拿掉 ticktick.js 的 plan_id == null，這個 read 就會把日期 roll-forward。
+    const after = (await api('/tasks')).body.find(t => t.id === task.id);
+    assert.equal(before.due_date, day(3));
+    assert.equal(after.due_date, day(3));
+    assert.equal(after.due_time, '19:00');
+  });
 });
