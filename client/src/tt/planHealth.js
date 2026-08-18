@@ -1,4 +1,5 @@
-import { useMemo } from 'react';
+import { useEffect, useMemo, useState } from 'react';
+import { api } from '../api';
 import { today } from './helpers';
 
 // 「這個計畫需要調整嗎？」的判斷。
@@ -54,9 +55,22 @@ export function planHealth(plan, raw) {
 }
 
 // 需要調整的計畫（依未完成數量多的排前面）
-export function usePlansNeedingAdjustment(plans, apiPlans = []) {
-  return useMemo(() => plans
-    .map(p => planHealth(p, apiPlans.find(x => x.id === p.planId)))
-    .filter(h => h && h.needsAdjustment)
-    .sort((a, b) => b.pending - a.pending), [plans, apiPlans]);
+export function usePlansNeedingAdjustment(plans) {
+  const ids = plans.filter(p => !p.isLegacy && p.planId != null && ['active', 'draft'].includes(p.status)).map(p => p.planId);
+  const key = ids.join(',');
+  const [rows, setRows] = useState([]);
+  useEffect(() => {
+    let alive = true;
+    Promise.all(ids.map(id => api(`/plans/${id}/health`).catch(() => null)))
+      .then(result => { if (alive) setRows(result.filter(Boolean)); });
+    return () => { alive = false; };
+  }, [key]);
+  return useMemo(() => {
+    const byId = new Map(rows.map(r => [Number(r.plan_id), r]));
+    return plans.map(plan => {
+      const health = byId.get(Number(plan.planId));
+      if (!health || health.status === 'healthy' || !health.pending) return null;
+      return { ...health, planId: plan.planId, planKey: plan.key, name: plan.name, needsAdjustment: true };
+    }).filter(Boolean).sort((a, b) => b.pending - a.pending);
+  }, [plans, rows]);
 }

@@ -27,7 +27,7 @@ const WD = '日一二三四五六';
 // 視覺上用 accent（AI／建議），不是 Danger：這是「可以幫你處理」而不是「出事了」。
 function AdjustBanner({ tasks, lists, apiPlans, reload, goWizardEdit }) {
   const plans = usePlans(tasks, lists, apiPlans);
-  const needing = usePlansNeedingAdjustment(plans, apiPlans);
+  const needing = usePlansNeedingAdjustment(plans);
   const [dismissed, setDismissed] = useState([]);   // 只是這次畫面上收起來，不動任何資料
   const [picking, setPicking] = useState(false);
   const [replanKey, setReplanKey] = useState(null);
