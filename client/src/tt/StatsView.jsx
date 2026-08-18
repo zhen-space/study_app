@@ -9,6 +9,7 @@ export default function StatsView() {
 
   const days = [...Array(30)].map((_, i) => addDays(today(), i - 29));
   const maxC = Math.max(1, ...days.map(d => s.completedByDay[d] || 0));
+  const maxStudy = Math.max(1, ...days.map(d => s.actualByDay?.[d] || 0));
   const heat = v => v === 0 ? '#eef1f4' : `rgba(71,114,250,${0.25 + 0.75 * v / maxC})`;
   const streak = (() => {
     let n = 0, d = today();
@@ -26,7 +27,18 @@ export default function StatsView() {
           <div className="tile"><div className="muted">完成率</div><div className="num">{s.total ? Math.round(s.done / s.total * 100) : 0}%</div></div>
           <div className="tile"><div className="muted">連續完成天數</div><div className="num">🔥 {streak}</div></div>
           <div className="tile"><div className="muted">總專注時間</div><div className="num">{(s.focusTotal / 60).toFixed(1)}h</div></div>
+          <div className="tile"><div className="muted">原定／實際</div><div className="num">{(s.plannedMinutes / 60).toFixed(1)} / {(s.actualTotal / 60).toFixed(1)}h</div></div>
         </div>
+        <div className="tile" style={{ marginTop: 12 }}>
+          <div className="muted">近 30 天實際讀書時間</div>
+          <div className="heat">{days.map(d => <div key={d} className="hcell" title={`${d}：${s.actualByDay?.[d] || 0} 分鐘`} style={{ background: (s.actualByDay?.[d] || 0) ? `rgba(22,163,74,${.25 + .75 * (s.actualByDay[d] || 0) / maxStudy})` : '#eef1f4' }} />)}</div>
+          <div className="muted" style={{ marginTop: 8 }}>尚未安排的計畫任務：{s.unplaced || 0} 項</div>
+        </div>
+        {(Object.keys(s.bySubject || {}).length > 0 || Object.keys(s.byPlan || {}).length > 0) && <div className="tile" style={{ marginTop: 12 }}>
+          <div className="muted">實際讀書時間</div>
+          {Object.entries(s.bySubject || {}).sort((a,b) => b[1]-a[1]).map(([name, minutes]) => <div className="row" key={`s:${name}`} style={{ marginTop: 6 }}><span style={{ flex: 1 }}>{name}</span><b>{(minutes / 60).toFixed(1)} 小時</b></div>)}
+          {Object.entries(s.byPlan || {}).sort((a,b) => b[1]-a[1]).map(([name, minutes]) => <div className="row" key={`p:${name}`} style={{ marginTop: 6 }}><span className="muted" style={{ flex: 1 }}>{name}</span><b>{(minutes / 60).toFixed(1)} 小時</b></div>)}
+        </div>}
         <div className="tile" style={{ marginTop: 12 }}>
           <div className="muted">近 30 天完成熱力圖</div>
           <div className="heat">

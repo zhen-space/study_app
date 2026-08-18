@@ -456,6 +456,11 @@ router.delete('/filters/:id', async (req, res) => {
 router.get('/tstats', async (req, res) => {
   const tasks = await q.all('SELECT completed, completed_at FROM tasks WHERE user_id=?', [req.userId]);
   const pomo = await q.all('SELECT date, SUM(minutes) m FROM pomo_sessions WHERE user_id=? GROUP BY date', [req.userId]);
+  // StudySession 是實際學習的正式來源；pomo 留作舊資料相容，兩者不互相覆寫。
+  const sessions = await q.all(`SELECT s.*, t.list_id, t.plan_id, l.name AS list_name, p.name AS plan_name
+    FROM study_sessions s JOIN tasks t ON t.id=s.task_id
+    LEFT JOIN lists l ON l.id=t.list_id LEFT JOIN plans p ON p.id=t.plan_id
+    WHERE s.user_id=? AND s.status='completed'`, [req.userId]);
   const days = {};
   for (const t of tasks) {
     if (t.completed && t.completed_at) {
@@ -468,14 +473,31 @@ router.get('/tstats', async (req, res) => {
   const byMonth = Array(12).fill(0), focusByMonth = Array(12).fill(0);
   for (const [d, n] of Object.entries(days)) if (d.startsWith(year)) byMonth[+d.slice(5, 7) - 1] += n;
   for (const p of pomo) if (p.date?.startsWith(year)) focusByMonth[+p.date.slice(5, 7) - 1] += p.m;
+  for (const s of sessions) if (s.ended_at?.startsWith(year)) focusByMonth[+s.ended_at.slice(5, 7) - 1] += s.actual_minutes;
   const topLists = await q.all(`SELECT l.name, l.color, COUNT(*) c FROM tasks t JOIN lists l ON l.id=t.list_id
     WHERE t.user_id=? AND t.completed=1 GROUP BY l.id ORDER BY c DESC LIMIT 5`, [req.userId]);
+  const actualByDay = {}, bySubject = {}, byPlan = {};
+  for (const s of sessions) {
+    const d = (s.ended_at || s.started_at).slice(0, 10);
+    actualByDay[d] = (actualByDay[d] || 0) + s.actual_minutes;
+    if (s.list_name) bySubject[s.list_name] = (bySubject[s.list_name] || 0) + s.actual_minutes;
+    if (s.plan_name) byPlan[s.plan_name] = (byPlan[s.plan_name] || 0) + s.actual_minutes;
+  }
+  const active = await q.get('SELECT active_version_id FROM user_schedule_state WHERE user_id=?', [req.userId]);
+  const planned = active?.active_version_id == null ? [] : await q.all(`SELECT b.planned_minutes, b.date, t.list_id, t.plan_id, l.name AS list_name, p.name AS plan_name
+    FROM scheduled_blocks b JOIN tasks t ON t.id=b.task_id LEFT JOIN lists l ON l.id=t.list_id LEFT JOIN plans p ON p.id=t.plan_id
+    WHERE b.user_id=? AND b.schedule_version_id=? AND t.completed=0 AND COALESCE(t.deleted,0)=0`, [req.userId, active.active_version_id]);
+  const plannedMinutes = planned.reduce((n, b) => n + (b.planned_minutes || 0), 0);
+  const unplaced = active?.active_version_id == null ? 0 : (await q.get(`SELECT COUNT(*) c FROM tasks t WHERE t.user_id=? AND t.plan_id IS NOT NULL AND t.completed=0 AND COALESCE(t.deleted,0)=0
+    AND NOT EXISTS (SELECT 1 FROM scheduled_blocks b WHERE b.user_id=t.user_id AND b.schedule_version_id=? AND b.task_id=t.id)`, [req.userId, active.active_version_id]))?.c || 0;
   res.json({
     total: tasks.length,
     done: tasks.filter(t => t.completed).length,
     completedByDay: days,
     focusByDay: Object.fromEntries(pomo.map(p => [p.date, p.m])),
-    focusTotal: pomo.reduce((a, p) => a + p.m, 0),
+    focusTotal: pomo.reduce((a, p) => a + p.m, 0) + sessions.reduce((a, s) => a + s.actual_minutes, 0),
+    actualByDay, actualTotal: sessions.reduce((a, s) => a + s.actual_minutes, 0), bySubject, byPlan,
+    plannedMinutes, unplaced,
     year: { byMonth, focusByMonth, topLists },
   });
 });

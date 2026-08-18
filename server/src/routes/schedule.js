@@ -87,14 +87,25 @@ router.post('/preview', async (req, res) => {
     if (ONE_TAIL.test(tail)) it.onePerDay = true;
   }
 
+  // C：已確認的 Plan constraint 是使用者意圖的正式來源。request 明確帶的值
+  // 可以暫時覆寫（例如 Wizard 調整中預覽），但未支援欄位永遠不進演算法。
+  let confirmedConstraints = {};
+  if (req.body.plan_id != null) {
+    const row = await q.get('SELECT intent_json FROM plan_constraints WHERE plan_id=? AND user_id=?', [req.body.plan_id, req.userId]);
+    try { confirmedConstraints = row ? JSON.parse(row.intent_json || '{}') : {}; } catch {}
+  }
+  for (const d of confirmedConstraints.exclude_dates || []) if (!excludeDates.includes(d)) excludeDates.push(d);
+  for (const d of confirmedConstraints.exclude_weekdays || []) if (!excludeWeekdays.includes(d)) excludeWeekdays.push(d);
+
   // 科目先後順序（2C-P6-B）。結構化欄位，不是自然語言——之後 AI 也是映射成
   // 這個形狀送進來，不會再長出第二套語意。
   //
   // 名次是「相對」的：沒被列到的科目排在列到的後面，彼此維持原本的順序。
   // 不合法的內容（不是陣列）當作沒指定，不報錯——排序偏好不該擋住排程。
   const subjectRank = new Map();
-  if (Array.isArray(req.body.subject_order)) {
-    req.body.subject_order.forEach((sid, i) => {
+  const requestedSubjectOrder = Array.isArray(req.body.subject_order) ? req.body.subject_order : confirmedConstraints.subject_order;
+  if (Array.isArray(requestedSubjectOrder)) {
+    requestedSubjectOrder.forEach((sid, i) => {
       const key = String(sid);
       if (key && !subjectRank.has(key)) subjectRank.set(key, i);   // 重複只認第一次
     });

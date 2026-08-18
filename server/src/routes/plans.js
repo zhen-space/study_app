@@ -32,6 +32,10 @@ async function validate(body, userId, base = {}) {
     const l = await q.get('SELECT id FROM lists WHERE id=? AND user_id=?', [v.primary_list_id, userId]);
     if (!l) return '找不到這個科目';
   }
+  if (v.goal_id != null) {
+    const goal = await q.get('SELECT id FROM goals WHERE id=? AND user_id=?', [v.goal_id, userId]);
+    if (!goal) return '找不到這個目標';
+  }
   return null;
 }
 
