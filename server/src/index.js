@@ -14,6 +14,7 @@ import routinesRouter from './routes/routines.js';
 import studySessionsRouter from './routes/study-sessions.js';
 import goalsRouter from './routes/goals.js';
 import constraintsRouter from './routes/constraints.js';
+import legacyMigrationRouter from './routes/legacy-migration.js';
 
 const app = express();
 app.use(cors());
@@ -27,6 +28,7 @@ app.use('/api', routinesRouter);
 app.use('/api', studySessionsRouter);
 app.use('/api', goalsRouter);
 app.use('/api', constraintsRouter);
+app.use('/api', legacyMigrationRouter);
 app.use('/api', ticktickRouter);
 app.use('/api/import', importRouter);
 

@@ -42,6 +42,7 @@ export default function PlanDetailView({ planKey, tasks, lists, apiPlans = [], r
   const [nt, setNt] = useState({ title: '', list_id: '', deadline_date: '' });
   const [edit, setEdit] = useState(null);     // 編輯計畫資訊的暫存（按儲存才送出）
   const [adjustBlock, setAdjustBlock] = useState(null);   // { block, task }
+  const [legacyPreview, setLegacyPreview] = useState(null);
   // 排定時間的真相在 ScheduledBlock；要讓使用者自己改，就得知道是哪一格。
   const sched = useActiveSchedule();
   // 必須在早退前呼叫，避免資料刷新瞬間找不到 Plan 時違反 React Hook 順序。
@@ -229,6 +230,7 @@ export default function PlanDetailView({ planKey, tasks, lists, apiPlans = [], r
             <div className="ui-meta" style={{ marginTop: 2 }}>
               這份計畫尚未轉成正式計畫，目前只能查看與完成任務。
             </div>
+            <Button size="sm" style={{ marginTop: 10 }} onClick={async () => { try { setLegacyPreview(await api('/legacy-migration/preview')); setSheet('legacy'); } catch (e) { setErr(e.message); } }}>查看安全轉換方式</Button>
           </SurfaceCard>
         )}
 
@@ -354,6 +356,7 @@ export default function PlanDetailView({ planKey, tasks, lists, apiPlans = [], r
         </BottomSheet>
       )}
       {sheet === 'constraints' && <ConstraintSheet planId={plan.planId} onClose={close} />}
+      {sheet === 'legacy' && <BottomSheet onClose={close} label="轉成正式計畫"><b>安全轉成正式計畫</b><div className="ui-meta" style={{ marginTop: 8 }}>{legacyPreview?.warning}</div><div className="ui-meta" style={{ marginTop: 8 }}>找到 {legacyPreview?.candidates?.length || 0} 項可人工確認的舊任務。系統不會猜分群，也不會直接搬動資料。</div><div className="row" style={{ marginTop: 16 }}><Button onClick={close}>取消</Button><Button variant="primary" style={{ marginLeft: 'auto' }} onClick={async () => { await api('/plans', { method: 'POST', body: { name: `${plan.name}（正式計畫）`, description: '由舊資料手動轉換；請逐筆確認任務歸屬。', source: 'legacy_migration' } }); await reload(); close(); onBack(); }}>建立正式計畫草稿</Button></div></BottomSheet>}
 
       {/* ---------- 完成確認：後端 needs_confirm 語意完全不變 ---------- */}
       {sheet === 'confirmComplete' && (
