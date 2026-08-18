@@ -47,11 +47,11 @@ describe('schema migration', () => {
 describe('bootstrap（2A → 2C cutover）', () => {
   test('只把「未來的、屬於計畫的、未完成的」既有排定日期收成 V1', async () => {
     const { body: plan } = await mkPlan({ name: '段考' });
-    const future = await mkTask({ title: '未來', plan_id: plan.id, due_date: day(2) });
-    const today0 = await mkTask({ title: '今天', plan_id: plan.id, due_date: day(0), due_time: '19:00' });
-    const past = await mkTask({ title: '過去', plan_id: plan.id, due_date: day(-3) });
+    const future = await mkTask({ title: '未來', plan_id: plan.id, due_date: day(2), legacy_due_compat: true });
+    const today0 = await mkTask({ title: '今天', plan_id: plan.id, due_date: day(0), due_time: '19:00', legacy_due_compat: true });
+    const past = await mkTask({ title: '過去', plan_id: plan.id, due_date: day(-3), legacy_due_compat: true });
     const noDate = await mkTask({ title: '沒排', plan_id: plan.id });
-    const done = await mkTask({ title: '已完成', plan_id: plan.id, due_date: day(1) });
+    const done = await mkTask({ title: '已完成', plan_id: plan.id, due_date: day(1), legacy_due_compat: true });
     await api(`/tasks/${done.body.id}`, { method: 'PATCH', body: { completed: true } });
     const loose = await mkTask({ title: '沒有計畫的一般任務', due_date: day(1) });
 

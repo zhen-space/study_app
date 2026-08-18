@@ -46,7 +46,7 @@ describe('Plan CRUD', () => {
 
   test('GET /plans/:id 回 plan + tasks + summary', async () => {
     const { body: p } = await mkPlan({ name: '明細測試' });
-    await mkTask({ title: '未完成', plan_id: p.id, due_date: day(-2) });   // 逾期
+    await mkTask({ title: '未完成', plan_id: p.id, due_date: day(-2), legacy_due_compat: true });   // legacy 相容資料的逾期
     const done = await mkTask({ title: '完成', plan_id: p.id });
     await api(`/tasks/${done.body.id}`, { method: 'PATCH', body: { completed: true } });
 
@@ -164,17 +164,13 @@ describe('Task ↔ Plan', () => {
     assert.equal((await mkTask({ title: 'x', plan_id: done.id })).status, 400);
   });
 
-  test('deadline_date 與 due_date 是不同欄位，各自存得住', async () => {
+  test('Plan Task 的 deadline_date 是使用者欄位，due_date 只能由排程 mirror 寫入', async () => {
     const { body: p } = await mkPlan();
-    const { body: t } = await mkTask({ title: '有截止日', plan_id: p.id, due_date: day(3), deadline_date: day(9) });
-    assert.equal(t.due_date, day(3));
+    const { body: t } = await mkTask({ title: '有截止日', plan_id: p.id, deadline_date: day(9) });
+    assert.equal(t.due_date, null);
     assert.equal(t.deadline_date, day(9));
-    // 改排定日期不會動到截止日
-    // （PATCH /tasks/:id 回的是 { ok, earned } 不是任務本身，所以要重抓）
-    await api(`/tasks/${t.id}`, { method: 'PATCH', body: { due_date: day(5) } });
-    const t2 = (await api('/tasks')).body.find(x => x.id === t.id);
-    assert.equal(t2.due_date, day(5));
-    assert.equal(t2.deadline_date, day(9));
+    assert.equal((await mkTask({ title: '不可直接排定', plan_id: p.id, due_date: day(3) })).status, 409);
+    assert.equal((await api(`/tasks/${t.id}`, { method: 'PATCH', body: { due_date: day(5) } })).status, 409);
   });
 
   test('一個 Plan 可以跨科目（Plan ≠ 科目）', async () => {
@@ -199,19 +195,20 @@ describe('Task ↔ Plan', () => {
     assert.ok(same.length >= 2, '同一科目底下要能同時存在多個 Plan');
   });
 
-  test('bulk 建立也帶得動 plan_id / deadline_date', async () => {
+  test('bulk 建立帶得動 plan_id / deadline_date，但不接受直接寫排定時間', async () => {
     const { body: p } = await mkPlan();
     const r = await api('/tasks/bulk', {
       method: 'POST',
       body: { tasks: [
-        { title: '批次A', plan_id: p.id, due_date: day(1), deadline_date: day(6) },
-        { title: '批次B', plan_id: p.id, due_date: day(2) },
+        { title: '批次A', plan_id: p.id, deadline_date: day(6) },
+        { title: '批次B', plan_id: p.id },
       ] },
     });
     assert.equal(r.body.added, 2);
     const { body } = await api(`/plans/${p.id}`);
     assert.equal(body.tasks.length, 2);
     assert.equal(body.tasks.find(t => t.title === '批次A').deadline_date, day(6));
+    assert.equal((await api('/tasks/bulk', { method: 'POST', body: { tasks: [{ title: '不行', plan_id: p.id, due_date: day(2) }] } })).status, 409);
   });
 
   test('bulk 掛到已封存的計畫要被擋下來', async () => {

@@ -118,6 +118,11 @@ router.post('/tasks', async (req, res) => {
   if (!title) return res.status(400).json({ error: '請輸入標題' });
   const planErr = await checkPlan(plan_id ?? null, req.userId);
   if (planErr) return res.status(400).json({ error: planErr });
+  // Plan Task 的未來時間只能由 ScheduleVersion mirror 寫入。deadline_date 是使用者
+  // 的硬期限，due_date/due_time 則是排程結果；不能混成一般 Task API 的欄位。
+  if (plan_id != null && (due_date != null || due_time != null) && req.body.legacy_due_compat !== true) {
+    return res.status(409).json({ error: '計畫任務的排定時間必須透過排程器建立' });
+  }
   // 新增到「分享給我的清單」時，任務掛在清單擁有者名下（雙方都看得到）
   let ownerId = req.userId;
   if (list_id) {
@@ -218,6 +223,9 @@ router.patch('/tasks/:id', async (req, res) => {
     const planErr = await checkPlan(b.plan_id, req.userId);
     if (planErr) return res.status(400).json({ error: planErr });
   }
+  if ((t.plan_id != null || b.plan_id != null) && (b.due_date !== undefined || b.due_time !== undefined) && b.legacy_due_compat !== true) {
+    return res.status(409).json({ error: '計畫任務的排定時間必須透過排程器調整' });
+  }
   const f = {
     list_id: b.list_id !== undefined ? b.list_id : t.list_id,
     title: b.title ?? t.title,
@@ -286,6 +294,9 @@ router.post('/tasks/bulk', async (req, res) => {
   for (const pid of planIds) {
     const planErr = await checkPlan(pid, req.userId);
     if (planErr) return res.status(400).json({ error: planErr });
+  }
+  if (list.some(t => t.plan_id != null && (t.due_date != null || t.due_time != null) && t.legacy_due_compat !== true)) {
+    return res.status(409).json({ error: '計畫任務的排定時間必須透過排程器建立' });
   }
   await q.batch(list.map(t => [
     `INSERT INTO tasks (user_id,list_id,title,notes,due_date,due_time,priority,tags,subtasks,recurring,miss_policy,plan_id,deadline_date)
