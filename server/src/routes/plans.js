@@ -98,7 +98,7 @@ router.get('/plans/:id/health', async (req, res) => {
   if (!plan) return res.status(404).json({ error: '找不到這個計畫' });
   const today = todayTW();
   const [tasks, state, locks] = await Promise.all([
-    q.all('SELECT id,due_date,completed,deleted FROM tasks WHERE user_id=? AND plan_id=?', [req.userId, plan.id]),
+    q.all('SELECT id,due_date,completed,deleted,estimated_minutes FROM tasks WHERE user_id=? AND plan_id=?', [req.userId, plan.id]),
     q.get('SELECT active_version_id FROM user_schedule_state WHERE user_id=?', [req.userId]),
     q.get('SELECT COUNT(*) c FROM schedule_locks WHERE user_id=? AND released_at IS NULL', [req.userId]),
   ]);
@@ -111,9 +111,15 @@ router.get('/plans/:id/health', async (req, res) => {
   const lateTarget = plan.target_date ? pending.filter(t => t.due_date && t.due_date > plan.target_date).length : 0;
   const deadlineViolation = activeBlocks.filter(b => Number(b.plan_id) === Number(plan.id) && b.deadline_date && b.date > b.deadline_date).length;
   const collision = findSelfCollisions(activeBlocks.filter(b => !b.deleted && !b.completed)).size > 0;
-  // 尚未安排代表工作量完全沒有可用 placement；分鐘數是 preview 才能精算的值，
-  // health 不猜每項時長，因此只把確定的未安排數正規化輸出。
-  res.json({ plan_id: plan.id, ...classifyScheduleHealth({ pending: pending.length, overdue, unplaced, lateTarget, deadlineViolation, collision, locked: locks?.c || 0 }) });
+  const planBlocks = activeBlocks.filter(b => Number(b.plan_id) === Number(plan.id));
+  const estimatedWorkload = pending.reduce((total, task) => total + (Number(task.estimated_minutes) || 0), 0);
+  const scheduledMinutes = planBlocks.reduce((total, block) => total + (Number(block.planned_minutes) || 0), 0);
+  // 沒有估計時間的舊任務不猜分鐘；有明確 estimate 卻尚未得到同等未來 placement
+  // 時，這個 gap 才是 deterministic 的。完整「可用時段不足」仍由 preview 的
+  // feasibility response 計算，兩種數字不能混在一起。
+  const capacityGap = Math.max(0, estimatedWorkload - scheduledMinutes);
+  res.json({ plan_id: plan.id, estimated_workload_minutes: estimatedWorkload, scheduled_minutes: scheduledMinutes,
+    ...classifyScheduleHealth({ pending: pending.length, overdue, unplaced, lateTarget, deadlineViolation, collision, locked: locks?.c || 0, capacityGap }) });
 });
 
 // POST /api/plans

@@ -106,6 +106,7 @@ CREATE TABLE IF NOT EXISTS tasks (
   completed INTEGER DEFAULT 0,
   completed_at TEXT,
   order_index INTEGER DEFAULT 0,
+  estimated_minutes INTEGER,
   created_at TEXT DEFAULT CURRENT_TIMESTAMP
 );
 CREATE TABLE IF NOT EXISTS habits (
@@ -345,6 +346,9 @@ export async function initSchema() {
   try { await client.execute("ALTER TABLE tasks ADD COLUMN plan_id INTEGER"); } catch {}
   // Phase 2A：正式截止日。跟 due_date（排定日期）分開，NULL＝沒有硬性截止
   try { await client.execute("ALTER TABLE tasks ADD COLUMN deadline_date TEXT"); } catch {}
+  // Master A/F：估計時間是工作量的明確輸入；實際時間仍只寫 StudySession。
+  // NULL 表示舊資料尚無估計，不能硬猜成一個看似精確的數字。
+  try { await client.execute("ALTER TABLE tasks ADD COLUMN estimated_minutes INTEGER"); } catch {}
   // Phase 2C-P1：排程持久化。契約見 docs/phase2c-schedule-persistence.md §2
   // effective_from：這一版涵蓋哪一天起（過去不進 snapshot）
   try { await client.execute("ALTER TABLE schedule_versions ADD COLUMN effective_from TEXT"); } catch {}

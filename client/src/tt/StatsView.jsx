@@ -39,7 +39,7 @@ export default function StatsView() {
         </div>
         {(subjectNames.length > 0 || planNames.length > 0) && <div className="tile" style={{ marginTop: 12 }}>
           <div className="muted">實際讀書時間</div>
-          {subjectNames.sort((a,b) => (s.actualBySubject?.[b] || s.bySubject?.[b] || 0) - (s.actualBySubject?.[a] || s.bySubject?.[a] || 0)).map(name => <div className="row" key={`s:${name}`} style={{ marginTop: 6 }}><span style={{ flex: 1 }}>{name}</span><b>原定 {((s.plannedBySubject?.[name] || 0) / 60).toFixed(1)} / 實際 {((s.bySubject?.[name] || 0) / 60).toFixed(1)} 小時</b></div>)}
+          {subjectNames.sort((a,b) => (s.bySubject?.[b] || 0) - (s.bySubject?.[a] || 0)).map(name => <div className="row" key={`s:${name}`} style={{ marginTop: 6 }}><span style={{ flex: 1 }}>{name}</span><b>原定 {((s.plannedBySubject?.[name] || 0) / 60).toFixed(1)} / 實際 {((s.bySubject?.[name] || 0) / 60).toFixed(1)} 小時</b></div>)}
           {planNames.sort((a,b) => (s.byPlan?.[b] || 0) - (s.byPlan?.[a] || 0)).map(name => <div className="row" key={`p:${name}`} style={{ marginTop: 6 }}><span className="muted" style={{ flex: 1 }}>{name}</span><b>原定 {((s.plannedByPlan?.[name] || 0) / 60).toFixed(1)} / 實際 {((s.byPlan?.[name] || 0) / 60).toFixed(1)} 小時</b></div>)}
         </div>}
         <div className="tile" style={{ marginTop: 12 }}>

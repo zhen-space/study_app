@@ -52,3 +52,14 @@ test('Master C：只有確認後的 supported constraint 會保存，unsupported
   assert.deepEqual(saved.body.supported, { exclude_weekdays: [3] });
   assert.equal(saved.body.unsupported[0].key, 'strict_dependency');
 });
+
+test('Master A：Plan Task 的明確工作量會進入正式 health gap，舊資料不猜分鐘', async () => {
+  const plan = await api('/plans', { method: 'POST', body: { name: '工作量計畫' } });
+  const task = await api('/tasks', { method: 'POST', body: { title: '需要兩小時', plan_id: plan.body.id, estimated_minutes: 120 } });
+  assert.equal(task.status, 200);
+  const health = await api(`/plans/${plan.body.id}/health`);
+  assert.equal(health.status, 200);
+  assert.equal(health.body.estimated_workload_minutes, 120);
+  assert.equal(health.body.capacity_gap_minutes, 120);
+  assert.equal(health.body.reasons.some(r => r.type === 'capacity_gap'), true);
+});

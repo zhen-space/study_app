@@ -12,6 +12,7 @@ const asArr = s => { if (Array.isArray(s)) return s; try { const v = JSON.parse(
 // 過濾掉舊 bug 產生的碎片標籤（純 1–2 個英文小寫字母，如 ek、ne、l）
 const cleanTags = arr => arr.filter(x => typeof x === 'string' && x.trim() && !/^[a-zA-Z]{1,2}$/.test(x.trim()));
 const parseTask = t => ({ ...t, tags: cleanTags(asArr(t.tags)), subtasks: asArr(t.subtasks) });
+const estimate = value => value == null || value === '' ? null : (Number.isInteger(Number(value)) && Number(value) > 0 && Number(value) <= 1440 ? Number(value) : undefined);
 
 // 任務要掛到某個 Plan 之前的檢查：計畫得是自己的，而且不能是已封存／已完成的
 // （那兩種狀態代表「這件事告一段落了」，再往裡面丟東西沒有意義）。
@@ -116,7 +117,7 @@ router.get('/tasks', async (req, res) => {
 
 router.post('/tasks', async (req, res) => {
   const { title, list_id, notes, due_date, due_time, priority, tags, subtasks, recurring, miss_policy,
-    plan_id, deadline_date } = req.body;
+    plan_id, deadline_date, estimated_minutes } = req.body;
   if (!title) return res.status(400).json({ error: '請輸入標題' });
   const planErr = await checkPlan(plan_id ?? null, req.userId);
   if (planErr) return res.status(400).json({ error: planErr });
@@ -125,6 +126,8 @@ router.post('/tasks', async (req, res) => {
   if (plan_id != null && (due_date != null || due_time != null) && req.body.legacy_due_compat !== true) {
     return res.status(409).json({ error: '計畫任務的排定時間必須透過排程器建立' });
   }
+  const estimated = estimate(estimated_minutes);
+  if (estimated === undefined) return res.status(400).json({ error: '預估時間需介於 1 到 1440 分鐘' });
   // 新增到「分享給我的清單」時，任務掛在清單擁有者名下（雙方都看得到）
   let ownerId = req.userId;
   if (list_id) {
@@ -135,11 +138,11 @@ router.post('/tasks', async (req, res) => {
       ownerId = l.user_id;
     }
   }
-  const r = await q.run(`INSERT INTO tasks (user_id,list_id,title,notes,due_date,due_time,priority,tags,subtasks,recurring,miss_policy,plan_id,deadline_date)
-    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+  const r = await q.run(`INSERT INTO tasks (user_id,list_id,title,notes,due_date,due_time,priority,tags,subtasks,recurring,miss_policy,plan_id,deadline_date,estimated_minutes)
+    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
     [ownerId, list_id || null, title, notes || '', due_date || null, due_time || null,
       priority || 0, JSON.stringify(cleanTags(asArr(tags || []))), JSON.stringify(subtasks || []), recurring || null, miss_policy || 'keep',
-      plan_id ?? null, deadline_date || null]);
+      plan_id ?? null, deadline_date || null, estimated]);
   res.json(parseTask(await q.get('SELECT * FROM tasks WHERE id=?', [r.lastInsertRowid])));
 });
 
@@ -245,12 +248,14 @@ router.patch('/tasks/:id', async (req, res) => {
     deleted: b.deleted !== undefined ? (b.deleted ? 1 : 0) : (t.deleted || 0),
     plan_id: b.plan_id !== undefined ? b.plan_id : (t.plan_id ?? null),
     deadline_date: b.deadline_date !== undefined ? (b.deadline_date || null) : (t.deadline_date ?? null),
+    estimated_minutes: b.estimated_minutes !== undefined ? estimate(b.estimated_minutes) : (t.estimated_minutes ?? null),
   };
+  if (f.estimated_minutes === undefined) return res.status(400).json({ error: '預估時間需介於 1 到 1440 分鐘' });
   await q.run(`UPDATE tasks SET list_id=?,title=?,notes=?,due_date=?,due_time=?,priority=?,tags=?,subtasks=?,
-    recurring=?,miss_policy=?,completed=?,completed_at=?,order_index=?,deleted=?,plan_id=?,deadline_date=? WHERE id=?`,
+    recurring=?,miss_policy=?,completed=?,completed_at=?,order_index=?,deleted=?,plan_id=?,deadline_date=?,estimated_minutes=? WHERE id=?`,
     [f.list_id, f.title, f.notes, f.due_date, f.due_time, f.priority, f.tags, f.subtasks,
       f.recurring, f.miss_policy, f.completed, f.completed_at, f.order_index, f.deleted,
-      f.plan_id, f.deadline_date, t.id]);
+      f.plan_id, f.deadline_date, f.estimated_minutes, t.id]);
 
   if (b.completed && !t.completed && t.recurring && t.due_date) {
     let cfg = null;
@@ -300,12 +305,13 @@ router.post('/tasks/bulk', async (req, res) => {
   if (list.some(t => t.plan_id != null && (t.due_date != null || t.due_time != null) && t.legacy_due_compat !== true)) {
     return res.status(409).json({ error: '計畫任務的排定時間必須透過排程器建立' });
   }
+  if (list.some(t => estimate(t.estimated_minutes) === undefined)) return res.status(400).json({ error: '預估時間需介於 1 到 1440 分鐘' });
   await q.batch(list.map(t => [
-    `INSERT INTO tasks (user_id,list_id,title,notes,due_date,due_time,priority,tags,subtasks,recurring,miss_policy,plan_id,deadline_date)
-     VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+    `INSERT INTO tasks (user_id,list_id,title,notes,due_date,due_time,priority,tags,subtasks,recurring,miss_policy,plan_id,deadline_date,estimated_minutes)
+     VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
     [req.userId, t.list_id || null, t.title, t.notes || '', t.due_date || null, t.due_time || null,
       t.priority || 0, JSON.stringify(cleanTags(asArr(t.tags || []))), JSON.stringify(t.subtasks || []), t.recurring || null, t.miss_policy || 'keep',
-      t.plan_id ?? null, t.deadline_date || null],
+      t.plan_id ?? null, t.deadline_date || null, estimate(t.estimated_minutes)],
   ]));
   res.json({ added: list.length });
 });

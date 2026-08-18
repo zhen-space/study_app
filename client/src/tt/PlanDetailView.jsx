@@ -39,7 +39,7 @@ export default function PlanDetailView({ planKey, tasks, lists, apiPlans = [], r
   const [err, setErr] = useState('');
   const [replan, setReplan] = useState(false);
   const [unresolved, setUnresolved] = useState(0);
-  const [nt, setNt] = useState({ title: '', list_id: '', deadline_date: '' });
+  const [nt, setNt] = useState({ title: '', list_id: '', deadline_date: '', estimated_minutes: '' });
   const [edit, setEdit] = useState(null);     // 編輯計畫資訊的暫存（按儲存才送出）
   const [adjustBlock, setAdjustBlock] = useState(null);   // { block, task }
   const [legacyPreview, setLegacyPreview] = useState(null);
@@ -100,9 +100,10 @@ export default function PlanDetailView({ planKey, tasks, lists, apiPlans = [], r
         plan_id: plan.planId,
         list_id: nt.list_id ? Number(nt.list_id) : null,
         deadline_date: nt.deadline_date || null,
+        estimated_minutes: nt.estimated_minutes ? Number(nt.estimated_minutes) : null,
       },
     });
-    setNt({ title: '', list_id: nt.list_id, deadline_date: '' });   // 科目留著，連續加同一科比較順
+    setNt({ title: '', list_id: nt.list_id, deadline_date: '', estimated_minutes: '' });   // 科目留著，連續加同一科比較順
     close();
   });
 
@@ -396,6 +397,12 @@ export default function PlanDetailView({ planKey, tasks, lists, apiPlans = [], r
                 <input id="nt-deadline" type="date" aria-label="截止日" value={nt.deadline_date}
                   style={{ width: '100%', marginTop: 'var(--sp-1)' }}
                   onChange={e => setNt({ ...nt, deadline_date: e.target.value })} />
+              </span>
+              <span style={{ flex: 1 }}>
+                <label className="ui-meta" htmlFor="nt-estimate">預估分鐘</label>
+                <input id="nt-estimate" type="number" min="1" max="1440" inputMode="numeric" aria-label="預估分鐘" value={nt.estimated_minutes}
+                  placeholder="例如 60" style={{ width: '100%', marginTop: 'var(--sp-1)' }}
+                  onChange={e => setNt({ ...nt, estimated_minutes: e.target.value })} />
               </span>
             </div>
           </div>
