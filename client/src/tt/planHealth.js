@@ -74,3 +74,17 @@ export function usePlansNeedingAdjustment(plans) {
     }).filter(Boolean).sort((a, b) => b.pending - a.pending);
   }, [plans, rows]);
 }
+
+// 單一計畫明細也讀同一支正式 health API，不能在 Today 與 Detail 各自猜一次。
+export function usePlanScheduleHealth(plan) {
+  const id = plan?.isLegacy || plan?.planId == null ? null : plan.planId;
+  const [health, setHealth] = useState(null);
+  useEffect(() => {
+    let alive = true;
+    if (!id) { setHealth(null); return undefined; }
+    api(`/plans/${id}/health`).then(x => { if (alive) setHealth(x); }).catch(() => { if (alive) setHealth(null); });
+    return () => { alive = false; };
+  }, [id]);
+  if (!health || health.status === 'healthy' || !health.pending) return null;
+  return { ...health, planId: id, planKey: plan?.key, name: plan?.name, needsAdjustment: true };
+}

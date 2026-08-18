@@ -11,7 +11,7 @@ router.use(requireAuth);
 const toMin = t => { const [h, m] = t.split(':').map(Number); return h * 60 + m; };
 const toHM = m => `${String(Math.floor(m / 60)).padStart(2, '0')}:${String(m % 60).padStart(2, '0')}`;
 
-function freeSlotsForDay(dateStr, events, settings) {
+function freeSlotsForDay(dateStr, events, settings, availability = null) {
   const busy = [];
   const sleepStart = toMin(settings.sleep_start);
   const sleepEnd = toMin(settings.sleep_end);
@@ -41,7 +41,17 @@ function freeSlotsForDay(dateStr, events, settings) {
     cur = Math.max(cur, b);
   }
   if (1440 - cur >= 30) free.push([cur, 1440]);
-  return free;
+  // 有設定「可讀書時間」時，那是可排程的白名單，不只是另一個 busy event。
+  // 例外日的 available window 也會併進來；沒有任何 availability routine
+  // 則維持舊流程的全天（扣睡眠／行程）語意，確保既有資料不會突然沒空檔。
+  if (!availability) return free;
+  const allowed = [...availability].sort((a, b) => a[0] - b[0]);
+  const intersected = [];
+  for (const [a, b] of free) for (const [x, y] of allowed) {
+    const start = Math.max(a, x), end = Math.min(b, y);
+    if (end - start >= 30) intersected.push([start, end]);
+  }
+  return intersected;
 }
 
 // POST /api/schedule/preview
@@ -102,17 +112,36 @@ router.post('/preview', async (req, res) => {
   // scheduler 直接讀結構化 routine，class/fixed_event/sleep/meal 都視為 busy。
   const routines = await q.all('SELECT * FROM availability_routines WHERE user_id=? AND enabled=1', [req.userId]);
   const exceptions = await q.all('SELECT * FROM routine_exceptions WHERE user_id=?', [req.userId]);
+  const availabilityByDate = new Map();
+  const hasAvailabilityRoutine = routines.some(r => r.type === 'availability');
+  const addAvailability = (date, start, end) => {
+    if (!start || !end) return;
+    const windows = availabilityByDate.get(date) || [];
+    windows.push([toMin(start), toMin(end)]);
+    availabilityByDate.set(date, windows);
+  };
   for (const routine of routines) {
-    if (!routine.start_time || !routine.end_time || routine.type === 'availability') continue;
+    if (!routine.start_time || !routine.end_time) continue;
     let weekdays = []; try { weekdays = JSON.parse(routine.weekdays || '[]'); } catch {}
     for (let date = minD; date <= maxD; date = addDays(date, 1)) {
       if (!weekdays.includes(dayOfWeek(date))) continue;
       if (exceptions.some(x => Number(x.routine_id) === Number(routine.id) && x.date === date && x.kind === 'cancel')) continue;
+      if (routine.type === 'availability') {
+        addAvailability(date, routine.start_time, routine.end_time);
+        continue;
+      }
       events.push({ title: routine.title || routine.type, date, start_time: routine.start_time, end_time: routine.end_time, recurring: null, _routine: true });
     }
   }
   for (const exception of exceptions.filter(x => x.kind === 'unavailable' && x.start_time && x.end_time)) {
     events.push({ title: exception.title || '例外日', date: exception.date, start_time: exception.start_time, end_time: exception.end_time, recurring: null, _exception: true });
+  }
+  // available 是一次性可讀書時間覆寫。只要有固定 availability，它就是白名單的一部分；
+  // 沒有設定固定 availability 時仍採既有全天可排的相容語意。
+  if (hasAvailabilityRoutine) {
+    for (const exception of exceptions.filter(x => x.kind === 'available' && x.start_time && x.end_time)) {
+      addAvailability(exception.date, exception.start_time, exception.end_time);
+    }
   }
   // P4 preview 第一層防線：Lock 不只扣掉空間，還要 freeze active placement。
   // apply 仍會在 transaction 用 pure validator 再驗一次，不能只信 preview。
@@ -181,7 +210,8 @@ router.post('/preview', async (req, res) => {
     if (excludeDates.includes(ds)) continue;                      // 指定不排的日期
     if (excludeWeekdays.includes(dayOfWeek(ds))) continue;        // 不排的星期
     if (skipIfBusyHours > 0 && busyMinutesForDay(ds, events) >= skipIfBusyHours * 60) continue; // 既定行程太滿
-    days.push({ date: ds, slots: freeSlotsForDay(ds, events, settings), slotIdx: 0 });
+    days.push({ date: ds, slots: freeSlotsForDay(ds, events, settings,
+      hasAvailabilityRoutine ? (availabilityByDate.get(ds) || []) : null), slotIdx: 0 });
   }
   if (!days.length) return res.status(400).json({ error: '沒有可排的日期' });
   days.forEach(d => { d.pos = d.slots[0]?.[0] ?? null; });

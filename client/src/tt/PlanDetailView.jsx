@@ -3,7 +3,7 @@ import { api } from '../api';
 import Icon from './Icons';
 import { today } from './helpers';
 import { usePlans, bookOf, shortTitle, md, byLesson } from './plans';
-import { planHealth } from './planHealth';
+import { usePlanScheduleHealth } from './planHealth';
 import { useActiveSchedule, blocksForTask } from './scheduleAdjust';
 import AdjustBlockSheet from './AdjustBlockSheet';
 import ReplanSheet from './ReplanSheet';
@@ -43,6 +43,8 @@ export default function PlanDetailView({ planKey, tasks, lists, apiPlans = [], r
   const [adjustBlock, setAdjustBlock] = useState(null);   // { block, task }
   // 排定時間的真相在 ScheduledBlock；要讓使用者自己改，就得知道是哪一格。
   const sched = useActiveSchedule();
+  // 必須在早退前呼叫，避免資料刷新瞬間找不到 Plan 時違反 React Hook 順序。
+  const health = usePlanScheduleHealth(plan);
 
   if (!plan) {
     return (
@@ -59,8 +61,6 @@ export default function PlanDetailView({ planKey, tasks, lists, apiPlans = [], r
   const isReal = !plan.isLegacy && plan.planId != null;
   const raw = apiPlans.find(p => p.id === plan.planId);
   const showAdjust = isReal && plan.status !== 'archived' && !!adjustPlan;
-  // 跟 Today 用同一套判斷、同一套重排流程，不寫第二份
-  const health = planHealth(plan, raw);
   const pct = plan.total ? Math.round(plan.done / plan.total * 100) : 0;
 
   const close = () => { setSheet(null); setErr(''); };
@@ -81,6 +81,9 @@ export default function PlanDetailView({ planKey, tasks, lists, apiPlans = [], r
   });
   const restore = () => run(async () => {
     await api(`/plans/${plan.planId}/restore`, { method: 'POST', body: {} }); close();
+  });
+  const restart = () => run(async () => {
+    await api(`/plans/${plan.planId}`, { method: 'PATCH', body: { status: 'active' } }); close();
   });
 
   // 走既有的 POST /tasks，自動帶上目前的 plan_id——使用者不用再選一次計畫。
@@ -119,6 +122,7 @@ export default function PlanDetailView({ planKey, tasks, lists, apiPlans = [], r
     if (name && name !== plan.name) body.name = name;
     if ((edit.start_date || null) !== (raw?.start_date || null)) body.start_date = edit.start_date || null;
     if ((edit.target_date || null) !== (raw?.target_date || null)) body.target_date = edit.target_date || null;
+    if ((edit.description || '') !== (raw?.description || '')) body.description = edit.description || '';
     if (Object.keys(body).length) await api(`/plans/${plan.planId}`, { method: 'PATCH', body });
     close();
   });
@@ -294,9 +298,11 @@ export default function PlanDetailView({ planKey, tasks, lists, apiPlans = [], r
         <BottomSheet onClose={close} label="計畫選項">
           <b style={{ fontSize: 17 }}>計畫選項</b>
           <div style={{ marginTop: 'var(--sp-3)' }}>
-            <ListRow title="編輯計畫資訊" subtitle="名稱、開始日、目標日"
+            <ListRow title="編輯計畫資訊" subtitle="名稱、說明、開始日、目標日"
               trailing={<Icon name="chevron" size={16} />} role="button" tabIndex={0} style={{ cursor: 'pointer' }}
-              onClick={() => { setEdit({ name: plan.name, start_date: raw?.start_date || '', target_date: raw?.target_date || '' }); setSheet('edit'); }} />
+              onClick={() => { setEdit({ name: plan.name, description: raw?.description || '', start_date: raw?.start_date || '', target_date: raw?.target_date || '' }); setSheet('edit'); }} />
+            {plan.status === 'completed' && <ListRow title="重新開始" subtitle="回到進行中，保留全部任務"
+              role="button" tabIndex={0} style={{ cursor: 'pointer' }} onClick={restart} />}
             {plan.status !== 'completed' && plan.status !== 'archived' && (
               <ListRow title="標記完成" subtitle="整個計畫做完了"
                 role="button" tabIndex={0} style={{ cursor: 'pointer' }} onClick={complete} />
@@ -319,6 +325,9 @@ export default function PlanDetailView({ planKey, tasks, lists, apiPlans = [], r
             <label className="ui-meta" htmlFor="plan-name">計畫名稱</label>
             <input id="plan-name" aria-label="計畫名稱" value={edit.name} style={{ width: '100%', marginTop: 'var(--sp-1)' }}
               onChange={e => setEdit(v => ({ ...v, name: e.target.value }))} />
+            <label className="ui-meta" htmlFor="plan-description" style={{ display: 'block', marginTop: 'var(--sp-4)' }}>計畫說明</label>
+            <textarea id="plan-description" aria-label="計畫說明" value={edit.description} rows="3" style={{ width: '100%', marginTop: 'var(--sp-1)' }}
+              onChange={e => setEdit(v => ({ ...v, description: e.target.value }))} />
             <div className="row" style={{ marginTop: 'var(--sp-4)' }}>
               <span style={{ flex: 1 }}>
                 <label className="ui-meta" htmlFor="plan-start">開始日期</label>

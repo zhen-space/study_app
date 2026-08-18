@@ -2,6 +2,7 @@ import { Router } from 'express';
 import { q } from '../db/init.js';
 import { requireAuth } from '../middleware/auth.js';
 import { classifyScheduleHealth } from '../schedule/health.js';
+import { todayTW } from '../util/date.js';
 
 // Plan＝有目標、範圍、期限與生命週期的工作單位。
 // 契約見 docs/phase2-plan-domain.md，動之前先讀。重點：
@@ -73,7 +74,7 @@ router.get('/plans/:id', async (req, res) => {
   const tasks = await q.all(
     'SELECT * FROM tasks WHERE user_id=? AND plan_id=? AND COALESCE(deleted,0)=0 ORDER BY due_date, id',
     [req.userId, plan.id]);
-  const today = new Date(Date.now() + 8 * 3600e3).toISOString().slice(0, 10);
+  const today = todayTW();
   res.json({
     plan,
     tasks,
@@ -90,7 +91,7 @@ router.get('/plans/:id', async (req, res) => {
 router.get('/plans/:id/health', async (req, res) => {
   const plan = await mine(req.params.id, req.userId);
   if (!plan) return res.status(404).json({ error: '找不到這個計畫' });
-  const today = new Date(Date.now() + 8 * 3600e3).toISOString().slice(0, 10);
+  const today = todayTW();
   const [tasks, state, locks] = await Promise.all([
     q.all('SELECT id,due_date,completed,deleted FROM tasks WHERE user_id=? AND plan_id=?', [req.userId, plan.id]),
     q.get('SELECT active_version_id FROM user_schedule_state WHERE user_id=?', [req.userId]),
