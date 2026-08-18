@@ -53,7 +53,9 @@ function ColorPicker({ value, onPick }) {
 }
 
 export default function CalendarView({ tasks, reload }) {
-  const schedule = useActiveSchedule();
+  // 測試／尚未進入 2C 的帳號可能回空；Calendar 仍需能正常顯示既有行程。
+  const rawSchedule = useActiveSchedule();
+  const schedule = { ...(rawSchedule || {}), blocks: rawSchedule?.blocks || [], version: rawSchedule?.version || null, reload: rawSchedule?.reload || (async () => {}) };
   const [adjustBlock, setAdjustBlock] = useState(null);
   const [locks, setLocks] = useState([]);
   const scheduledTaskIds = new Set(schedule.blocks.map(b => Number(b.task_id)));

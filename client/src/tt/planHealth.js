@@ -89,7 +89,7 @@ export function usePlanScheduleHealth(plan, raw) {
     api(`/plans/${id}/health`).then(x => { if (alive) setHealth(x); }).catch(() => { if (alive) setHealth(null); });
     return () => { alive = false; };
   }, [id]);
-  if (!health) return planHealth(plan, raw);
+  if (!health || typeof health.status !== 'string') return planHealth(plan, raw);
   if (health.status === 'healthy' || !health.pending) return null;
   return { ...health, planId: id, planKey: plan?.key, name: plan?.name, needsAdjustment: true };
 }
