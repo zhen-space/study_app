@@ -83,7 +83,7 @@ router.post('/preview', async (req, res) => {
   if (req.body.sleep_start) settings.sleep_start = req.body.sleep_start;
   if (req.body.sleep_end) settings.sleep_end = req.body.sleep_end;
   const events = await q.all('SELECT * FROM fixed_events WHERE user_id=?', [req.userId]);
-  // P4 preview 第一層防線：day/time 先扣空間，Task Lock 先把原 block 釘回結果。
+  // P4 preview 第一層防線：Lock 不只扣掉空間，還要 freeze active placement。
   // apply 仍會在 transaction 用 pure validator 再驗一次，不能只信 preview。
   const lockRows = await q.all(`SELECT l.*, t.deleted, t.completed FROM schedule_locks l
     LEFT JOIN tasks t ON t.id=l.task_id WHERE l.user_id=? AND l.released_at IS NULL`, [req.userId]);
@@ -93,12 +93,34 @@ router.post('/preview', async (req, res) => {
   for (const d of dayLocked) if (!excludeDates.includes(d)) excludeDates.push(d);
   for (const l of effectiveLocks.filter(l=>l.type==='time')) events.push({ date:l.date,start_time:l.start_time,end_time:l.end_time,recurring:null,_lock:true });
   const activeForLocks = await sched.getActiveSchedule(req.userId);
-  const pinned = activeForLocks.blocks.filter(b => effectiveLocks.some(l => l.type==='task' && Number(l.task_id)===Number(b.task_id)));
+  const activeTasks = await q.all('SELECT id,plan_id,deleted,completed FROM tasks WHERE user_id=?', [req.userId]);
+  const activeTaskById = new Map(activeTasks.map(t => [Number(t.id), t]));
+  const currentPlanId = Number(req.body.plan_id);
+  const isCurrentLivePlanBlock = b => {
+    const task = activeTaskById.get(Number(b.task_id));
+    return Number.isInteger(currentPlanId) && task && Number(task.plan_id) === currentPlanId
+      && !task.deleted && !task.completed;
+  };
+  const overlapsLockedTime = (block, lock) => block.date === lock.date
+    && block.start_time && block.end_time
+    && block.start_time < lock.end_time && lock.start_time < block.end_time;
+  // Time Lock / Day Lock 凍結的是「完整 ScheduledBlock」，即使只碰到一部分
+  // Time interval 也不能裁切。只 pin current Plan；其他 Plan 會由 apply carry-forward。
+  const pinnedById = new Map();
+  for (const block of activeForLocks.blocks) {
+    if (!isCurrentLivePlanBlock(block)) continue;
+    if (effectiveLocks.some(lock => (lock.type === 'task' && Number(lock.task_id) === Number(block.task_id))
+      || (lock.type === 'day' && block.date === lock.date)
+      || (lock.type === 'time' && overlapsLockedTime(block, lock)))) {
+      pinnedById.set(Number(block.id), block);
+    }
+  }
+  const pinned = [...pinnedById.values()];
   const pinnedIds = new Set(pinned.map(b=>Number(b.task_id)));
-  // 被 Task Lock 釘住的 block 也必須佔住 free slot；否則 preview 雖把
-  // 鎖定任務帶回結果，卻可能再把另一個任務塞進相同時間，交給 apply 才失敗。
+  // 所有 pinned timed block 都佔住 free slot；否則 preview 雖把 block 帶回結果，
+  // 卻可能再把另一個任務塞進相同時間，交給 apply 才失敗。
   if (timed) events.push(...pinned.filter(b => b.start_time && b.end_time)
-    .map(b => ({ date:b.date, start_time:b.start_time, end_time:b.end_time, recurring:null, _task_lock:true })));
+    .map(b => ({ date:b.date, start_time:b.start_time, end_time:b.end_time, recurring:null, _pinned_lock:true })));
   for (let i=items.length-1;i>=0;i--) if (pinnedIds.has(Number(items[i].task_id))) items.splice(i,1);
   if (!items.length && pinned.length) return res.json({ blocks: pinned.map(b => ({ ...b, _pinned:true })), check:{ tight:[], warnings:[], subjects:[], dailyMin:0, dailyMax:0 }, unplaced:false });
   // 全域排程：其他 Plan 已經生效的「有明確起迄時間」block 必須佔住時段。
