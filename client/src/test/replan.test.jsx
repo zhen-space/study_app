@@ -488,6 +488,7 @@ describe('preview request 只有一套 mapping', () => {
 
   it('從「讀書時段」還原時長', () => {
     expect(taskMinutes({ notes: '讀書時段 08:00–09:30' })).toBe(90);
+    expect(taskMinutes({ estimated_minutes: 75, notes: '讀書時段 08:00–09:30' })).toBe(75);
     expect(taskMinutes({ notes: '' })).toBeNull();
     expect(taskMinutes({ notes: '讀書時段 09:00–08:00' })).toBeNull();
   });
