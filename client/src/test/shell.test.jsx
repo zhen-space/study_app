@@ -108,7 +108,7 @@ describe('五大主導航都能切換', () => {
     expect(screen.getByRole('heading', { name: '計畫' })).toBeInTheDocument();
 
     await click(navButton('讀書'));
-    expect(screen.getByRole('heading', { name: '番茄專注' })).toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: '讀書' })).toBeInTheDocument();
 
     await click(navButton('任務'));
     expect(screen.getByRole('heading', { name: '所有任務' })).toBeInTheDocument();
@@ -131,7 +131,7 @@ describe('TodayView', () => {
     expect(screen.getByText('接下來')).toBeInTheDocument();
 
     await click(mainButton(/開始讀書/));
-    expect(screen.getByRole('heading', { name: '番茄專注' })).toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: '讀書' })).toBeInTheDocument();
     noCrash();
   });
 
@@ -210,13 +210,12 @@ describe('PlansView / PlanDetailView', () => {
 });
 
 describe('StudyView', () => {
-  it('7. 能 render 既有的 PomoView（計時器與綁定任務都在）', async () => {
+  it('7. StudySession 是唯一計時入口，可從任務開始讀書', async () => {
     await mountShell();
     await click(navButton('讀書'));
-    expect(screen.getByRole('heading', { name: '番茄專注' })).toBeInTheDocument();
-    expect(screen.getByText('25:00')).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: '開始專注' })).toBeInTheDocument();
-    expect(screen.getByText('綁定任務')).toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: '讀書' })).toBeInTheDocument();
+    expect(screen.getByText('開始一段讀書')).toBeInTheDocument();
+    expect(screen.getAllByRole('button', { name: '開始' }).length).toBeGreaterThan(0);
     noCrash();
   });
 });

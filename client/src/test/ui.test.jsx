@@ -87,7 +87,7 @@ describe('UI-R1：視覺重構後功能沒有退化', () => {
     expect(b.className).toContain('primary');
     expect(b.querySelector('.primary-fab')).toBeTruthy();
     await click(b);
-    expect(screen.getByRole('heading', { name: '番茄專注' })).toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: '讀書' })).toBeInTheDocument();
     noCrash();
   });
 
