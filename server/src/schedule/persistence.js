@@ -250,12 +250,35 @@ async function getRestorePreviewFrom(db, userId, sourceVersionId, {
     'SELECT task_id,date,start_time,end_time,planned_minutes FROM scheduled_blocks WHERE user_id=? AND schedule_version_id=?',
     [userId, state.active_version_id]);
   const lockConflicts = checkLocks(restorableBlocks, activeBlocks, locks, liveTasks, { day: planningDay, time: nowHM });
-  const lockedIds = new Set(lockConflicts.filter(c => c.task_id != null).map(c => Number(c.task_id)));
   for (const c of lockConflicts) conflicts.push({ ...c, message: '因目前鎖定無法恢復原安排' });
   const violatedLocks = new Map(lockConflicts.map(c => [Number(c.lock_id), locks.find(l => Number(l.id) === Number(c.lock_id))]));
-  const lockedRestorable = restorableBlocks.filter(b => !lockedIds.has(Number(b.task_id)) && ![...violatedLocks.values()].some(l => l && (l.type === 'day'
-    ? b.date === l.date
-    : l.type === 'time' && b.date === l.date && b.start_time && b.end_time && b.start_time < l.end_time && l.start_time < b.end_time)));
+
+  // Lock conflict 不是把 Task 變成 unplaced。Restore 只放棄「舊位置」，
+  // 並把現在 active 的受鎖 block 帶入新版本，讓 Task／時間／整日凍結語意成立。
+  const belongsToLock = (block, lock) => lock.type === 'task'
+    ? Number(block.task_id) === Number(lock.task_id)
+    : lock.type === 'day'
+      ? block.date === lock.date
+      : block.date === lock.date && block.start_time && block.end_time
+        && block.start_time < lock.end_time && lock.start_time < block.end_time;
+  const activeLiveBlocks = activeBlocks.filter(block => {
+    const task = tasks.get(Number(block.task_id));
+    return task && !task.deleted && !task.completed && task.plan_id != null;
+  });
+  let lockedRestorable = restorableBlocks;
+  for (const lock of violatedLocks.values()) {
+    if (!lock) continue;
+    lockedRestorable = lockedRestorable.filter(block => !belongsToLock(block, lock));
+    lockedRestorable.push(...activeLiveBlocks.filter(block => belongsToLock(block, lock)));
+  }
+  // 多個 lock 可以覆蓋同一 block；寫入前維持一個 block 一份 placement。
+  const seenPlacements = new Set();
+  lockedRestorable = lockedRestorable.filter(block => {
+    const key = [block.task_id, block.date, block.start_time || '', block.end_time || '', block.planned_minutes ?? ''].join('|');
+    if (seenPlacements.has(key)) return false;
+    seenPlacements.add(key);
+    return true;
+  });
 
   const scheduledIds = new Set(lockedRestorable.map(b => Number(b.task_id)));
   const conflictIds = new Set(conflicts.map(c => Number(c.task_id)));
@@ -309,6 +332,9 @@ export async function applyRestore(userId, sourceVersionId, { baseVersionId, con
     }
     if (preview.status === 'partial' && !confirmPartial) throw new ScheduleRestoreConfirmationError();
     validateTimedBlockOverlaps(preview.restorable_blocks);
+    // Preview 是 UX 防線；套用前仍需用 transaction 內此刻的 active + locks
+    // 再檢查一次，避免 preview 與寫入間有任何繞過或競態。
+    await assertCandidateLocks(tx, userId, state?.active_version_id ?? null, preview.restorable_blocks);
     const version = await createScheduleVersionInTx(tx, userId, {
       source: SOURCE.RESTORE,
       reason: `恢復版本 V${preview.source_version.version_no}`,

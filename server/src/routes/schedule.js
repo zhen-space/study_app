@@ -95,6 +95,10 @@ router.post('/preview', async (req, res) => {
   const activeForLocks = await sched.getActiveSchedule(req.userId);
   const pinned = activeForLocks.blocks.filter(b => effectiveLocks.some(l => l.type==='task' && Number(l.task_id)===Number(b.task_id)));
   const pinnedIds = new Set(pinned.map(b=>Number(b.task_id)));
+  // 被 Task Lock 釘住的 block 也必須佔住 free slot；否則 preview 雖把
+  // 鎖定任務帶回結果，卻可能再把另一個任務塞進相同時間，交給 apply 才失敗。
+  if (timed) events.push(...pinned.filter(b => b.start_time && b.end_time)
+    .map(b => ({ date:b.date, start_time:b.start_time, end_time:b.end_time, recurring:null, _task_lock:true })));
   for (let i=items.length-1;i>=0;i--) if (pinnedIds.has(Number(items[i].task_id))) items.splice(i,1);
   if (!items.length && pinned.length) return res.json({ blocks: pinned.map(b => ({ ...b, _pinned:true })), check:{ tight:[], warnings:[], subjects:[], dailyMin:0, dailyMax:0 }, unplaced:false });
   // 全域排程：其他 Plan 已經生效的「有明確起迄時間」block 必須佔住時段。

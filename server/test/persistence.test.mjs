@@ -280,6 +280,37 @@ describe('schedule/apply（Wizard 與 Replan 的唯一寫入入口）', () => {
     assert.equal(preview.body.blocks[0].start_time, '20:00');
     assert.equal(preview.body.blocks[0].end_time, '21:00');
   });
+
+  // mutation guard：Task Lock 的原 block 若沒有同時進入 busy intervals，
+  // preview 會把另一個 current-Plan 任務塞到 19:00–20:00，最後才在 apply 撞牆。
+  test('Task Lock 在 preview 釘住完整 block set，也占用對其他候選任務的時段', async () => {
+    const { body: plan } = await mkPlan({ name: 'Preview Task Lock' });
+    const date = day(20);
+    const initial = await api('/schedule/apply', {
+      method: 'POST', body: {
+        plan_id: plan.id, source: 'initial',
+        task_creates: [{ client_key: 'locked', title: '已鎖定任務' }],
+        blocks: [{ client_key: 'locked', date, start_time: '19:00', end_time: '20:00', planned_minutes: 60 }],
+      },
+    });
+    const taskId = initial.body.created[0].id;
+    assert.equal((await api('/schedule/locks', { method: 'POST', body: { type: 'task', task_id: taskId } })).status, 201);
+    const preview = await api('/schedule/preview', {
+      method: 'POST', body: {
+        plan_id: plan.id, timed: true, perDay: 0, pace: 'even',
+        sleep_start: '21:00', sleep_end: '19:00', startDate: date, endDate: date,
+        items: [
+          { task_id: taskId, subject_id: 1, title: '已鎖定任務', minutes: 60, start: date, end: date },
+          { subject_id: 2, title: '另一個任務', minutes: 60, start: date, end: date },
+        ],
+      },
+    });
+    assert.equal(preview.status, 200);
+    assert.deepEqual(preview.body.blocks.map(b => [b.task_id ?? null, b.title, b.start_time, b.end_time]), [
+      [taskId, '已鎖定任務', '19:00', '20:00'],
+      [null, '另一個任務', '20:00', '21:00'],
+    ]);
+  });
 });
 
 /* ---------- P3：Schedule History / Restore API ---------- */

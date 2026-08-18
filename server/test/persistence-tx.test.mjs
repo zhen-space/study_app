@@ -305,6 +305,10 @@ describe('P4 Lock integration：preview/apply/restore 共用 hard constraint', (
     assert.ok(ok.version_id, '完成的 Task Lock 不得卡住未來排程');
     await q.run('UPDATE tasks SET completed=0 WHERE id=?', [taskId]);
     await assert.rejects(() => sched.applySchedule(userId, { planId:p.lastInsertRowid, source:sched.SOURCE.AI_REPLAN, blocks:[] }), e => e.status===409, '取消完成後同一列 lock 必須恢復效力');
+    await q.run('UPDATE tasks SET deleted=1 WHERE id=?', [taskId]);
+    await sched.applySchedule(userId, { planId:p.lastInsertRowid, source:sched.SOURCE.AI_REPLAN, blocks:[] });
+    await q.run('UPDATE tasks SET deleted=0 WHERE id=?', [taskId]);
+    await assert.rejects(() => sched.applySchedule(userId, { planId:p.lastInsertRowid, source:sched.SOURCE.AI_REPLAN, blocks:[] }), e => e.status===409, '恢復 soft-deleted Task 後同一列 lock 必須恢復效力');
     assert.equal((await q.get('SELECT released_at FROM schedule_locks WHERE task_id=?', [taskId])).released_at, null);
   });
 
@@ -323,6 +327,29 @@ describe('P4 Lock integration：preview/apply/restore 共用 hard constraint', (
     assert.deepEqual(await countsFor(userId),before,'★ slice/day conflict 不得留下 version');
     const preview=await sched.getRestorePreview(userId,seed.version_id);
     assert.ok(preview.conflicts.some(c=>String(c.type).startsWith('LOCKED_')),'restore 必須使用現在的 Lock');
+  });
+
+  // mutation guard：若 Restore 遇到 Task Lock 時只是丟掉 source block，
+  // 這個測試會讓 Task 變 unplaced；正確行為是帶入目前 active 的鎖定 placement。
+  test('Restore 遇到 Task Lock 時保留 active block set，不能把任務變 unplaced', async () => {
+    const userId = 12;
+    await q.run('INSERT INTO users (id,email,password_hash) VALUES (?,?,?)', [userId, 'restore-lock@test', 'x']);
+    const p = await q.run('INSERT INTO plans (user_id,name,status) VALUES (?,?,?)', [userId, '恢復鎖定', 'active']);
+    const source = await sched.applySchedule(userId, { planId:p.lastInsertRowid, source:sched.SOURCE.INITIAL,
+      taskCreates:[{client_key:'a',title:'A'}], blocks:[{client_key:'a',date:'2099-10-01',start_time:'18:00',end_time:'19:00'}] });
+    const taskId = source.created[0].id;
+    const active = await sched.applySchedule(userId, { planId:p.lastInsertRowid, source:sched.SOURCE.AI_REPLAN,
+      blocks:[{task_id:taskId,date:'2099-10-01',start_time:'19:00',end_time:'20:00'}] });
+    await q.run("INSERT INTO schedule_locks (user_id,type,task_id) VALUES (?,?,?)", [userId, 'task', taskId]);
+    const preview = await sched.getRestorePreview(userId, source.version_id);
+    assert.equal(preview.status, 'partial');
+    assert.ok(preview.conflicts.some(c => c.type === 'LOCKED_TASK_MOVED'));
+    assert.deepEqual(preview.restorable_blocks.map(b => [b.task_id,b.start_time,b.end_time]), [[taskId,'19:00','20:00']],
+      '★ lock 使 restore 保留目前 active placement，而不是 unplaced');
+    assert.deepEqual(preview.unplaced_task_ids, []);
+    const restored = await sched.applyRestore(userId, source.version_id, { baseVersionId: active.version_id, confirmPartial:true });
+    assert.equal(restored.applied, true);
+    assert.deepEqual((await sched.getBlocks(userId, restored.version.version_id)).map(b => [b.task_id,b.start_time,b.end_time]), [[taskId,'19:00','20:00']]);
   });
 });
 
