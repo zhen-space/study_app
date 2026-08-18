@@ -20,6 +20,7 @@
 - F/G：StudySession 與 planned vs actual 統計已建立；後續估時調整必須以資料驗證後另行設計。
 - H：Goal CRUD、Plan 指派與 aggregate progress 已建立。
 - I：audit、preview 與 UI 安全入口已建立；production apply 仍受 audit gate 保護。
+- Post-Master Audit Fix：Plan Task read path 不再 roll-forward due date；untimed health 不再把 date-only block 誤算成分鐘缺口；health lock reason 改為 plan-scoped。
 
 ## 正式 Gate
 

@@ -39,6 +39,7 @@ async function bootOnce() {
       PORT: String(port),
       DB_FILE: path.join(dir, 'test.sqlite'),
       JWT_SECRET: 'test-secret',
+      INTERNAL_MIGRATION_TOKEN: 'test-internal-migration-token',
       TURSO_DATABASE_URL: '',        // 確保不會連到雲端資料庫
       TURSO_AUTH_TOKEN: '',
     },

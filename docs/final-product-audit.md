@@ -4,7 +4,7 @@
 
 ## 已確認
 
-1. Plan Task 的未來 `due_date` / `due_time` 唯一正式寫入點是 `schedule/persistence.js` 的 mirror。一般 Task API 對有 `plan_id` 的直接時間寫入回 409；Calendar、Tasks、Matrix、Shell 的直接日期寫入只適用一般 Task。
+1. Plan Task 的未來 `due_date` / `due_time` 唯一正式寫入點是 `schedule/persistence.js` 的 mirror；公開 Task API 即使帶 `legacy_due_compat` 也回 409。唯一例外是持有 server-only migration token 的 cutover path。
 2. 所有正式 schedule write 都經 `/api/schedule/apply`、manual adjustment 或 restore，最後集中在 `createScheduleVersionInTx()`；不會由前端直接寫 `scheduled_blocks`。
 3. Plan 與 List/Subject 分離：schema、Plan API 與 Plan Detail 都以 `plan_id` 作工作容器，`list_id` 僅為科目分類。
 4. legacy heuristic 只保留於 compatibility/preview 路徑；新版 Wizard 不呼叫 legacy `/api/plan-tasks`。

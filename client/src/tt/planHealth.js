@@ -73,7 +73,7 @@ export function usePlansNeedingAdjustment(plans) {
       // legacy-compatible fallback；一旦正式 health 到達就會完整取代它。
       const fallback = planHealth(plan);
       const effective = health || fallback;
-      if (!effective || effective.status === 'healthy' || effective.needsAdjustment === false || !effective.pending) return null;
+      if (!effective || !['needs_replan', 'blocked'].includes(effective.status) || effective.needsAdjustment === false || !effective.pending) return null;
       return { ...effective, planId: plan.planId, planKey: plan.key, name: plan.name, needsAdjustment: true };
     }).filter(Boolean).sort((a, b) => b.pending - a.pending);
   }, [plans, rows]);
@@ -90,6 +90,6 @@ export function usePlanScheduleHealth(plan, raw) {
     return () => { alive = false; };
   }, [id]);
   if (!health || typeof health.status !== 'string') return planHealth(plan, raw);
-  if (health.status === 'healthy' || !health.pending) return null;
+  if (!['needs_replan', 'blocked'].includes(health.status) || !health.pending) return null;
   return { ...health, planId: id, planKey: plan?.key, name: plan?.name, needsAdjustment: true };
 }

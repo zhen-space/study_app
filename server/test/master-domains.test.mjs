@@ -170,13 +170,13 @@ test('Master C：指定日期 availability override 不改 Routine，卻會限�
   assert.equal(preview.body.blocks[0].end_time, '17:00');
 });
 
-test('Master A：Plan Task 的明確工作量會進入正式 health gap，舊資料不猜分鐘', async () => {
+test('Master A：untimed / 未安排 Plan Task 不把估時誤判成分鐘 capacity gap', async () => {
   const plan = await api('/plans', { method: 'POST', body: { name: '工作量計畫' } });
   const task = await api('/tasks', { method: 'POST', body: { title: '需要兩小時', plan_id: plan.body.id, estimated_minutes: 120 } });
   assert.equal(task.status, 200);
   const health = await api(`/plans/${plan.body.id}/health`);
   assert.equal(health.status, 200);
   assert.equal(health.body.estimated_workload_minutes, 120);
-  assert.equal(health.body.capacity_gap_minutes, 120);
-  assert.equal(health.body.reasons.some(r => r.type === 'capacity_gap'), true);
+  assert.equal(health.body.capacity_gap_minutes, 0);
+  assert.equal(health.body.reasons.some(r => r.type === 'unplaced'), true);
 });

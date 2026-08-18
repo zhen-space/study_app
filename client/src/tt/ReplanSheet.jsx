@@ -6,6 +6,7 @@ import { shortTitle } from './plans';
 import { applyWizardSchedule } from './wizardApply';
 import { buildSchedulePreviewRequest, planScheduleConditions, CONDITION_LABEL } from './schedulePreview';
 import { BottomSheet, Button, SurfaceCard } from './ui';
+import FeasibilityGap from './FeasibilityGap';
 
 // AI 重排流程：確認 → 預覽 → 套用。
 //
@@ -154,12 +155,7 @@ export default function ReplanSheet({ plan, health, raw, lists = [], reload, onC
               <SurfaceCard tone="warning" style={{ marginTop: 'var(--sp-3)' }}>
                 <b style={{ color: 'var(--warning)' }}>目前無法完整安排</b>
                 <div className="ui-meta" style={{ margin: '4px 0 8px' }}>{preview.message}</div>
-                {preview.feasibility?.gap_minutes > 0 && <div className="ui-meta" style={{ marginBottom: 8 }}>
-                  目前還缺約 {preview.feasibility.gap_hours} 小時；維持期限時，接下來每天約需多 {preview.feasibility.recommendations.find(x => x.type === 'add_daily_time')?.minutes_per_day || 0} 分鐘。
-                </div>}
-                {preview.feasibility?.recommendations.find(x => x.type === 'extend_days') && <div className="ui-meta" style={{ marginBottom: 8 }}>
-                  維持目前可用時間，最少需延後 {preview.feasibility.recommendations.find(x => x.type === 'extend_days').min_days} 天。
-                </div>}
+                <FeasibilityGap feasibility={preview.feasibility} />
                 <div className="row" style={{ flexWrap: 'wrap' }}>
                   <Button size="sm" onClick={() => onEditConditions('deadline')}>延後期限</Button>
                   <Button size="sm" onClick={() => onEditConditions('time')}>調整可用時間</Button>
