@@ -1,6 +1,7 @@
 import { Router } from 'express';
 import { q } from '../db/init.js';
 import { requireAuth } from '../middleware/auth.js';
+import { classifyScheduleHealth } from '../schedule/health.js';
 
 // Plan＝有目標、範圍、期限與生命週期的工作單位。
 // 契約見 docs/phase2-plan-domain.md，動之前先讀。重點：
@@ -83,6 +84,26 @@ router.get('/plans/:id', async (req, res) => {
       overdue_tasks: tasks.filter(t => !t.completed && t.due_date && t.due_date < today).length,
     },
   });
+});
+
+// A2：Today／Replan 的正式 health model。只讀 active ScheduleVersion，不改任何安排。
+router.get('/plans/:id/health', async (req, res) => {
+  const plan = await mine(req.params.id, req.userId);
+  if (!plan) return res.status(404).json({ error: '找不到這個計畫' });
+  const today = new Date(Date.now() + 8 * 3600e3).toISOString().slice(0, 10);
+  const [tasks, state, locks] = await Promise.all([
+    q.all('SELECT id,due_date,completed,deleted FROM tasks WHERE user_id=? AND plan_id=?', [req.userId, plan.id]),
+    q.get('SELECT active_version_id FROM user_schedule_state WHERE user_id=?', [req.userId]),
+    q.get('SELECT COUNT(*) c FROM schedule_locks WHERE user_id=? AND released_at IS NULL', [req.userId]),
+  ]);
+  const pending = tasks.filter(t => !t.completed && !t.deleted);
+  const blockIds = state?.active_version_id == null ? new Set() : new Set((await q.all(
+    'SELECT b.task_id FROM scheduled_blocks b WHERE b.user_id=? AND b.schedule_version_id=?', [req.userId, state.active_version_id]))
+    .map(b => Number(b.task_id)));
+  const overdue = pending.filter(t => t.due_date && t.due_date < today).length;
+  const unplaced = state?.active_version_id == null ? pending.filter(t => !t.due_date).length : pending.filter(t => !blockIds.has(Number(t.id))).length;
+  const lateTarget = plan.target_date ? pending.filter(t => t.due_date && t.due_date > plan.target_date).length : 0;
+  res.json({ plan_id: plan.id, ...classifyScheduleHealth({ pending: pending.length, overdue, unplaced, lateTarget, locked: locks?.c || 0 }) });
 });
 
 // POST /api/plans
