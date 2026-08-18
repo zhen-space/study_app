@@ -498,6 +498,10 @@ select { -webkit-appearance: none; appearance: none; padding-right: 26px;
   text-underline-offset: 3px; text-decoration-color: var(--text-3);
 }
 .row-adjust:hover { text-decoration-color: var(--accent); }
+/* 排程精靈：科目先後順序的上下移動。
+   第一個不能再往上、最後一個不能再往下——停用了就要看得出來停用，
+   不然使用者只會覺得「按了沒反應」。（.btn 這支舊樣式沒有 :disabled 樣態） */
+.subj-move:disabled { opacity: .35; cursor: default; }
 
 /* ---- Today：進度 ---- */
 .today-progress { height: 8px; border-radius: var(--radius-pill); background: var(--fill-strong); overflow: hidden; }

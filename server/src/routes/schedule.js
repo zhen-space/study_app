@@ -75,6 +75,19 @@ router.post('/preview', async (req, res) => {
     if (ONE_TAIL.test(tail)) it.onePerDay = true;
   }
 
+  // 科目先後順序（2C-P6-B）。結構化欄位，不是自然語言——之後 AI 也是映射成
+  // 這個形狀送進來，不會再長出第二套語意。
+  //
+  // 名次是「相對」的：沒被列到的科目排在列到的後面，彼此維持原本的順序。
+  // 不合法的內容（不是陣列）當作沒指定，不報錯——排序偏好不該擋住排程。
+  const subjectRank = new Map();
+  if (Array.isArray(req.body.subject_order)) {
+    req.body.subject_order.forEach((sid, i) => {
+      const key = String(sid);
+      if (key && !subjectRank.has(key)) subjectRank.set(key, i);   // 重複只認第一次
+    });
+  }
+
   const minD = items.reduce((a, i) => i.start < a ? i.start : a, items[0].start);
   const maxD = items.reduce((a, i) => i.end > a ? i.end : a, items[0].end);
 
@@ -174,16 +187,36 @@ router.post('/preview', async (req, res) => {
   };
 
   // 佇列：同科目內依「打散/照順序」排列（item.spread，預設打散），跨科目一律輪流（每天各科都碰到）
+  //
+  // 2C-P6-B：subject_order 讓使用者決定「先讀哪一科」。
+  //
+  // 語意是 **priority，不是 dependency**：在其他 hard constraint 都滿足的前提下，
+  // 排在前面的科目優先取得排程位置；它**不要求**數學全部排完才能開始化學。
+  // 各科仍然每天輪流出現，只是輪流的順序照使用者的排法走。
+  //
+  // 影響兩件事，而且都只是「順序」：
+  //   ① 輪流佇列裡誰先出手
+  //   ② distribute 的 buckets 是照佇列第一次出現的順序建立的，主輪逐日發放時
+  //      也照同樣順序詢問各桶 → 同一天名額或時段有限時，優先科目先拿
+  //
+  // 刻意**不做**的事：不改各科的日期範圍、不把優先科目整段往前挪。
+  // 那會破壞既有的平均分配，而且離 dependency 只剩一步。
+  const rankOf = sid => subjectRank.has(String(sid)) ? subjectRank.get(String(sid)) : Number.MAX_SAFE_INTEGER;
   function buildQueue(list) {
     const bySub = {};
     list.forEach(it => { (bySub[it.subject_id] = bySub[it.subject_id] || []).push(it); });
-    const subjQueues = Object.values(bySub).map(subjItems => {
-      const chunkLists = subjItems.map(it => mkChunks([it]));
-      if (subjItems[0].spread === false) return chunkLists.flat(); // 照章節順序
-      const out = []; let added = true;                            // 章節打散：輪流
-      while (added) { added = false; for (const cl of chunkLists) if (cl.length) { out.push(cl.shift()); added = true; } }
-      return out;
-    });
+    // Object 的 key 是字串，整數型 key 的列舉順序是數值遞增——沒給 subject_order
+    // 時就是既有行為。sort 是穩定的，所以同名次（含全部未指定）維持原順序。
+    const subjQueues = Object.keys(bySub)
+      .sort((a, b) => rankOf(a) - rankOf(b))
+      .map(k => bySub[k])
+      .map(subjItems => {
+        const chunkLists = subjItems.map(it => mkChunks([it]));
+        if (subjItems[0].spread === false) return chunkLists.flat(); // 照章節順序
+        const out = []; let added = true;                            // 章節打散：輪流
+        while (added) { added = false; for (const cl of chunkLists) if (cl.length) { out.push(cl.shift()); added = true; } }
+        return out;
+      });
     const out = []; let added = true;
     while (added) { added = false; for (const q2 of subjQueues) if (q2.length) { out.push(q2.shift()); added = true; } }
     return out;
