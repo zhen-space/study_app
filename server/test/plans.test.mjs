@@ -57,12 +57,12 @@ describe('Plan CRUD', () => {
     assert.equal(body.plan.id, p.id);
     assert.equal(body.tasks.length, 2);
     assert.deepEqual(body.summary, {
-      total_tasks: 2, completed_tasks: 1, remaining_tasks: 1, overdue_tasks: 1,
+      total_tasks: 2, completed_tasks: 1, cancelled_tasks: 0, remaining_tasks: 1, overdue_tasks: 1,
     });
   });
 
   test('PATCH 只吃白名單欄位，server 自有的欄位改不動', async () => {
-    const { body: p } = await mkPlan();
+    const { body: p } = await mkPlan({ status: 'active' });
     const { body: after } = await api(`/plans/${p.id}`, {
       method: 'PATCH',
       body: { name: '改過的名字', source: 'ai', user_id: 999, created_at: '1999-01-01' },
@@ -95,18 +95,20 @@ describe('Plan 驗證', () => {
 });
 
 describe('Plan 生命週期', () => {
-  test('complete：有未完成任務時先回報，force 才真的完成', async () => {
-    const { body: p } = await mkPlan();
+  test('complete：有未完成任務一律 409，force 不得冒充結束', async () => {
+    const { body: p } = await mkPlan({ status: 'active' });
     await mkTask({ title: '還沒做', plan_id: p.id });
 
     const first = await api(`/plans/${p.id}/complete`, { method: 'POST', body: {} });
-    assert.equal(first.body.needs_confirm, true);
-    assert.equal(first.body.unresolved.length, 1);
-    assert.equal(first.body.plan.status, 'draft');        // 還沒真的改狀態
-
-    const second = await api(`/plans/${p.id}/complete`, { method: 'POST', body: { force: true } });
-    assert.equal(second.body.plan.status, 'completed');
-    assert.ok(second.body.plan.completed_at);
+    assert.equal(first.status, 409);
+    assert.equal(first.body.code, 'unresolved_tasks');
+    const forced = await api(`/plans/${p.id}/complete`, { method: 'POST', body: { force: true } });
+    assert.equal(forced.status, 409, 'force complete 已退場，不能當作 ended');
+    await api(`/tasks/${first.body.unresolved[0].id}/cancel`, { method: 'POST', body: {} });
+    const done = await api(`/plans/${p.id}/complete`, { method: 'POST', body: {} });
+    assert.equal(done.status, 200);
+    assert.equal(done.body.plan.status, 'completed');
+    assert.ok(done.body.plan.completed_at);
   });
 
   test('archive 不刪任何任務，restore 拉得回來', async () => {
@@ -133,11 +135,38 @@ describe('Plan 生命週期', () => {
     assert.equal((await api(`/plans/${p.id}/restore`, { method: 'POST', body: {} })).status, 400);
   });
 
-  test('離開 completed 會清掉 completed_at', async () => {
-    const { body: p } = await mkPlan({ status: 'completed' });
-    assert.ok(p.completed_at);
-    const { body: back } = await api(`/plans/${p.id}`, { method: 'PATCH', body: { status: 'active' } });
+  test('PATCH 不得偽造 lifecycle；重新開始走正式 endpoint', async () => {
+    const { body: p } = await mkPlan({ status: 'active' });
+    const { body: completed } = await api(`/plans/${p.id}/complete`, { method: 'POST', body: {} });
+    assert.ok(completed.completed_at);
+    const ignored = await api(`/plans/${p.id}`, { method: 'PATCH', body: { status: 'active' } });
+    assert.equal(ignored.body.status, 'completed');
+    const { body: back } = await api(`/plans/${p.id}/restart`, { method: 'POST', body: {} });
     assert.equal(back.completed_at, null);
+  });
+
+  test('pause/end/archive 都保留語意；archive restore 回封存前狀態', async () => {
+    const { body: p } = await mkPlan({ status: 'active' });
+    const paused = await api(`/plans/${p.id}/pause`, { method: 'POST', body: {} });
+    assert.equal(paused.body.plan.status, 'paused');
+    assert.ok(paused.body.plan.paused_at);
+    const ended = await api(`/plans/${p.id}/end`, { method: 'POST', body: { confirm: true, reason: '改變目標' } });
+    assert.equal(ended.body.plan.status, 'ended');
+    assert.equal(ended.body.plan.end_reason, '改變目標');
+    await api(`/plans/${p.id}/archive`, { method: 'POST', body: {} });
+    const restored = await api(`/plans/${p.id}/restore`, { method: 'POST', body: {} });
+    assert.equal(restored.body.plan.status, 'ended');
+  });
+
+  test('取消 Task 不等於刪除或完成，而且可 reopen', async () => {
+    const { body: p } = await mkPlan({ status: 'active' });
+    const { body: task } = await mkTask({ title: '不需要做', plan_id: p.id });
+    const cancelled = await api(`/tasks/${task.id}/cancel`, { method: 'POST', body: {} });
+    assert.equal(cancelled.body.cancelled, 1);
+    assert.equal(cancelled.body.completed, 0);
+    assert.equal(cancelled.body.deleted, 0);
+    const reopened = await api(`/tasks/${task.id}/reopen`, { method: 'POST', body: {} });
+    assert.equal(reopened.body.cancelled, 0);
   });
 
   test('封存的計畫預設不出現在清單，includeArchived 才出現', async () => {
@@ -161,9 +190,11 @@ describe('Task ↔ Plan', () => {
   });
 
   test('不能掛到已封存或已完成的計畫', async () => {
-    const { body: arch } = await mkPlan({ status: 'archived' });
+    const { body: openForArchive } = await mkPlan({ status: 'active' });
+    const { body: arch } = await api(`/plans/${openForArchive.id}/archive`, { method: 'POST', body: {} });
     assert.equal((await mkTask({ title: 'x', plan_id: arch.id })).status, 400);
-    const { body: done } = await mkPlan({ status: 'completed' });
+    const { body: openForComplete } = await mkPlan({ status: 'active' });
+    const { body: done } = await api(`/plans/${openForComplete.id}/complete`, { method: 'POST', body: {} });
     assert.equal((await mkTask({ title: 'x', plan_id: done.id })).status, 400);
   });
 
@@ -215,7 +246,8 @@ describe('Task ↔ Plan', () => {
   });
 
   test('bulk 掛到已封存的計畫要被擋下來', async () => {
-    const { body: p } = await mkPlan({ status: 'archived' });
+    const { body: open } = await mkPlan({ status: 'active' });
+    const { body: p } = await api(`/plans/${open.id}/archive`, { method: 'POST', body: {} });
     const r = await api('/tasks/bulk', { method: 'POST', body: { tasks: [{ title: 'x', plan_id: p.id }] } });
     assert.equal(r.status, 400);
   });

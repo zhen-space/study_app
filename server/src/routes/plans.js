@@ -4,6 +4,7 @@ import { requireAuth } from '../middleware/auth.js';
 import { classifyScheduleHealth } from '../schedule/health.js';
 import { todayTW } from '../util/date.js';
 import { findSelfCollisions } from '../schedule/feasibility.js';
+import { transitionPlanLifecycle } from '../schedule/persistence.js';
 
 // Plan＝有目標、範圍、期限與生命週期的工作單位。
 // 契約見 docs/phase2-plan-domain.md，動之前先讀。重點：
@@ -15,7 +16,7 @@ import { findSelfCollisions } from '../schedule/feasibility.js';
 const router = Router();
 router.use(requireAuth);
 
-const STATUS = ['draft', 'active', 'completed', 'archived'];
+const STATUS = ['draft', 'active', 'paused', 'completed', 'ended', 'archived'];
 const SOURCE = ['manual', 'ai', 'legacy_migration', 'import'];
 const now = () => new Date().toISOString();
 
@@ -46,7 +47,8 @@ async function withCounts(rows, userId) {
   const stats = await q.all(
     `SELECT plan_id,
             COUNT(*) task_count,
-            SUM(CASE WHEN completed=1 THEN 1 ELSE 0 END) completed_task_count
+            SUM(CASE WHEN completed=1 THEN 1 ELSE 0 END) completed_task_count,
+            SUM(CASE WHEN COALESCE(cancelled,0)=1 THEN 1 ELSE 0 END) cancelled_task_count
      FROM tasks WHERE user_id=? AND plan_id IS NOT NULL AND COALESCE(deleted,0)=0
      GROUP BY plan_id`, [userId]);
   const m = new Map(stats.map(s => [s.plan_id, s]));
@@ -54,6 +56,7 @@ async function withCounts(rows, userId) {
     ...p,
     task_count: m.get(p.id)?.task_count ?? 0,
     completed_task_count: m.get(p.id)?.completed_task_count ?? 0,
+    cancelled_task_count: m.get(p.id)?.cancelled_task_count ?? 0,
   }));
 }
 
@@ -86,8 +89,9 @@ router.get('/plans/:id', async (req, res) => {
     summary: {
       total_tasks: tasks.length,
       completed_tasks: tasks.filter(t => t.completed).length,
-      remaining_tasks: tasks.filter(t => !t.completed).length,
-      overdue_tasks: tasks.filter(t => !t.completed && t.due_date && t.due_date < today).length,
+      cancelled_tasks: tasks.filter(t => t.cancelled).length,
+      remaining_tasks: tasks.filter(t => !t.completed && !t.cancelled).length,
+      overdue_tasks: tasks.filter(t => !t.completed && !t.cancelled && t.due_date && t.due_date < today).length,
     },
   });
 });
@@ -98,19 +102,19 @@ router.get('/plans/:id/health', async (req, res) => {
   if (!plan) return res.status(404).json({ error: '找不到這個計畫' });
   const today = todayTW();
   const [tasks, state] = await Promise.all([
-    q.all('SELECT id,due_date,completed,deleted,estimated_minutes FROM tasks WHERE user_id=? AND plan_id=?', [req.userId, plan.id]),
+    q.all('SELECT id,due_date,completed,cancelled,deleted,estimated_minutes FROM tasks WHERE user_id=? AND plan_id=?', [req.userId, plan.id]),
     q.get('SELECT active_version_id FROM user_schedule_state WHERE user_id=?', [req.userId]),
   ]);
-  const pending = tasks.filter(t => !t.completed && !t.deleted);
+  const pending = tasks.filter(t => !t.completed && !t.cancelled && !t.deleted);
   const activeBlocks = state?.active_version_id == null ? [] : await q.all(
-    'SELECT b.*, t.plan_id,t.deadline_date,t.deleted,t.completed FROM scheduled_blocks b JOIN tasks t ON t.id=b.task_id AND t.user_id=b.user_id WHERE b.user_id=? AND b.schedule_version_id=?', [req.userId, state.active_version_id]);
+    'SELECT b.*, t.plan_id,t.deadline_date,t.deleted,t.completed,t.cancelled FROM scheduled_blocks b JOIN tasks t ON t.id=b.task_id AND t.user_id=b.user_id WHERE b.user_id=? AND b.schedule_version_id=?', [req.userId, state.active_version_id]);
   const planBlocks = activeBlocks.filter(b => Number(b.plan_id) === Number(plan.id));
   const blockIds = new Set(planBlocks.map(b => Number(b.task_id)));
   const overdue = pending.filter(t => t.due_date && t.due_date < today).length;
   const unplaced = state?.active_version_id == null ? pending.filter(t => !t.due_date).length : pending.filter(t => !blockIds.has(Number(t.id))).length;
   const lateTarget = plan.target_date ? pending.filter(t => t.due_date && t.due_date > plan.target_date).length : 0;
   const deadlineViolation = activeBlocks.filter(b => Number(b.plan_id) === Number(plan.id) && b.deadline_date && b.date > b.deadline_date).length;
-  const collision = findSelfCollisions(planBlocks.filter(b => !b.deleted && !b.completed)).size > 0;
+  const collision = findSelfCollisions(planBlocks.filter(b => !b.deleted && !b.completed && !b.cancelled)).size > 0;
   const estimatedWorkload = pending.reduce((total, task) => total + (Number(task.estimated_minutes) || 0), 0);
   const timedBlocks = planBlocks.filter(b => b.start_time && b.end_time);
   const timedTaskIds = new Set(timedBlocks.map(b => Number(b.task_id)));
@@ -140,19 +144,22 @@ router.post('/plans', async (req, res) => {
   const err = await validate(b, req.userId);
   if (err) return res.status(400).json({ error: err });
   const status = b.status || 'draft';
+  // 新計畫只能從可工作的起點建立；其餘狀態必須經 lifecycle endpoint，
+  // 才能同時守住確認、版本與 mirror 的交易邊界。
+  if (!['draft', 'active'].includes(status)) return res.status(400).json({ error: '新計畫只能建立為草稿或進行中' });
   const r = await q.run(
     `INSERT INTO plans (user_id,name,description,goal_id,primary_list_id,start_date,target_date,status,source,created_at,updated_at,completed_at,archived_at)
      VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`,
     [req.userId, String(b.name).trim(), b.description || '', b.goal_id ?? null, b.primary_list_id ?? null,
       b.start_date || null, b.target_date || null, status, b.source || 'manual',
-      now(), now(), status === 'completed' ? now() : null, status === 'archived' ? now() : null]);
+      now(), now(), null, null]);
   res.json(await q.get('SELECT * FROM plans WHERE id=?', [r.lastInsertRowid]));
 });
 
 // PATCH /api/plans/:id
 // user_id / created_at / updated_at / completed_at / archived_at / source 由伺服器決定，
 // 客戶端送了也不算數。
-const PATCHABLE = ['name', 'description', 'goal_id', 'primary_list_id', 'start_date', 'target_date', 'status'];
+const PATCHABLE = ['name', 'description', 'goal_id', 'primary_list_id', 'start_date', 'target_date'];
 router.patch('/plans/:id', async (req, res) => {
   const plan = await mine(req.params.id, req.userId);
   if (!plan) return res.status(404).json({ error: '找不到這個計畫' });
@@ -164,56 +171,64 @@ router.patch('/plans/:id', async (req, res) => {
 
   const sets = [], args = [];
   for (const [k, v] of Object.entries(patch)) { sets.push(`${k}=?`); args.push(v === '' ? null : v); }
-  // 狀態轉換時同步時間戳：進入該狀態就記時間，離開就清掉
-  if ('status' in patch) {
-    sets.push('completed_at=?'); args.push(patch.status === 'completed' ? (plan.completed_at || now()) : null);
-    sets.push('archived_at=?'); args.push(patch.status === 'archived' ? (plan.archived_at || now()) : null);
-  }
   sets.push('updated_at=?'); args.push(now());
   args.push(plan.id);
   await q.run(`UPDATE plans SET ${sets.join(',')} WHERE id=?`, args);
   res.json(await q.get('SELECT * FROM plans WHERE id=?', [plan.id]));
 });
 
-// 只改狀態的小工具（下面三個語意化端點共用）
-async function setStatus(plan, status) {
-  await q.run('UPDATE plans SET status=?, completed_at=?, archived_at=?, updated_at=? WHERE id=?', [
-    status,
-    status === 'completed' ? (plan.completed_at || now()) : null,
-    status === 'archived' ? (plan.archived_at || now()) : null,
-    now(), plan.id,
-  ]);
-  return q.get('SELECT * FROM plans WHERE id=?', [plan.id]);
+async function lifecycle(req, res, nextStatus, options = {}) {
+  try {
+    const out = await transitionPlanLifecycle(req.userId, Number(req.params.id), {
+      nextStatus,
+      endReason: options.endReason,
+      baseVersionId: req.body?.base_version_id,
+    });
+    // 保留舊 caller 直接讀 plan 欄位的相容性，同時提供明確的 plan/version shape。
+    res.json({ ...out.plan, plan: out.plan, schedule_version: out.version });
+  } catch (err) {
+    res.status(err.status || 400).json({ error: err.message, conflicts: err.conflicts });
+  }
 }
 
 // POST /api/plans/:id/complete
-// 計畫完成不等於底下每一項都打勾——可能有被取消或跳過的。
-// 所以把還沒解決的項目回給前端，讓使用者自己確認；帶 force=1 才真的完成。
+// 完成只代表所有 Task 都已有結果（completed/cancelled）。未解決時不可 force，
+// 使用者若不再繼續必須走 ended，不能污染完成率。
 router.post('/plans/:id/complete', async (req, res) => {
   const plan = await mine(req.params.id, req.userId);
   if (!plan) return res.status(404).json({ error: '找不到這個計畫' });
   const unresolved = await q.all(
-    'SELECT id, title, due_date FROM tasks WHERE user_id=? AND plan_id=? AND completed=0 AND COALESCE(deleted,0)=0 ORDER BY due_date, id',
+    'SELECT id, title, due_date FROM tasks WHERE user_id=? AND plan_id=? AND completed=0 AND COALESCE(cancelled,0)=0 AND COALESCE(deleted,0)=0 ORDER BY due_date, id',
     [req.userId, plan.id]);
-  if (unresolved.length && !req.body?.force) {
-    return res.json({ plan, unresolved, needs_confirm: true });
-  }
-  res.json({ plan: await setStatus(plan, 'completed'), unresolved: [], needs_confirm: false });
+  if (unresolved.length) return res.status(409).json({ error: '仍有未完成任務，請先完成或取消；若不再繼續請結束計畫', code: 'unresolved_tasks', plan, unresolved });
+  return lifecycle(req, res, 'completed');
+});
+
+router.post('/plans/:id/pause', async (req, res) => lifecycle(req, res, 'paused'));
+router.post('/plans/:id/resume', async (req, res) => lifecycle(req, res, 'active'));
+router.post('/plans/:id/restart', async (req, res) => lifecycle(req, res, 'active'));
+router.post('/plans/:id/end', async (req, res) => {
+  const plan = await mine(req.params.id, req.userId);
+  if (!plan) return res.status(404).json({ error: '找不到這個計畫' });
+  const unresolved = await q.all('SELECT id,title,due_date FROM tasks WHERE user_id=? AND plan_id=? AND completed=0 AND COALESCE(cancelled,0)=0 AND COALESCE(deleted,0)=0 ORDER BY due_date,id', [req.userId, plan.id]);
+  if (unresolved.length && !req.body?.confirm) return res.status(409).json({ error: '結束計畫會保留未完成任務，請明確確認', code: 'end_confirmation_required', plan, unresolved });
+  return lifecycle(req, res, 'ended', { endReason: req.body?.reason });
 });
 
 // POST /api/plans/:id/archive —— 封存不刪任何 Task
 router.post('/plans/:id/archive', async (req, res) => {
   const plan = await mine(req.params.id, req.userId);
   if (!plan) return res.status(404).json({ error: '找不到這個計畫' });
-  res.json(await setStatus(plan, 'archived'));
+  if (plan.status === 'archived') return res.status(400).json({ error: '計畫已封存' });
+  return lifecycle(req, res, 'archived');
 });
 
-// POST /api/plans/:id/restore —— 封存的計畫拉回進行中
+// POST /api/plans/:id/restore —— 必須回到封存前的 lifecycle，不能一律 active。
 router.post('/plans/:id/restore', async (req, res) => {
   const plan = await mine(req.params.id, req.userId);
   if (!plan) return res.status(404).json({ error: '找不到這個計畫' });
   if (plan.status !== 'archived') return res.status(400).json({ error: '只有封存的計畫可以恢復' });
-  res.json(await setStatus(plan, 'active'));
+  return lifecycle(req, res, plan.archived_from_status || 'active');
 });
 
 // DELETE /api/plans/:id/tasks?incomplete=1
@@ -232,7 +247,7 @@ router.delete('/plans/:id/tasks', async (req, res) => {
   // 變成 orphan——而 ScheduledBlock 是 immutable snapshot，事後補不回來。
   // 軟刪除同時保住「垃圾桶救得回來」與「歷史版本仍看得懂」兩件事。
   const r = await q.run(
-    'UPDATE tasks SET deleted=1 WHERE user_id=? AND plan_id=? AND completed=0 AND COALESCE(deleted,0)=0',
+    'UPDATE tasks SET deleted=1 WHERE user_id=? AND plan_id=? AND completed=0 AND COALESCE(cancelled,0)=0 AND COALESCE(deleted,0)=0',
     [req.userId, plan.id]);
   res.json({ removed: r.changes ?? 0 });
 });

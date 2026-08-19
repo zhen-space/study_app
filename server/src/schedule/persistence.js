@@ -33,6 +33,7 @@ export const SOURCE = {
   BOOTSTRAP: 'bootstrap',
   INITIAL: 'initial',
   MANUAL: 'manual',
+  LIFECYCLE: 'lifecycle',
   AI_REPLAN: 'ai_replan',
   RESTORE: 'restore',
 };
@@ -185,7 +186,7 @@ export async function getUnplaced(userId, versionId) {
     `SELECT t.id, t.title, t.plan_id, t.list_id, t.deadline_date
        FROM tasks t
       WHERE t.user_id=? AND t.plan_id IS NOT NULL
-        AND COALESCE(t.deleted,0)=0 AND t.completed=0
+        AND COALESCE(t.deleted,0)=0 AND t.completed=0 AND COALESCE(t.cancelled,0)=0
         AND NOT EXISTS (
           SELECT 1 FROM scheduled_blocks b
            WHERE b.schedule_version_id=? AND b.task_id=t.id)
@@ -216,7 +217,7 @@ async function assertCandidateLocks(tx, userId, activeVersionId, candidate) {
   if (activeVersionId == null) return;
   const [locks, tasks, active] = await Promise.all([
     tx.all('SELECT * FROM schedule_locks WHERE user_id=? AND released_at IS NULL', [userId]),
-    tx.all('SELECT id,deleted,completed FROM tasks WHERE user_id=?', [userId]),
+    tx.all('SELECT id,deleted,completed,cancelled FROM tasks WHERE user_id=?', [userId]),
     tx.all('SELECT task_id,date,start_time,end_time,planned_minutes FROM scheduled_blocks WHERE user_id=? AND schedule_version_id=?', [userId, activeVersionId]),
   ]);
   const conflicts = checkLocks(candidate, active, locks, tasks, lockNow());
@@ -234,7 +235,7 @@ async function getRestorePreviewFrom(db, userId, sourceVersionId, {
     db.all(`SELECT id, task_id, date, start_time, end_time, planned_minutes, task_title_snapshot
               FROM scheduled_blocks WHERE schedule_version_id=? AND user_id=?
              ORDER BY date, COALESCE(start_time,''), id`, [sourceVersionId, userId]),
-    db.all(`SELECT id, title, plan_id, deadline_date, deleted, completed
+    db.all(`SELECT id, title, plan_id, deadline_date, deleted, completed, cancelled
               FROM tasks WHERE user_id=?`, [userId]),
     db.all('SELECT date,start_time,end_time,recurring,title FROM fixed_events WHERE user_id=?', [userId]),
     db.get('SELECT active_version_id FROM user_schedule_state WHERE user_id=?', [userId]),
@@ -289,7 +290,7 @@ async function getRestorePreviewFrom(db, userId, sourceVersionId, {
         && block.start_time < lock.end_time && lock.start_time < block.end_time;
   const activeLiveBlocks = activeBlocks.filter(block => {
     const task = tasks.get(Number(block.task_id));
-    return task && !task.deleted && !task.completed && task.plan_id != null;
+    return task && !task.deleted && !task.completed && !task.cancelled && task.plan_id != null;
   });
   let lockedRestorable = restorableBlocks;
   for (const lock of violatedLocks.values()) {
@@ -310,7 +311,7 @@ async function getRestorePreviewFrom(db, userId, sourceVersionId, {
   const conflictIds = new Set(conflicts.map(c => Number(c.task_id)));
   // Restore 不 overlay active：template 中沒有的新任務，以及無法恢復的有效任務，
   // 都會是新版本的 unplaced。completed/deleted 已退出 future schedule，不列入。
-  const unplacedTaskIds = liveTasks.filter(t => t.plan_id != null && !t.deleted && !t.completed && !scheduledIds.has(Number(t.id)))
+  const unplacedTaskIds = liveTasks.filter(t => t.plan_id != null && !t.deleted && !t.completed && !t.cancelled && !scheduledIds.has(Number(t.id)))
     .map(t => Number(t.id));
   const status = lockedRestorable.length === 0
     ? (conflicts.length ? 'impossible' : 'nothing_to_restore')
@@ -440,7 +441,7 @@ async function buildManualCandidate(db, userId, activeVersionId, moves, { planni
     db.all(`SELECT id, task_id, date, start_time, end_time, planned_minutes
               FROM scheduled_blocks WHERE schedule_version_id=? AND user_id=?
              ORDER BY date, COALESCE(start_time,''), id`, [activeVersionId, userId]),
-    db.all('SELECT id, title, plan_id, deadline_date, deleted, completed FROM tasks WHERE user_id=?', [userId]),
+    db.all('SELECT id, title, plan_id, deadline_date, deleted, completed, cancelled FROM tasks WHERE user_id=?', [userId]),
     db.all('SELECT date,start_time,end_time,recurring,title FROM fixed_events WHERE user_id=?', [userId]),
   ]);
   const tasks = new Map(liveTasks.map(t => [Number(t.id), t]));
@@ -538,7 +539,7 @@ export async function applyManualAdjustment(userId, { baseVersionId, moves = [],
       candidate,
       await db.all('SELECT task_id,date,start_time,end_time,planned_minutes FROM scheduled_blocks WHERE user_id=? AND schedule_version_id=?', [userId, activeId]),
       await db.all('SELECT * FROM schedule_locks WHERE user_id=? AND released_at IS NULL', [userId]),
-      await db.all('SELECT id,deleted,completed FROM tasks WHERE user_id=?', [userId]),
+      await db.all('SELECT id,deleted,completed,cancelled FROM tasks WHERE user_id=?', [userId]),
       { day: planningDay, time: nowHM });
     const all = [...conflicts, ...lockConflicts.map(c => ({ ...c, message: '這個位置已鎖定，請先解除鎖定' }))];
     if (dryRun) return { ok: all.length === 0, conflicts: all, base_version_id: activeId, blocks: candidate };
@@ -589,6 +590,126 @@ export async function createScheduleVersion(userId, {
   )));
 }
 
+// Plan lifecycle 不能只改 plans.status：那會讓已停止的 Plan 仍留在 active
+// ScheduleVersion。此處把狀態變更、其他 Plan 的 future blocks carry-forward、
+// Lock feasibility、active pointer 與 due mirror 放進同一個 transaction。
+export async function transitionPlanLifecycle(userId, planId, {
+  nextStatus, endReason = null, baseVersionId = undefined,
+}) {
+  return serializeWrite(() => withVersionNoRetry(() => q.tx(async tx => {
+    const plan = await tx.get('SELECT * FROM plans WHERE id=? AND user_id=?', [planId, userId]);
+    if (!plan) throw new ScheduleInputError('找不到這個計畫');
+    // lifecycle 不是可任意覆寫的欄位。明確限制轉換，避免把「重新開始」
+    // 誤用成 paused -> completed 等沒有產品語意的捷徑。
+    const allowed = {
+      draft: new Set(['active', 'ended', 'archived']),
+      active: new Set(['paused', 'completed', 'ended', 'archived']),
+      paused: new Set(['active', 'ended', 'archived']),
+      completed: new Set(['active', 'archived']),
+      ended: new Set(['active', 'archived']),
+      archived: new Set([plan.archived_from_status || 'active']),
+    };
+    if (!allowed[plan.status]?.has(nextStatus)) {
+      throw new ScheduleInputError('這個計畫目前不能進行此狀態轉換');
+    }
+    const state = await tx.get('SELECT active_version_id FROM user_schedule_state WHERE user_id=?', [userId]);
+    const activeId = state?.active_version_id ?? null;
+    if (baseVersionId !== undefined && Number(baseVersionId ?? -1) !== Number(activeId ?? -1)) {
+      throw new ScheduleRestoreStaleError();
+    }
+
+    const at = new Date().toISOString();
+    const archivedFrom = nextStatus === 'archived'
+      ? (plan.status === 'archived' ? plan.archived_from_status : plan.status)
+      : null;
+    const restoring = plan.status === 'archived' && nextStatus !== 'archived';
+    await tx.run(
+      `UPDATE plans SET status=?, completed_at=?, paused_at=?, ended_at=?, end_reason=?,
+                        archived_at=?, archived_from_status=?, updated_at=?
+        WHERE id=? AND user_id=?`,
+      [nextStatus,
+        nextStatus === 'completed' ? (plan.completed_at || at) : null,
+        nextStatus === 'paused' ? (plan.paused_at || at) : null,
+        nextStatus === 'ended' ? (plan.ended_at || at) : null,
+        nextStatus === 'ended' ? (endReason || null) : null,
+        nextStatus === 'archived' ? (plan.archived_at || at) : null,
+        nextStatus === 'archived' ? archivedFrom : null,
+        at, plan.id, userId]);
+
+    if (activeId == null) {
+      return { plan: await tx.get('SELECT * FROM plans WHERE id=?', [plan.id]), version: null };
+    }
+    const effectiveFrom = todayTW();
+    const candidate = (await tx.all(
+      `SELECT b.task_id,b.date,b.start_time,b.end_time,b.planned_minutes
+         FROM scheduled_blocks b
+         JOIN tasks t ON t.id=b.task_id AND t.user_id=b.user_id
+         JOIN plans p ON p.id=t.plan_id AND p.user_id=t.user_id
+        WHERE b.user_id=? AND b.schedule_version_id=? AND b.date>=?
+          AND t.plan_id<>? AND COALESCE(t.deleted,0)=0
+          AND t.completed=0 AND COALESCE(t.cancelled,0)=0
+          AND p.status NOT IN ('paused','completed','ended','archived')
+        ORDER BY b.date,COALESCE(b.start_time,''),b.id`,
+      [userId, activeId, effectiveFrom, planId])).map(canonicalizeBlockTiming);
+    validateTimedBlockOverlaps(candidate);
+    await assertCandidateLocks(tx, userId, activeId, candidate);
+    const version = await createScheduleVersionInTx(tx, userId, {
+      source: SOURCE.LIFECYCLE,
+      reason: `計畫「${plan.name}」${nextStatus === 'paused' ? '暫停' : nextStatus === 'ended' ? '結束' : nextStatus === 'completed' ? '完成' : nextStatus === 'archived' ? '封存' : restoring ? '恢復' : '重新開始'}`,
+      effectiveFrom,
+      parentVersionId: activeId,
+      blocks: candidate,
+      expectedActiveVersionId: activeId,
+    });
+    return { plan: await tx.get('SELECT * FROM plans WHERE id=?', [plan.id]), version };
+  })));
+}
+
+// 取消不是刪除，也不是完成。取消 Plan Task 時，舊版本仍保留歷史安排，
+// 但新的 active version 必須不再把它當成未來排程；重新開啟則只回到 unplaced，
+// 不會偷偷復活舊 block。
+export async function transitionTaskOutcome(userId, taskId, outcome) {
+  return serializeWrite(() => withVersionNoRetry(() => q.tx(async tx => {
+    const task = await tx.get('SELECT * FROM tasks WHERE id=? AND user_id=?', [taskId, userId]);
+    if (!task || task.deleted) throw new ScheduleInputError('找不到可變更的任務');
+    if (!['completed', 'cancelled', null].includes(outcome)) throw new ScheduleInputError('任務結果不正確');
+    if (outcome === 'cancelled' && task.completed) throw new ScheduleInputError('已完成任務不能取消；請先重新開啟');
+    const at = new Date().toISOString();
+    await tx.run(
+      `UPDATE tasks SET completed=?,completed_at=?,cancelled=?,cancelled_at=?,due_date=?,due_time=? WHERE id=? AND user_id=?`,
+      [outcome === 'completed' ? 1 : 0, outcome === 'completed' ? at : null,
+        outcome === 'cancelled' ? 1 : 0, outcome === 'cancelled' ? at : null,
+        outcome === 'cancelled' && task.plan_id != null ? null : task.due_date,
+        outcome === 'cancelled' && task.plan_id != null ? null : task.due_time, task.id, userId]);
+
+    const state = await tx.get('SELECT active_version_id FROM user_schedule_state WHERE user_id=?', [userId]);
+    const activeId = state?.active_version_id ?? null;
+    // 一般待辦不在 ScheduleVersion domain；Plan Task 的 reopen 不復活舊安排。
+    if (outcome == null || task.plan_id == null || activeId == null) {
+      return { task: await tx.get('SELECT * FROM tasks WHERE id=?', [task.id]), version: null };
+    }
+    const effectiveFrom = todayTW();
+    const candidate = (await tx.all(
+      `SELECT b.task_id,b.date,b.start_time,b.end_time,b.planned_minutes
+         FROM scheduled_blocks b
+         JOIN tasks t ON t.id=b.task_id AND t.user_id=b.user_id
+         JOIN plans p ON p.id=t.plan_id AND p.user_id=t.user_id
+        WHERE b.user_id=? AND b.schedule_version_id=? AND b.date>=?
+          AND t.id<>? AND COALESCE(t.deleted,0)=0 AND t.completed=0
+          AND COALESCE(t.cancelled,0)=0 AND p.status IN ('draft','active')
+        ORDER BY b.date,COALESCE(b.start_time,''),b.id`,
+      [userId, activeId, effectiveFrom, task.id])).map(canonicalizeBlockTiming);
+    validateTimedBlockOverlaps(candidate);
+    await assertCandidateLocks(tx, userId, activeId, candidate);
+    const version = await createScheduleVersionInTx(tx, userId, {
+      source: SOURCE.LIFECYCLE,
+      reason: `任務「${task.title}」已${outcome === 'completed' ? '完成' : '取消'}`, effectiveFrom, parentVersionId: activeId,
+      blocks: candidate, expectedActiveVersionId: activeId,
+    });
+    return { task: await tx.get('SELECT * FROM tasks WHERE id=?', [task.id]), version };
+  })));
+}
+
 // 給 P2 的「任務身分異動＋新版排程」共用。呼叫端已經握有同一筆 transaction
 // 時，不能再開巢狀交易；版本本體仍然只由這個檔案寫入。
 async function createScheduleVersionInTx(tx, userId, {
@@ -630,13 +751,14 @@ async function createScheduleVersionInTx(tx, userId, {
     // 整個 transaction rollback，不能 silently skip 或留下 partial version。
     for (const b of normalizedBlocks) {
       const t = await tx.get(
-        `SELECT t.id, t.title, t.plan_id, t.deleted, t.completed, l.name AS subject
+        `SELECT t.id, t.title, t.plan_id, t.deleted, t.completed, t.cancelled, l.name AS subject
            FROM tasks t LEFT JOIN lists l ON l.id = t.list_id
           WHERE t.id=? AND t.user_id=?`, [b.task_id, userId]);
       if (!t) throw new ScheduleInputError(`排程任務不存在或不屬於目前使用者：${b.task_id}`);
       if (t.plan_id == null) throw new ScheduleInputError(`排程任務必須屬於計畫：${b.task_id}`);
       if (t.deleted) throw new ScheduleInputError(`排程任務已刪除：${b.task_id}`);
       if (t.completed) throw new ScheduleInputError(`排程任務已完成：${b.task_id}`);
+      if (t.cancelled) throw new ScheduleInputError(`排程任務已取消：${b.task_id}`);
       await tx.run(
         `INSERT INTO scheduled_blocks
            (user_id, schedule_version_id, task_id, date, start_time, end_time,
@@ -686,14 +808,15 @@ export async function applySchedule(userId, {
     throw new ScheduleInputError('排程來源不正確');
   }
   return serializeWrite(() => withVersionNoRetry(() => q.tx(async tx => {
-    const plan = await tx.get('SELECT id FROM plans WHERE id=? AND user_id=?', [planId, userId]);
+    const plan = await tx.get('SELECT id,status FROM plans WHERE id=? AND user_id=?', [planId, userId]);
     if (!plan) throw new ScheduleInputError('找不到這個計畫');
+    if (!['draft', 'active'].includes(plan.status)) throw new ScheduleInputError('目前未執行的計畫不能重新排程');
 
     const assertLivePlanTask = async taskId => {
       const task = await tx.get(
-        `SELECT id, plan_id, deleted, completed FROM tasks WHERE id=? AND user_id=?`,
+        `SELECT id, plan_id, deleted, completed, cancelled FROM tasks WHERE id=? AND user_id=?`,
         [taskId, userId]);
-      if (!task || Number(task.plan_id) !== Number(planId) || task.deleted || task.completed) {
+      if (!task || Number(task.plan_id) !== Number(planId) || task.deleted || task.completed || task.cancelled) {
         throw new ScheduleInputError(`任務不屬於這個可排程的計畫：${taskId}`);
       }
       return task;
@@ -751,7 +874,7 @@ export async function applySchedule(userId, {
            JOIN tasks t ON t.id=b.task_id AND t.user_id=b.user_id
           WHERE b.schedule_version_id=? AND b.user_id=?
             AND t.plan_id IS NOT NULL AND t.plan_id<>?
-            AND COALESCE(t.deleted,0)=0 AND t.completed=0
+            AND COALESCE(t.deleted,0)=0 AND t.completed=0 AND COALESCE(t.cancelled,0)=0
             AND b.date>=?
           ORDER BY b.date, COALESCE(b.start_time,''), b.id`,
         [active.active_version_id, userId, planId, effFrom])).map(canonicalizeBlockTiming);
@@ -841,7 +964,7 @@ function isBusy(e) {
 //
 // 已完成的任務也不動：它們不屬於「未來排程」，due_date 是它當初做的那天，
 // 是歷史紀錄。把它清成 NULL 會讓行事曆上的完成紀錄整批消失。
-const MIRROR_WHERE = `user_id=? AND plan_id IS NOT NULL AND COALESCE(deleted,0)=0 AND completed=0`;
+const MIRROR_WHERE = `user_id=? AND plan_id IS NOT NULL AND COALESCE(deleted,0)=0 AND completed=0 AND COALESCE(cancelled,0)=0`;
 
 async function mirrorDueDates(tx, userId, versionId) {
   await tx.run(
@@ -875,7 +998,7 @@ export async function bootstrapScheduleIfNeeded(userId, planningDay = todayTW())
   const rows = await q.all(
     `SELECT id, due_date, due_time FROM tasks
       WHERE user_id=? AND plan_id IS NOT NULL AND COALESCE(deleted,0)=0
-        AND completed=0 AND due_date IS NOT NULL AND due_date >= ?
+        AND completed=0 AND COALESCE(cancelled,0)=0 AND due_date IS NOT NULL AND due_date >= ?
       ORDER BY due_date, COALESCE(due_time,''), id`,
     [userId, planningDay]);
 

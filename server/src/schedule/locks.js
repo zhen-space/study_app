@@ -1,6 +1,6 @@
 // 2C-P4：純 Lock feasibility。這個檔案不查 DB，讓 restore / replan / manual 共用。
 import { canonicalizeBlockTiming } from './timing.js';
-const live = (task, tasks) => { const t = tasks instanceof Map ? tasks.get(Number(task)) : tasks.find(x => Number(x.id) === Number(task)); return t && !t.deleted && !t.completed; };
+const live = (task, tasks) => { const t = tasks instanceof Map ? tasks.get(Number(task)) : tasks.find(x => Number(x.id) === Number(task)); return t && !t.deleted && !t.completed && !t.cancelled; };
 const nowParts = now => ({ day: now.day, time: now.time });
 export function effectiveLocks(locks, tasks, now) {
   const { day, time } = nowParts(now);

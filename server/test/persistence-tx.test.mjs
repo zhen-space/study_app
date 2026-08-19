@@ -500,6 +500,87 @@ describe('P4 Lock integration：preview/apply/restore 共用 hard constraint', (
   });
 });
 
+describe('Phase 1：Plan／Task lifecycle 與 user-level ScheduleVersion', () => {
+  test('暫停 Plan 只移除自己的 future blocks、保留其他 Plan，恢復後任務維持 unplaced', async () => {
+    const userId = 51;
+    await q.run('INSERT INTO users (id,email,password_hash) VALUES (?,?,?)', [userId, 'lifecycle@test', 'x']);
+    const planA = await q.run('INSERT INTO plans (user_id,name,status) VALUES (?,?,?)', [userId, '計畫 A', 'active']);
+    const planB = await q.run('INSERT INTO plans (user_id,name,status) VALUES (?,?,?)', [userId, '計畫 B', 'active']);
+    const a = await q.run('INSERT INTO tasks (user_id,title,plan_id) VALUES (?,?,?)', [userId, 'A 任務', planA.lastInsertRowid]);
+    const b = await q.run('INSERT INTO tasks (user_id,title,plan_id) VALUES (?,?,?)', [userId, 'B 任務', planB.lastInsertRowid]);
+    const initial = await sched.createScheduleVersion(userId, { source: sched.SOURCE.INITIAL, effectiveFrom: '2099-01-01', blocks: [
+      { task_id: a.lastInsertRowid, date: '2099-08-10', start_time: '18:00', end_time: '19:00' },
+      { task_id: b.lastInsertRowid, date: '2099-08-10', start_time: '19:00', end_time: '20:00' },
+    ] });
+    const paused = await sched.transitionPlanLifecycle(userId, planA.lastInsertRowid, {
+      nextStatus: 'paused', baseVersionId: initial.version_id,
+    });
+    assert.equal(paused.plan.status, 'paused');
+    assert.deepEqual((await sched.getBlocks(userId, paused.version.version_id)).map(x => x.task_id), [b.lastInsertRowid],
+      '★ 版本是 user-level snapshot，不能因暫停 A 連 B 一起刪掉');
+    assert.equal((await q.get('SELECT due_date FROM tasks WHERE id=?', [a.lastInsertRowid])).due_date, null);
+    assert.equal((await q.get('SELECT due_date FROM tasks WHERE id=?', [b.lastInsertRowid])).due_date, '2099-08-10');
+    const resumed = await sched.transitionPlanLifecycle(userId, planA.lastInsertRowid, {
+      nextStatus: 'active', baseVersionId: paused.version.version_id,
+    });
+    assert.deepEqual((await sched.getBlocks(userId, resumed.version.version_id)).map(x => x.task_id), [b.lastInsertRowid]);
+    assert.deepEqual((await sched.getActiveSchedule(userId)).unplaced.map(x => x.id), [a.lastInsertRowid],
+      '恢復不是恢復舊版排程；A 應明確回到 unplaced');
+    assert.equal((await sched.getBlocks(userId, initial.version_id)).length, 2, '舊版 immutable');
+  });
+
+  test('Plan lifecycle 被現在有效的 Lock 擋下時，Plan status／active／mirror 一起 rollback', async () => {
+    const userId = 52;
+    await q.run('INSERT INTO users (id,email,password_hash) VALUES (?,?,?)', [userId, 'lifecycle-lock@test', 'x']);
+    const plan = await q.run('INSERT INTO plans (user_id,name,status) VALUES (?,?,?)', [userId, '不能暫停', 'active']);
+    const task = await q.run('INSERT INTO tasks (user_id,title,plan_id) VALUES (?,?,?)', [userId, '被鎖任務', plan.lastInsertRowid]);
+    const initial = await sched.createScheduleVersion(userId, { source: sched.SOURCE.INITIAL, effectiveFrom: '2099-01-01', blocks: [
+      { task_id: task.lastInsertRowid, date: '2099-08-11', start_time: '18:00', end_time: '19:00' },
+    ] });
+    await q.run("INSERT INTO schedule_locks (user_id,type,task_id) VALUES (?,?,?)", [userId, 'task', task.lastInsertRowid]);
+    await assert.rejects(() => sched.transitionPlanLifecycle(userId, plan.lastInsertRowid, {
+      nextStatus: 'paused', baseVersionId: initial.version_id,
+    }), err => err.status === 409 && err.conflicts.some(c => String(c.type).startsWith('LOCKED_TASK')));
+    assert.equal((await q.get('SELECT status FROM plans WHERE id=?', [plan.lastInsertRowid])).status, 'active');
+    assert.equal(await sched.getActiveVersionId(userId), initial.version_id);
+    assert.equal((await q.get('SELECT due_date FROM tasks WHERE id=?', [task.lastInsertRowid])).due_date, '2099-08-11');
+  });
+
+  test('取消 Plan Task 會建立新版移除未來 block；reopen 不復活舊 block', async () => {
+    const userId = 53;
+    await q.run('INSERT INTO users (id,email,password_hash) VALUES (?,?,?)', [userId, 'cancel-version@test', 'x']);
+    const plan = await q.run('INSERT INTO plans (user_id,name,status) VALUES (?,?,?)', [userId, '取消任務', 'active']);
+    const task = await q.run('INSERT INTO tasks (user_id,title,plan_id) VALUES (?,?,?)', [userId, '取消後不排程', plan.lastInsertRowid]);
+    const initial = await sched.createScheduleVersion(userId, { source: sched.SOURCE.INITIAL, effectiveFrom: '2099-01-01', blocks: [
+      { task_id: task.lastInsertRowid, date: '2099-08-12', start_time: '18:00', end_time: '19:00' },
+    ] });
+    const cancelled = await sched.transitionTaskOutcome(userId, task.lastInsertRowid, 'cancelled');
+    assert.equal(cancelled.task.cancelled, 1);
+    assert.equal((await sched.getBlocks(userId, cancelled.version.version_id)).length, 0);
+    assert.equal((await q.get('SELECT due_date FROM tasks WHERE id=?', [task.lastInsertRowid])).due_date, null);
+    const reopened = await sched.transitionTaskOutcome(userId, task.lastInsertRowid, null);
+    assert.equal(reopened.task.cancelled, 0);
+    assert.equal(reopened.version, null);
+    assert.deepEqual((await sched.getActiveSchedule(userId)).unplaced.map(x => x.id), [task.lastInsertRowid]);
+    assert.equal((await sched.getBlocks(userId, initial.version_id)).length, 1);
+  });
+
+  test('完成 Plan Task 也會退出 active future schedule，但保留 due_date 歷史相容資料', async () => {
+    const userId = 54;
+    await q.run('INSERT INTO users (id,email,password_hash) VALUES (?,?,?)', [userId, 'complete-version@test', 'x']);
+    const plan = await q.run('INSERT INTO plans (user_id,name,status) VALUES (?,?,?)', [userId, '完成任務', 'active']);
+    const task = await q.run('INSERT INTO tasks (user_id,title,plan_id) VALUES (?,?,?)', [userId, '完成後不排程', plan.lastInsertRowid]);
+    const initial = await sched.createScheduleVersion(userId, { source: sched.SOURCE.INITIAL, effectiveFrom: '2099-01-01', blocks: [
+      { task_id: task.lastInsertRowid, date: '2099-08-13', start_time: '18:00', end_time: '19:00' },
+    ] });
+    const completed = await sched.transitionTaskOutcome(userId, task.lastInsertRowid, 'completed');
+    assert.equal(completed.task.completed, 1);
+    assert.equal((await sched.getBlocks(userId, completed.version.version_id)).length, 0);
+    assert.equal((await q.get('SELECT due_date FROM tasks WHERE id=?', [task.lastInsertRowid])).due_date, '2099-08-13');
+    assert.equal((await sched.getBlocks(userId, initial.version_id)).length, 1, '歷史版本不可改寫');
+  });
+});
+
 describe('P3 Restore：版本是 template，套用永遠建立新版本', () => {
   test('full restore 建立新版本、保留舊版 immutable，且不在 template 的新 Task 變 unplaced', async () => {
     const userId = 6;
