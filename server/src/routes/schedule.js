@@ -83,8 +83,16 @@ router.post('/preview', async (req, res) => {
     .filter(id => Number.isInteger(id) && id > 0))];
   if (referencedTaskIds.length) {
     const placeholders = referencedTaskIds.map(() => '?').join(',');
-    const rows = await q.all(`SELECT id,deleted,completed,cancelled FROM tasks WHERE user_id=? AND id IN (${placeholders})`, [req.userId, ...referencedTaskIds]);
-    const ineligible = new Set(rows.filter(t => t.deleted || t.completed || t.cancelled).map(t => Number(t.id)));
+    const rows = await q.all(
+      `SELECT t.id,t.plan_id,t.deleted,t.completed,t.cancelled,p.status AS plan_status
+         FROM tasks t LEFT JOIN plans p ON p.id=t.plan_id AND p.user_id=t.user_id
+        WHERE t.user_id=? AND t.id IN (${placeholders})`, [req.userId, ...referencedTaskIds]);
+    // preview 不能替 apply 預演一份 write gate 必定拒絕的 candidate。沒有查到的
+    // task、一般待辦、非 draft/active 計畫，以及已結束 Task 都一律退出。
+    const found = new Set(rows.map(t => Number(t.id)));
+    const ineligible = new Set(referencedTaskIds.filter(id => !found.has(id)));
+    for (const t of rows) if (t.plan_id == null || t.deleted || t.completed || t.cancelled
+      || !['draft', 'active'].includes(t.plan_status)) ineligible.add(Number(t.id));
     for (let i = items.length - 1; i >= 0; i--) if (ineligible.has(Number(items[i].task_id))) items.splice(i, 1);
   }
   if (!items.length) return res.status(400).json({ error: '沒有可排程的未完成任務' });

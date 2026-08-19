@@ -783,16 +783,20 @@ async function createScheduleVersionInTx(tx, userId, {
         reason, source, effFrom, normalizedBlocks.length]);
     const versionId = v.lastInsertRowid;
 
-    // ② blocks。每一個都必須是這位使用者有效、未完成的 Plan Task；不得寫入
-    // orphan、別人的任務、一般待辦、已刪除或已完成任務。任何一筆不合法都使
-    // 整個 transaction rollback，不能 silently skip 或留下 partial version。
+    // ② blocks。每一個都必須是這位使用者 draft／active 計畫底下有效、未完成的
+    // Task；不得寫入 orphan、別人的任務、一般待辦、inactive Plan、已刪除或已完成
+    // 任務。任何一筆不合法都使整個 transaction rollback，不能 silently skip 或留下
+    // partial version。
     for (const b of normalizedBlocks) {
       const t = await tx.get(
-        `SELECT t.id, t.title, t.plan_id, t.deleted, t.completed, t.cancelled, l.name AS subject
-           FROM tasks t LEFT JOIN lists l ON l.id = t.list_id
+        `SELECT t.id,t.title,t.plan_id,t.deleted,t.completed,t.cancelled,l.name AS subject,p.status AS plan_status
+           FROM tasks t
+           LEFT JOIN lists l ON l.id=t.list_id AND l.user_id=t.user_id
+           LEFT JOIN plans p ON p.id=t.plan_id AND p.user_id=t.user_id
           WHERE t.id=? AND t.user_id=?`, [b.task_id, userId]);
       if (!t) throw new ScheduleInputError(`排程任務不存在或不屬於目前使用者：${b.task_id}`);
       if (t.plan_id == null) throw new ScheduleInputError(`排程任務必須屬於計畫：${b.task_id}`);
+      if (!['draft', 'active'].includes(t.plan_status)) throw new ScheduleInputError(`排程任務所屬計畫目前未參與排程：${b.task_id}`);
       if (t.deleted) throw new ScheduleInputError(`排程任務已刪除：${b.task_id}`);
       if (t.completed) throw new ScheduleInputError(`排程任務已完成：${b.task_id}`);
       if (t.cancelled) throw new ScheduleInputError(`排程任務已取消：${b.task_id}`);
@@ -1033,10 +1037,12 @@ export async function bootstrapScheduleIfNeeded(userId, planningDay = todayTW())
   if (existing != null) return { created: false, version_id: existing };
 
   const rows = await q.all(
-    `SELECT id, due_date, due_time FROM tasks
-      WHERE user_id=? AND plan_id IS NOT NULL AND COALESCE(deleted,0)=0
-        AND completed=0 AND COALESCE(cancelled,0)=0 AND due_date IS NOT NULL AND due_date >= ?
-      ORDER BY due_date, COALESCE(due_time,''), id`,
+    `SELECT t.id,t.due_date,t.due_time FROM tasks t
+      JOIN plans p ON p.id=t.plan_id AND p.user_id=t.user_id
+      WHERE t.user_id=? AND t.plan_id IS NOT NULL AND COALESCE(t.deleted,0)=0
+        AND t.completed=0 AND COALESCE(t.cancelled,0)=0 AND t.due_date IS NOT NULL AND t.due_date >= ?
+        AND p.status IN ('draft','active')
+      ORDER BY t.due_date, COALESCE(t.due_time,''), t.id`,
     [userId, planningDay]);
 
   // legacy Task 只有 due_time，沒有可證實的 duration；不能杜撰 60 分鐘工作量。

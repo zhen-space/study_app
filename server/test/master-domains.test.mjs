@@ -51,6 +51,18 @@ test('P1 regression：取消任務不再是 preview 的排程項目或有效 Tas
   assert.match(preview.body.error, /未完成任務/);
 });
 
+test('P1 regression：preview 不接受 paused Plan 的既有 Task', async () => {
+  const plan = await api('/plans', { method: 'POST', body: { name: '暫停後不可排程', status: 'active' } });
+  const task = await api('/tasks', { method: 'POST', body: { title: '暫停計畫任務', plan_id: plan.body.id } });
+  assert.equal((await api(`/plans/${plan.body.id}/pause`, { method: 'POST', body: {} })).status, 200);
+  const preview = await api('/schedule/preview', { method: 'POST', body: {
+    plan_id: plan.body.id, timed: false, startDate: '2099-01-01', endDate: '2099-01-02',
+    items: [{ task_id: task.body.id, subject_id: 1, title: '暫停計畫任務', spread: false, start: '2099-01-01', end: '2099-01-02' }],
+  } });
+  assert.equal(preview.status, 400);
+  assert.match(preview.body.error, /未完成任務/);
+});
+
 test('Master F：StudySession 綁 Task，不改動 ScheduledBlock', async () => {
   const plan = await api('/plans', { method: 'POST', body: { name: '讀書紀錄' } });
   const task = await api('/tasks', { method: 'POST', body: { title: '讀一章', plan_id: plan.body.id } });

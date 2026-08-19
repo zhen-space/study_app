@@ -306,6 +306,39 @@ describe('version_no 併發', () => {
   });
 });
 
+describe('inactive Plan 不可進入 future ScheduleVersion', () => {
+  test('沒有 active version 時，bootstrap 不替 paused／ended／archived Plan 建 block', async () => {
+    const userId = 71;
+    await q.run('INSERT INTO users (id,email,password_hash) VALUES (?,?,?)', [userId, 'bootstrap-inactive@test', 'x']);
+    const statuses = ['paused', 'ended', 'archived'];
+    for (const status of statuses) {
+      const plan = await q.run('INSERT INTO plans (user_id,name,status) VALUES (?,?,?)', [userId, `不排程 ${status}`, status]);
+      await q.run('INSERT INTO tasks (user_id,title,plan_id,due_date,due_time) VALUES (?,?,?,?,?)',
+        [userId, `${status} 任務`, plan.lastInsertRowid, '2026-10-01', '19:00']);
+    }
+    const result = await sched.bootstrapScheduleIfNeeded(userId, '2026-09-01');
+    assert.equal(result.created, true);
+    const blocks = await sched.getBlocks(userId, result.version_id);
+    assert.equal(blocks.length, 0, 'inactive Plan 的 legacy due_date 不能被 bootstrap 收成 placement');
+  });
+
+  test('把 inactive Plan Task 寫入版本會整筆 rollback', async () => {
+    const userId = 72;
+    await q.run('INSERT INTO users (id,email,password_hash) VALUES (?,?,?)', [userId, 'inactive-write@test', 'x']);
+    const activePlan = await q.run('INSERT INTO plans (user_id,name,status) VALUES (?,?,?)', [userId, '進行中', 'active']);
+    const pausedPlan = await q.run('INSERT INTO plans (user_id,name,status) VALUES (?,?,?)', [userId, '暫停中', 'paused']);
+    const activeTask = await q.run('INSERT INTO tasks (user_id,title,plan_id) VALUES (?,?,?)', [userId, '合法任務', activePlan.lastInsertRowid]);
+    const inactiveTask = await q.run('INSERT INTO tasks (user_id,title,plan_id) VALUES (?,?,?)', [userId, '不合法任務', pausedPlan.lastInsertRowid]);
+    const before = await counts();
+    await assert.rejects(() => sched.createScheduleVersion(userId, {
+      source: sched.SOURCE.AI_REPLAN, effectiveFrom: '2026-09-01',
+      blocks: [{ task_id: activeTask.lastInsertRowid, date: '2026-09-10' }, { task_id: inactiveTask.lastInsertRowid, date: '2026-09-11' }],
+    }), /未參與排程/);
+    const after = await counts();
+    assert.deepEqual(after, before, 'inactive Plan gate 必須 rollback version、blocks、active 與 mirror');
+  });
+});
+
 describe('active version 沒有 fallback 推導', () => {
   test('user_schedule_state 被清掉時就是沒有 active，不會退回 MAX(version_no)', async () => {
     const had = await sched.getActiveVersionId(USER);
@@ -611,12 +644,15 @@ describe('Phase 1：Plan／Task lifecycle 與 user-level ScheduleVersion', () =>
     const userId = 56;
     await q.run('INSERT INTO users (id,email,password_hash) VALUES (?,?,?)', [userId, 'eligible-plan@test', 'x']);
     const activePlan = await q.run('INSERT INTO plans (user_id,name,status) VALUES (?,?,?)', [userId, '進行中', 'active']);
-    const pausedPlan = await q.run('INSERT INTO plans (user_id,name,status) VALUES (?,?,?)', [userId, '暫停中', 'paused']);
+    // 直接 seed 舊 active snapshot：這是 write gate 收緊前可能存在的歷史資料，
+    // 讀取端仍必須把後來暫停的 Plan 排除，而不是假設它永遠不會存在。
+    const pausedPlan = await q.run('INSERT INTO plans (user_id,name,status) VALUES (?,?,?)', [userId, '稍後暫停', 'active']);
     const a = await q.run('INSERT INTO tasks (user_id,title,plan_id) VALUES (?,?,?)', [userId, '可排', activePlan.lastInsertRowid]);
     const p = await q.run('INSERT INTO tasks (user_id,title,plan_id) VALUES (?,?,?)', [userId, '不可排', pausedPlan.lastInsertRowid]);
     const version = await sched.createScheduleVersion(userId, { source: sched.SOURCE.INITIAL, effectiveFrom: '2099-01-01', blocks: [
       { task_id: a.lastInsertRowid, date: '2099-08-15' }, { task_id: p.lastInsertRowid, date: '2099-08-15' },
     ] });
+    await q.run('UPDATE plans SET status=? WHERE id=?', ['paused', pausedPlan.lastInsertRowid]);
     const active = await sched.getActiveSchedule(userId);
     assert.equal(active.version.id, version.version_id);
     assert.deepEqual(active.blocks.map(b => b.task_id), [a.lastInsertRowid]);
