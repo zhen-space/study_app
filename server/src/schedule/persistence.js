@@ -82,6 +82,19 @@ export class ScheduleLockConflictError extends Error {
   constructor(conflicts) { super('因鎖定無法重排，請先解鎖後再試'); this.name = 'ScheduleLockConflictError'; this.status = 409; this.conflicts = conflicts; }
 }
 
+// complete 的條件必須和 Plan status 寫入、ScheduleVersion 建立在同一筆交易中。
+// 否則兩個請求交錯時，可能在 transaction 外看起來都已完成，實際上卻留下
+// 尚未完成 Task 的 completed Plan。
+export class PlanCompletionIncompleteError extends Error {
+  constructor(unresolved) {
+    super('仍有未完成任務，請先完成或取消；若不再繼續請結束計畫');
+    this.name = 'PlanCompletionIncompleteError';
+    this.status = 409;
+    this.code = 'unresolved_tasks';
+    this.unresolved = unresolved;
+  }
+}
+
 // 資料完整性最後一道防線：preview 是 UX 層，不能假設所有 caller 都經過它。
 // 只有同日、同時帶 start/end 的 block 才佔用實際時段；待辦模式的 date-only
 // block 可以同日並存，絕不能被這裡誤判為碰撞。
@@ -185,8 +198,10 @@ export async function getUnplaced(userId, versionId) {
   return q.all(
     `SELECT t.id, t.title, t.plan_id, t.list_id, t.deadline_date
        FROM tasks t
+       JOIN plans p ON p.id=t.plan_id AND p.user_id=t.user_id
       WHERE t.user_id=? AND t.plan_id IS NOT NULL
         AND COALESCE(t.deleted,0)=0 AND t.completed=0 AND COALESCE(t.cancelled,0)=0
+        AND p.status IN ('draft','active')
         AND NOT EXISTS (
           SELECT 1 FROM scheduled_blocks b
            WHERE b.schedule_version_id=? AND b.task_id=t.id)
@@ -198,7 +213,16 @@ export async function getActiveSchedule(userId) {
   const version = await getActiveVersion(userId);
   if (!version) return { active: false, version: null, blocks: [], unplaced: [] };
   const [blocks, unplaced] = await Promise.all([
-    getBlocks(userId, version.id),
+    q.all(
+      `SELECT b.id,b.task_id,b.date,b.start_time,b.end_time,b.planned_minutes,
+              b.task_title_snapshot,b.subject_name_snapshot
+         FROM scheduled_blocks b
+         JOIN tasks t ON t.id=b.task_id AND t.user_id=b.user_id
+         JOIN plans p ON p.id=t.plan_id AND p.user_id=t.user_id
+        WHERE b.schedule_version_id=? AND b.user_id=?
+          AND COALESCE(t.deleted,0)=0 AND t.completed=0 AND COALESCE(t.cancelled,0)=0
+          AND p.status IN ('draft','active')
+        ORDER BY b.date,COALESCE(b.start_time,''),b.id`, [version.id, userId]).then(rows => rows.map(canonicalizeBlockTiming)),
     getUnplaced(userId, version.id),
   ]);
   return { active: true, version, blocks, unplaced };
@@ -235,8 +259,10 @@ async function getRestorePreviewFrom(db, userId, sourceVersionId, {
     db.all(`SELECT id, task_id, date, start_time, end_time, planned_minutes, task_title_snapshot
               FROM scheduled_blocks WHERE schedule_version_id=? AND user_id=?
              ORDER BY date, COALESCE(start_time,''), id`, [sourceVersionId, userId]),
-    db.all(`SELECT id, title, plan_id, deadline_date, deleted, completed, cancelled
-              FROM tasks WHERE user_id=?`, [userId]),
+    db.all(`SELECT t.id,t.title,t.plan_id,t.deadline_date,t.deleted,t.completed,t.cancelled,
+                   p.status AS plan_status
+              FROM tasks t LEFT JOIN plans p ON p.id=t.plan_id AND p.user_id=t.user_id
+             WHERE t.user_id=?`, [userId]),
     db.all('SELECT date,start_time,end_time,recurring,title FROM fixed_events WHERE user_id=?', [userId]),
     db.get('SELECT active_version_id FROM user_schedule_state WHERE user_id=?', [userId]),
     db.all('SELECT * FROM schedule_locks WHERE user_id=? AND released_at IS NULL', [userId]),
@@ -310,8 +336,10 @@ async function getRestorePreviewFrom(db, userId, sourceVersionId, {
   const scheduledIds = new Set(lockedRestorable.map(b => Number(b.task_id)));
   const conflictIds = new Set(conflicts.map(c => Number(c.task_id)));
   // Restore 不 overlay active：template 中沒有的新任務，以及無法恢復的有效任務，
-  // 都會是新版本的 unplaced。completed/deleted 已退出 future schedule，不列入。
-  const unplacedTaskIds = liveTasks.filter(t => t.plan_id != null && !t.deleted && !t.completed && !t.cancelled && !scheduledIds.has(Number(t.id)))
+  // 都會是新版本的 unplaced。已完成／取消／刪除，或非 draft/active 計畫，
+  // 都已退出 future schedule，不列入。
+  const unplacedTaskIds = liveTasks.filter(t => t.plan_id != null && !t.deleted && !t.completed && !t.cancelled
+    && ['draft', 'active'].includes(t.plan_status) && !scheduledIds.has(Number(t.id)))
     .map(t => Number(t.id));
   const status = lockedRestorable.length === 0
     ? (conflicts.length ? 'impossible' : 'nothing_to_restore')
@@ -326,6 +354,7 @@ async function getRestorePreviewFrom(db, userId, sourceVersionId, {
     conflicts,
     skipped,
     skipped_completed: skipped.filter(s => s.reason === 'completed').map(s => s.task_id),
+    skipped_cancelled: skipped.filter(s => s.reason === 'cancelled').map(s => s.task_id),
     skipped_deleted: skipped.filter(s => s.reason === 'deleted').map(s => s.task_id),
     unplaced_task_ids: unplacedTaskIds,
     summary: {
@@ -611,6 +640,14 @@ export async function transitionPlanLifecycle(userId, planId, {
     };
     if (!allowed[plan.status]?.has(nextStatus)) {
       throw new ScheduleInputError('這個計畫目前不能進行此狀態轉換');
+    }
+    if (nextStatus === 'completed') {
+      const unresolved = await tx.all(
+        `SELECT id,title,due_date FROM tasks
+          WHERE user_id=? AND plan_id=? AND completed=0
+            AND COALESCE(cancelled,0)=0 AND COALESCE(deleted,0)=0
+          ORDER BY due_date,id`, [userId, plan.id]);
+      if (unresolved.length) throw new PlanCompletionIncompleteError(unresolved);
     }
     const state = await tx.get('SELECT active_version_id FROM user_schedule_state WHERE user_id=?', [userId]);
     const activeId = state?.active_version_id ?? null;

@@ -26,6 +26,31 @@ test('Master H：Goal 是 Plan 的 optional 上層，不取代 Plan', async () =
   assert.equal(detail.body.plans.some(x => x.id === plan.body.id), true);
 });
 
+test('Goal progress 排除取消任務的分母，完成與取消分開呈現', async () => {
+  const goal = await api('/goals', { method: 'POST', body: { name: '取消不拖累進度' } });
+  const plan = await api('/plans', { method: 'POST', body: { name: '目標計畫', goal_id: goal.body.id, status: 'active' } });
+  const done = await api('/tasks', { method: 'POST', body: { title: '已完成', plan_id: plan.body.id } });
+  const cancelled = await api('/tasks', { method: 'POST', body: { title: '已取消', plan_id: plan.body.id } });
+  await api(`/tasks/${done.body.id}`, { method: 'PATCH', body: { completed: true } });
+  await api(`/tasks/${cancelled.body.id}/cancel`, { method: 'POST', body: {} });
+  const detail = await api(`/goals/${goal.body.id}`);
+  assert.deepEqual(detail.body.progress, { total_tasks: 1, completed_tasks: 1, percent: 100 });
+  const child = detail.body.plans.find(p => p.id === plan.body.id);
+  assert.equal(child.cancelled_task_count, 1);
+});
+
+test('P1 regression：取消任務不再是 preview 的排程項目或有效 Task Lock', async () => {
+  const plan = await api('/plans', { method: 'POST', body: { name: '取消後退出排程', status: 'active' } });
+  const task = await api('/tasks', { method: 'POST', body: { title: '已取消任務', plan_id: plan.body.id } });
+  assert.equal((await api(`/tasks/${task.body.id}/cancel`, { method: 'POST', body: {} })).status, 200);
+  const preview = await api('/schedule/preview', { method: 'POST', body: {
+    plan_id: plan.body.id, timed: false, startDate: '2099-01-01', endDate: '2099-01-02',
+    items: [{ task_id: task.body.id, subject_id: 1, title: '已取消任務', spread: false, start: '2099-01-01', end: '2099-01-02' }],
+  } });
+  assert.equal(preview.status, 400);
+  assert.match(preview.body.error, /未完成任務/);
+});
+
 test('Master F：StudySession 綁 Task，不改動 ScheduledBlock', async () => {
   const plan = await api('/plans', { method: 'POST', body: { name: '讀書紀錄' } });
   const task = await api('/tasks', { method: 'POST', body: { title: '讀一章', plan_id: plan.body.id } });

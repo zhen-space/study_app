@@ -431,9 +431,9 @@ export async function initSchema() {
   try { await client.execute("CREATE INDEX IF NOT EXISTS idx_routine_exceptions_user_date ON routine_exceptions(user_id, date)"); } catch {}
   try { await client.execute("CREATE INDEX IF NOT EXISTS idx_study_sessions_user_started ON study_sessions(user_id, started_at)"); } catch {}
   try { await client.execute("CREATE INDEX IF NOT EXISTS idx_study_sessions_task ON study_sessions(task_id)"); } catch {}
-  // 同一使用者的 running／paused session 都是尚未結束的計時；資料庫與 API
-  // 一起守住唯一性，不能因兩個瀏覽器同時按開始而出現雙計時。
-  try { await client.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_study_sessions_one_live ON study_sessions(user_id) WHERE status IN ('running','paused')"); } catch {}
+  // live StudySession 的 partial unique index 不能在啟動時靜默嘗試：若 production
+  // 已有舊的重複 running／paused rows，SQLite 會拒絕建 index。先跑唯讀 audit，再由
+  // 明確的 operator script 在「確認沒有重複」後建立，避免把問題藏起來。
   try { await client.execute("ALTER TABLE study_sessions ADD COLUMN running_since TEXT"); } catch {}
   // 舊資料的分類補進「記住的分類」清單，之後直接用選的
   try { await client.execute("INSERT INTO memo_categories (user_id,name,order_index) SELECT DISTINCT user_id,category,0 FROM memos WHERE category<>'' AND category IS NOT NULL AND NOT EXISTS (SELECT 1 FROM memo_categories c WHERE c.user_id=memos.user_id AND c.name=memos.category)"); } catch {}

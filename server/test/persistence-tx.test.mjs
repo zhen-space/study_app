@@ -501,6 +501,16 @@ describe('P4 Lock integration：preview/apply/restore 共用 hard constraint', (
 });
 
 describe('Phase 1：Plan／Task lifecycle 與 user-level ScheduleVersion', () => {
+  test('complete 的 unresolved 驗證在 lifecycle transaction 內，不能只靠 route 前置讀取', async () => {
+    const userId = 50;
+    await q.run('INSERT INTO users (id,email,password_hash) VALUES (?,?,?)', [userId, 'complete-tx@test', 'x']);
+    const plan = await q.run('INSERT INTO plans (user_id,name,status) VALUES (?,?,?)', [userId, '尚未完成', 'active']);
+    await q.run('INSERT INTO tasks (user_id,title,plan_id) VALUES (?,?,?)', [userId, '未完成 Task', plan.lastInsertRowid]);
+    await assert.rejects(() => sched.transitionPlanLifecycle(userId, plan.lastInsertRowid, { nextStatus: 'completed' }),
+      err => err.name === 'PlanCompletionIncompleteError' && err.code === 'unresolved_tasks' && err.unresolved.length === 1);
+    assert.equal((await q.get('SELECT status FROM plans WHERE id=?', [plan.lastInsertRowid])).status, 'active');
+  });
+
   test('暫停 Plan 只移除自己的 future blocks、保留其他 Plan，恢復後任務維持 unplaced', async () => {
     const userId = 51;
     await q.run('INSERT INTO users (id,email,password_hash) VALUES (?,?,?)', [userId, 'lifecycle@test', 'x']);
@@ -578,6 +588,42 @@ describe('Phase 1：Plan／Task lifecycle 與 user-level ScheduleVersion', () =>
     assert.equal((await sched.getBlocks(userId, completed.version.version_id)).length, 0);
     assert.equal((await q.get('SELECT due_date FROM tasks WHERE id=?', [task.lastInsertRowid])).due_date, '2099-08-13');
     assert.equal((await sched.getBlocks(userId, initial.version_id)).length, 1, '歷史版本不可改寫');
+  });
+
+  test('cancelled Task restore 時列為 skip，preview 與 apply 都不會重新寫入 block 或 unplaced', async () => {
+    const userId = 55;
+    await q.run('INSERT INTO users (id,email,password_hash) VALUES (?,?,?)', [userId, 'restore-cancelled@test', 'x']);
+    const plan = await q.run('INSERT INTO plans (user_id,name,status) VALUES (?,?,?)', [userId, '取消後恢復', 'active']);
+    const task = await q.run('INSERT INTO tasks (user_id,title,plan_id) VALUES (?,?,?)', [userId, '已取消來源', plan.lastInsertRowid]);
+    const source = await sched.createScheduleVersion(userId, { source: sched.SOURCE.INITIAL, effectiveFrom: '2099-01-01', blocks: [
+      { task_id: task.lastInsertRowid, date: '2099-08-14' },
+    ] });
+    await q.run('UPDATE tasks SET cancelled=1 WHERE id=?', [task.lastInsertRowid]);
+    const preview = await sched.getRestorePreview(userId, source.version_id);
+    assert.deepEqual(preview.skipped_cancelled, [task.lastInsertRowid]);
+    assert.deepEqual(preview.restorable_blocks, []);
+    assert.deepEqual(preview.unplaced_task_ids, []);
+    const result = await sched.applyRestore(userId, source.version_id, { baseVersionId: source.version_id });
+    assert.equal(result.applied, false);
+  });
+
+  test('active schedule 的 blocks 與 unplaced 只屬於 draft／active Plan', async () => {
+    const userId = 56;
+    await q.run('INSERT INTO users (id,email,password_hash) VALUES (?,?,?)', [userId, 'eligible-plan@test', 'x']);
+    const activePlan = await q.run('INSERT INTO plans (user_id,name,status) VALUES (?,?,?)', [userId, '進行中', 'active']);
+    const pausedPlan = await q.run('INSERT INTO plans (user_id,name,status) VALUES (?,?,?)', [userId, '暫停中', 'paused']);
+    const a = await q.run('INSERT INTO tasks (user_id,title,plan_id) VALUES (?,?,?)', [userId, '可排', activePlan.lastInsertRowid]);
+    const p = await q.run('INSERT INTO tasks (user_id,title,plan_id) VALUES (?,?,?)', [userId, '不可排', pausedPlan.lastInsertRowid]);
+    const version = await sched.createScheduleVersion(userId, { source: sched.SOURCE.INITIAL, effectiveFrom: '2099-01-01', blocks: [
+      { task_id: a.lastInsertRowid, date: '2099-08-15' }, { task_id: p.lastInsertRowid, date: '2099-08-15' },
+    ] });
+    const active = await sched.getActiveSchedule(userId);
+    assert.equal(active.version.id, version.version_id);
+    assert.deepEqual(active.blocks.map(b => b.task_id), [a.lastInsertRowid]);
+    await sched.createScheduleVersion(userId, {
+      source: sched.SOURCE.AI_REPLAN, effectiveFrom: '2099-01-01', parentVersionId: version.version_id, blocks: [],
+    });
+    assert.deepEqual((await sched.getActiveSchedule(userId)).unplaced.map(t => t.id), [a.lastInsertRowid]);
   });
 });
 

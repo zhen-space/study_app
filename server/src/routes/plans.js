@@ -105,10 +105,15 @@ router.get('/plans/:id/health', async (req, res) => {
     q.all('SELECT id,due_date,completed,cancelled,deleted,estimated_minutes FROM tasks WHERE user_id=? AND plan_id=?', [req.userId, plan.id]),
     q.get('SELECT active_version_id FROM user_schedule_state WHERE user_id=?', [req.userId]),
   ]);
-  const pending = tasks.filter(t => !t.completed && !t.cancelled && !t.deleted);
+  // paused／completed／ended／archived Plan 是管理中的資料，不是未來排程工作量；
+  // health 不能因此把 Today 誤標成「需要調整」。
+  const scheduleParticipates = ['draft', 'active'].includes(plan.status);
+  const pending = scheduleParticipates ? tasks.filter(t => !t.completed && !t.cancelled && !t.deleted) : [];
   const activeBlocks = state?.active_version_id == null ? [] : await q.all(
     'SELECT b.*, t.plan_id,t.deadline_date,t.deleted,t.completed,t.cancelled FROM scheduled_blocks b JOIN tasks t ON t.id=b.task_id AND t.user_id=b.user_id WHERE b.user_id=? AND b.schedule_version_id=?', [req.userId, state.active_version_id]);
-  const planBlocks = activeBlocks.filter(b => Number(b.plan_id) === Number(plan.id));
+  const planBlocks = scheduleParticipates
+    ? activeBlocks.filter(b => Number(b.plan_id) === Number(plan.id) && !b.deleted && !b.completed && !b.cancelled)
+    : [];
   const blockIds = new Set(planBlocks.map(b => Number(b.task_id)));
   const overdue = pending.filter(t => t.due_date && t.due_date < today).length;
   const unplaced = state?.active_version_id == null ? pending.filter(t => !t.due_date).length : pending.filter(t => !blockIds.has(Number(t.id))).length;
@@ -187,7 +192,7 @@ async function lifecycle(req, res, nextStatus, options = {}) {
     // 保留舊 caller 直接讀 plan 欄位的相容性，同時提供明確的 plan/version shape。
     res.json({ ...out.plan, plan: out.plan, schedule_version: out.version });
   } catch (err) {
-    res.status(err.status || 400).json({ error: err.message, conflicts: err.conflicts });
+    res.status(err.status || 400).json({ error: err.message, code: err.code, unresolved: err.unresolved, conflicts: err.conflicts });
   }
 }
 
@@ -197,10 +202,6 @@ async function lifecycle(req, res, nextStatus, options = {}) {
 router.post('/plans/:id/complete', async (req, res) => {
   const plan = await mine(req.params.id, req.userId);
   if (!plan) return res.status(404).json({ error: '找不到這個計畫' });
-  const unresolved = await q.all(
-    'SELECT id, title, due_date FROM tasks WHERE user_id=? AND plan_id=? AND completed=0 AND COALESCE(cancelled,0)=0 AND COALESCE(deleted,0)=0 ORDER BY due_date, id',
-    [req.userId, plan.id]);
-  if (unresolved.length) return res.status(409).json({ error: '仍有未完成任務，請先完成或取消；若不再繼續請結束計畫', code: 'unresolved_tasks', plan, unresolved });
   return lifecycle(req, res, 'completed');
 });
 

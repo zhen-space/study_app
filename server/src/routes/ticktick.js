@@ -545,7 +545,8 @@ router.get('/tstats', async (req, res) => {
   const active = await q.get('SELECT active_version_id FROM user_schedule_state WHERE user_id=?', [req.userId]);
   const planned = active?.active_version_id == null ? [] : await q.all(`SELECT b.planned_minutes, b.date, t.list_id, t.plan_id, l.name AS list_name, p.name AS plan_name
     FROM scheduled_blocks b JOIN tasks t ON t.id=b.task_id AND t.user_id=b.user_id LEFT JOIN lists l ON l.id=t.list_id AND l.user_id=t.user_id LEFT JOIN plans p ON p.id=t.plan_id AND p.user_id=t.user_id
-    WHERE b.user_id=? AND b.schedule_version_id=? AND t.completed=0 AND COALESCE(t.cancelled,0)=0 AND COALESCE(t.deleted,0)=0`, [req.userId, active.active_version_id]);
+    WHERE b.user_id=? AND b.schedule_version_id=? AND t.completed=0 AND COALESCE(t.cancelled,0)=0 AND COALESCE(t.deleted,0)=0
+      AND p.status IN ('draft','active')`, [req.userId, active.active_version_id]);
   const plannedMinutes = planned.reduce((n, b) => n + (b.planned_minutes || 0), 0);
   // 統計不再只看 Task checkbox：原定時間來自 active ScheduleVersion，實際時間
   // 來自 StudySession。兩者各自保留，不能把實際學習反寫進 immutable block。
@@ -555,7 +556,8 @@ router.get('/tstats', async (req, res) => {
     if (block.list_name) plannedBySubject[block.list_name] = (plannedBySubject[block.list_name] || 0) + minutes;
     if (block.plan_name) plannedByPlan[block.plan_name] = (plannedByPlan[block.plan_name] || 0) + minutes;
   }
-  const unplaced = active?.active_version_id == null ? 0 : (await q.get(`SELECT COUNT(*) c FROM tasks t WHERE t.user_id=? AND t.plan_id IS NOT NULL AND t.completed=0 AND COALESCE(t.cancelled,0)=0 AND COALESCE(t.deleted,0)=0
+  const unplaced = active?.active_version_id == null ? 0 : (await q.get(`SELECT COUNT(*) c FROM tasks t JOIN plans p ON p.id=t.plan_id AND p.user_id=t.user_id WHERE t.user_id=? AND t.plan_id IS NOT NULL AND t.completed=0 AND COALESCE(t.cancelled,0)=0 AND COALESCE(t.deleted,0)=0
+    AND p.status IN ('draft','active')
     AND NOT EXISTS (SELECT 1 FROM scheduled_blocks b WHERE b.user_id=t.user_id AND b.schedule_version_id=? AND b.task_id=t.id)`, [req.userId, active.active_version_id]))?.c || 0;
   // 「移動次數」由 immutable version blocks 即時計算，不另存一份容易失真的
   // counter。只計未來 placement，避免舊歷史版本讓數字隨時間無限膨脹。
