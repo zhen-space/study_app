@@ -13,13 +13,14 @@ const item = (id, node_id, kind = 'reading', order_index = 0) =>
   ({ id, book_id: 1, node_id, kind, title: `i${id}`, estimated_minutes: null, order_index });
 
 describe('樹形限制（契約 7）', () => {
-  test('章只能在書底下，節只能在章底下，主題只能在節底下', () => {
+  test('章在書底下，Section / Topic 同層且都只能直接掛在章底下', () => {
     assert.equal(nodePlacementProblem('chapter', null), null);
     assert.equal(nodePlacementProblem('section', 'chapter'), null);
-    assert.equal(nodePlacementProblem('topic', 'section'), null);
+    assert.equal(nodePlacementProblem('topic', 'chapter'), null);
     assert.match(nodePlacementProblem('chapter', 'chapter'), /只能直接放在書底下/);
     assert.match(nodePlacementProblem('section', null), /只能放在章底下/);
-    assert.match(nodePlacementProblem('topic', 'chapter'), /只能放在節底下/);
+    assert.match(nodePlacementProblem('topic', 'section'), /只能放在章底下/);
+    assert.match(nodePlacementProblem('topic', null), /只能放在章底下/);
     assert.match(nodePlacementProblem('unit', null), /層級不正確/);
   });
 
@@ -42,30 +43,31 @@ describe('樹形限制（契約 7）', () => {
 });
 
 describe('derived 完成度（契約 1）', () => {
-  // 章1 ├ 節1 ├ 主題1（item 1）
-  //     │     └ item 2
+  // 章1 ├ 節1（item 2）
+  //     ├ 主題1（item 1）
   //     └ item 3（單元練習，直接掛章）
-  const nodes = [node(1, 'chapter', null), node(2, 'section', 1), node(3, 'topic', 2)];
+  const nodes = [node(1, 'chapter', null), node(2, 'section', 1), node(3, 'topic', 1)];
   const items = [item(10, 3), item(11, 2), item(12, 1, 'unit_exercise')];
 
-  test('節點完成度由子孫 ContentItem 現算，節點自身沒有完成欄位', () => {
+  test('節點完成度由自身 ContentItem 與合法子節點現算，節點自身沒有完成欄位', () => {
     const t = buildTree(nodes, items, { completed: new Set([10]) });
     const ch = t.nodes[0];
     assert.equal(ch.progress.total_items, 3);
     assert.equal(ch.progress.completed_items, 1);
     assert.equal(ch.progress.percent, 33);
     assert.equal('completed' in ch, false, '節點不得帶有自己的 completed 欄位');
-    const sec = ch.children[0];
-    assert.equal(sec.progress.total_items, 2);
-    assert.equal(sec.progress.completed_items, 1);
-    const topic = sec.children[0];
+    const sec = ch.children.find(n => n.kind === 'section');
+    const topic = ch.children.find(n => n.kind === 'topic');
+    assert.equal(sec.progress.total_items, 1);
+    assert.equal(sec.progress.completed_items, 0);
     assert.equal(topic.progress.percent, 100);
   });
 
   test('直接掛在章底下的項目也計入該章進度', () => {
     const t = buildTree(nodes, items, { completed: new Set([12]) });
     assert.equal(t.nodes[0].progress.completed_items, 1);
-    assert.equal(t.nodes[0].children[0].progress.completed_items, 0);
+    assert.equal(t.nodes[0].children.find(n => n.kind === 'section').progress.completed_items, 0);
+    assert.equal(t.nodes[0].children.find(n => n.kind === 'topic').progress.completed_items, 0);
   });
 
   test('整本書的進度是所有 ContentItem 的聚合', () => {
@@ -133,14 +135,15 @@ describe('tri-state 選取（契約 6）', () => {
 });
 
 describe('descendantItemIds（節點批次選取的作用範圍）', () => {
-  const nodes = [node(1, 'chapter', null), node(2, 'section', 1), node(3, 'topic', 2), node(4, 'section', 1)];
+  const nodes = [node(1, 'chapter', null), node(2, 'section', 1), node(3, 'topic', 1), node(4, 'section', 1)];
   const items = [item(10, 3), item(11, 2), item(12, 1), item(13, 4)];
 
-  test('涵蓋整棵子樹', () => {
+  test('章涵蓋所有直接子節點與章本身的 ContentItem', () => {
     assert.deepEqual(descendantItemIds(1, nodes, items).sort((a, b) => a - b), [10, 11, 12, 13]);
   });
-  test('只取指定子樹，不會外溢到兄弟節點', () => {
-    assert.deepEqual(descendantItemIds(2, nodes, items).sort((a, b) => a - b), [10, 11]);
+  test('Section / Topic 各自只取自身項目，不會外溢到同層兄弟節點', () => {
+    assert.deepEqual(descendantItemIds(2, nodes, items), [11]);
+    assert.deepEqual(descendantItemIds(3, nodes, items), [10]);
     assert.deepEqual(descendantItemIds(4, nodes, items), [13]);
   });
 });

@@ -6,11 +6,12 @@
 
 export const NODE_KINDS = ['chapter', 'section', 'topic'];
 
-// 允許的父子關係。書底下只能是章；章底下是節；節底下是主題。主題底下不再分層。
+// 允許的父子關係。書底下只能是章；Section / Topic 是同層，兩者都直接掛在章底下。
+// Section / Topic 底下不再有 material node 子層；它們只承載 ContentItem。
 const ALLOWED_PARENT = {
   chapter: [null],
   section: ['chapter'],
-  topic: ['section'],
+  topic: ['chapter'],
 };
 
 export const ITEM_KINDS = ['reading', 'example', 'unit_exercise', 'past_exam'];
@@ -41,7 +42,7 @@ export function nodePlacementProblem(kind, parentKind) {
   if (!allowed.includes(parentKind ?? null)) {
     if (kind === 'chapter') return '「章」只能直接放在書底下';
     if (kind === 'section') return '「節」只能放在章底下';
-    return '「主題」只能放在節底下';
+    return '「主題」只能放在章底下';
   }
   return null;
 }

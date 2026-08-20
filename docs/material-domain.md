@@ -107,7 +107,18 @@ tri-state 的計算只看**尚未完成**的項目：
 
 已完成卻仍留著 selection 列的殘留狀態（先選取、之後在別處完成）不計入 selection。
 
-## 7. 不得建立假的 Section
+## 7. Material hierarchy 與不得建立假的 Section
+
+正式 hierarchy 是：
+
+- Book
+  - Chapter
+    - Section
+    - Topic
+
+**Section 與 Topic 是同一層級，兩者都直接掛在 Chapter。** Topic 不是 Section 的子層。
+Section / Topic 底下可以直接承載範例／例題；Chapter 本身可以直接承載單元練習／歷屆試題。
+不得為了讓 Chapter-level ContentItem「有 parent」而建立假的 Section。
 
 | ContentItem 類型 | 允許掛在 |
 |---|---|
@@ -119,7 +130,7 @@ tri-state 的計算只看**尚未完成**的項目：
 單元練習與歷屆試題直接屬於章。為了「讓題目有個 parent」而生出假的節，會污染
 每一個 derived 數字：章的完成率、tri-state、教材樹的層數。
 
-節點層級：章只能在書底下，節只能在章底下，主題只能在節底下。
+節點層級固定為：章只能在書底下；Section 與 Topic 都只能在章底下。
 
 ## 8. Category ↔ Book 是 many-to-many
 
@@ -148,7 +159,7 @@ Task——那是既有 lifecycle 的正常行為。
 | 表 | 用途 |
 |---|---|
 | `material_books` | 教材本體。`archived` / `archived_at` 撐起封存語意 |
-| `material_nodes` | 章／節／主題的自我參照樹（`kind` + `parent_id`） |
+| `material_nodes` | 章／節／主題的自我參照樹（`kind` + `parent_id`）；Section / Topic 都直接 reference Chapter |
 | `material_content_items` | 完成度的最小單位，掛在某個 node 底下 |
 | `material_progress` | 跨 Plan 的全域完成度，唯一真相 |
 | `material_categories` | 分類 |
