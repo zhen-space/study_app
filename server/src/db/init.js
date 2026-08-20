@@ -87,6 +87,43 @@ export async function repairScheduledBlockTiming() {
   });
 }
 
+// live StudySession 的 partial unique index。
+//
+// 這條 index 原本只由 operator script 手動建立，理由是：若資料庫裡已經有重複的
+// running／paused rows，SQLite 會拒絕建 index，而 `try { … } catch {}` 會把這個
+// 失敗吞掉，讓「以為有防線、其實沒有」變成靜默狀態。
+//
+// 但只靠 operator script 的代價是每個環境各自 opt-in：production 有、dev／staging／
+// 新環境沒有。所以這裡改成「先 preflight 再建立」——保留原本不藏問題的性質，
+// 同時讓安全的環境自動拿到防線：
+//   ・有重複 → 完全不動資料庫，回報 blocked 並印出訊息，絕不自動取消／結束舊 session
+//   ・沒有重複 → 建立 index（IF NOT EXISTS，已有的環境是 no-op）
+export async function ensureStudySessionLiveIndex() {
+  const LIVE = "status IN ('running','paused')";
+  let duplicates;
+  try {
+    const rs = await client.execute(`SELECT user_id, COUNT(*) AS live_session_count
+      FROM study_sessions WHERE ${LIVE}
+      GROUP BY user_id HAVING COUNT(*) > 1 ORDER BY user_id LIMIT 20`);
+    duplicates = rs.rows;
+  } catch (e) {
+    return { status: 'error', error: String(e?.message || e) };
+  }
+  if (duplicates.length) {
+    console.warn('[schema] 發現重複的未結束讀書計時，未建立 idx_study_sessions_one_live；'
+      + `影響 ${duplicates.length} 位使用者（最多列 20 筆）。未修改任何資料。`);
+    return { status: 'blocked', duplicate_users: duplicates.length };
+  }
+  try {
+    await client.execute(
+      `CREATE UNIQUE INDEX IF NOT EXISTS idx_study_sessions_one_live ON study_sessions(user_id) WHERE ${LIVE}`);
+    return { status: 'ok' };
+  } catch (e) {
+    console.warn('[schema] 建立 idx_study_sessions_one_live 失敗：', e?.message || e);
+    return { status: 'error', error: String(e?.message || e) };
+  }
+}
+
 const SCHEMA = `
 CREATE TABLE IF NOT EXISTS users (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -431,10 +468,9 @@ export async function initSchema() {
   try { await client.execute("CREATE INDEX IF NOT EXISTS idx_routine_exceptions_user_date ON routine_exceptions(user_id, date)"); } catch {}
   try { await client.execute("CREATE INDEX IF NOT EXISTS idx_study_sessions_user_started ON study_sessions(user_id, started_at)"); } catch {}
   try { await client.execute("CREATE INDEX IF NOT EXISTS idx_study_sessions_task ON study_sessions(task_id)"); } catch {}
-  // live StudySession 的 partial unique index 不能在啟動時靜默嘗試：若 production
-  // 已有舊的重複 running／paused rows，SQLite 會拒絕建 index。先跑唯讀 audit，再由
-  // 明確的 operator script 在「確認沒有重複」後建立，避免把問題藏起來。
   try { await client.execute("ALTER TABLE study_sessions ADD COLUMN running_since TEXT"); } catch {}
+  // 見 ensureStudySessionLiveIndex()：有重複 live session 時會跳過而不是靜默失敗。
+  await ensureStudySessionLiveIndex();
   // 舊資料的分類補進「記住的分類」清單，之後直接用選的
   try { await client.execute("INSERT INTO memo_categories (user_id,name,order_index) SELECT DISTINCT user_id,category,0 FROM memos WHERE category<>'' AND category IS NOT NULL AND NOT EXISTS (SELECT 1 FROM memo_categories c WHERE c.user_id=memos.user_id AND c.name=memos.category)"); } catch {}
   // 舊 bug（重複扣款）造成的負金幣歸零
