@@ -4,6 +4,7 @@ import { requireAuth } from '../middleware/auth.js';
 import { calculateScheduleDiff } from '../schedule/diff.js';
 import { todayTW } from '../util/date.js';
 import { transitionTaskOutcome } from '../schedule/persistence.js';
+import { setCompletion } from '../material/service.js';
 
 const router = Router();
 // 僅供 server-side migration/cutover 呼叫；一般 JWT client 不能靠 body 欄位繞過。
@@ -121,10 +122,22 @@ router.get('/tasks', async (req, res) => {
 
 router.post('/tasks', async (req, res) => {
   const { title, list_id, notes, due_date, due_time, priority, tags, subtasks, recurring, miss_policy,
-    plan_id, deadline_date, estimated_minutes } = req.body;
+    plan_id, deadline_date, estimated_minutes, material_content_item_id } = req.body;
   if (!title) return res.status(400).json({ error: '請輸入標題' });
   const planErr = await checkPlan(plan_id ?? null, req.userId);
   if (planErr) return res.status(400).json({ error: planErr });
+  // Task ↔ Material：Task 仍是排程單位，這只是「這個 Task 在做哪一份教材」。
+  // 已完成的教材不可以再長出新的待辦——那正是契約 3 想擋掉的重複工作。
+  let materialItem = null;
+  if (material_content_item_id != null) {
+    materialItem = await q.get(
+      `SELECT i.id, i.book_id, COALESCE(p.completed,0) AS completed
+         FROM material_content_items i
+         LEFT JOIN material_progress p ON p.content_item_id=i.id AND p.user_id=i.user_id
+        WHERE i.id=? AND i.user_id=?`, [material_content_item_id, req.userId]);
+    if (!materialItem) return res.status(404).json({ error: '找不到這個教材項目' });
+    if (Number(materialItem.completed) === 1) return res.status(409).json({ error: '這份教材已完成，不需要再排程' });
+  }
   // Plan Task 的未來時間只能由 ScheduleVersion mirror 寫入。deadline_date 是使用者
   // 的硬期限，due_date/due_time 則是排程結果；不能混成一般 Task API 的欄位。
   if (plan_id != null && (due_date != null || due_time != null) && !trustedMigration(req)) {
@@ -142,11 +155,18 @@ router.post('/tasks', async (req, res) => {
       ownerId = l.user_id;
     }
   }
-  const r = await q.run(`INSERT INTO tasks (user_id,list_id,title,notes,due_date,due_time,priority,tags,subtasks,recurring,miss_policy,plan_id,deadline_date,estimated_minutes)
-    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+  const r = await q.run(`INSERT INTO tasks (user_id,list_id,title,notes,due_date,due_time,priority,tags,subtasks,recurring,miss_policy,plan_id,deadline_date,estimated_minutes,material_content_item_id,material_book_id)
+    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
     [ownerId, list_id || null, title, notes || '', due_date || null, due_time || null,
       priority || 0, JSON.stringify(cleanTags(asArr(tags || []))), JSON.stringify(subtasks || []), recurring || null, miss_policy || 'keep',
-      plan_id ?? null, deadline_date || null, estimated]);
+      plan_id ?? null, deadline_date || null, estimated,
+      materialItem?.id ?? null, materialItem?.book_id ?? null]);
+  // selection 列記下這次實際產生的 Task，取消選取時才知道要讓誰退出排程。
+  if (materialItem && plan_id != null) {
+    await q.run(
+      'UPDATE plan_material_items SET task_id=?,updated_at=CURRENT_TIMESTAMP WHERE user_id=? AND plan_id=? AND content_item_id=?',
+      [r.lastInsertRowid, req.userId, plan_id, materialItem.id]);
+  }
   res.json(parseTask(await q.get('SELECT * FROM tasks WHERE id=?', [r.lastInsertRowid])));
 });
 
@@ -239,7 +259,18 @@ router.patch('/tasks/:id', async (req, res) => {
     try {
       const out = await transitionTaskOutcome(req.userId, t.id, changedOutcome);
       const earned = changedOutcome === 'completed' ? await award(req.userId, 'task', t.id, 10) : 0;
-      return res.json({ ok: true, earned, task: parseTask(out.task), schedule_version: out.version });
+      // 完成綁著教材的 Task 會帶起教材完成度（跨 Plan 的全域狀態）。
+      // 刻意只有 'completed' 這一個方向：
+      //   ・reopen（outcome === null）不得把教材改回未完成——使用者可能已經在
+      //     別處讀完這份教材，重開一個 Task 不是「教材沒讀過」的證據（契約 2）
+      //   ・取消不是完成，同樣不動教材進度
+      let materialProgress = null;
+      if (changedOutcome === 'completed' && t.material_content_item_id != null) {
+        materialProgress = await setCompletion(req.userId, t.material_content_item_id, {
+          completed: true, source: 'task', taskId: t.id,
+        });
+      }
+      return res.json({ ok: true, earned, task: parseTask(out.task), schedule_version: out.version, material: materialProgress });
     } catch (err) {
       return res.status(err.status || 400).json({ error: err.message, conflicts: err.conflicts });
     }
