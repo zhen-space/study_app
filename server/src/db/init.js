@@ -394,6 +394,101 @@ CREATE TABLE IF NOT EXISTS study_sessions (
   created_at TEXT DEFAULT CURRENT_TIMESTAMP,
   updated_at TEXT DEFAULT CURRENT_TIMESTAMP
 );
+
+-- ===== Material domain =====================================================
+-- 教材是「長期存在的東西」，Plan 是「這一次要做的事」。兩者刻意分開：
+--   ・完成度的最小單位永遠是 ContentItem，而且是跨 Plan 的全域長期狀態
+--   ・Chapter / Section / Topic 的完成度一律 derived，不另外保存
+--   ・Plan 選取（plan_material_items）與教材進度（material_progress）互不寫入對方
+--   ・排程仍然只認 Task：ScheduledBlock / ScheduleVersion 完全沒有 material 欄位
+-- 契約見 docs/material-domain.md。
+
+CREATE TABLE IF NOT EXISTS material_books (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  user_id INTEGER NOT NULL,
+  title TEXT NOT NULL,
+  publisher TEXT DEFAULT '',
+  subject_list_id INTEGER,               -- 顯示用的主要科目，不是書的身分
+  source TEXT NOT NULL DEFAULT 'manual', -- manual | ocr_import | import
+  -- 刪除的正常語意是封存。只有完全沒有任何 reference 的書才允許 hard delete。
+  archived INTEGER DEFAULT 0,
+  archived_at TEXT,
+  created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+  updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+);
+
+-- 章 / 節 / 主題共用一張表的自我參照樹。層級由 kind 表示，不用不同表，
+-- 因為「節底下可以有主題、也可以沒有」這件事不該逼出兩套查詢。
+CREATE TABLE IF NOT EXISTS material_nodes (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  user_id INTEGER NOT NULL,
+  book_id INTEGER NOT NULL,
+  parent_id INTEGER,                     -- NULL = 直接掛在書底下（章）
+  kind TEXT NOT NULL,                    -- chapter | section | topic
+  title TEXT NOT NULL,
+  order_index INTEGER DEFAULT 0,
+  created_at TEXT DEFAULT CURRENT_TIMESTAMP
+);
+
+-- 完成度的最小單位。單元練習／歷屆試題直接掛在「章」底下，
+-- 不得為了讓它有 parent 而捏造一個假的「節」。
+CREATE TABLE IF NOT EXISTS material_content_items (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  user_id INTEGER NOT NULL,
+  book_id INTEGER NOT NULL,
+  node_id INTEGER NOT NULL,              -- 可以是 chapter、section 或 topic
+  kind TEXT NOT NULL,                    -- reading | example | unit_exercise | past_exam
+  title TEXT NOT NULL,
+  estimated_minutes INTEGER,
+  order_index INTEGER DEFAULT 0,
+  created_at TEXT DEFAULT CURRENT_TIMESTAMP
+);
+
+-- 跨 Plan 的全域教材進度。一個 ContentItem 一位使用者最多一列。
+-- 沒有列 = 尚未完成；不需要為了「未完成」而預先寫滿整本書。
+CREATE TABLE IF NOT EXISTS material_progress (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  user_id INTEGER NOT NULL,
+  content_item_id INTEGER NOT NULL,
+  completed INTEGER NOT NULL DEFAULT 0,
+  completed_at TEXT,
+  source TEXT NOT NULL DEFAULT 'manual', -- manual | task
+  source_task_id INTEGER,                -- 由 Task 完成時的來源，僅 provenance
+  created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+  updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+);
+
+-- 分類只 reference 書，不複製書。同一本書可以同時屬於多個分類。
+CREATE TABLE IF NOT EXISTS material_categories (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  user_id INTEGER NOT NULL,
+  name TEXT NOT NULL,
+  order_index INTEGER DEFAULT 0,
+  created_at TEXT DEFAULT CURRENT_TIMESTAMP
+);
+CREATE TABLE IF NOT EXISTS material_category_books (
+  user_id INTEGER NOT NULL,
+  category_id INTEGER NOT NULL,
+  book_id INTEGER NOT NULL,
+  order_index INTEGER DEFAULT 0,
+  created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (category_id, book_id)
+);
+
+-- Plan 這一次選了哪些 ContentItem。這裡只記「選取」，不記完成度。
+-- 取消選取不是完成、也不是刪除：selected 轉 0 並留下 removed_at 與 task_id，
+-- 歷史 provenance 因此不會消失。
+CREATE TABLE IF NOT EXISTS plan_material_items (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  user_id INTEGER NOT NULL,
+  plan_id INTEGER NOT NULL,
+  content_item_id INTEGER NOT NULL,
+  selected INTEGER NOT NULL DEFAULT 1,
+  task_id INTEGER,                       -- 這次選取實際產生的 Task
+  removed_at TEXT,
+  created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+  updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+);
 `;
 
 export async function initSchema() {
@@ -469,6 +564,22 @@ export async function initSchema() {
   try { await client.execute("CREATE INDEX IF NOT EXISTS idx_study_sessions_user_started ON study_sessions(user_id, started_at)"); } catch {}
   try { await client.execute("CREATE INDEX IF NOT EXISTS idx_study_sessions_task ON study_sessions(task_id)"); } catch {}
   try { await client.execute("ALTER TABLE study_sessions ADD COLUMN running_since TEXT"); } catch {}
+  // Task ↔ Material：Task 仍是排程的唯一單位，這兩個欄位只是「這個 Task 在做哪一
+  // 份教材」的指向。scheduled_blocks 刻意不加 material 欄位（契約 10）。
+  try { await client.execute("ALTER TABLE tasks ADD COLUMN material_content_item_id INTEGER"); } catch {}
+  try { await client.execute("ALTER TABLE tasks ADD COLUMN material_book_id INTEGER"); } catch {}
+  try { await client.execute("CREATE INDEX IF NOT EXISTS idx_material_books_user ON material_books(user_id, archived)"); } catch {}
+  try { await client.execute("CREATE INDEX IF NOT EXISTS idx_material_nodes_book ON material_nodes(book_id, parent_id, order_index)"); } catch {}
+  try { await client.execute("CREATE INDEX IF NOT EXISTS idx_material_items_node ON material_content_items(node_id, order_index)"); } catch {}
+  try { await client.execute("CREATE INDEX IF NOT EXISTS idx_material_items_book ON material_content_items(book_id)"); } catch {}
+  // 一個 ContentItem 一位使用者只有一列進度——完成度的唯一真相由這條守。
+  try { await client.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_material_progress_one ON material_progress(user_id, content_item_id)"); } catch {}
+  try { await client.execute("CREATE INDEX IF NOT EXISTS idx_material_categories_user ON material_categories(user_id, order_index)"); } catch {}
+  try { await client.execute("CREATE INDEX IF NOT EXISTS idx_material_category_books_book ON material_category_books(book_id)"); } catch {}
+  // 同一個 Plan 對同一個 ContentItem 只能有一列 selection（含已移除的歷史列）。
+  try { await client.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_plan_material_one ON plan_material_items(plan_id, content_item_id)"); } catch {}
+  try { await client.execute("CREATE INDEX IF NOT EXISTS idx_plan_material_item ON plan_material_items(user_id, content_item_id, selected)"); } catch {}
+  try { await client.execute("CREATE INDEX IF NOT EXISTS idx_tasks_material_item ON tasks(user_id, material_content_item_id)"); } catch {}
   // 見 ensureStudySessionLiveIndex()：有重複 live session 時會跳過而不是靜默失敗。
   await ensureStudySessionLiveIndex();
   // 舊資料的分類補進「記住的分類」清單，之後直接用選的
