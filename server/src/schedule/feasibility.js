@@ -28,7 +28,7 @@ export function timedOverlap(a, b) {
 
 // 一個 placement 的判定結果：
 //   null                     → 可以放
-//   { kind:'skip', ... }     → 這個任務已經退出未來排程（完成／刪除），
+//   { kind:'skip', ... }     → 這個任務已經退出未來排程（完成／取消／刪除），
 //                              不是衝突，也不該叫使用者去解決
 //   { kind:'conflict', ... } → 真的放不下，要讓使用者知道原因
 //
@@ -52,6 +52,12 @@ export function classifyPlacement(block, {
   };
   if (!task || task.deleted) return { kind: 'skip', type: 'deleted' };
   if (task.completed) return { kind: 'skip', type: 'completed' };
+  if (task.cancelled) return { kind: 'skip', type: 'cancelled' };
+  // 未參與 active schedule 的 Plan 不應被 Restore 重新放回未來排程。
+  // 沒有帶 plan_status 的舊呼叫端維持既有相容語意。
+  if (task.plan_status && !['draft', 'active'].includes(task.plan_status)) {
+    return { kind: 'skip', type: 'inactive_plan' };
+  }
   if (task.plan_id == null) {
     return { kind: 'conflict', type: 'task_constraint', message: say('task_constraint') };
   }

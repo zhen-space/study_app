@@ -12,7 +12,9 @@ const readSession = (id, userId) => q.get(`SELECT s.*, COALESCE(t.title,s.task_t
   LEFT JOIN tasks t ON t.id=s.task_id AND t.user_id=s.user_id WHERE s.id=? AND s.user_id=?`, [id, userId]);
 
 async function ownTask(userId, taskId) {
-  return q.get('SELECT id,plan_id,deleted,completed,title FROM tasks WHERE id=? AND user_id=?', [taskId, userId]);
+  return q.get(`SELECT t.id,t.plan_id,t.deleted,t.completed,t.cancelled,t.title,p.status AS plan_status
+    FROM tasks t LEFT JOIN plans p ON p.id=t.plan_id AND p.user_id=t.user_id
+    WHERE t.id=? AND t.user_id=?`, [taskId, userId]);
 }
 
 // GET /api/study-sessions?from=YYYY-MM-DD&to=YYYY-MM-DD
@@ -28,12 +30,13 @@ router.post('/study-sessions', async (req, res) => {
   const b = req.body || {};
   const task = await ownTask(req.userId, Number(b.task_id));
   if (!task || task.deleted) return res.status(400).json({ error: '找不到可讀書的任務' });
-  if (task.completed) return res.status(409).json({ error: '已完成的任務不能開始讀書' });
+  if (task.completed || task.cancelled) return res.status(409).json({ error: '已完成或已取消的任務不能開始讀書' });
+  if (task.plan_status && !['draft', 'active'].includes(task.plan_status)) return res.status(409).json({ error: '目前未執行的計畫不能開始讀書' });
   if (b.scheduled_block_id != null) {
     const block = await q.get('SELECT id FROM scheduled_blocks WHERE id=? AND user_id=? AND task_id=?', [b.scheduled_block_id, req.userId, task.id]);
     if (!block) return res.status(400).json({ error: '排程區塊不屬於這個任務' });
   }
-  const active = await q.get("SELECT * FROM study_sessions WHERE user_id=? AND status='running'", [req.userId]);
+  const active = await q.get("SELECT * FROM study_sessions WHERE user_id=? AND status IN ('running','paused')", [req.userId]);
   if (active) return res.status(409).json({ error: '已有進行中的讀書計時', session: active });
   const began = isoNow();
   const r = await q.run(`INSERT INTO study_sessions (user_id,task_id,scheduled_block_id,task_title_snapshot,started_at,running_since,status,source)
@@ -49,7 +52,7 @@ router.patch('/study-sessions/:id', async (req, res) => {
   if (!STATUS.has(status)) return res.status(400).json({ error: '讀書狀態不正確' });
   if (session.status === 'completed' || session.status === 'cancelled') return res.status(409).json({ error: '這筆讀書紀錄已結束' });
   if (status === 'running') {
-    const active = await q.get("SELECT id FROM study_sessions WHERE user_id=? AND status='running' AND id<>?", [req.userId, session.id]);
+    const active = await q.get("SELECT id FROM study_sessions WHERE user_id=? AND status IN ('running','paused') AND id<>?", [req.userId, session.id]);
     if (active) return res.status(409).json({ error: '已有進行中的讀書計時' });
   }
   const ends = status === 'completed' || status === 'cancelled';

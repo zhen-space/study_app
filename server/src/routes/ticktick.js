@@ -3,6 +3,7 @@ import { q } from '../db/init.js';
 import { requireAuth } from '../middleware/auth.js';
 import { calculateScheduleDiff } from '../schedule/diff.js';
 import { todayTW } from '../util/date.js';
+import { transitionTaskOutcome } from '../schedule/persistence.js';
 
 const router = Router();
 // 僅供 server-side migration/cutover 呼叫；一般 JWT client 不能靠 body 欄位繞過。
@@ -24,7 +25,7 @@ async function checkPlan(planId, userId) {
   if (planId == null) return null;
   const p = await q.get('SELECT id, status FROM plans WHERE id=? AND user_id=?', [planId, userId]);
   if (!p) return '找不到這個計畫';
-  if (p.status === 'archived' || p.status === 'completed') return '已封存或已完成的計畫不能再加入任務';
+  if (['archived', 'completed', 'paused', 'ended'].includes(p.status)) return '目前不接受新增任務的計畫狀態';
   return null;
 }
 
@@ -227,6 +228,22 @@ router.patch('/tasks/:id', async (req, res) => {
   const t = await q.get('SELECT * FROM tasks WHERE id=?', [req.params.id]);
   if (!(await canTouch(req.userId, t))) return res.status(404).json({ error: 'not found' });
   const b = req.body;
+  // Plan Task 的完成／取消會改變 active ScheduleVersion，不能由一般 PATCH
+  // 直接留下「已完成但仍在未來 block」的第二個時間真相。
+  const changedOutcome = b.completed === true && !t.completed ? 'completed'
+    : b.cancelled === true && !t.cancelled ? 'cancelled'
+      : ((b.completed === false && t.completed) || (b.cancelled === false && t.cancelled)) ? null : undefined;
+  if (t.plan_id != null && changedOutcome !== undefined) {
+    const otherFields = Object.keys(b).filter(k => !['completed', 'cancelled'].includes(k));
+    if (otherFields.length) return res.status(400).json({ error: '變更任務結果時請分開儲存其他欄位' });
+    try {
+      const out = await transitionTaskOutcome(req.userId, t.id, changedOutcome);
+      const earned = changedOutcome === 'completed' ? await award(req.userId, 'task', t.id, 10) : 0;
+      return res.json({ ok: true, earned, task: parseTask(out.task), schedule_version: out.version });
+    } catch (err) {
+      return res.status(err.status || 400).json({ error: err.message, conflicts: err.conflicts });
+    }
+  }
   if (b.plan_id !== undefined && b.plan_id !== null && b.plan_id !== t.plan_id) {
     const planErr = await checkPlan(b.plan_id, req.userId);
     if (planErr) return res.status(400).json({ error: planErr });
@@ -247,17 +264,22 @@ router.patch('/tasks/:id', async (req, res) => {
     miss_policy: b.miss_policy ?? t.miss_policy ?? 'keep',
     completed: b.completed !== undefined ? (b.completed ? 1 : 0) : t.completed,
     completed_at: b.completed !== undefined ? (b.completed ? new Date().toISOString() : null) : t.completed_at,
+    cancelled: b.cancelled !== undefined ? (b.cancelled ? 1 : 0) : (t.cancelled || 0),
+    cancelled_at: b.cancelled !== undefined ? (b.cancelled ? new Date().toISOString() : null) : (t.cancelled_at || null),
     order_index: b.order_index ?? t.order_index,
     deleted: b.deleted !== undefined ? (b.deleted ? 1 : 0) : (t.deleted || 0),
     plan_id: b.plan_id !== undefined ? b.plan_id : (t.plan_id ?? null),
     deadline_date: b.deadline_date !== undefined ? (b.deadline_date || null) : (t.deadline_date ?? null),
     estimated_minutes: b.estimated_minutes !== undefined ? estimate(b.estimated_minutes) : (t.estimated_minutes ?? null),
   };
+  // 任務只能有一種結果；取消不是完成，也不能藉由 generic PATCH 留下雙重狀態。
+  if (f.completed) { f.cancelled = 0; f.cancelled_at = null; }
+  if (f.cancelled) { f.completed = 0; f.completed_at = null; }
   if (f.estimated_minutes === undefined) return res.status(400).json({ error: '預估時間需介於 1 到 1440 分鐘' });
   await q.run(`UPDATE tasks SET list_id=?,title=?,notes=?,due_date=?,due_time=?,priority=?,tags=?,subtasks=?,
-    recurring=?,miss_policy=?,completed=?,completed_at=?,order_index=?,deleted=?,plan_id=?,deadline_date=?,estimated_minutes=? WHERE id=?`,
+    recurring=?,miss_policy=?,completed=?,completed_at=?,cancelled=?,cancelled_at=?,order_index=?,deleted=?,plan_id=?,deadline_date=?,estimated_minutes=? WHERE id=?`,
     [f.list_id, f.title, f.notes, f.due_date, f.due_time, f.priority, f.tags, f.subtasks,
-      f.recurring, f.miss_policy, f.completed, f.completed_at, f.order_index, f.deleted,
+      f.recurring, f.miss_policy, f.completed, f.completed_at, f.cancelled, f.cancelled_at, f.order_index, f.deleted,
       f.plan_id, f.deadline_date, f.estimated_minutes, t.id]);
 
   if (b.completed && !t.completed && t.recurring && t.due_date) {
@@ -286,6 +308,27 @@ router.patch('/tasks/:id', async (req, res) => {
   let earned = 0;
   if (b.completed && !t.completed) earned = await award(req.userId, 'task', t.id, 10);
   res.json({ ok: true, earned });
+});
+// Task cancel/reopen 是正式 lifecycle endpoint；不使用 delete 假裝取消。
+router.post('/tasks/:id/cancel', async (req, res) => {
+  const t = await q.get('SELECT * FROM tasks WHERE id=?', [req.params.id]);
+  if (!(await canTouch(req.userId, t))) return res.status(404).json({ error: 'not found' });
+  try {
+    const out = await transitionTaskOutcome(req.userId, t.id, 'cancelled');
+    res.json({ ...parseTask(out.task), schedule_version: out.version });
+  } catch (err) {
+    res.status(err.status || 400).json({ error: err.message, conflicts: err.conflicts });
+  }
+});
+router.post('/tasks/:id/reopen', async (req, res) => {
+  const t = await q.get('SELECT * FROM tasks WHERE id=?', [req.params.id]);
+  if (!(await canTouch(req.userId, t))) return res.status(404).json({ error: 'not found' });
+  try {
+    const out = await transitionTaskOutcome(req.userId, t.id, null);
+    res.json({ ...parseTask(out.task), schedule_version: out.version });
+  } catch (err) {
+    res.status(err.status || 400).json({ error: err.message, conflicts: err.conflicts });
+  }
 });
 router.delete('/tasks/:id', async (req, res) => {
   const t = await q.get('SELECT * FROM tasks WHERE id=?', [req.params.id]);
@@ -502,7 +545,8 @@ router.get('/tstats', async (req, res) => {
   const active = await q.get('SELECT active_version_id FROM user_schedule_state WHERE user_id=?', [req.userId]);
   const planned = active?.active_version_id == null ? [] : await q.all(`SELECT b.planned_minutes, b.date, t.list_id, t.plan_id, l.name AS list_name, p.name AS plan_name
     FROM scheduled_blocks b JOIN tasks t ON t.id=b.task_id AND t.user_id=b.user_id LEFT JOIN lists l ON l.id=t.list_id AND l.user_id=t.user_id LEFT JOIN plans p ON p.id=t.plan_id AND p.user_id=t.user_id
-    WHERE b.user_id=? AND b.schedule_version_id=? AND t.completed=0 AND COALESCE(t.deleted,0)=0`, [req.userId, active.active_version_id]);
+    WHERE b.user_id=? AND b.schedule_version_id=? AND t.completed=0 AND COALESCE(t.cancelled,0)=0 AND COALESCE(t.deleted,0)=0
+      AND p.status IN ('draft','active')`, [req.userId, active.active_version_id]);
   const plannedMinutes = planned.reduce((n, b) => n + (b.planned_minutes || 0), 0);
   // 統計不再只看 Task checkbox：原定時間來自 active ScheduleVersion，實際時間
   // 來自 StudySession。兩者各自保留，不能把實際學習反寫進 immutable block。
@@ -512,7 +556,8 @@ router.get('/tstats', async (req, res) => {
     if (block.list_name) plannedBySubject[block.list_name] = (plannedBySubject[block.list_name] || 0) + minutes;
     if (block.plan_name) plannedByPlan[block.plan_name] = (plannedByPlan[block.plan_name] || 0) + minutes;
   }
-  const unplaced = active?.active_version_id == null ? 0 : (await q.get(`SELECT COUNT(*) c FROM tasks t WHERE t.user_id=? AND t.plan_id IS NOT NULL AND t.completed=0 AND COALESCE(t.deleted,0)=0
+  const unplaced = active?.active_version_id == null ? 0 : (await q.get(`SELECT COUNT(*) c FROM tasks t JOIN plans p ON p.id=t.plan_id AND p.user_id=t.user_id WHERE t.user_id=? AND t.plan_id IS NOT NULL AND t.completed=0 AND COALESCE(t.cancelled,0)=0 AND COALESCE(t.deleted,0)=0
+    AND p.status IN ('draft','active')
     AND NOT EXISTS (SELECT 1 FROM scheduled_blocks b WHERE b.user_id=t.user_id AND b.schedule_version_id=? AND b.task_id=t.id)`, [req.userId, active.active_version_id]))?.c || 0;
   // 「移動次數」由 immutable version blocks 即時計算，不另存一份容易失真的
   // counter。只計未來 placement，避免舊歷史版本讓數字隨時間無限膨脹。

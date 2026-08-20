@@ -130,6 +130,8 @@ CREATE TABLE IF NOT EXISTS tasks (
   recurring TEXT,
   completed INTEGER DEFAULT 0,
   completed_at TEXT,
+  cancelled INTEGER DEFAULT 0,
+  cancelled_at TEXT,
   order_index INTEGER DEFAULT 0,
   estimated_minutes INTEGER,
   created_at TEXT DEFAULT CURRENT_TIMESTAMP
@@ -230,12 +232,16 @@ CREATE TABLE IF NOT EXISTS plans (
   primary_list_id INTEGER,          -- 只是主要分類／顯示用，不代表 Plan 的身分
   start_date TEXT,
   target_date TEXT,
-  status TEXT NOT NULL DEFAULT 'draft',   -- draft | active | completed | archived
+  status TEXT NOT NULL DEFAULT 'draft',   -- draft | active | paused | completed | ended | archived
   source TEXT NOT NULL DEFAULT 'manual',  -- manual | ai | legacy_migration | import
   created_at TEXT DEFAULT CURRENT_TIMESTAMP,
   updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
   completed_at TEXT,
-  archived_at TEXT
+  paused_at TEXT,
+  ended_at TEXT,
+  end_reason TEXT,
+  archived_at TEXT,
+  archived_from_status TEXT
 );
 -- Master Plan H：Goal 是 Plan 的可選上層目標，不取代 Plan。
 CREATE TABLE IF NOT EXISTS goals (
@@ -381,6 +387,13 @@ export async function initSchema() {
   // Master A/F：估計時間是工作量的明確輸入；實際時間仍只寫 StudySession。
   // NULL 表示舊資料尚無估計，不能硬猜成一個看似精確的數字。
   try { await client.execute("ALTER TABLE tasks ADD COLUMN estimated_minutes INTEGER"); } catch {}
+  // Phase 1 lifecycle：取消是任務結果，不是完成或刪除；舊資料預設仍是未取消。
+  try { await client.execute("ALTER TABLE tasks ADD COLUMN cancelled INTEGER DEFAULT 0"); } catch {}
+  try { await client.execute("ALTER TABLE tasks ADD COLUMN cancelled_at TEXT"); } catch {}
+  try { await client.execute("ALTER TABLE plans ADD COLUMN paused_at TEXT"); } catch {}
+  try { await client.execute("ALTER TABLE plans ADD COLUMN ended_at TEXT"); } catch {}
+  try { await client.execute("ALTER TABLE plans ADD COLUMN end_reason TEXT"); } catch {}
+  try { await client.execute("ALTER TABLE plans ADD COLUMN archived_from_status TEXT"); } catch {}
   // Phase 2C-P1：排程持久化。契約見 docs/phase2c-schedule-persistence.md §2
   // effective_from：這一版涵蓋哪一天起（過去不進 snapshot）
   try { await client.execute("ALTER TABLE schedule_versions ADD COLUMN effective_from TEXT"); } catch {}
@@ -418,6 +431,9 @@ export async function initSchema() {
   try { await client.execute("CREATE INDEX IF NOT EXISTS idx_routine_exceptions_user_date ON routine_exceptions(user_id, date)"); } catch {}
   try { await client.execute("CREATE INDEX IF NOT EXISTS idx_study_sessions_user_started ON study_sessions(user_id, started_at)"); } catch {}
   try { await client.execute("CREATE INDEX IF NOT EXISTS idx_study_sessions_task ON study_sessions(task_id)"); } catch {}
+  // live StudySession 的 partial unique index 不能在啟動時靜默嘗試：若 production
+  // 已有舊的重複 running／paused rows，SQLite 會拒絕建 index。先跑唯讀 audit，再由
+  // 明確的 operator script 在「確認沒有重複」後建立，避免把問題藏起來。
   try { await client.execute("ALTER TABLE study_sessions ADD COLUMN running_since TEXT"); } catch {}
   // 舊資料的分類補進「記住的分類」清單，之後直接用選的
   try { await client.execute("INSERT INTO memo_categories (user_id,name,order_index) SELECT DISTINCT user_id,category,0 FROM memos WHERE category<>'' AND category IS NOT NULL AND NOT EXISTS (SELECT 1 FROM memo_categories c WHERE c.user_id=memos.user_id AND c.name=memos.category)"); } catch {}

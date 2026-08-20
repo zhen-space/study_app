@@ -6,8 +6,12 @@ const router = Router(); router.use(requireAuth);
 const validDate = x => x == null || x === '' || /^\d{4}-\d\d-\d\d$/.test(x);
 const mine = (id, userId) => q.get('SELECT * FROM goals WHERE id=? AND user_id=?', [id, userId]);
 async function detail(goal, userId) {
-  const plans = await q.all(`SELECT p.*, COUNT(t.id) task_count,
-    SUM(CASE WHEN t.completed=1 THEN 1 ELSE 0 END) completed_task_count
+  // 取消表示「這件工作不再做」，不應把 Goal 的完成率假性拉低；它不計入
+  // 進度分母，也不算完成，但會以獨立數字保留給 UI／歷史說明。
+  const plans = await q.all(`SELECT p.*,
+    SUM(CASE WHEN t.id IS NOT NULL AND COALESCE(t.cancelled,0)=0 THEN 1 ELSE 0 END) task_count,
+    SUM(CASE WHEN t.completed=1 AND COALESCE(t.cancelled,0)=0 THEN 1 ELSE 0 END) completed_task_count,
+    SUM(CASE WHEN COALESCE(t.cancelled,0)=1 THEN 1 ELSE 0 END) cancelled_task_count
     FROM plans p LEFT JOIN tasks t ON t.plan_id=p.id AND t.user_id=p.user_id AND COALESCE(t.deleted,0)=0
     WHERE p.user_id=? AND p.goal_id=? GROUP BY p.id ORDER BY p.target_date,p.id`, [userId, goal.id]);
   const total = plans.reduce((n, p) => n + (p.task_count || 0), 0);

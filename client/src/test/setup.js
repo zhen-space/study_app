@@ -4,6 +4,21 @@ import { afterEach, vi } from 'vitest';
 
 afterEach(cleanup);
 
+// Node 25 也提供了自己的 experimental localStorage；在部分執行環境它會覆蓋
+// jsdom 的 Storage 並缺少 clear()。以最小、標準的 Storage mock 同時覆蓋 worker
+// global 與 window，讓測試行為與瀏覽器一致且每個 worker 自己隔離。
+const storage = new Map();
+const testLocalStorage = {
+  get length() { return storage.size; },
+  key: index => [...storage.keys()][index] ?? null,
+  getItem: key => storage.has(String(key)) ? storage.get(String(key)) : null,
+  setItem: (key, value) => storage.set(String(key), String(value)),
+  removeItem: key => storage.delete(String(key)),
+  clear: () => storage.clear(),
+};
+vi.stubGlobal('localStorage', testLocalStorage);
+Object.defineProperty(window, 'localStorage', { configurable: true, value: testLocalStorage });
+
 // jsdom 沒有這些瀏覽器 API，元件（番茄鐘、提醒通知）會直接用到
 globalThis.Notification = class {
   static permission = 'granted';

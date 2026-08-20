@@ -77,6 +77,25 @@ function busyMinutesForDay(dateStr, events) {
 router.post('/preview', async (req, res) => {
   const { items, excludeWeekdays = [], excludeDates = [], skipIfBusyHours = 0, timed = true, perDay = 3, pace = 'even' } = req.body;
   if (!items?.length) return res.status(400).json({ error: '參數不完整' });
+  // 已取消／完成／刪除的正式 Task 已退出未來排程。preview 與 apply 使用同一
+  // eligibility，不讓 UI 看見一份其實永遠無法套用的候選安排。
+  const referencedTaskIds = [...new Set(items.map(item => Number(item.task_id))
+    .filter(id => Number.isInteger(id) && id > 0))];
+  if (referencedTaskIds.length) {
+    const placeholders = referencedTaskIds.map(() => '?').join(',');
+    const rows = await q.all(
+      `SELECT t.id,t.plan_id,t.deleted,t.completed,t.cancelled,p.status AS plan_status
+         FROM tasks t LEFT JOIN plans p ON p.id=t.plan_id AND p.user_id=t.user_id
+        WHERE t.user_id=? AND t.id IN (${placeholders})`, [req.userId, ...referencedTaskIds]);
+    // preview 不能替 apply 預演一份 write gate 必定拒絕的 candidate。沒有查到的
+    // task、一般待辦、非 draft/active 計畫，以及已結束 Task 都一律退出。
+    const found = new Set(rows.map(t => Number(t.id)));
+    const ineligible = new Set(referencedTaskIds.filter(id => !found.has(id)));
+    for (const t of rows) if (t.plan_id == null || t.deleted || t.completed || t.cancelled
+      || !['draft', 'active'].includes(t.plan_status)) ineligible.add(Number(t.id));
+    for (let i = items.length - 1; i >= 0; i--) if (ineligible.has(Number(items[i].task_id))) items.splice(i, 1);
+  }
+  if (!items.length) return res.status(400).json({ error: '沒有可排程的未完成任務' });
   const requestedItems = items.map(item => ({ ...item }));
   const today = todayTW(); // 台灣時區的今天
   const gStart = req.body.startDate || today, gEnd = req.body.endDate || today;
@@ -192,21 +211,22 @@ router.post('/preview', async (req, res) => {
   }
   // P4 preview 第一層防線：Lock 不只扣掉空間，還要 freeze active placement。
   // apply 仍會在 transaction 用 pure validator 再驗一次，不能只信 preview。
-  const lockRows = await q.all(`SELECT l.*, t.deleted, t.completed FROM schedule_locks l
-    LEFT JOIN tasks t ON t.id=l.task_id WHERE l.user_id=? AND l.released_at IS NULL`, [req.userId]);
+  const lockRows = await q.all(`SELECT l.*, t.deleted, t.completed, t.cancelled FROM schedule_locks l
+    LEFT JOIN tasks t ON t.id=l.task_id AND t.user_id=l.user_id
+    WHERE l.user_id=? AND l.released_at IS NULL`, [req.userId]);
   const nowHM = new Intl.DateTimeFormat('en-GB', { timeZone:'Asia/Taipei', hour:'2-digit', minute:'2-digit', hourCycle:'h23' }).format(new Date());
-  const effectiveLocks = lockRows.filter(l => l.type === 'task' ? !l.deleted && !l.completed : l.type === 'day' ? l.date >= today : l.date > today || (l.date === today && l.end_time > nowHM));
+  const effectiveLocks = lockRows.filter(l => l.type === 'task' ? !l.deleted && !l.completed && !l.cancelled : l.type === 'day' ? l.date >= today : l.date > today || (l.date === today && l.end_time > nowHM));
   const dayLocked = new Set(effectiveLocks.filter(l=>l.type==='day').map(l=>l.date));
   for (const d of dayLocked) if (!excludeDates.includes(d)) excludeDates.push(d);
   for (const l of effectiveLocks.filter(l=>l.type==='time')) events.push({ date:l.date,start_time:l.start_time,end_time:l.end_time,recurring:null,_lock:true });
   const activeForLocks = await sched.getActiveSchedule(req.userId);
-  const activeTasks = await q.all('SELECT id,plan_id,deleted,completed FROM tasks WHERE user_id=?', [req.userId]);
+  const activeTasks = await q.all('SELECT id,plan_id,deleted,completed,cancelled FROM tasks WHERE user_id=?', [req.userId]);
   const activeTaskById = new Map(activeTasks.map(t => [Number(t.id), t]));
   const currentPlanId = Number(req.body.plan_id);
   const isCurrentLivePlanBlock = b => {
     const task = activeTaskById.get(Number(b.task_id));
     return Number.isInteger(currentPlanId) && task && Number(task.plan_id) === currentPlanId
-      && !task.deleted && !task.completed;
+      && !task.deleted && !task.completed && !task.cancelled;
   };
   const overlapsLockedTime = (block, lock) => block.date === lock.date
     && block.start_time && block.end_time
@@ -242,8 +262,10 @@ router.post('/preview', async (req, res) => {
         `SELECT b.date, b.start_time, b.end_time
            FROM scheduled_blocks b
            JOIN tasks t ON t.id=b.task_id AND t.user_id=b.user_id
+           JOIN plans p ON p.id=t.plan_id AND p.user_id=t.user_id
           WHERE b.schedule_version_id=? AND b.user_id=?
-            AND t.plan_id IS NOT NULL AND COALESCE(t.deleted,0)=0 AND t.completed=0
+            AND t.plan_id IS NOT NULL AND COALESCE(t.deleted,0)=0 AND t.completed=0 AND COALESCE(t.cancelled,0)=0
+            AND p.status IN ('draft','active')
             AND b.date>=? AND b.start_time IS NOT NULL AND b.end_time IS NOT NULL
             AND (? IS NULL OR t.plan_id<>?)`,
         [activeVersionId, req.userId, today, currentPlanId, currentPlanId]);
