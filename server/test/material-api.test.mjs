@@ -26,12 +26,12 @@ const ok = async (method, path, body) => {
   return r.json;
 };
 
-// 一本標準結構的書：章 → 節 → 主題，加上直接掛在章底下的單元練習。
+// 一本標準結構的書：章底下直接有 Section / Topic，同時有直接掛章的單元練習。
 async function seedBook(title = '數學') {
   const book = await ok('POST', '/material/books', { title });
   const ch = await ok('POST', '/material/nodes', { book_id: book.id, kind: 'chapter', title: '第一章' });
   const sec = await ok('POST', '/material/nodes', { book_id: book.id, parent_id: ch.id, kind: 'section', title: '1-1' });
-  const topic = await ok('POST', '/material/nodes', { book_id: book.id, parent_id: sec.id, kind: 'topic', title: '1-1-1' });
+  const topic = await ok('POST', '/material/nodes', { book_id: book.id, parent_id: ch.id, kind: 'topic', title: '主題一' });
   const reading = await ok('POST', '/material/content-items', { node_id: sec.id, kind: 'reading', title: '內文' });
   const example = await ok('POST', '/material/content-items', { node_id: topic.id, kind: 'example', title: '例題一' });
   const exercise = await ok('POST', '/material/content-items', { node_id: ch.id, kind: 'unit_exercise', title: '單元練習' });
@@ -45,13 +45,23 @@ const mkTask = (planId, itemId, title = '讀教材') =>
   ok('POST', '/tasks', { title, plan_id: planId, material_content_item_id: itemId });
 
 describe('教材樹建立與樹形限制', () => {
-  test('合法結構建得起來，derived 進度從 ContentItem 算', async () => {
+  test('合法結構建得起來，Section / Topic 是 Chapter 的同層子節點', async () => {
     const B = await seedBook('樹形');
     const tree = await ok('GET', `/material/books/${B.book.id}/tree`);
     assert.equal(tree.progress.total_items, 3);
     assert.equal(tree.progress.completed_items, 0);
     assert.equal(tree.nodes.length, 1);
-    assert.equal(tree.nodes[0].children[0].children[0].content_items[0].title, '例題一');
+    const chapter = tree.nodes[0];
+    assert.deepEqual(chapter.children.map(n => n.kind), ['section', 'topic']);
+    assert.equal(chapter.children.find(n => n.kind === 'topic').content_items[0].title, '例題一');
+  });
+
+  test('拒絕把 Topic 掛在 Section 底下', async () => {
+    const B = await seedBook('Topic 層級');
+    const r = await api('POST', '/material/nodes',
+      { book_id: B.book.id, parent_id: B.sec.id, kind: 'topic', title: '錯誤巢狀主題' });
+    assert.equal(r.status, 400);
+    assert.match(r.json.error, /只能放在章底下/);
   });
 
   test('拒絕為單元練習建立假的節（契約 7）', async () => {
@@ -270,8 +280,9 @@ describe('Plan selection lifecycle（契約 4、6、9）', () => {
 
     await ok('POST', `/plans/${plan.id}/material-nodes/${B.sec.id}`, { selected: false });
     const after = await ok('GET', `/material/books/${B.book.id}/tree?plan_id=${plan.id}`);
-    assert.equal(after.nodes[0].selection, 'some', '只取消該節子樹，章底下的單元練習仍保持選取');
-    assert.equal(after.nodes[0].children[0].selection, 'none');
+    assert.equal(after.nodes[0].selection, 'some', '只取消該節，Topic 與章底下的單元練習仍保持選取');
+    assert.equal(after.nodes[0].children.find(n => n.kind === 'section').selection, 'none');
+    assert.equal(after.nodes[0].children.find(n => n.kind === 'topic').selection, 'all');
     assert.equal(after.progress.completed_items, 0, '批次取消不得寫成完成');
   });
 
@@ -304,7 +315,7 @@ describe('Plan selection lifecycle（契約 4、6、9）', () => {
     assert.equal(r.selected, true);
     assert.equal(r.material_completed, false);
     const tree = await ok('GET', `/material/books/${B.book.id}/tree?plan_id=${plan.id}`);
-    const ex = tree.nodes[0].children[0].children[0].content_items[0];
+    const ex = tree.nodes[0].children.find(n => n.kind === 'topic').content_items[0];
     assert.equal(ex.completed, true);
     assert.equal(ex.selected, false);
   });
