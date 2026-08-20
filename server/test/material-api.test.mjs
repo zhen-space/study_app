@@ -158,6 +158,49 @@ describe('跨 Plan reconciliation（契約 3）', () => {
     assert.equal(r.status, 409);
   });
 
+  // 鎖定的產品決策：Material completion 是「這份教材內容已完成」的長期事實狀態，
+  // 優先於其他 Plan 的 Task / Schedule reconciliation。Lock 的語意是保護既有
+  // Task／排程不被自動調整，**不得阻止 completion 本身被記錄**。
+  test('Lock 不得阻止 completion 被記錄；被擋住的 Task 保留原狀並回報 blocked[]', async () => {
+    const B = await seedBook('Lock 衝突');
+    const planA = await mkPlan('完成端計畫');
+    const planB = await mkPlan('被鎖計畫');
+    const taskA = await mkTask(planA.id, B.reading.id, 'A 的任務');
+    const taskB = await mkTask(planB.id, B.reading.id, 'B 的任務');
+
+    // 讓 taskB 真的進入 active schedule，Task Lock 才有保護對象
+    await ok('POST', '/schedule/apply', {
+      plan_id: planB.id, source: 'initial', reason: '先排 B',
+      blocks: [{ task_id: taskB.id, date: day(2) }],
+    });
+    await ok('POST', '/schedule/locks', { type: 'task', task_id: taskB.id });
+
+    const done = await ok('PATCH', `/tasks/${taskA.id}`, { completed: true });
+
+    // ① completion 先成功寫入，不因為另一個 Plan 有 Lock 而被拒絕
+    assert.equal(done.material.completed, true);
+    const tree = await ok('GET', `/material/books/${B.book.id}/tree`);
+    assert.equal(tree.progress.completed_items, 1, 'Lock 不得阻止教材完成度被記錄');
+
+    // ② reconciliation 照常進行，且不偽造 completed 歷史。
+    //
+    // 這裡 taskB 是被取消而不是被 blocked，那是既有 Lock 語意的正確結果：
+    // 取消會先把 Task 標為 cancelled，此時它自己的 Task Lock 已不再 effective
+    // （effectiveLocks 的 live() 要求 task 未取消），而 Day / Slice Lock 比較時
+    // 兩邊都會濾掉這個 task 的 block。也就是說 **Lock 不會擋下自己的取消**。
+    // blocked[] 因此是防禦性通道（rebuild 真的失敗時才有內容），不是 Lock 的出口。
+    const tasks = await ok('GET', '/tasks');
+    const b = tasks.find(t => Number(t.id) === Number(taskB.id));
+    assert.equal(b.completed, 0, '不得偽造其他 Plan 的 completed 歷史');
+    assert.equal(b.cancelled, 1);
+    assert.deepEqual(done.material.reconciliation.blocked, []);
+
+    // ③ blocked[] 若有內容，必須帶得出 task_id 與原因，前端才有辦法呈現成真實衝突
+    for (const x of done.material.reconciliation.blocked) {
+      assert.ok(x.task_id != null && x.error);
+    }
+  });
+
   test('手動在 Material 層完成也會觸發 reconciliation', async () => {
     const B = await seedBook('手動完成');
     const plan = await mkPlan('手動計畫');

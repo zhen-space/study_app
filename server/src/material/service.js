@@ -216,7 +216,16 @@ const isCompleted = async (userId, itemId) => Number(
 // 把它當成待排程工作。做法刻意用既有 lifecycle 的「取消」——
 //   ・取消的語意本來就是「這件工作不再做」，而且已經會安全地退出 active schedule
 //   ・不偽造其他 Plan 的 completed 歷史（那會污染 Plan 完成率與 Goal 進度）
-// 被 Lock 擋住的 Task 不會被靜默略過，而是原樣回報給呼叫端。
+//
+// 順序是鎖定的產品決策，不要調換：completion 先寫入，再 reconcile。
+// Material completion 是「這份教材內容已完成」的長期事實狀態，優先於其他 Plan 的
+// Task／Schedule reconciliation；Lock 保護的是既有排程不被自動調整，不得阻止
+// completion 本身被記錄。所以這裡失敗的 Task 一律保留原狀並回報，
+// 絕不因為某一筆擋住就回頭把 completion 撤銷，也絕不靜默略過。
+//
+// 實作現況：取消會先把 Task 標為 cancelled，此時它自己的 Task Lock 已不再
+// effective，Day／Slice Lock 比較時兩邊也都會濾掉該 block——Lock 不會擋下自己的
+// 取消。因此 blocked[] 是防禦性通道（重建 active version 真的失敗時才有內容）。
 async function reconcileOtherTasks(userId, itemId, { exceptTaskId = null } = {}) {
   const tasks = await q.all(
     `SELECT id, plan_id FROM tasks

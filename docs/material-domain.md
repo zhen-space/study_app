@@ -39,10 +39,33 @@ reconciliation 刻意複用既有 lifecycle 的「取消」：
   已經會安全地讓 Task 退出 active ScheduleVersion 並尊重 Lock
 - **不偽造其他 Plan 的 `completed` 歷史**——那會污染 Plan 完成率與 Goal 進度
 
-被 Lock 擋住的 Task 不會被靜默略過，而是原樣回報在回應的
-`reconciliation.blocked[]` 裡，由使用者決定怎麼處理。
-
 已完成的 ContentItem 也不能再長出新的 Task（`POST /api/tasks` 回 409）。
+
+### Lock × completion（鎖定的產品決策）
+
+> Material completion 是使用者「這份教材內容已完成」的**長期事實狀態**，
+> **優先於**其他 Plan 的 Task / Schedule reconciliation。
+> Lock 的語意是保護既有 Task／排程不被自動調整，
+> **不得阻止 Material completion 本身被記錄。**
+
+因此執行順序是固定的：
+
+1. Material completion **先成功寫入**
+2. 其他 Plan 中同一個 ContentItem 的 open Task 再進行 reconciliation
+3. 未被阻擋者安全取消／退出 active schedule，且**不得偽造 completed history**
+4. 被阻擋者**保留原狀**並回報在 `reconciliation.blocked[]`
+5. 前端必須把 `blocked[]` 當成**需要使用者處理的真實衝突**，不可靜默忽略
+
+`blocked[]` 每一筆帶 `task_id`、`plan_id`、`error`，有 lock 衝突時另帶 `conflicts`。
+
+**實作現況（重要）**：在目前的 schedule lifecycle 語意下，Lock 並不會擋下
+「取消這個 Task」本身——取消會先把 Task 標為 `cancelled`，此時它自己的 Task Lock
+已不再 effective（`effectiveLocks` 的 `live()` 要求 task 未取消），而 Day / Slice
+Lock 比較時兩邊都會濾掉該 task 的 block。所以實務上 reconciliation 幾乎都會成功，
+`blocked[]` 是**防禦性通道**：只有在重建 active version 真的失敗時才會有內容。
+
+這不改變上面的契約——契約規定的是「completion 優先、被擋住的要回報而不是靜默
+略過」，而不是「一定要有東西被擋住」。前端仍必須處理 `blocked[]` 非空的情況。
 
 ## 4. 取消選取 ≠ 教材完成，也 ≠ 刪除
 
