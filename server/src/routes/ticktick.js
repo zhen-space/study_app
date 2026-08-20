@@ -155,6 +155,12 @@ router.post('/tasks', async (req, res) => {
       ownerId = l.user_id;
     }
   }
+  // 分享清單會把任務掛到清單擁有者名下，但教材項目是自己的。兩者湊在一起會產生
+  // 「A 名下的 Task 指向 B 的教材」，之後 reconciliation 依 user_id 查就永遠找不到
+  // 它——完成教材時它不會退出排程。與其留下這種對不起來的資料，不如直接擋掉。
+  if (materialItem && ownerId !== req.userId) {
+    return res.status(400).json({ error: '分享清單的任務不能綁定自己的教材項目' });
+  }
   const r = await q.run(`INSERT INTO tasks (user_id,list_id,title,notes,due_date,due_time,priority,tags,subtasks,recurring,miss_policy,plan_id,deadline_date,estimated_minutes,material_content_item_id,material_book_id)
     VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
     [ownerId, list_id || null, title, notes || '', due_date || null, due_time || null,

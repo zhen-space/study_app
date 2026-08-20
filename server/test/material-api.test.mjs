@@ -430,6 +430,44 @@ describe('排程仍是 Task-centric（契約 10）', () => {
 });
 
 describe('跨帳號隔離', () => {
+  test('分享清單的任務不能綁定自己的教材項目', async () => {
+    // 分享清單會把 Task 掛到清單擁有者名下，教材項目卻是自己的。
+    // 兩者湊起來會產生「A 名下的 Task 指向 B 的教材」，reconciliation 依
+    // user_id 查就永遠找不到它，完成教材時它不會退出排程。
+    // 第二個帳號要在**同一台**伺服器上（每台 startServer 各自一個暫存資料庫，
+    // 分屬兩台就根本分享不起來，也就測不到這件事）。
+    const email = `share${Date.now()}@test.local`;
+    const reg = await (await fetch(S.base + '/auth/register', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ email, password: '12345678', name: '被分享者' }),
+    })).json();
+    const H2 = { 'Content-Type': 'application/json', Authorization: 'Bearer ' + reg.token };
+    const call2 = async (method, path, body) => {
+      const r = await fetch(S.base + path, {
+        method, headers: H2, body: body === undefined ? undefined : JSON.stringify(body) });
+      return { status: r.status, json: await r.json().catch(() => null) };
+    };
+
+    // 清單擁有者是 S，分享給第二個帳號
+    const list = await ok('POST', '/lists', { name: '共用科目' });
+    await ok('POST', `/lists/${list.id}/share`, { email });
+
+    // 第二個帳號用自己的教材項目，在別人的清單底下建任務
+    const book2 = (await call2('POST', '/material/books', { title: '我的書' })).json;
+    const ch2 = (await call2('POST', '/material/nodes',
+      { book_id: book2.id, kind: 'chapter', title: '第一章' })).json;
+    const item2 = (await call2('POST', '/material/content-items',
+      { node_id: ch2.id, kind: 'reading', title: '內文' })).json;
+
+    const r = await call2('POST', '/tasks',
+      { title: '綁到別人清單', list_id: list.id, material_content_item_id: item2.id });
+    assert.equal(r.status, 400, `預期被擋下，實際 ${r.status} ${JSON.stringify(r.json)}`);
+
+    // 沒有帶教材時，分享清單本身仍然可以正常建任務——不能把整個功能一起擋掉
+    const plain = await call2('POST', '/tasks', { title: '一般共用任務', list_id: list.id });
+    assert.equal(plain.status, 200);
+  });
+
   test('看不到也改不到別人的教材', async () => {
     const B = await seedBook('別人的書');
     const other = await startServer();

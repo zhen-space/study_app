@@ -138,9 +138,13 @@ export async function hardDeleteBook(userId, id) {
     err.references = refs;
     throw err;
   }
-  await q.run('DELETE FROM material_content_items WHERE user_id=? AND book_id=?', [userId, id]);
-  await q.run('DELETE FROM material_nodes WHERE user_id=? AND book_id=?', [userId, id]);
-  await q.run('DELETE FROM material_books WHERE user_id=? AND id=?', [userId, id]);
+  // 三段刪除要嘛全成功要嘛全不做：中途失敗會留下「書沒了但節點還在」的孤兒，
+  // 而這些孤兒再也沒有入口可以清掉。
+  await q.tx(async tx => {
+    await tx.run('DELETE FROM material_content_items WHERE user_id=? AND book_id=?', [userId, id]);
+    await tx.run('DELETE FROM material_nodes WHERE user_id=? AND book_id=?', [userId, id]);
+    await tx.run('DELETE FROM material_books WHERE user_id=? AND id=?', [userId, id]);
+  });
   return { deleted: true };
 }
 
