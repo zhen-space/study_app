@@ -1,8 +1,9 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { api } from '../api';
 import Icon from './Icons';
 import { today } from './helpers';
 import { usePlans, bookOf, shortTitle, md, byLesson } from './plans';
+import { listBooks } from './material';
 import { usePlanScheduleHealth } from './planHealth';
 import { useActiveSchedule, blocksForTask } from './scheduleAdjust';
 import AdjustBlockSheet from './AdjustBlockSheet';
@@ -34,6 +35,11 @@ const ADJUST = [
 export default function PlanDetailView({ planKey, tasks, lists, apiPlans = [], reload, onBack, goWizard, adjustPlan, goLocks }) {
   const plan = usePlans(tasks, lists, apiPlans).find(p => p.key === planKey);
   const [showDone, setShowDone] = useState(false);
+  // 教材脈絡只用來顯示；identity 一律是 task.material_book_id，不從標題猜。
+  const [matBooks, setMatBooks] = useState(() => new Map());
+  useEffect(() => {
+    listBooks().then(bs => setMatBooks(new Map(bs.map(b => [b.id, b])))).catch(() => {});
+  }, []);
   const [sheet, setSheet] = useState(null);   // manage | edit | add | adjust | confirmComplete
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState('');
@@ -134,6 +140,12 @@ export default function PlanDetailView({ planKey, tasks, lists, apiPlans = [], r
   // 尚未安排的已經有自己的區塊，這裡要排除掉，否則同一筆會出現兩次。
   const unplacedIds = new Set(plan.unplaced.map(t => t.id));
   const placed = plan.items.filter(t => !unplacedIds.has(t.id));
+  // 教材脈絡優先用**正式 linkage**（material_book_id），沒有 linkage 的才退回
+  // 舊的標題前綴解析。Manual Task 完全沒有教材也是正常的，不強迫每個 Task 屬於某本書。
+  const bookLabelOf = t => (t.material_book_id != null
+    ? (matBooks.get(t.material_book_id)?.title || '教材')
+    : bookOf(t.title));
+
   const groups = plan.subjects.length
     ? plan.subjects.map(s => ({
         subject: s,
@@ -262,7 +274,7 @@ export default function PlanDetailView({ planKey, tasks, lists, apiPlans = [], r
           const list = visible(items);
           if (!list.length) return null;
           const undone = items.filter(t => !t.completed).length;
-          const books = [...new Set(list.map(t => bookOf(t.title)))];
+          const books = [...new Set(list.map(bookLabelOf))];
           return (
             <section key={String(subject?.id ?? 'none')} className="ui-section">
               <div className="row" style={{ marginBottom: 'var(--sp-1)' }}>
@@ -274,7 +286,7 @@ export default function PlanDetailView({ planKey, tasks, lists, apiPlans = [], r
                 ? books.map(b => (
                     <div key={b}>
                       <div className="ui-meta" style={{ padding: 'var(--sp-2) 0 0' }}>{b}</div>
-                      {list.filter(t => bookOf(t.title) === b).map(Row)}
+                      {list.filter(t => bookLabelOf(t) === b).map(Row)}
                     </div>
                   ))
                 : list.map(Row)}

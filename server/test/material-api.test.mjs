@@ -488,3 +488,119 @@ describe('跨帳號隔離', () => {
     } finally { other.stop(); }
   });
 });
+
+describe('Wizard 套用：task_creates 的 Material linkage', () => {
+  test('經排程器建立的 Task 帶得上 material linkage，並回填 selection 的 task_id', async () => {
+    const B = await seedBook('精靈套用');
+    const plan = await mkPlan('精靈計畫');
+    await ok('POST', `/plans/${plan.id}/material-items`,
+      { content_item_ids: [B.reading.id], selected: true });
+    const applied = await ok('POST', '/schedule/apply', {
+      plan_id: plan.id, source: 'initial', reason: '教材排程',
+      task_creates: [{ client_key: 'n1', title: '新大滿貫｜第一章｜內文', list_id: null,
+        material_content_item_id: B.reading.id }],
+      blocks: [{ client_key: 'n1', date: day(1) }],
+    });
+    assert.ok(applied.version_id);
+    const taskId = applied.created.find(c => c.client_key === 'n1').id;
+    const tasks = await ok('GET', '/tasks');
+    const t = tasks.find(x => Number(x.id) === Number(taskId));
+    assert.equal(Number(t.material_content_item_id), Number(B.reading.id));
+    assert.equal(Number(t.material_book_id), Number(B.book.id));
+    // selection 列要記下實際產生的 Task，之後取消選取才知道誰該退出排程
+    const sel = await ok('GET', `/plans/${plan.id}/material-items`);
+    assert.equal(Number(sel.find(s => Number(s.content_item_id) === Number(B.reading.id)).task_id),
+      Number(taskId));
+  });
+
+  test('已完成的教材不能經由排程器旁路長出新 Task', async () => {
+    const B = await seedBook('精靈旁路');
+    const plan = await mkPlan('旁路計畫');
+    await ok('PUT', `/material/content-items/${B.reading.id}/completion`, { completed: true });
+    const r = await api('POST', '/schedule/apply', {
+      plan_id: plan.id, source: 'initial',
+      task_creates: [{ client_key: 'n1', title: '重複的工作',
+        material_content_item_id: B.reading.id }],
+      blocks: [{ client_key: 'n1', date: day(1) }],
+    });
+    assert.ok(r.status >= 400, `應該被擋下，實際 ${r.status}`);
+    assert.match(r.json.error, /已完成/);
+    // 整筆交易 rollback：不得留下半套的 Task 或版本
+    const tasks = await ok('GET', '/tasks');
+    assert.equal(tasks.some(t => t.title === '重複的工作'), false);
+  });
+
+  test('別人的教材項目不能被綁進自己的排程', async () => {
+    const B = await seedBook('跨帳號教材');
+    const plan = await mkPlan('跨帳號計畫');
+    const r = await api('POST', '/schedule/apply', {
+      plan_id: plan.id, source: 'initial',
+      task_creates: [{ client_key: 'n1', title: '不存在的教材', material_content_item_id: 999999 }],
+      blocks: [{ client_key: 'n1', date: day(1) }],
+    });
+    assert.ok(r.status >= 400);
+    assert.match(r.json.error, /找不到教材項目/);
+    assert.ok(B.book.id);
+  });
+
+  test('沒有 material linkage 的一般 Task 照樣建得起來（不強迫每個 Task 都屬於教材）', async () => {
+    const plan = await mkPlan('純手動計畫');
+    const applied = await ok('POST', '/schedule/apply', {
+      plan_id: plan.id, source: 'initial',
+      task_creates: [{ client_key: 'm1', title: '自己加的複習' }],
+      blocks: [{ client_key: 'm1', date: day(2) }],
+    });
+    const taskId = applied.created[0].id;
+    const t = (await ok('GET', '/tasks')).find(x => Number(x.id) === Number(taskId));
+    assert.equal(t.material_content_item_id ?? null, null);
+    assert.equal(t.material_book_id ?? null, null);
+  });
+});
+
+describe('教材的科目（subject_list_id）', () => {
+  test('建立教材時可以指定科目，並以 lists.id 保存', async () => {
+    const subject = await ok('POST', '/lists', { name: '物理' });
+    const book = await ok('POST', '/material/books', { title: '物理講義', subject_list_id: subject.id });
+    assert.equal(Number(book.subject_list_id), Number(subject.id));
+    const listed = (await ok('GET', '/material/books')).find(b => b.id === book.id);
+    assert.equal(Number(listed.subject_list_id), Number(subject.id));
+  });
+
+  test('沒指定科目時是 NULL，不會被塞一個預設科目', async () => {
+    const book = await ok('POST', '/material/books', { title: '沒科目的書' });
+    assert.equal(book.subject_list_id ?? null, null);
+  });
+
+  test('既有教材可以用 PATCH 補科目，也可以清掉', async () => {
+    const subject = await ok('POST', '/lists', { name: '化學' });
+    const book = await ok('POST', '/material/books', { title: '化學講義' });
+    const patched = await ok('PATCH', `/material/books/${book.id}`, { subject_list_id: subject.id });
+    assert.equal(Number(patched.subject_list_id), Number(subject.id));
+    const cleared = await ok('PATCH', `/material/books/${book.id}`, { subject_list_id: null });
+    assert.equal(cleared.subject_list_id ?? null, null);
+  });
+
+  test('不能指定不存在或別人的科目', async () => {
+    const r = await api('POST', '/material/books', { title: '亂指科目', subject_list_id: 999999 });
+    assert.equal(r.status, 400);
+    assert.match(r.json.error, /找不到這個科目/);
+  });
+
+  test('Material-backed Task 的科目由呼叫端明確帶入，與教材的科目一致', async () => {
+    const subject = await ok('POST', '/lists', { name: '地科' });
+    const B = await seedBook('地科講義');
+    await ok('PATCH', `/material/books/${B.book.id}`, { subject_list_id: subject.id });
+    const plan = await mkPlan('地科計畫');
+    const applied = await ok('POST', '/schedule/apply', {
+      plan_id: plan.id, source: 'initial',
+      task_creates: [{ client_key: 'g1', title: '地科講義｜第一章｜內文',
+        list_id: subject.id, material_content_item_id: B.reading.id }],
+      blocks: [{ client_key: 'g1', date: day(1) }],
+    });
+    const taskId = applied.created[0].id;
+    const t = (await ok('GET', '/tasks')).find(x => Number(x.id) === Number(taskId));
+    assert.equal(Number(t.list_id), Number(subject.id));
+    assert.equal(Number(t.material_content_item_id), Number(B.reading.id));
+    assert.equal(Number(t.material_book_id), Number(B.book.id));
+  });
+});

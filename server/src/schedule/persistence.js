@@ -881,15 +881,38 @@ export async function applySchedule(userId, {
       if (!c.client_key || created.has(c.client_key) || !String(c.title || '').trim()) {
         throw new ScheduleInputError('新任務資料不正確');
       }
+      // Task ↔ Material 只是「這個 Task 在做哪一份教材」的指向，不改變任何排程語意：
+      // ScheduledBlock 仍然只 reference Task。這裡驗的規則與 POST /tasks 完全一致，
+      // 否則精靈就成了「已完成教材還能長出新任務」的旁路。
+      let materialItem = null;
+      if (c.material_content_item_id != null) {
+        materialItem = await tx.get(
+          `SELECT i.id, i.book_id, COALESCE(p.completed,0) AS completed
+             FROM material_content_items i
+             LEFT JOIN material_progress p ON p.content_item_id=i.id AND p.user_id=i.user_id
+            WHERE i.id=? AND i.user_id=?`, [c.material_content_item_id, userId]);
+        if (!materialItem) throw new ScheduleInputError(`找不到教材項目：${c.material_content_item_id}`);
+        if (Number(materialItem.completed) === 1) {
+          throw new ScheduleInputError(`這份教材已完成，不需要再排程：${c.material_content_item_id}`);
+        }
+      }
       const r = await tx.run(
-        `INSERT INTO tasks (user_id,list_id,title,notes,priority,tags,subtasks,recurring,miss_policy,plan_id,deadline_date,estimated_minutes)
-         VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`,
+        `INSERT INTO tasks (user_id,list_id,title,notes,priority,tags,subtasks,recurring,miss_policy,plan_id,deadline_date,estimated_minutes,material_content_item_id,material_book_id)
+         VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
         [userId, c.list_id || null, String(c.title).trim(), c.notes || '', c.priority || 0,
           JSON.stringify(c.tags || []), JSON.stringify(c.subtasks || []), c.recurring || null,
           c.miss_policy || 'keep', planId, c.deadline_date || null,
           c.estimated_minutes ?? (blocks.filter(b => b.client_key === c.client_key)
-            .reduce((total, b) => total + (Number(b.planned_minutes) || 0), 0) || null)]);
+            .reduce((total, b) => total + (Number(b.planned_minutes) || 0), 0) || null),
+          materialItem?.id ?? null, materialItem?.book_id ?? null]);
       created.set(c.client_key, r.lastInsertRowid);
+      // selection 列記下這次實際產生的 Task，取消選取時才知道要讓誰退出排程。
+      if (materialItem) {
+        await tx.run(
+          `UPDATE plan_material_items SET task_id=?,updated_at=CURRENT_TIMESTAMP
+            WHERE user_id=? AND plan_id=? AND content_item_id=?`,
+          [r.lastInsertRowid, userId, planId, materialItem.id]);
+      }
     }
 
     for (const taskId of taskDeleteIds) {

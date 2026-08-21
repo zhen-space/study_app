@@ -643,3 +643,206 @@ select { -webkit-appearance: none; appearance: none; padding-right: 26px;
 .plan-card-title { min-width: 0; display: flex; align-items: baseline; gap: var(--sp-2); flex-wrap: wrap; }
 .plan-card-title b { overflow-wrap: anywhere; }
 .plan-card-date { white-space: nowrap; }
+
+/* ============================================================
+   Material：教材庫與 Wizard 教材選取
+   ------------------------------------------------------------
+   只用既有 token，不另立一套 CSS language。三件事必須在視覺上分得開，
+   而且都不能只靠顏色：
+     ・已完成       → 打勾徽章 ＋「已完成」文字 ＋ 刪除線
+     ・已選（本次排）→ 實心方塊 ＋ 勾
+     ・未選         → 空心方塊
+   手機優先：巢狀縮排刻意很淺（每層 10–12px），375px 下內容才不會被擠窄。
+   ============================================================ */
+
+.mt-selector, .ml-view { display: flex; flex-direction: column; gap: var(--sp-3); min-width: 0; }
+
+/* ---- 選取方塊：44px 觸控目標，視覺方塊 22px ---- */
+.mt-box, .ml-check {
+  flex: 0 0 auto; width: 44px; height: 44px; margin: -11px 0 -11px -11px;
+  display: inline-flex; align-items: center; justify-content: center;
+  background: none; border: 0; padding: 0; color: var(--accent-contrast);
+}
+.mt-box::before, .ml-check::before {
+  content: ''; position: absolute; width: 22px; height: 22px;
+  border: 2px solid var(--text-3); border-radius: 6px; background: var(--surface-2);
+}
+.mt-box, .ml-check { position: relative; }
+.mt-box > span, .ml-check > span {
+  position: relative; z-index: 1; font-size: 14px; font-weight: 700; line-height: 1;
+}
+.mt-box.on::before, .mt-box.mixed::before, .ml-check.on::before {
+  background: var(--accent); border-color: var(--accent);
+}
+.mt-box:disabled, .ml-check:disabled { opacity: .5; }
+
+/* 已完成徽章：不是 checkbox，形狀（圓形）與 checkbox（方形）就不同 */
+.mt-done {
+  flex: 0 0 auto; width: 44px; height: 44px; margin: -11px 0 -11px -11px;
+  display: inline-flex; align-items: center; justify-content: center;
+  position: relative; color: var(--success);
+}
+.mt-done::before {
+  content: ''; position: absolute; width: 22px; height: 22px;
+  border: 2px solid var(--success); border-radius: 999px; background: transparent;
+}
+.mt-done > span { position: relative; z-index: 1; font-size: 13px; font-weight: 700; }
+.mt-done-text { color: var(--success); font-weight: 600; }
+
+/* ---- 內容列 ---- */
+.mt-item, .ml-item {
+  display: flex; align-items: flex-start; gap: var(--sp-3);
+  padding: 10px 0 10px 12px; min-height: 44px; min-width: 0;
+  border-top: 1px solid var(--separator);
+}
+.mt-item-main, .ml-item-main { min-width: 0; flex: 1; }
+.mt-item-title, .ml-item-title { font-size: 15px; overflow-wrap: anywhere; }
+.mt-item.is-done .mt-item-title, .ml-item.is-done .ml-item-title {
+  text-decoration: line-through; color: var(--text-2);
+}
+.mt-item-meta, .ml-item-meta {
+  display: flex; gap: var(--sp-2); flex-wrap: wrap; font-size: 12px; color: var(--text-2); margin-top: 2px;
+}
+.mt-kind {
+  background: var(--fill); border-radius: var(--radius-pill); padding: 1px 8px; white-space: nowrap;
+}
+
+/* ---- Chapter ---- */
+.mt-chapter, .ml-chapter { border-top: 1px solid var(--separator); }
+.mt-chapter-head { display: flex; align-items: center; gap: var(--sp-2); padding-left: 12px; }
+.mt-chapter-btn, .ml-chapter-head {
+  flex: 1; display: flex; align-items: center; gap: var(--sp-2); min-width: 0;
+  min-height: 48px; padding: 8px 0; background: none; border: 0; text-align: left;
+  font-size: 16px; font-weight: 600; color: var(--text);
+}
+.ml-chapter-head { padding-left: 12px; }
+.mt-caret { flex: 0 0 auto; width: 16px; color: var(--text-2); font-size: 12px; }
+.mt-chapter-title, .ml-chapter-title { min-width: 0; flex: 1; overflow-wrap: anywhere; }
+.mt-progress-text {
+  flex: 0 0 auto; font-size: 12px; color: var(--text-2);
+  font-variant-numeric: tabular-nums; white-space: nowrap;
+}
+.mt-chapter-body, .ml-chapter-body { padding-left: 10px; }
+
+/* ---- Section / Topic：Chapter 的同層子節點 ---- */
+.mt-child, .ml-child { border-top: 1px solid var(--separator); }
+.mt-child-head, .ml-child-head {
+  display: flex; align-items: center; gap: var(--sp-2);
+  min-height: 44px; padding: 6px 0 6px 12px; min-width: 0;
+}
+.mt-child-main { display: flex; align-items: baseline; gap: var(--sp-2); flex-wrap: wrap; min-width: 0; flex: 1; }
+.mt-child-title, .ml-child-title { font-size: 15px; font-weight: 500; overflow-wrap: anywhere; min-width: 0; }
+.ml-child-head .ml-child-title { flex: 1; }
+/* 節／主題各有明確標籤，不靠位置暗示層級——兩者是同層 */
+.mt-tag {
+  flex: 0 0 auto; font-size: 11px; padding: 1px 7px; border-radius: var(--radius-pill);
+  border: 1px solid var(--separator); color: var(--text-2); white-space: nowrap;
+}
+.mt-tag--topic { border-style: dashed; }
+.mt-child-items { padding-left: 10px; }
+
+/* ---- Chapter 直屬內容：與 Section / Topic 同層，不縮排成它們的 child ---- */
+.mt-chapter-level { border-top: 1px solid var(--separator); padding-top: var(--sp-1); }
+.mt-chapter-level-label {
+  font-size: 11px; font-weight: 600; letter-spacing: .03em; color: var(--text-2);
+  text-transform: uppercase; padding: 6px 0 2px 12px;
+}
+
+/* ---- 書單 ---- */
+.mt-booklist, .ml-booklist { display: flex; flex-direction: column; }
+.mt-book, .ml-book {
+  display: flex; align-items: center; gap: var(--sp-3); width: 100%; min-width: 0;
+  min-height: 56px; padding: 12px 2px; background: none; border: 0;
+  border-top: 1px solid var(--separator); text-align: left; color: var(--text);
+}
+.mt-book-main, .ml-book-main { display: flex; flex-direction: column; gap: 2px; min-width: 0; flex: 1; }
+.mt-book-title, .ml-book-title { font-size: 16px; font-weight: 600; overflow-wrap: anywhere; }
+.mt-book-sub, .ml-book-sub, .ml-book-cats { font-size: 12px; color: var(--text-2); overflow-wrap: anywhere; }
+.mt-book-meta, .ml-book-meta {
+  display: flex; align-items: center; gap: var(--sp-2); flex: 0 0 auto;
+}
+.ml-book-pct { font-size: 12px; color: var(--text-2); font-variant-numeric: tabular-nums; }
+.mt-warn {
+  font-size: 12px; color: var(--warning); font-weight: 600;
+  overflow-wrap: anywhere;
+}
+.mt-badge {
+  background: var(--accent-soft); color: var(--accent); font-size: 11px; font-weight: 600;
+  border-radius: var(--radius-pill); padding: 2px 8px; white-space: nowrap;
+}
+
+/* ---- 底部計數 ---- */
+.mt-footer {
+  display: flex; align-items: center; gap: var(--sp-3); flex-wrap: wrap;
+  border-top: 1px solid var(--separator); padding-top: var(--sp-3); margin-top: var(--sp-2);
+}
+.mt-count { font-size: 15px; font-weight: 600; }
+.mt-tree-head { display: flex; align-items: center; gap: var(--sp-2); min-width: 0; flex-wrap: wrap; }
+/* 窄螢幕時讓書名自己一行，不要跟返回鍵擠在一起 */
+@media (max-width: 480px) {
+  .mt-tree-head { align-items: flex-start; }
+  .mt-tree-head .mt-tree-title { flex-basis: 100%; }
+}
+.mt-tree-title { font-size: 16px; font-weight: 600; min-width: 0; overflow-wrap: anywhere; }
+.mt-loading, .mt-err { font-size: 14px; color: var(--text-2); padding: var(--sp-3) 0; }
+.mt-err { color: var(--danger); }
+
+/* ---- blocked / reconciliation ---- */
+.mt-blocked {
+  border: 1px solid var(--warning); border-radius: var(--radius-md);
+  background: var(--warning-soft); padding: var(--sp-4); display: flex;
+  flex-direction: column; gap: var(--sp-2);
+}
+.mt-blocked-head { display: flex; align-items: center; gap: var(--sp-2); color: var(--warning); }
+.mt-blocked-icon {
+  flex: 0 0 auto; width: 20px; height: 20px; border-radius: 999px;
+  border: 2px solid currentColor; display: inline-flex; align-items: center;
+  justify-content: center; font-size: 13px; font-weight: 700;
+}
+.mt-blocked-body { font-size: 14px; color: var(--text); margin: 0; }
+.mt-blocked-list { margin: 0; padding-left: 18px; display: flex; flex-direction: column; gap: var(--sp-1); }
+.mt-blocked-list li { font-size: 14px; }
+.mt-blocked-item { font-weight: 600; overflow-wrap: anywhere; }
+.mt-blocked-why { display: block; font-size: 12px; color: var(--text-2); overflow-wrap: anywhere; }
+.mt-blocked-actions { display: flex; gap: var(--sp-2); flex-wrap: wrap; }
+
+/* ---- 教材庫其他 ---- */
+.ml-bookprog { display: flex; align-items: center; gap: var(--sp-3); }
+.ml-bookprog .today-progress { flex: 1; }
+.ml-samebook {
+  font-size: 13px; color: var(--text-2); background: var(--fill);
+  border-radius: var(--radius-sm); padding: var(--sp-3); overflow-wrap: anywhere;
+}
+.ml-addrow { display: flex; gap: var(--sp-2); align-items: center; flex-wrap: wrap; }
+.ml-addrow select { min-height: 44px; }
+.ml-addrow--book input { flex: 1 1 140px; }
+/* 科目：排程的前提，放在教材頁最上面 */
+.ml-subject {
+  display: flex; align-items: center; gap: var(--sp-2); flex-wrap: wrap;
+  padding: var(--sp-3); border-radius: var(--radius-sm); background: var(--fill);
+}
+.ml-subject.needs { background: var(--warning-soft); border: 1px solid var(--warning); }
+.ml-subject label { font-size: 13px; color: var(--text-2); font-weight: 600; }
+.ml-subject select { min-height: 44px; }
+.ml-addrow input { flex: 1; min-width: 0; min-height: 44px; }
+.ml-addrow--cat { margin-top: var(--sp-4); padding-top: var(--sp-4); border-top: 1px solid var(--separator); }
+
+/* ---- Wizard 教材來源分界：正式教材 vs 舊版目錄 ---- */
+.mt-source-note {
+  font-size: 13px; color: var(--text-2); background: var(--fill);
+  border-radius: var(--radius-sm); padding: var(--sp-3); overflow-wrap: anywhere;
+}
+.mt-legacy-tag {
+  display: inline-block; font-size: 11px; font-weight: 600; padding: 1px 7px;
+  border-radius: var(--radius-pill); border: 1px dashed var(--text-3); color: var(--text-2);
+  margin-left: var(--sp-2); white-space: nowrap;
+}
+
+/* ---- Plan Detail：教材脈絡分組 ---- */
+.pd-mgroup { border-top: 1px solid var(--separator); padding-top: var(--sp-2); margin-top: var(--sp-2); }
+.pd-mgroup-head {
+  display: flex; align-items: baseline; gap: var(--sp-2); flex-wrap: wrap;
+  font-size: 13px; color: var(--text-2); padding-bottom: var(--sp-1); min-width: 0;
+}
+.pd-mgroup-book { font-weight: 600; color: var(--text); overflow-wrap: anywhere; }
+.pd-mgroup-ctx { overflow-wrap: anywhere; }

@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { api } from '../api';
 import { planName, isLegacyPlanTask } from './plans';
 import { applyWizardSchedule } from './wizardApply';
@@ -7,6 +7,9 @@ import { today, addDays } from './helpers';
 import { parseICS } from './ics';
 import { fileToPayload } from './vocabImport';
 import FeasibilityGap from './FeasibilityGap';
+import MaterialSelector from './MaterialSelector';
+import { listBooks, getPlanSelection, selectItems, materialSchedulingItems } from './material';
+import { SegmentedControl, Button } from './ui';
 
 const LIST_COLORS = ['#0086CC', '#e03131', '#16a34a', '#f59f00', '#9333ea', '#0891b2'];
 const TYPE_OPTIONS = ['範例', '例題', '單元練習', '歷屆試題'];
@@ -67,6 +70,13 @@ export default function WizardView({
   const [shift, setShift] = useState({ sleep_start: '', sleep_end: '' });
   const [items, setItems] = useState([]);           // 已勾選的章節項目
   const [rangeInput, setRangeInput] = useState({});
+  // 正式 Material 選取。Create 模式是草稿（Plan 還不存在），Edit 模式直接寫正式 API。
+  const [matIds, setMatIds] = useState(() => new Set());
+  const [matPicked, setMatPicked] = useState(() => new Map()); // id → descriptor
+  const [matBooks, setMatBooks] = useState([]);
+  // null = 自動：有正式教材就用教材庫，還沒有就直接顯示舊版目錄。
+  // 一律預設教材庫會讓還沒轉換的使用者一進來就看到空白。
+  const [source, setSource] = useState(null);
   const [tocs, setTocs] = useState([]);
   const [tocBusy, setTocBusy] = useState(null);
   const [editBook, setEditBook] = useState(null);   // 正在改名的書：`${list_id}|${第一章的id}`
@@ -118,6 +128,7 @@ export default function WizardView({
     loadEv();
     api('/settings').then(s => { setSettings(s); setShift({ sleep_start: s.sleep_start, sleep_end: s.sleep_end }); });
     api('/import/toc').then(setTocs);
+    listBooks().then(setMatBooks).catch(() => setMatBooks([]));
     // AI 解讀結果自動保存：離開頁面回來還在
     try { const saved = localStorage.getItem('wizardAiPreview'); if (saved) setAiPreview(JSON.parse(saved)); } catch {}
   }, []);
@@ -386,6 +397,46 @@ export default function WizardView({
   const chapterNode = row => ({ key: `toc-${row.id}`, title: row.title, level: row.level || '章', children: normKids(row.sections), depth: 0 });
 
   const isAncestor = (a, b) => b.startsWith(a + '.');
+  /* ---------- Material 選取 → 排程項目 ---------- */
+  //
+  // Material 的 ContentItem 本身就是原子單位（某一份單元練習、某一題例題），
+  // 不需要再經過舊版的「題型展開」——那是為了把抽象的章節拆成可排的份數而存在的。
+  // 所以這裡直接一項對一項產生排程項目，並保留 material_content_item_id，
+  // 讓套用時建立的 Task 帶得上正式 Material linkage。
+  // 排程項目一律由 material.js 的純函式產生：它回傳的 subject_id 是正式的
+  // lists.id（material_books.subject_list_id），**絕不用科目名稱**去比對。
+  // 沒有科目的書會被列進 blocked，在第 1 步就顯示出來，不會拖到排程最後才失敗。
+  const { items: materialItems, blocked: matNoSubject } = useMemo(
+    () => materialSchedulingItems(matPicked, matBooks, lists, LIST_COLORS[0]),
+    [matPicked, matBooks, lists]);
+
+  const onMaterialPicked = useCallback((descriptors, selected) => {
+    setMatPicked(prev => {
+      const next = new Map(prev);
+      for (const d of descriptors) { if (selected) next.set(d.id, d); else next.delete(d.id); }
+      return next;
+    });
+  }, []);
+
+  // Edit Mode：正式 selection 存在後端，進來時直接讀回來當初始狀態。
+  useEffect(() => {
+    if (!isEdit || planId == null) return;
+    getPlanSelection(planId).then(rows => {
+      const picked = new Map();
+      for (const r of rows) {
+        if (!r.selected || r.material_completed) continue;
+        picked.set(r.content_item_id, {
+          id: r.content_item_id, title: r.title, kind: r.kind,
+          estimated_minutes: null, book_id: r.book_id,
+          book_title: matBooks.find(b => b.id === r.book_id)?.title || '', path: [],
+        });
+      }
+      setMatPicked(picked);
+      setMatIds(new Set(picked.keys()));
+    }).catch(() => {});
+  }, [isEdit, planId, matBooks]);
+
+  const srcTab = source ?? (matBooks.length ? 'material' : 'legacy');
   const findItem = key => items.find(x => x.key === key);
 
   function toggleNode(l, key, title, level, depth) {
@@ -604,6 +655,16 @@ export default function WizardView({
         merged2.push(t);
       }
     }
+    // Material 選取直接附加，不經過題型展開（ContentItem 已經是原子單位）。
+    // 這一步刻意放在展開之後：既有的展開邏輯一行都沒有被改到。
+    for (const m of materialItems) {
+      const w = bySubject ? fixWin(mergeWin(`${m.subject_id}|all`)) : fixWin(mergeWin('all|all'));
+      expanded2.push({
+        subject_id: m.subject_id, title: m.title, minutes: m.minutes,
+        start: w.start, end: w.end, spread: false,
+        material_content_item_id: m.material_content_item_id,
+      });
+    }
     setMergedLeftover(merged2);
     // 已經打勾完成的不要再排一次（想重讀才勾「已完成的也重排」）。
     // 同一科＋同一個標題才算同一件事，不同科目撞名不會誤刪。
@@ -646,6 +707,14 @@ export default function WizardView({
   // 真正寫進資料庫的只有這一步，而且只透過 ./wizardApply 這一層。
   // 精靈本身不知道排定位置目前是存在 due_date——2C 換成 ScheduleVersion 時，
   // 三個步驟一行都不用改。
+  // block → material_content_item_id。materialItems 的 title 是這次自己組出來的，
+  // 所以 (科目|標題) 在這次 session 內足以指回原本的 ContentItem。
+  const materialBlockMap = useMemo(() => {
+    const m = {};
+    for (const it of materialItems) m[`${it.subject_id}|${it.title}`] = it.material_content_item_id;
+    return m;
+  }, [materialItems]);
+
   async function confirm() {
     setSaving(true);
     try {
@@ -655,6 +724,9 @@ export default function WizardView({
         name: planNameInput.trim() || planName(
           preview.blocks.map(b => ({ title: b.title, list_id: b.subject_id, due_date: b.date })), lists),
         blocks: preview.blocks,
+        // 這一批 Material 選取產生的 block 對應到哪個 ContentItem。
+        // key 是本次 session 自己生成的（科目＋標題），不是拿去猜 legacy 身分的全域比對。
+        materialByBlock: materialBlockMap,
         existingTasks: livePlanTasks,
         // 舊任務只有同時滿足這三件事才會被軟刪除：
         //   ① 這次真的被帶進排程（merged）
@@ -665,6 +737,11 @@ export default function WizardView({
         // 使用者選「維持原本日期不動」時，這次沒排到的任務原封不動留著
         removeUnscheduled: redoUndone,
       });
+      // Create Mode：Plan 這時候才存在，把草稿選取寫成正式的 Plan selection。
+      // （Edit Mode 的每一次點擊本來就已經寫進後端了，不需要再送一次）
+      if (!isEdit && matIds.size) {
+        try { await selectItems(r.planId, [...matIds], true); } catch { /* 排程已成立，選取失敗不回滾 */ }
+      }
       setApplied(r);
       // 先把這次真正用的排法記下來，之後 Today 的 AI 重排才有得依循。
       // 順序很重要：草稿是「操作到一半」，套用成功後就沒有意義了，
@@ -863,6 +940,41 @@ export default function WizardView({
         {/* ============ 步驟 1：讀什麼 ============ */}
         {step === 0 && (
           <div className="tile" id="wz-sec-content">
+            {/* 正式教材（Material domain）與舊版目錄（legacy toc_items）是兩套資料，
+                identity 不互通。legacy → Material 的 migration 還沒執行，所以這裡
+                明確分開讓使用者選，前端絕不用書名／路徑去猜兩邊是不是同一份教材。 */}
+            <SegmentedControl ariaLabel="教材來源" block value={srcTab} onChange={setSource}
+              options={[{ value: 'material', label: '教材庫' }, { value: 'legacy', label: '舊版目錄' }]} />
+            {srcTab === 'material' && (
+              <div style={{ marginTop: 12 }}>
+                <MaterialSelector
+                  planId={isEdit ? planId : null}
+                  draftIds={matIds}
+                  onDraftChange={setMatIds}
+                  onPickedChange={onMaterialPicked}
+                  footer={
+                    // 用 Design System 的 Button：舊的 .btn 沒有 :disabled 樣態，
+                    // 停用時看起來仍像可按，使用者只會覺得「按了沒反應」。
+                    <Button variant="primary" style={{ marginLeft: 'auto' }}
+                      disabled={!materialItems.length} onClick={() => setStep(1)}>
+                      下一步：怎麼安排
+                    </Button>
+                  } />
+                {matNoSubject.length > 0 && (
+                  <div className="mt-source-note" role="alert" style={{ marginTop: 12 }}>
+                    這些教材還沒有指定科目，所以無法排入計畫：
+                    {matNoSubject.map(b => `${b.book_title}（已選 ${b.count} 項）`).join('、')}。
+                    請先到「更多 → 教材庫」為它們設定科目，再回來排程。
+                  </div>
+                )}
+              </div>
+            )}
+            {srcTab === 'legacy' && (<>
+            <div className="mt-source-note" style={{ marginTop: 12 }}>
+              舊版目錄<span className="mt-legacy-tag">legacy</span>
+              是以前用拍照匯入建立的資料，尚未轉成正式教材，所以不會出現在教材庫，
+              也不會累積教材完成度。兩邊是不同的資料，不會互相對應。
+            </div>
             <Help>
               每科先「拍課本目錄」建立章節，之後直接勾選。<br />
               ・可勾章／節／主題任一層，勾小的會取代大的<br />
@@ -1138,6 +1250,7 @@ export default function WizardView({
             <div className="row" style={{ marginTop: 16 }}>
               <button className="btn" disabled={!items.length} onClick={() => setStep(1)}>下一步：怎麼安排（已選 {items.length} 項）</button>
             </div>
+            </>)}
           </div>
         )}
 
