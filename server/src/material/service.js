@@ -14,6 +14,7 @@ import {
   buildTree, descendantItemIds, nodePlacementProblem, itemPlacementProblem,
   NODE_KINDS, ITEM_KINDS,
 } from './tree.js';
+import { validateDraft, draftSummary } from './draft.js';
 
 export class MaterialInputError extends Error {
   constructor(message, status = 400) { super(message); this.name = 'MaterialInputError'; this.status = status; }
@@ -435,3 +436,99 @@ export async function selectNode(userId, planId, nodeId, selected) {
 }
 
 export { NODE_KINDS, ITEM_KINDS };
+
+// 科目必須是這位使用者自己的 lists.id。用名稱比對是不行的。
+export const assertSubject = (userId, subjectListId) =>
+  q.get('SELECT id FROM lists WHERE id=? AND user_id=?', [subjectListId, userId]);
+
+/* ---------- Canonical draft 的唯一 full-tree writer ---------- */
+
+// 整本教材一次建立，全成功或全不做。
+//
+// 這是**唯一**的 full-tree writer：import commit 與（未來）手動建立教材都走這裡。
+// 兩套 writer 遲早會分岔成「一邊擋得住、另一邊繞得過」，所以不做第二套。
+//
+// 半本教材是最糟的結果：Book 存在但沒有章、章建了一半、ContentItem 缺一截。
+// 學生看到的是一本壞掉的書，而且沒有任何入口可以修。所以全部包在一個
+// transaction 裡，任何一步失敗就整筆 rollback。
+export async function commitMaterialDraft(userId, input) {
+  const { draft, problems } = validateDraft(input);
+  if (problems.length) {
+    const err = new MaterialInputError('教材內容有問題，尚未建立', 400);
+    err.problems = problems;
+    throw err;
+  }
+  return writeDraftTree(userId, draft);
+}
+
+// 真正的寫入層，與驗證分開。
+//
+// 分開有兩個理由：
+//   ① 手動建立教材與 import 都只需要「組出 draft → 交給這支」，寫入路徑只有一條
+//   ② 驗證擋掉的東西永遠到不了交易裡；交易要防的是**驗證看不到的失敗**
+//      （DB 錯誤、併發刪除、bind 失敗）。把兩者分開，rollback 才測得到。
+//
+// 呼叫端有責任先跑 validateDraft。這支自己也會在迴圈裡再驗一次 placement，
+// 但那是 defence in depth，不是主要防線。
+export async function writeDraftTree(userId, draft) {
+  // 科目必須是這位使用者自己的 lists.id。用名稱比對是不行的：
+  // 名稱可以重複、可以改，不是 identity。
+  if (draft.book.subject_list_id != null) {
+    const l = await q.get('SELECT id FROM lists WHERE id=? AND user_id=?',
+      [draft.book.subject_list_id, userId]);
+    if (!l) throw new MaterialInputError('找不到這個科目', 400);
+  }
+
+  const bookId = await q.tx(async tx => {
+    const b = await tx.run(
+      `INSERT INTO material_books (user_id,title,publisher,subject_list_id,source)
+       VALUES (?,?,?,?,?)`,
+      [userId, draft.book.title, draft.book.publisher || '',
+        draft.book.subject_list_id ?? null, 'ocr_import']);
+    const id = Number(b.lastInsertRowid);
+
+    const addItems = async (nodeId, nodeKind, list) => {
+      for (const it of list) {
+        // 每一筆都再驗一次 placement：呼叫端就算繞過 validateDraft 也進不來。
+        const problem = itemPlacementProblem(it.kind, nodeKind);
+        if (problem) throw new MaterialInputError(problem, 400);
+        await tx.run(
+          `INSERT INTO material_content_items
+             (user_id,book_id,node_id,kind,title,estimated_minutes,order_index)
+           VALUES (?,?,?,?,?,?,?)`,
+          [userId, id, nodeId, it.kind, it.title, it.estimated_minutes ?? null, it.order]);
+      }
+    };
+
+    for (const ch of draft.chapters) {
+      const chProblem = nodePlacementProblem('chapter', null);
+      if (chProblem) throw new MaterialInputError(chProblem, 400);
+      const c = await tx.run(
+        `INSERT INTO material_nodes (user_id,book_id,parent_id,kind,title,order_index)
+         VALUES (?,?,?,?,?,?)`,
+        [userId, id, null, 'chapter', ch.title, ch.order]);
+      const chapterId = Number(c.lastInsertRowid);
+      await addItems(chapterId, 'chapter', ch.content_items);
+
+      for (const child of ch.children) {
+        // Section 與 Topic 都直接掛在章底下——這一行就是「同層」的實作。
+        const problem = nodePlacementProblem(child.kind, 'chapter');
+        if (problem) throw new MaterialInputError(problem, 400);
+        const n = await tx.run(
+          `INSERT INTO material_nodes (user_id,book_id,parent_id,kind,title,order_index)
+           VALUES (?,?,?,?,?,?)`,
+          [userId, id, chapterId, child.kind, child.title, child.order]);
+        await addItems(Number(n.lastInsertRowid), child.kind, child.content_items);
+      }
+    }
+    return id;
+  });
+
+  return { book: await getBook(userId, bookId), summary: draftSummary(draft) };
+}
+
+// preview 用：只驗證與統計，**完全不寫資料庫**。
+export function previewMaterialDraft(input) {
+  const { draft, problems } = validateDraft(input);
+  return { ok: problems.length === 0, problems, draft, summary: draftSummary(draft) };
+}

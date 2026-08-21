@@ -120,12 +120,23 @@ tri-state 的計算只看**尚未完成**的項目：
 Section / Topic 底下可以直接承載範例／例題；Chapter 本身可以直接承載單元練習／歷屆試題。
 不得為了讓 Chapter-level ContentItem「有 parent」而建立假的 Section。
 
-| ContentItem 類型 | 允許掛在 |
-|---|---|
-| `reading` 內文 | chapter / section / topic |
-| `example` 範例／例題 | section / topic |
-| `unit_exercise` 單元練習 | **chapter** |
-| `past_exam` 歷屆試題 | **chapter** |
+| ContentItem 類型 | 學生看到的字 | 允許掛在 |
+|---|---|---|
+| `reading` | 課本內容 | chapter / section / topic |
+| `example` | 範例 | section / topic |
+| `example_problem` | 例題 | section / topic |
+| `unit_exercise` | 單元練習 | **chapter** |
+| `past_exam` | 歷屆試題 | **chapter** |
+
+**`example`（範例）與 `example_problem`（例題）是兩種不同的東西**：範例是課本
+講解過的示範，例題是要學生自己動手做的題目。它們必須是各自獨立的 ContentItem，
+學生才能「只讀課本內容」「只做例題」或「全部一起排」。
+
+`reading` 保留成獨立的 ContentItem —— **不要**把 Section / Topic 本身當成
+completion identity。完成度的最小單位永遠是 ContentItem（§1）。
+
+`material_content_items.kind` 是 `TEXT NOT NULL`，**沒有 CHECK constraint**，
+所以擴充 kind 是純粹的 application-level enum 變更，不需要 schema migration。
 
 單元練習與歷屆試題直接屬於章。為了「讓題目有個 parent」而生出假的節，會污染
 每一個 derived 數字：章的完成率、tri-state、教材樹的層數。
@@ -193,3 +204,102 @@ POST   /api/plans/:id/material-nodes/:nodeId         { selected }  tri-state 批
 ```
 
 節點**沒有** completion 端點，這是刻意的（見 §1）。
+
+---
+
+## 11. Canonical Material Draft 與唯一的 full-tree writer
+
+「一份還沒寫進資料庫的完整教材」有一個明確形狀（`server/src/material/draft.js`）：
+
+```
+{
+  book: { title, publisher?, subject_list_id? },
+  chapters: [{
+    title, order?,
+    content_items: [ … ],        // 章直屬：reading / unit_exercise / past_exam
+    children: [{                 // Section 與 Topic 同層，都直接掛在章底下
+      kind: 'section' | 'topic', title, order?,
+      content_items: [ … ],      // reading / example / example_problem
+    }],
+  }],
+}
+```
+
+draft **不帶任何 id**：它描述「要建立什麼」，不是「已經有什麼」。identity 一律由
+commit 當下的 INSERT 決定，不從 title / path 猜。
+
+canonical draft 禁止：Topic 巢狀在 Section 底下、為 chapter-level 內容造假的
+Section、未知的 kind、任何 identity 猜測。
+
+**只有一個 full-tree writer**：`writeDraftTree()`。import commit 與手動建立教材
+都組出同一種 draft 再交給它——兩套 writer 遲早會分岔成「一邊擋得住、另一邊繞得過」。
+
+```
+圖片／PDF ──► parser ─┐
+                     ├─► canonical draft ─► writeDraftTree()（單一 transaction）
+手動建立 ────────────┘
+```
+
+驗證（`validateDraft`）與寫入（`writeDraftTree`）刻意分開：驗證擋掉的東西永遠到
+不了交易裡，交易要防的是**驗證看不到的失敗**（DB 錯誤、併發刪除）。分開之後
+rollback 才測得到。
+
+### Import：preview → 確認 → commit
+
+| 端點 | 行為 |
+|---|---|
+| `POST /api/material/import/preview` | 呼叫正式 parser，回 canonical draft 與統計。**完全不寫資料庫** |
+| `POST /api/material/import/commit` | 把確認過的 draft 一次建立完整教材樹，全成功或全不做 |
+
+正式 parser（`server/src/material/parser.js`）直接輸出 canonical draft，不先產
+legacy TOC 形狀再讓前端轉——轉換寫在前端就等於把 hierarchy 契約複製一份到前端。
+
+legacy 的 `POST /api/import/toc` 原樣保留：它的 prompt 要求「章 → 節 → 主題」
+三層巢狀，與正式 hierarchy 正面衝突，直接改會讓既有資料的語意在一次部署之間改變。
+
+## 12. Legacy 相容讀取層（read-only）
+
+學生只看到一個「教材」的世界，看不到「教材庫／舊版目錄」兩個分頁。但這**不代表**
+要把 `toc_items` migrate 成 Material——migration 不可逆，而且會把「猜出來的對應」
+變成看起來像事實的資料。
+
+所以只做投影（`server/src/material/legacy.js`，**只有 SELECT**）：
+
+| | 正式 Material | Legacy |
+|---|---|---|
+| `source` | `'material'` | `'legacy'` |
+| identity | `material_book_id` / `material_node_id` / `material_content_item_id` | `legacy_ref = { toc_id, path }` |
+| 完成度 | 真的有 | `completion_supported: false` |
+
+**兩者的 identity 永遠不互轉。** 不做 title matching、不做書名比對、不用 path 猜
+Material identity、不 silent conversion、不 auto migration。
+
+### 巢狀 Topic 的攤平
+
+legacy 原始是 `Chapter → Section → Topic`；投影後 `Chapter → [Section, Topic, …]`。
+
+**攤平只發生在呈現。** 每個節點都帶 `legacy_ref = { toc_id, path }`，path 是它在
+原始 `sections` JSON 裡的索引路徑，所以指得回原本那一列的那個位置；被提上來的
+Topic 另外帶 `legacy_flattened_from`，記得自己原本掛在誰底下。**不 UPDATE toc_items。**
+
+### 「焦點」等對不上的 level
+
+production 有 25 筆 `level = 焦點`，正式 Material 沒有對應的 kind。
+
+**保守契約**：投影成 `kind: 'legacy_node'` 的顯示節點，原始 level 原樣保留在
+`legacy_level`，並標明 `completion_supported: false`。它**不是**正式 Material 節點，
+沒有 Material identity，也不會被猜成 `reading` / `example` / `example_problem` /
+`unit_exercise`。猜錯就是把使用者的教材結構改掉，而且沒有回頭路。
+
+只有明確對得上的 level 才投影：`節`/`小節`/`單元` → `section`，`主題`/`重點` → `topic`，
+其餘一律 `legacy_node`。
+
+### 統一讀取
+
+`GET /api/study-materials`（可帶 `?plan_id=`）把兩個來源合成同一個形狀回傳，
+前端不必再寫 `if (legacy) … if (material) …`。
+
+`plan_id` 只影響**正式 Material** 的 selection：legacy 沒有 `plan_material_items`
+可以指向，所以永遠沒有 selection，也不假裝有。legacy 沒有正式完成度時
+**不得捏造 0%** 假裝語意相同——回 `completion_supported: false`，由呈現層自己決定
+怎麼自然呈現。
