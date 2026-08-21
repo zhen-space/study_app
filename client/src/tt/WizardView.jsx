@@ -8,8 +8,8 @@ import { parseICS } from './ics';
 import { fileToPayload } from './vocabImport';
 import FeasibilityGap from './FeasibilityGap';
 import MaterialSelector from './MaterialSelector';
-import { listBooks, getPlanSelection, selectItems, ITEM_LABEL } from './material';
-import { SegmentedControl } from './ui';
+import { listBooks, getPlanSelection, selectItems, materialSchedulingItems } from './material';
+import { SegmentedControl, Button } from './ui';
 
 const LIST_COLORS = ['#0086CC', '#e03131', '#16a34a', '#f59f00', '#9333ea', '#0891b2'];
 const TYPE_OPTIONS = ['範例', '例題', '單元練習', '歷屆試題'];
@@ -403,36 +403,12 @@ export default function WizardView({
   // 不需要再經過舊版的「題型展開」——那是為了把抽象的章節拆成可排的份數而存在的。
   // 所以這裡直接一項對一項產生排程項目，並保留 material_content_item_id，
   // 讓套用時建立的 Task 帶得上正式 Material linkage。
-  const bookSubject = useCallback(
-    bookId => matBooks.find(b => b.id === bookId)?.subject_list_id ?? null, [matBooks]);
-
-  // 沒有指定科目的教材排不進計畫（排程以科目分組）。這種情況要明講，不能默默略過。
-  const matNoSubject = useMemo(() => {
-    const bad = new Set();
-    for (const d of matPicked.values()) if (bookSubject(d.book_id) == null) bad.add(d.book_title);
-    return [...bad];
-  }, [matPicked, bookSubject]);
-
-  const materialItems = useMemo(() => {
-    const out = [];
-    for (const d of matPicked.values()) {
-      const sid = bookSubject(d.book_id);
-      if (sid == null) continue;
-      const l = lists.find(x => x.id === sid);
-      out.push({
-        key: `mat-${d.id}`,
-        material_content_item_id: d.id,
-        subject_id: sid,
-        name: l?.name || '',
-        color: l?.color || LIST_COLORS[0],
-        // 標題帶書名與所在章節，學生在任務列表才看得懂這是哪一本的哪一段
-        title: [d.book_title, ...(d.path || []), d.title].filter(Boolean).join('｜'),
-        minutes: d.estimated_minutes || 60,
-        level: ITEM_LABEL[d.kind] || '內容',
-      });
-    }
-    return out;
-  }, [matPicked, bookSubject, lists]);
+  // 排程項目一律由 material.js 的純函式產生：它回傳的 subject_id 是正式的
+  // lists.id（material_books.subject_list_id），**絕不用科目名稱**去比對。
+  // 沒有科目的書會被列進 blocked，在第 1 步就顯示出來，不會拖到排程最後才失敗。
+  const { items: materialItems, blocked: matNoSubject } = useMemo(
+    () => materialSchedulingItems(matPicked, matBooks, lists, LIST_COLORS[0]),
+    [matPicked, matBooks, lists]);
 
   const onMaterialPicked = useCallback((descriptors, selected) => {
     setMatPicked(prev => {
@@ -977,13 +953,18 @@ export default function WizardView({
                   onDraftChange={setMatIds}
                   onPickedChange={onMaterialPicked}
                   footer={
-                    <button className="btn" style={{ marginLeft: 'auto' }}
-                      disabled={!materialItems.length} onClick={() => setStep(1)}>下一步：怎麼安排</button>
+                    // 用 Design System 的 Button：舊的 .btn 沒有 :disabled 樣態，
+                    // 停用時看起來仍像可按，使用者只會覺得「按了沒反應」。
+                    <Button variant="primary" style={{ marginLeft: 'auto' }}
+                      disabled={!materialItems.length} onClick={() => setStep(1)}>
+                      下一步：怎麼安排
+                    </Button>
                   } />
                 {matNoSubject.length > 0 && (
                   <div className="mt-source-note" role="alert" style={{ marginTop: 12 }}>
-                    這些教材還沒有指定科目，無法排入計畫：{matNoSubject.join('、')}。
-                    請先到「更多 → 教材庫」為它們設定科目。
+                    這些教材還沒有指定科目，所以無法排入計畫：
+                    {matNoSubject.map(b => `${b.book_title}（已選 ${b.count} 項）`).join('、')}。
+                    請先到「更多 → 教材庫」為它們設定科目，再回來排程。
                   </div>
                 )}
               </div>

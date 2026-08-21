@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   listCategories, listBooks, getBookTree, setItemCompletion, createCategory, createBook,
-  addBookToCategory, ITEM_LABEL, CHAPTER_LEVEL_KINDS, collectBlocked, collectCancelled,
+  addBookToCategory, updateBook, bookNeedsSubject, ITEM_LABEL, CHAPTER_LEVEL_KINDS,
+  collectBlocked, collectCancelled,
 } from './material';
 import { Button, EmptyState, PageHeader, SegmentedControl, ProgressBar } from './ui';
 import BlockedNotice from './BlockedNotice';
@@ -82,7 +83,9 @@ function Chapter({ node, open, onOpen, busy, onToggle }) {
   );
 }
 
-export default function MaterialLibraryView({ goPlans = null }) {
+// lists 就是「科目」。教材的科目一律以 lists.id 保存（material_books.subject_list_id），
+// UI 只拿名稱來顯示，絕不用名稱當 identity。
+export default function MaterialLibraryView({ goPlans = null, lists = [] }) {
   const [categories, setCategories] = useState([]);
   const [books, setBooks] = useState([]);
   const [scope, setScope] = useState('all');
@@ -93,6 +96,7 @@ export default function MaterialLibraryView({ goPlans = null }) {
   const [err, setErr] = useState('');
   const [blocked, setBlocked] = useState(null);
   const [adding, setAdding] = useState('');
+  const [addSubject, setAddSubject] = useState('');
 
   const load = useCallback(async () => {
     const [c, b] = await Promise.all([listCategories(), listBooks()]);
@@ -121,6 +125,16 @@ export default function MaterialLibraryView({ goPlans = null }) {
     finally { setBusy(false); }
   };
 
+  // 既有教材補科目的 remediation 入口。null 代表清掉（後端接受 null）。
+  const saveSubject = async value => {
+    setBusy(true); setErr('');
+    try {
+      await updateBook(openBook, { subject_list_id: value === '' ? null : Number(value) });
+      await load();
+    } catch (e) { setErr(e.message); }
+    finally { setBusy(false); }
+  };
+
   const visibleBooks = useMemo(() => {
     if (scope === 'all') return books;
     const cat = categories.find(c => String(c.id) === String(scope));
@@ -139,9 +153,13 @@ export default function MaterialLibraryView({ goPlans = null }) {
     if (!title) return;
     setBusy(true);
     try {
-      const b = await createBook({ title });
+      // 建立時就把科目一起送出去，不要讓學生在排程最後才發現排不進去。
+      const b = await createBook({
+        title,
+        ...(addSubject ? { subject_list_id: Number(addSubject) } : {}),
+      });
       if (scope !== 'all') await addBookToCategory(scope, b.id);
-      setAdding('');
+      setAdding(''); setAddSubject('');
       await load();
     } catch (e) { setErr(e.message); }
     finally { setBusy(false); }
@@ -159,6 +177,19 @@ export default function MaterialLibraryView({ goPlans = null }) {
         <div className="main-body ml-view">
         {blocked && <BlockedNotice data={blocked} onClose={() => setBlocked(null)} />}
         {err && <div className="mt-err" role="alert">{err}</div>}
+        {/* 科目是排程的前提，所以直接放在教材頁最上面，隨時可改。
+            存的是 lists.id，不是名稱。 */}
+        <div className={'ml-subject' + (bookNeedsSubject(book) ? ' needs' : '')}>
+          <label htmlFor="ml-subject-select">科目</label>
+          <select id="ml-subject-select" value={book?.subject_list_id ?? ''} disabled={busy}
+            onChange={e => saveSubject(e.target.value)}>
+            <option value="">未指定</option>
+            {lists.map(l => <option key={l.id} value={l.id}>{l.name}</option>)}
+          </select>
+          {bookNeedsSubject(book) && (
+            <span className="mt-warn">未指定科目的教材無法排入計畫</span>
+          )}
+        </div>
         {inCats.length > 1 && (
           <div className="ml-samebook">
             這本教材同時列在 {inCats.map(n => `「${n}」`).join('、')}，
@@ -202,11 +233,16 @@ export default function MaterialLibraryView({ goPlans = null }) {
         options={[{ value: 'all', label: '所有教材' },
           ...categories.map(c => ({ value: String(c.id), label: c.name }))]} />
 
-      <div className="ml-addrow">
+      <div className="ml-addrow ml-addrow--book">
         <input value={adding} onChange={e => setAdding(e.target.value)} placeholder="新增教材名稱"
           aria-label="新增教材名稱" onKeyDown={e => { if (e.key === 'Enter') addBook(); }} />
+        <select aria-label="科目" value={addSubject} onChange={e => setAddSubject(e.target.value)}>
+          <option value="">選擇科目…</option>
+          {lists.map(l => <option key={l.id} value={l.id}>{l.name}</option>)}
+        </select>
         <Button size="sm" variant="primary" disabled={!adding.trim() || busy} onClick={addBook}>新增</Button>
       </div>
+      <div className="ui-meta">沒有指定科目的教材無法排入計畫（排程以科目分組）。</div>
 
       {!visibleBooks.length ? (
         <EmptyState title="這個分類還沒有教材" description="新增一本教材，或切換到「所有教材」。" />
@@ -222,6 +258,11 @@ export default function MaterialLibraryView({ goPlans = null }) {
                   {inCats.length > 1 && (
                     <span className="ml-book-cats">同時列在 {inCats.length} 個分類</span>
                   )}
+                  {bookNeedsSubject(b)
+                    ? <span className="mt-warn">需要先指定科目，否則無法排入計畫</span>
+                    : <span className="ml-book-sub">
+                        {lists.find(l => l.id === b.subject_list_id)?.name || '科目已移除'}
+                      </span>}
                 </span>
                 <span className="ml-book-meta">
                   <span className="mt-progress-text">

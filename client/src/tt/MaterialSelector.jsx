@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   listCategories, listBooks, getBookTree, selectItems, selectNode,
   ITEM_LABEL, CHAPTER_LEVEL_KINDS, countSelected, collectBlocked, collectCancelled,
-  applyDraftSelection, openItemIdsUnder, flattenItems,
+  applyDraftSelection, openItemIdsUnder, flattenItems, bookNeedsSubject,
 } from './material';
 import { Button, EmptyState, SegmentedControl } from './ui';
 import BlockedNotice from './BlockedNotice';
@@ -246,6 +246,9 @@ export default function MaterialSelector({
   }, [scope, books, categories]);
 
   // 草稿模式的總數直接來自草稿集合——只算已開過的書會少算。
+  // 沒有指定科目的書：可以瀏覽目錄，但不能選取（選了也排不進去）
+  const locked = openBook != null && bookNeedsSubject(books.find(b => b.id === openBook));
+
   const total = draft
     ? (draftIds ? draftIds.size : 0)
     : Object.values(counts).reduce((a, b) => a + b, 0);
@@ -274,6 +277,8 @@ export default function MaterialSelector({
                   <span className="mt-book-main">
                     <span className="mt-book-title">{b.title}</span>
                     {b.publisher && <span className="mt-book-sub">{b.publisher}</span>}
+                    {/* 沒有科目就排不進計畫。在第一層就講，不要等到排程最後才失敗。 */}
+                    {bookNeedsSubject(b) && <span className="mt-warn">需要先指定科目</span>}
                   </span>
                   <span className="mt-book-meta">
                     <span className="mt-progress-text">
@@ -295,6 +300,12 @@ export default function MaterialSelector({
             <span className="mt-tree-title">{tree?.book?.title}</span>
           </div>
           {err && <div className="mt-err" role="alert">{err}</div>}
+          {locked && (
+            <div className="mt-source-note" role="alert">
+              這本教材還沒有指定科目，所以不能加入計畫——排程是以科目分組的。
+              請到「更多 → 教材庫」為它設定科目後再回來。
+            </div>
+          )}
           {!tree ? <div className="mt-loading">載入中…</div>
             : !tree.nodes.length ? (
               <EmptyState title="這本教材還沒有目錄"
@@ -302,7 +313,7 @@ export default function MaterialSelector({
             ) : (
               <div className="mt-tree">
                 {tree.nodes.map(ch => (
-                  <ChapterNode key={ch.id} node={ch} busy={busy}
+                  <ChapterNode key={ch.id} node={ch} busy={busy || locked}
                     open={!!openCh[ch.id]}
                     onOpen={v => setOpenCh(s => ({ ...s, [ch.id]: v }))}
                     onToggleNode={toggleNode} onToggleItem={toggleItem} />

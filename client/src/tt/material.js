@@ -43,6 +43,8 @@ export const selectNode = (planId, nodeId, selected) =>
 
 export const createCategory = name => api('/material/categories', { method: 'POST', body: { name } });
 export const createBook = body => api('/material/books', { method: 'POST', body });
+export const updateBook = (bookId, body) =>
+  api(`/material/books/${bookId}`, { method: 'PATCH', body });
 export const addBookToCategory = (categoryId, bookId) =>
   api(`/material/categories/${categoryId}/books/${bookId}`, { method: 'PUT' });
 
@@ -94,6 +96,53 @@ export function hasSelectable(node) {
   const items = node.content_items || [];
   if (items.some(i => !i.completed)) return true;
   return (node.children || []).some(hasSelectable);
+}
+
+/* ---------- Material → 排程項目 ---------- */
+
+// 教材必須有科目才排得進計畫：排程是以科目分組的。
+// 這裡回傳的永遠是**正式的 subject id**（material_books.subject_list_id → lists.id），
+// 絕不用科目名稱去比對——名稱可以重複、可以改，不是 identity。
+export const bookSubjectId = book => book?.subject_list_id ?? null;
+export const bookNeedsSubject = book => bookSubjectId(book) == null;
+
+// 把「這次選了哪些 ContentItem」轉成排程項目。
+//
+// Material 的 ContentItem 本身就是原子單位（某一份單元練習、某一題例題），
+// 不需要再經過舊版的「題型展開」——那是為了把抽象的章節拆成可排的份數而存在的。
+// 一項對一項，並保留 material_content_item_id 讓套用時的 Task 帶得上正式 linkage。
+//
+// 沒有科目的書會被放進 blocked，呼叫端必須把它顯示出來，
+// 不可以等到排程最後一步才無預警失敗。
+export function materialSchedulingItems(picked, books, lists = [], fallbackColor = '#0086CC') {
+  const byId = new Map((books || []).map(b => [b.id, b]));
+  const items = [];
+  const blocked = new Map();          // book_id → { book_id, book_title, count }
+  for (const d of (picked instanceof Map ? [...picked.values()] : picked || [])) {
+    const book = byId.get(d.book_id);
+    const sid = bookSubjectId(book);
+    if (sid == null) {
+      const prev = blocked.get(d.book_id)
+        || { book_id: d.book_id, book_title: book?.title ?? d.book_title ?? '', count: 0 };
+      prev.count += 1;
+      blocked.set(d.book_id, prev);
+      continue;
+    }
+    const subject = (lists || []).find(l => l.id === sid);
+    items.push({
+      key: `mat-${d.id}`,
+      material_content_item_id: d.id,
+      subject_id: sid,                                  // 正式 identity，不是名稱
+      name: subject?.name || '',
+      color: subject?.color || fallbackColor,
+      // 標題帶書名與所在章節，學生在任務列表才看得懂這是哪一本的哪一段。
+      // 這只是顯示用的組字，identity 一律是 material_content_item_id。
+      title: [book?.title ?? d.book_title, ...(d.path || []), d.title].filter(Boolean).join('｜'),
+      minutes: d.estimated_minutes || 60,
+      kind: d.kind,
+    });
+  }
+  return { items, blocked: [...blocked.values()] };
 }
 
 /* ---------- Create Plan 的草稿選取 ---------- */

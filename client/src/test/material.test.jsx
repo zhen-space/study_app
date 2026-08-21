@@ -20,7 +20,11 @@ vi.mock('../api', () => ({ api: vi.fn() }));
 const { api } = await import('../api');
 const MaterialSelector = (await import('../tt/MaterialSelector')).default;
 const MaterialLibraryView = (await import('../tt/MaterialLibraryView')).default;
-const { applyDraftSelection, openItemIdsUnder, collectBlocked } = await import('../tt/material');
+const { applyDraftSelection, openItemIdsUnder, collectBlocked, materialSchedulingItems }
+  = await import('../tt/material');
+const { applyWizardSchedule } = await import('../tt/wizardApply');
+
+const LISTS = [{ id: 1, name: '數學', color: '#0086CC' }, { id: 2, name: '英文', color: '#e03131' }];
 
 /* ---------- 測試資料：完全照正式 hierarchy ---------- */
 // 書「新大滿貫」
@@ -392,5 +396,167 @@ describe('legacy 共存邊界', () => {
     await openChapter({ planId: 55 });
     expect(calls.filter(([p]) => p.includes('/import/toc'))).toEqual([]);
     expect(calls.every(([p]) => p.startsWith('/material/') || p.startsWith('/plans/'))).toBe(true);
+  });
+});
+
+/* ============ Subject linkage（第一輪 Audit 必修） ============ */
+
+describe('教材的科目（Subject）', () => {
+  it('新增教材時把 subject_list_id 一起送出，而且用 id 不用名稱', async () => {
+    render(<MaterialLibraryView lists={LISTS} />);
+    await waitFor(() => expect(screen.queryByText('新大滿貫')).toBeTruthy());
+    fireEvent.change(screen.getByLabelText('新增教材名稱'), { target: { value: '新書' } });
+    fireEvent.change(screen.getByLabelText('科目'), { target: { value: '2' } });
+    await click(screen.getByRole('button', { name: '新增' }));
+    await flush();
+    const post = calls.find(([p, o]) => p === '/material/books' && o?.method === 'POST');
+    expect(post[1].body).toEqual({ title: '新書', subject_list_id: 2 });
+    // identity 是數字 id，不得出現科目名稱
+    expect(JSON.stringify(post[1].body)).not.toContain('英文');
+    expect(typeof post[1].body.subject_list_id).toBe('number');
+  });
+
+  it('沒選科目時不會偷偷塞一個，欄位直接不送', async () => {
+    render(<MaterialLibraryView lists={LISTS} />);
+    await waitFor(() => expect(screen.queryByText('新大滿貫')).toBeTruthy());
+    fireEvent.change(screen.getByLabelText('新增教材名稱'), { target: { value: '沒科目的書' } });
+    await click(screen.getByRole('button', { name: '新增' }));
+    await flush();
+    const post = calls.find(([p, o]) => p === '/material/books' && o?.method === 'POST');
+    expect(post[1].body).toEqual({ title: '沒科目的書' });
+  });
+
+  it('既有教材可以補科目，走 PATCH 且送 id', async () => {
+    setApi({ '/material/books': [{ ...BOOKS[0], subject_list_id: null }] });
+    render(<MaterialLibraryView lists={LISTS} />);
+    await waitFor(() => expect(screen.queryByText('新大滿貫')).toBeTruthy());
+    expect(screen.getByText(/需要先指定科目/)).toBeTruthy();
+    await click(screen.getByRole('button', { name: /新大滿貫/ }));
+    await flush();
+    fireEvent.change(screen.getByLabelText('科目'), { target: { value: '1' } });
+    await flush();
+    const patch = calls.find(([p, o]) => p === '/material/books/1' && o?.method === 'PATCH');
+    expect(patch[1].body).toEqual({ subject_list_id: 1 });
+  });
+
+  it('沒有科目的教材在 selector 第一層就標示出來，不是排到最後才失敗', async () => {
+    setApi({ '/material/books': [{ ...BOOKS[0], subject_list_id: null }] });
+    render(<MaterialSelector planId={55} />);
+    await waitFor(() => expect(screen.queryByText('新大滿貫')).toBeTruthy());
+    expect(screen.getByText('需要先指定科目')).toBeTruthy();
+  });
+
+  it('打開沒有科目的教材時，選取被鎖住並說明原因', async () => {
+    setApi({ '/material/books': [{ ...BOOKS[0], subject_list_id: null }] });
+    render(<MaterialSelector planId={55} />);
+    await waitFor(() => expect(screen.queryByText('新大滿貫')).toBeTruthy());
+    await click(screen.getByRole('button', { name: /新大滿貫/ }));
+    await flush();
+    expect(screen.getByRole('alert').textContent).toMatch(/還沒有指定科目/);
+    await click(screen.getByRole('button', { name: /第一章/ }));
+    await flush();
+    // 所有選取框都是 disabled，點了也不會送出任何 selection
+    const boxes = screen.getAllByRole('checkbox');
+    expect(boxes.length).toBeGreaterThan(0);
+    expect(boxes.every(b => b.disabled)).toBe(true);
+    boxes.forEach(b => b.click());
+    await flush();
+    expect(sent('/plans/55/material-items', 'POST')).toEqual([]);
+    expect(sent('/plans/55/material-nodes/', 'POST')).toEqual([]);
+  });
+});
+
+describe('materialSchedulingItems（Material → 排程項目）', () => {
+  const picked = [
+    { id: 101, title: '內文A', kind: 'reading', estimated_minutes: 45, book_id: 1, book_title: '新大滿貫', path: ['第一章', '1-1'] },
+    { id: 105, title: '例題X', kind: 'example', estimated_minutes: null, book_id: 1, book_title: '新大滿貫', path: ['第一章', '主題一'] },
+  ];
+
+  it('subject 用正式的 lists.id，不是名稱', () => {
+    const { items, blocked } = materialSchedulingItems(picked, BOOKS, LISTS);
+    expect(blocked).toEqual([]);
+    expect(items.map(i => i.subject_id)).toEqual([1, 1]);
+    expect(items.every(i => typeof i.subject_id === 'number')).toBe(true);
+    expect(items[0].name).toBe('數學');       // 名稱只用於顯示
+    expect(items[0].color).toBe('#0086CC');
+  });
+
+  it('linkage 不會遺失：每一項都帶得上 material_content_item_id', () => {
+    const { items } = materialSchedulingItems(picked, BOOKS, LISTS);
+    expect(items.map(i => i.material_content_item_id)).toEqual([101, 105]);
+    expect(items.map(i => i.key)).toEqual(['mat-101', 'mat-105']);
+  });
+
+  it('沒有科目的書進 blocked，不會靜默變成無科目項目', () => {
+    const noSubject = [{ ...BOOKS[0], subject_list_id: null }];
+    const { items, blocked } = materialSchedulingItems(picked, noSubject, LISTS);
+    expect(items).toEqual([]);
+    expect(blocked).toEqual([{ book_id: 1, book_title: '新大滿貫', count: 2 }]);
+  });
+
+  it('科目改了之後，同一批選取會產生新的 subject_id', () => {
+    const moved = [{ ...BOOKS[0], subject_list_id: 2 }];
+    const { items } = materialSchedulingItems(picked, moved, LISTS);
+    expect(items.map(i => i.subject_id)).toEqual([2, 2]);
+    expect(items[0].name).toBe('英文');
+  });
+
+  it('estimated_minutes 有值就用它，沒有才退回預設', () => {
+    const { items } = materialSchedulingItems(picked, BOOKS, LISTS);
+    expect(items.map(i => i.minutes)).toEqual([45, 60]);
+  });
+
+  it('標題只是顯示用組字，identity 仍是 content_item_id', () => {
+    const { items } = materialSchedulingItems(picked, BOOKS, LISTS);
+    expect(items[0].title).toBe('新大滿貫｜第一章｜1-1｜內文A');
+    expect(items[0].material_content_item_id).toBe(101);
+  });
+});
+
+describe('Material-backed Task 的最終 subject 與 linkage', () => {
+  it('建立計畫時，task_creates 同時帶正確的 subject（list_id）與 material linkage', async () => {
+    setApi({ '/plans': { id: 99 } });
+    const { items } = materialSchedulingItems(
+      [{ id: 101, title: '內文A', kind: 'reading', estimated_minutes: 45, book_id: 1,
+        book_title: '新大滿貫', path: ['第一章', '1-1'] }], BOOKS, LISTS);
+    // preview 回來的 block 保留 subject_id 與 title
+    const blocks = items.map(it => ({
+      subject_id: it.subject_id, title: it.title, date: '2026-09-01', minutes: it.minutes,
+    }));
+    const materialByBlock = Object.fromEntries(
+      items.map(it => [`${it.subject_id}|${it.title}`, it.material_content_item_id]));
+
+    await applyWizardSchedule({ mode: 'create', name: '教材計畫', blocks, materialByBlock });
+
+    const apply = calls.find(([p, o]) => p === '/schedule/apply' && o?.method === 'POST');
+    const created = apply[1].body.task_creates;
+    expect(created.length).toBe(1);
+    expect(created[0].list_id).toBe(1);                        // 正式 subject id
+    expect(created[0].material_content_item_id).toBe(101);     // 正式 material linkage
+  });
+
+  it('Manual Task（沒有 material linkage）不受影響，material 欄位為 null', async () => {
+    setApi({ '/plans': { id: 99 } });
+    const blocks = [{ subject_id: 2, title: '自己整理的錯題本', date: '2026-09-02' }];
+    await applyWizardSchedule({ mode: 'create', name: '手動計畫', blocks, materialByBlock: {} });
+    const apply = calls.find(([p, o]) => p === '/schedule/apply' && o?.method === 'POST');
+    const created = apply[1].body.task_creates;
+    expect(created[0].list_id).toBe(2);
+    expect(created[0].material_content_item_id).toBeNull();
+  });
+
+  it('同一批裡教材任務與手動任務並存時，只有教材那筆帶 linkage', async () => {
+    setApi({ '/plans': { id: 99 } });
+    const blocks = [
+      { subject_id: 1, title: '新大滿貫｜第一章｜1-1｜內文A', date: '2026-09-01' },
+      { subject_id: 1, title: '自己加的複習', date: '2026-09-02' },
+    ];
+    await applyWizardSchedule({
+      mode: 'create', name: '混合計畫', blocks,
+      materialByBlock: { '1|新大滿貫｜第一章｜1-1｜內文A': 101 },
+    });
+    const created = calls.find(([p, o]) => p === '/schedule/apply' && o?.method === 'POST')[1].body.task_creates;
+    expect(created.map(c => c.material_content_item_id)).toEqual([101, null]);
+    expect(created.every(c => c.list_id === 1)).toBe(true);
   });
 });

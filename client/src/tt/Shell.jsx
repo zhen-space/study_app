@@ -281,7 +281,7 @@ export default function Shell({ onLogout }) {
         : view.type === 'schedule-history' ? <ScheduleHistoryView onRestored={() => reload('tasks')} />
         : view.type === 'locks' ? <LocksView tasks={tasks} />
         : view.type === 'routines' ? <RoutinesView />
-        : view.type === 'material' ? <MaterialLibraryView goPlans={() => setView({ type: 'plans' })} />
+        : view.type === 'material' ? <MaterialLibraryView lists={lists} goPlans={() => setView({ type: 'plans' })} />
         : view.type === 'goals' ? <GoalsView plans={apiPlans} reloadPlans={() => reload()} />
         : view.type === 'matrix' ? <MatrixView tasks={tasks.filter(t => !t.deleted)} reload={reload} />
         : view.type === 'habits' ? <HabitsView habits={habits} reload={reload} />
