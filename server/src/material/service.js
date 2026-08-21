@@ -15,6 +15,7 @@ import {
   NODE_KINDS, ITEM_KINDS,
 } from './tree.js';
 import { validateDraft, draftSummary } from './draft.js';
+import { legacyFormalizationDraft, formalizedSourceRowIds } from './legacy.js';
 
 export class MaterialInputError extends Error {
   constructor(message, status = 400) { super(message); this.name = 'MaterialInputError'; this.status = status; }
@@ -470,7 +471,13 @@ export async function commitMaterialDraft(userId, input) {
 //
 // 呼叫端有責任先跑 validateDraft。這支自己也會在迴圈裡再驗一次 placement，
 // 但那是 defence in depth，不是主要防線。
-export async function writeDraftTree(userId, draft) {
+export const LEGACY_SOURCE_KIND = 'legacy_toc';
+
+// sources：這本正式教材是由哪幾列來源資料正式化來的。
+// **在同一筆 transaction 內**寫入——provenance 與 Material tree 必須同生共死，
+// 否則會出現「教材建好了但沒有來源記錄」（legacy 副本永遠不會被隱藏）
+// 或「有來源記錄但沒有教材」（那列 legacy 從此再也無法正式化）。
+export async function writeDraftTree(userId, draft, { sources = [] } = {}) {
   // 科目必須是這位使用者自己的 lists.id。用名稱比對是不行的：
   // 名稱可以重複、可以改，不是 identity。
   if (draft.book.subject_list_id != null) {
@@ -521,6 +528,14 @@ export async function writeDraftTree(userId, draft) {
         await addItems(Number(n.lastInsertRowid), child.kind, child.content_items);
       }
     }
+    // provenance 與教材樹同一筆交易。UNIQUE(user_id, source_kind, source_row_id)
+    // 會擋下重複正式化——第二次嘗試整筆 rollback，不會生出第二本重複的書。
+    for (const src of sources) {
+      await tx.run(
+        `INSERT INTO material_book_sources (user_id,book_id,source_kind,source_row_id)
+         VALUES (?,?,?,?)`,
+        [userId, id, src.source_kind, src.source_row_id]);
+    }
     return id;
   });
 
@@ -532,3 +547,55 @@ export function previewMaterialDraft(input) {
   const { draft, problems } = validateDraft(input);
   return { ok: problems.length === 0, problems, draft, summary: draftSummary(draft) };
 }
+
+/* ---------- Just-in-time formalization ---------- */
+
+// 學生第一次真的要用這本舊教材時才發生。學生看到的只有「確認這本教材裡有哪些
+// 內容」；legacy / migration / formalization / identity 全部是系統內部的事。
+//
+// 系統 deterministic 帶入結構（書名、出版社、科目、章、節／主題），
+// ContentItem 的 kind 一律由使用者確認——legacy 沒有存這個資訊，猜就是無中生有。
+export async function getLegacyFormalizationPreview(userId, { listId, book = '' }) {
+  const out = await legacyFormalizationDraft(userId, { listId, book });
+  if (!out) throw new MaterialInputError('找不到這本教材', 404);
+  if (out.already_formalized_row_ids.length) {
+    const err = new MaterialInputError('這本教材已經整理過了', 409);
+    err.already_formalized_row_ids = out.already_formalized_row_ids;
+    throw err;
+  }
+  return out;
+}
+
+// 使用者確認之後的 atomic 正式化。
+//
+// Material tree 與 provenance 在**同一筆 transaction**內建立：
+//   ・任一步失敗 → 整筆 rollback，不留下半本教材，也不留下孤兒 provenance
+//   ・使用者取消 → 根本不會呼叫這支，什麼都不會寫
+//   ・重複正式化 → UNIQUE(user_id, source_kind, source_row_id) 擋下並整筆 rollback
+export async function formalizeLegacyBook(userId, { listId, book = '', draft } = {}) {
+  const projected = await legacyFormalizationDraft(userId, { listId, book });
+  if (!projected) throw new MaterialInputError('找不到這本教材', 404);
+  if (projected.already_formalized_row_ids.length) {
+    const err = new MaterialInputError('這本教材已經整理過了', 409);
+    err.already_formalized_row_ids = projected.already_formalized_row_ids;
+    throw err;
+  }
+
+  // 使用者確認過的 draft 仍要完整驗證：結構是我們給的，內容是使用者填的。
+  const { draft: valid, problems } = validateDraft(draft);
+  if (problems.length) {
+    const err = new MaterialInputError('教材內容有問題，尚未建立', 400);
+    err.problems = problems;
+    throw err;
+  }
+
+  // 來源列一律以伺服器投影出來的為準，不接受呼叫端自己指定——
+  // 否則就能把 provenance 指到不屬於自己的 legacy 列。
+  const sources = projected.source_row_ids.map(id => ({
+    source_kind: LEGACY_SOURCE_KIND, source_row_id: id,
+  }));
+  const out = await writeDraftTree(userId, valid, { sources });
+  return { ...out, source_row_ids: projected.source_row_ids };
+}
+
+export { formalizedSourceRowIds };

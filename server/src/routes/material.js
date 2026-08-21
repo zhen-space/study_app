@@ -21,6 +21,7 @@ const handle = fn => async (req, res) => {
       if (e.references) body.references = e.references;
       if (e.completed_item_ids) body.completed_item_ids = e.completed_item_ids;
       if (e.problems) body.problems = e.problems;
+      if (e.already_formalized_row_ids) body.already_formalized_row_ids = e.already_formalized_row_ids;
       return res.status(e.status || 400).json(body);
     }
     console.error('[material]', e);
@@ -178,6 +179,30 @@ router.post('/material/import/preview', handle(async (req, res) => {
 // 全成功或全不做——不會留下半本教材。
 router.post('/material/import/commit', handle(async (req, res) => {
   res.status(201).json(await material.commitMaterialDraft(req.userId, req.body?.draft ?? req.body));
+}));
+
+/* ---------- 舊教材的 just-in-time 整理 ---------- */
+
+// 學生第一次真的要用這本舊教材時才走這裡。
+//
+// 回傳的 draft 已經把能 deterministic 判斷的結構填好（書名、出版社、科目、
+// 章、節／主題，含巢狀 Topic 的攤平結果），但每個節點的 content_items 都是空的：
+// 舊資料完全沒有存「課本內容／範例／例題」這種資訊，系統不猜。
+//
+// 這一步**不寫任何東西**。使用者取消就什麼都不會發生。
+router.get('/material/legacy-books/:listId/content-check', handle(async (req, res) => {
+  res.json(await material.getLegacyFormalizationPreview(req.userId, {
+    listId: Number(req.params.listId), book: req.query.book || '',
+  }));
+}));
+
+// 使用者確認內容之後：教材樹與來源記錄在同一筆交易內建立。
+// 之後這本教材就是正式 Material，Step 1 只使用正式的 material_content_item_id。
+router.post('/material/legacy-books/:listId/content-check', handle(async (req, res) => {
+  const b = req.body || {};
+  res.status(201).json(await material.formalizeLegacyBook(req.userId, {
+    listId: Number(req.params.listId), book: b.book || '', draft: b.draft,
+  }));
 }));
 
 /* ---------- Unified student-facing library ---------- */

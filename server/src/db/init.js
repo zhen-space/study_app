@@ -475,6 +475,25 @@ CREATE TABLE IF NOT EXISTS material_category_books (
   PRIMARY KEY (category_id, book_id)
 );
 
+-- 正式化來源：Formal Material Book ← 實際來源資料列。
+--
+-- 為什麼是一張表而不是 material_books 上的兩個欄位：
+-- 書名是文字，會重複、會改，拿它當長期 linkage 就是 title matching 的變形。
+-- 這裡直接記「這本正式教材是由哪幾列 toc_items 正式化來的」，
+-- 一本書通常有多個章 row，所以是 1 對多。
+--
+-- source_row_id 上的 unique index 讓每一列 legacy 都能 deterministic 回答
+-- 「我被正式化過了嗎」，unified library 也靠它隱藏已正式化的 legacy 副本——
+-- 不做任何事後的書名比對。
+CREATE TABLE IF NOT EXISTS material_book_sources (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  user_id INTEGER NOT NULL,
+  book_id INTEGER NOT NULL,              -- material_books.id
+  source_kind TEXT NOT NULL,             -- legacy_toc
+  source_row_id INTEGER NOT NULL,        -- toc_items.id
+  created_at TEXT DEFAULT CURRENT_TIMESTAMP
+);
+
 -- Plan 這一次選了哪些 ContentItem。這裡只記「選取」，不記完成度。
 -- 取消選取不是完成、也不是刪除：selected 轉 0 並留下 removed_at 與 task_id，
 -- 歷史 provenance 因此不會消失。
@@ -580,6 +599,10 @@ export async function initSchema() {
   try { await client.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_plan_material_one ON plan_material_items(plan_id, content_item_id)"); } catch {}
   try { await client.execute("CREATE INDEX IF NOT EXISTS idx_plan_material_item ON plan_material_items(user_id, content_item_id, selected)"); } catch {}
   try { await client.execute("CREATE INDEX IF NOT EXISTS idx_tasks_material_item ON tasks(user_id, material_content_item_id)"); } catch {}
+  // 同一列 legacy 來源只能被正式化一次。重複正式化會生出兩本內容相同、
+  // 完成度各自獨立的教材，而且沒有任何入口能合併回去。
+  try { await client.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_material_book_source_row ON material_book_sources(user_id, source_kind, source_row_id)"); } catch {}
+  try { await client.execute("CREATE INDEX IF NOT EXISTS idx_material_book_sources_book ON material_book_sources(book_id)"); } catch {}
   // 見 ensureStudySessionLiveIndex()：有重複 live session 時會跳過而不是靜默失敗。
   await ensureStudySessionLiveIndex();
   // 舊資料的分類補進「記住的分類」清單，之後直接用選的

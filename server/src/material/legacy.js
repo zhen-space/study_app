@@ -117,8 +117,12 @@ const bookKey = row => `${row.list_id}|${row.book || ''}`;
 
 // 讀出這位使用者所有 legacy 教材，投影成 unified book 形狀。純 SELECT。
 export async function listLegacyBooks(userId) {
-  const rows = await q.all(
+  const all = await q.all(
     'SELECT * FROM toc_items WHERE user_id=? ORDER BY list_id, book, order_index, id', [userId]);
+  // 已經正式化的來源列不再以 legacy 身分出現——否則同一本教材會變成兩本。
+  // 判準是 provenance 的 source_row_id，**不是**書名比對。
+  const done = await formalizedSourceRowIds(userId);
+  const rows = all.filter(r => !done.has(Number(r.id)));
   const byBook = new Map();
   for (const row of rows) {
     const key = bookKey(row);
@@ -134,9 +138,90 @@ export async function listLegacyBooks(userId) {
         chapters: [],
         // legacy 沒有正式 completion。不給 progress 物件，也不給 0%。
         completion_supported: false,
+        // 這本教材還沒有正式的內容資訊，要先讓學生確認一次才能拿來排計畫。
+        // 學生看到的是「確認這本教材裡有哪些內容」，不是 migration。
+        requires_content_confirmation: true,
+        selectable: false,
       });
     }
     byBook.get(key).chapters.push(projectChapter(row));
   }
   return [...byBook.values()];
+}
+
+/* ---------- Just-in-time formalization ---------- */
+
+// 哪些 legacy 來源列已經被正式化過。deterministic：查的是 provenance 的
+// source_row_id，不是書名。
+export async function formalizedSourceRowIds(userId) {
+  const rows = await q.all(
+    'SELECT source_row_id FROM material_book_sources WHERE user_id=? AND source_kind=?',
+    [userId, 'legacy_toc']);
+  return new Set(rows.map(r => Number(r.source_row_id)));
+}
+
+// 把一本 legacy 教材投影成「可以拿去正式化的 canonical draft」。
+//
+// 能 deterministic 帶入的：書名、出版社、科目、章、節／主題（含巢狀 Topic 的
+// presentation flatten 結果）。
+//
+// **不能** deterministic 帶入的：ContentItem 的 kind。
+// legacy 的 toc_items 完全沒有存內容類型——舊流程裡「範例／例題／單元練習／
+// 歷屆試題」是使用者在排程時當場勾的，從來沒有落庫。所以這裡每個節點的
+// content_items 一律是空陣列，由使用者確認之後才填。猜就是無中生有。
+//
+// 對不上正式種類的 legacy 節點（如「焦點」）不會進 draft 的 children——
+// 它不是 section 也不是 topic，硬塞就是在猜。它們列在 unsupported_nodes 裡，
+// 讓呼叫端可以如實呈現。
+export async function legacyFormalizationDraft(userId, { listId, book = '' }) {
+  const rows = await q.all(
+    'SELECT * FROM toc_items WHERE user_id=? AND list_id=? AND COALESCE(book,\'\')=? ORDER BY order_index, id',
+    [userId, listId, book]);
+  if (!rows.length) return null;
+
+  const done = await formalizedSourceRowIds(userId);
+  const alreadyFormalized = rows.filter(r => done.has(Number(r.id))).map(r => Number(r.id));
+
+  const unsupported = [];
+  const chapters = rows.map((row, ci) => {
+    const projected = projectChapter(row);
+    const children = [];
+    for (const c of projected.children) {
+      if (c.kind === 'section' || c.kind === 'topic') {
+        children.push({
+          kind: c.kind,
+          title: c.title,
+          order: children.length,
+          // 使用者確認前一律是空的
+          content_items: [],
+          legacy_ref: c.legacy_ref,
+        });
+      } else {
+        unsupported.push({ title: c.title, legacy_level: c.legacy_level, legacy_ref: c.legacy_ref });
+      }
+    }
+    return {
+      title: row.title,
+      order: ci,
+      content_items: [],
+      children,
+      legacy_ref: { toc_id: Number(row.id), path: [] },
+    };
+  });
+
+  return {
+    draft: {
+      book: {
+        title: book || rows[0].book || '（未命名教材）',
+        publisher: rows[0].publisher || '',
+        subject_list_id: rows[0].list_id ?? null,
+      },
+      chapters,
+    },
+    source_row_ids: rows.map(r => Number(r.id)),
+    already_formalized_row_ids: alreadyFormalized,
+    unsupported_nodes: unsupported,
+    // 內容類型一定要使用者確認：legacy 沒有這個資訊，系統不猜。
+    requires_content_confirmation: true,
+  };
 }

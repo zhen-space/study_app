@@ -303,3 +303,79 @@ production 有 25 筆 `level = 焦點`，正式 Material 沒有對應的 kind。
 可以指向，所以永遠沒有 selection，也不假裝有。legacy 沒有正式完成度時
 **不得捏造 0%** 假裝語意相同——回 `completion_supported: false`，由呈現層自己決定
 怎麼自然呈現。
+
+## 13. 舊教材的 just-in-time 正式化
+
+### 為什麼 legacy 不能直接被選取
+
+`toc_items` 的欄位是 `id, user_id, list_id, title, level, sections, order_index,
+book, publisher`。`sections` 的每個節點只有 `{ title, level, children }`。
+
+**legacy 裡根本沒有 ContentItem。** 舊流程的「範例／例題／單元練習／歷屆試題」
+是使用者在排程時當場勾的（`WizardView` 的 `TYPE_OPTIONS`／`typesBy`），
+從來沒有落庫。而 `plan_material_items.content_item_id` 指向的是
+`material_content_items.id` —— legacy 沒有任何 row 可以被指到。
+
+所以：**結構（章／節／主題）deterministic；內容類型完全不存在於資料中。**
+任何自動 mapping 都是無中生有。
+
+### 正式化時機
+
+**學生第一次真的要用這本舊教材時**，就地確認一次。不另外做教材管理頁的
+「轉換」動作，也不是 migration wizard —— 學生看到的只有「確認這本教材裡有哪些內容」。
+
+UI 不得出現：legacy、migration、formalization、identity、轉換成 Material。
+
+```
+教材 → 打開教材 → （還缺內容資訊時）一次性的「確認教材內容」→ 確認 → 回 Step 1 → 正常選取
+```
+
+系統 deterministic 帶入：教材名稱、publisher、subject、Chapter、Section／Topic
+（含巢狀 Topic 的 presentation flatten 結果）。
+系統**不猜**：ContentItem 的 kind，一律由學生確認。
+
+對不上正式種類的節點（如「焦點」）不會進 draft，而是列在 `unsupported_nodes`
+如實呈現 —— 硬塞成 section／topic 就是在猜。
+
+### Provenance：`material_book_sources`
+
+| 欄位 | 意義 |
+|---|---|
+| `book_id` | 正式 `material_books.id` |
+| `source_kind` | `legacy_toc` |
+| `source_row_id` | 實際來源的 `toc_items.id` |
+
+一本正式教材通常對應**多列** `toc_items`（一章一列），所以是 1 對多。
+
+`UNIQUE(user_id, source_kind, source_row_id)` 讓每一列 legacy 都能 deterministic
+回答「我被正式化過了嗎」，同時擋下重複正式化 —— 重複會生出兩本內容相同、
+完成度各自獨立的教材，而且沒有任何入口能合併回去。
+
+**刻意不在 `material_books` 上放 `legacy_book` 之類的欄位**：書名是文字，會重複、
+會改，拿它當長期 linkage 就是 title matching 的變形。
+
+### 原子性
+
+教材樹與 provenance 在**同一筆 transaction** 內建立：
+
+- 任一步失敗 → 整筆 rollback，不留下半本教材，也不留下孤兒 provenance
+- 使用者取消 → 根本不會呼叫 commit，什麼都不會寫
+- 重複正式化 → UNIQUE 擋下並整筆 rollback
+
+`toc_items` 全程只被 SELECT，**不 UPDATE、不 DELETE**。
+
+### 去重
+
+`listStudyMaterials` 以 provenance 的 `source_row_id` 過濾掉已正式化的來源列，
+**不是**書名比對 —— 同名但來源列不同的另一本舊教材不會被連坐隱藏。
+
+### API
+
+```
+GET  /api/material/legacy-books/:listId/content-check?book=…   回 canonical draft（內容留空），不寫任何東西
+POST /api/material/legacy-books/:listId/content-check          { book, draft } → atomic 建立正式教材 + provenance
+```
+
+正式化之後，Step 1 只使用正式的 `material_content_item_id`，
+後續 `plan_material_items → Task → ScheduledBlock` 全部走既有正式路徑，
+Plan / Schedule 契約一行未改。
