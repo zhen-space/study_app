@@ -1,0 +1,174 @@
+import { api } from '../api';
+
+// Material 前端資料層。所有 Material 相關的 API 呼叫只從這裡走。
+//
+// 三條分界線，跟後端契約一字不差（docs/material-domain.md）：
+//   ① completion 與 selection 是兩個完全獨立的狀態。前端不從其中一個推另一個，
+//      也不從 Task.completed 推 Material completion。
+//   ② 節點（Chapter / Section / Topic）的完成度與 tri-state 一律**相信後端**
+//      回傳的 progress / selection，前端不自己 aggregate 出第二套 truth。
+//   ③ 正式 hierarchy 是 Book → Chapter →（Section｜Topic 同層），
+//      Chapter 底下可以直接掛 unit_exercise / past_exam。
+//      不得把 Topic 當 Section 的 child，也不得為 Chapter-level 內容造假的 Section。
+
+/* ---------- 讀取 ---------- */
+
+export const listBooks = ({ archived = false } = {}) =>
+  api('/material/books' + (archived ? '?archived=1' : ''));
+
+export const listCategories = () => api('/material/categories');
+
+// plan_id 存在時，後端會一併回傳這個 Plan 的 tri-state selection。
+export const getBookTree = (bookId, { planId = null } = {}) =>
+  api(`/material/books/${bookId}/tree` + (planId != null ? `?plan_id=${planId}` : ''));
+
+export const getPlanSelection = planId => api(`/plans/${planId}/material-items`);
+
+/* ---------- 寫入 ---------- */
+
+// 教材完成度。**只有**教材庫的完成操作可以呼叫這支；
+// Plan 的 selection checkbox 絕對不能呼叫它。
+export const setItemCompletion = (itemId, completed) =>
+  api(`/material/content-items/${itemId}/completion`, { method: 'PUT', body: { completed } });
+
+// Plan selection。這支永遠不會改到 completion。
+export const selectItems = (planId, contentItemIds, selected) =>
+  api(`/plans/${planId}/material-items`, {
+    method: 'POST', body: { content_item_ids: contentItemIds, selected },
+  });
+
+// 節點 tri-state 批次選取：送的是 node id，後端只會寫底下尚未完成的 ContentItem。
+export const selectNode = (planId, nodeId, selected) =>
+  api(`/plans/${planId}/material-nodes/${nodeId}`, { method: 'POST', body: { selected } });
+
+export const createCategory = name => api('/material/categories', { method: 'POST', body: { name } });
+export const createBook = body => api('/material/books', { method: 'POST', body });
+export const addBookToCategory = (categoryId, bookId) =>
+  api(`/material/categories/${categoryId}/books/${bookId}`, { method: 'PUT' });
+
+/* ---------- 純函式：只做「呈現」需要的整理，不重算 truth ---------- */
+
+export const NODE_LABEL = { chapter: '章', section: '節', topic: '主題' };
+export const ITEM_LABEL = {
+  reading: '內文',
+  example: '範例／例題',
+  unit_exercise: '單元練習',
+  past_exam: '歷屆試題',
+};
+// Chapter 可以直接承載的內容類型。用它判斷「這一列是 chapter-level content」，
+// 而不是靠「沒有 section parent」去猜。
+export const CHAPTER_LEVEL_KINDS = ['unit_exercise', 'past_exam'];
+
+// 章底下的子節點：Section 與 Topic 是**同層**，這裡只是為了顯示而保持後端順序。
+// 刻意不做任何 section→topic 的巢狀重組。
+export const childNodes = chapter => chapter.children || [];
+
+// 章自己直接掛的內容（單元練習／歷屆試題／章層內文）。
+export const chapterOwnItems = chapter => chapter.content_items || [];
+
+// 把整棵樹攤平成 ContentItem 陣列，附上顯示用的來源路徑。
+// path 只用於顯示，不是 identity——identity 永遠是 content_item_id。
+export function flattenItems(tree) {
+  const out = [];
+  const walkNode = (node, trail) => {
+    const here = [...trail, node.title];
+    for (const it of node.content_items || []) out.push({ ...it, path: here, node });
+    for (const child of node.children || []) walkNode(child, here);
+  };
+  for (const n of tree?.nodes || []) walkNode(n, []);
+  return out;
+}
+
+export const countSelected = tree => flattenItems(tree).filter(i => i.selected && !i.completed).length;
+
+// 一本書在這個 Plan 裡選了幾項。用於 selector 首層顯示，不影響任何寫入。
+export const bookSelectedCount = countSelected;
+
+// tri-state → checkbox 的三種視覺狀態。後端已經算好 selection，
+// 這裡只是把字串對應到 UI，不重新判定。
+export const triState = node => node.selection || 'none';
+
+// 節點底下是否還有「尚未完成、可以被選取」的內容。
+// 全部完成的節點不該給出可點的批次選取框——點了也沒有東西會被選。
+export function hasSelectable(node) {
+  const items = node.content_items || [];
+  if (items.some(i => !i.completed)) return true;
+  return (node.children || []).some(hasSelectable);
+}
+
+/* ---------- Create Plan 的草稿選取 ---------- */
+
+// Create Plan 的時候 Plan 還不存在，沒有 plan_material_items 可以寫，
+// 所以這一段草稿選取只能放在前端。這是**唯一**允許在前端算 selection 的情況，
+// 而且規則必須與後端 buildTree 一模一樣：
+//   ・只有「尚未完成」的 ContentItem 參與 selection
+//   ・沒有可選項目的節點一律 none（不是 all）
+// Plan 建立之後就把草稿送到正式 API，之後一律以後端回傳為準。
+export function applyDraftSelection(tree, selectedIds) {
+  const sel = selectedIds instanceof Set ? selectedIds : new Set(selectedIds || []);
+  const walk = node => {
+    const children = (node.children || []).map(walk);
+    const items = (node.content_items || []).map(i => ({ ...i, selected: sel.has(i.id) }));
+    const all = [...items, ...children.flatMap(c => c.__all)];
+    const open = all.filter(i => !i.completed);
+    const chosen = open.filter(i => i.selected);
+    return {
+      ...node,
+      children,
+      content_items: items,
+      selection: !open.length ? 'none'
+        : chosen.length === open.length ? 'all'
+          : chosen.length ? 'some' : 'none',
+      __all: all,
+    };
+  };
+  const nodes = (tree?.nodes || []).map(walk);
+  const flat = nodes.flatMap(n => n.__all);
+  const open = flat.filter(i => !i.completed);
+  const chosen = open.filter(i => i.selected);
+  const strip = n => { const { __all, ...rest } = n; return { ...rest, children: n.children.map(strip) }; };
+  return {
+    ...tree,
+    nodes: nodes.map(strip),
+    selection: !open.length ? 'none'
+      : chosen.length === open.length ? 'all'
+        : chosen.length ? 'some' : 'none',
+  };
+}
+
+// 一個節點底下所有「尚未完成」的 ContentItem id。草稿模式的批次選取用，
+// 對應後端 selectNode 只會寫未完成項目的行為。
+export function openItemIdsUnder(node) {
+  const out = [];
+  const walk = n => {
+    for (const i of n.content_items || []) if (!i.completed) out.push(i.id);
+    for (const c of n.children || []) walk(c);
+  };
+  walk(node);
+  return out;
+}
+
+/* ---------- blocked / reconciliation ---------- */
+
+// 把各種 API 回應裡的 blocked 清單統一成同一個形狀。
+// 後端有兩個來源：completion 的 reconciliation.blocked[]、
+// selection 的 task_exits.blocked[]。兩者結構相同，UI 只需要一種。
+export function collectBlocked(...responses) {
+  const out = [];
+  for (const r of responses) {
+    if (!r) continue;
+    for (const b of r.reconciliation?.blocked || []) out.push(b);
+    for (const b of r.task_exits?.blocked || []) out.push(b);
+  }
+  return out;
+}
+
+export function collectCancelled(...responses) {
+  const out = [];
+  for (const r of responses) {
+    if (!r) continue;
+    for (const b of r.reconciliation?.cancelled || []) out.push(b);
+    for (const b of r.task_exits?.cancelled || []) out.push(b);
+  }
+  return out;
+}

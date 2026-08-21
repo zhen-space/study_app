@@ -61,7 +61,11 @@ export function reconcile(blocks, existing = []) {
 export async function applyWizardSchedule({
   mode = 'create', planId = null, name = '', blocks = [],
   existingTasks = [], legacyMerged = [], removeUnscheduled = true, updatePlanDates = true,
+  // block → material_content_item_id。呼叫端在同一次 session 內自己組出來的，
+  // 不是全域的標題猜測，也不會用來對應 legacy 資料。
+  materialByBlock = {},
 }) {
+  const materialOf = b => materialByBlock[blockKey(b)] ?? null;
   const dates = blocks.map(b => b.date).filter(Boolean).sort();
   const counts = {};
   blocks.forEach(b => { counts[b.subject_id] = (counts[b.subject_id] || 0) + 1; });
@@ -87,7 +91,10 @@ export async function applyWizardSchedule({
           const { notes, deadline_date } = blockFields(block);
           return { task_id: task.id, notes, deadline_date };
         }),
-        task_creates: newTasks.map(({ client_key, block }) => ({ client_key, ...blockFields(block), tags: ['讀書計劃'] })),
+        task_creates: newTasks.map(({ client_key, block }) => ({
+          client_key, ...blockFields(block), tags: ['讀書計劃'],
+          material_content_item_id: materialOf(block),
+        })),
         task_delete_ids: removeUnscheduled ? remove.map(t => t.id) : [],
         blocks: [
           ...update.map(({ task, block }) => toScheduledBlock(block, { task_id: task.id })),
@@ -118,7 +125,10 @@ export async function applyWizardSchedule({
     body: {
       plan_id: plan.id,
       source: 'initial',
-      task_creates: newTasks.map(({ client_key, block }) => ({ client_key, ...blockFields(block), tags: ['讀書計劃'] })),
+      task_creates: newTasks.map(({ client_key, block }) => ({
+        client_key, ...blockFields(block), tags: ['讀書計劃'],
+        material_content_item_id: materialOf(block),
+      })),
       blocks: blocks.map(block => toScheduledBlock(block, { client_key: refs.get(block) })),
     },
   });
