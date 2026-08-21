@@ -15,7 +15,10 @@ import {
   NODE_KINDS, ITEM_KINDS,
 } from './tree.js';
 import { validateDraft, draftSummary } from './draft.js';
-import { legacyFormalizationDraft, formalizedSourceRowIds } from './legacy.js';
+import {
+  legacyFormalizationDraft, formalizedSourceRowIds, readLegacyGroup,
+  sourceFingerprint, LEGACY_SOURCE_KIND as LEGACY_KIND,
+} from './legacy.js';
 
 export class MaterialInputError extends Error {
   constructor(message, status = 400) { super(message); this.name = 'MaterialInputError'; this.status = status; }
@@ -471,13 +474,15 @@ export async function commitMaterialDraft(userId, input) {
 //
 // 呼叫端有責任先跑 validateDraft。這支自己也會在迴圈裡再驗一次 placement，
 // 但那是 defence in depth，不是主要防線。
-export const LEGACY_SOURCE_KIND = 'legacy_toc';
+export const LEGACY_SOURCE_KIND = LEGACY_KIND;
 
 // sources：這本正式教材是由哪幾列來源資料正式化來的。
 // **在同一筆 transaction 內**寫入——provenance 與 Material tree 必須同生共死，
 // 否則會出現「教材建好了但沒有來源記錄」（legacy 副本永遠不會被隱藏）
 // 或「有來源記錄但沒有教材」（那列 legacy 從此再也無法正式化）。
-export async function writeDraftTree(userId, draft, { sources = [] } = {}) {
+// verifyInTx：在**交易內**執行的最後一道檢查。放在交易外會有 TOCTOU——
+// 檢查完到寫入之間，舊資料仍可能被改動。
+export async function writeDraftTree(userId, draft, { sources = [], verifyInTx = null } = {}) {
   // 科目必須是這位使用者自己的 lists.id。用名稱比對是不行的：
   // 名稱可以重複、可以改，不是 identity。
   if (draft.book.subject_list_id != null) {
@@ -487,6 +492,7 @@ export async function writeDraftTree(userId, draft, { sources = [] } = {}) {
   }
 
   const bookId = await q.tx(async tx => {
+    if (verifyInTx) await verifyInTx(tx);
     const b = await tx.run(
       `INSERT INTO material_books (user_id,title,publisher,subject_list_id,source)
        VALUES (?,?,?,?,?)`,
@@ -572,15 +578,7 @@ export async function getLegacyFormalizationPreview(userId, { listId, book = '' 
 //   ・任一步失敗 → 整筆 rollback，不留下半本教材，也不留下孤兒 provenance
 //   ・使用者取消 → 根本不會呼叫這支，什麼都不會寫
 //   ・重複正式化 → UNIQUE(user_id, source_kind, source_row_id) 擋下並整筆 rollback
-export async function formalizeLegacyBook(userId, { listId, book = '', draft } = {}) {
-  const projected = await legacyFormalizationDraft(userId, { listId, book });
-  if (!projected) throw new MaterialInputError('找不到這本教材', 404);
-  if (projected.already_formalized_row_ids.length) {
-    const err = new MaterialInputError('這本教材已經整理過了', 409);
-    err.already_formalized_row_ids = projected.already_formalized_row_ids;
-    throw err;
-  }
-
+export async function formalizeLegacyBook(userId, { listId, book = '', draft, sourceSnapshot } = {}) {
   // 使用者確認過的 draft 仍要完整驗證：結構是我們給的，內容是使用者填的。
   const { draft: valid, problems } = validateDraft(draft);
   if (problems.length) {
@@ -589,13 +587,63 @@ export async function formalizeLegacyBook(userId, { listId, book = '', draft } =
     throw err;
   }
 
-  // 來源列一律以伺服器投影出來的為準，不接受呼叫端自己指定——
-  // 否則就能把 provenance 指到不屬於自己的 legacy 列。
-  const sources = projected.source_row_ids.map(id => ({
-    source_kind: LEGACY_SOURCE_KIND, source_row_id: id,
-  }));
-  const out = await writeDraftTree(userId, valid, { sources });
-  return { ...out, source_row_ids: projected.source_row_ids };
+  // commit 的授權依據是**使用者實際 preview 過的那份 snapshot**，
+  // 不是「現在 (list_id, book) 底下有哪些列」。少了這一步，preview 之後新增的
+  // 舊資料列會被一起吃進 provenance 並從教材世界消失，但使用者根本沒看過它。
+  const snap = sourceSnapshot;
+  if (!snap || !Array.isArray(snap.row_ids) || !snap.row_ids.length || !snap.fingerprint) {
+    throw new MaterialInputError('缺少教材來源資訊，請重新確認一次教材內容', 400);
+  }
+  if (snap.source_kind !== LEGACY_SOURCE_KIND) {
+    throw new MaterialInputError('教材來源資訊不正確', 400);
+  }
+  const wantIds = [...new Set(snap.row_ids.map(Number))].sort((a, b) => a - b);
+
+  const stale = message => {
+    const err = new MaterialInputError(message, 409);
+    err.stale = true;
+    return err;
+  };
+
+  // 全部檢查都在**交易內**再跑一次：放在交易外會有 TOCTOU——
+  // 檢查完到寫入之間，舊資料仍可能被改動。
+  const verifyInTx = async tx => {
+    // ① 有沒有哪一列已經被正式化過
+    const done = await tx.all(
+      `SELECT source_row_id FROM material_book_sources
+        WHERE user_id=? AND source_kind=? AND source_row_id IN (${wantIds.map(() => '?').join(',')})`,
+      [userId, LEGACY_SOURCE_KIND, ...wantIds]);
+    if (done.length) {
+      const err = new MaterialInputError('這本教材已經整理過了', 409);
+      err.already_formalized_row_ids = done.map(r => Number(r.source_row_id));
+      throw err;
+    }
+    // ② 快照描述的就是這一組嗎？
+    //    group 查詢是 user-scoped，所以「成員完全相同」同時證明了三件事：
+    //    每一列都存在、每一列都屬於這位使用者、而且沒有多出／少掉。
+    //    row_ids 被竄改成別人的列時，這裡就對不上。
+    //
+    //    (list_id, book) 只用來「找出這一組」——它是舊資料模型留下的
+    //    compatibility grouping，不是 commit 的授權依據。
+    const group = await tx.all(
+      `SELECT * FROM toc_items WHERE user_id=? AND list_id=? AND COALESCE(book,'')=?
+        ORDER BY order_index, id`, [userId, snap.list_id ?? listId, snap.book ?? book]);
+    const nowIds = group.map(r => Number(r.id)).sort((a, b) => a - b);
+    if (JSON.stringify(nowIds) !== JSON.stringify(wantIds)) {
+      throw stale('這本教材的內容已經變動，請重新確認一次');
+    }
+    // ③ 內容有沒有被改過。指紋涵蓋所有會影響 draft 的欄位，
+    //    所以改章名、改 sections、改順序、改書名／出版社都會被抓到。
+    if (sourceFingerprint(group) !== snap.fingerprint) {
+      throw stale('這本教材的內容已經變動，請重新確認一次');
+    }
+  };
+
+  // 來源列一律以 snapshot 為準，不是重新查出來的分組——
+  // 否則 preview 之後新增的那一列就會被偷偷吃進 provenance。
+  const sources = wantIds.map(id => ({ source_kind: LEGACY_SOURCE_KIND, source_row_id: id }));
+  const out = await writeDraftTree(userId, valid, { sources, verifyInTx });
+  return { ...out, source_row_ids: wantIds };
 }
 
 export { formalizedSourceRowIds };

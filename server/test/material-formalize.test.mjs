@@ -147,7 +147,7 @@ describe('正式化（commit）', () => {
     const L = await seedLegacyBook('可用的舊教材');
     const pre = await svc.getLegacyFormalizationPreview(USER, { listId, book: L.book });
     const out = await svc.formalizeLegacyBook(USER, {
-      listId, book: L.book, draft: confirmContent(pre.draft),
+      listId, book: L.book, draft: confirmContent(pre.draft), sourceSnapshot: pre.source_snapshot,
     });
 
     assert.ok(out.book.id, '必須拿到正式 material_books.id');
@@ -166,7 +166,7 @@ describe('正式化（commit）', () => {
   test('★ 教材樹與 provenance 同一筆交易；一個正式 Book link 多個 toc_items 列', async () => {
     const L = await seedLegacyBook('多章來源');
     const pre = await svc.getLegacyFormalizationPreview(USER, { listId, book: L.book });
-    const out = await svc.formalizeLegacyBook(USER, { listId, book: L.book, draft: confirmContent(pre.draft) });
+    const out = await svc.formalizeLegacyBook(USER, { listId, book: L.book, draft: confirmContent(pre.draft), sourceSnapshot: pre.source_snapshot });
 
     const sources = await q.all(
       'SELECT * FROM material_book_sources WHERE user_id=? AND book_id=? ORDER BY source_row_id',
@@ -189,11 +189,11 @@ describe('正式化（commit）', () => {
   test('★ 同一列 legacy 來源不可被重複正式化', async () => {
     const L = await seedLegacyBook('不可重複');
     const pre = await svc.getLegacyFormalizationPreview(USER, { listId, book: L.book });
-    await svc.formalizeLegacyBook(USER, { listId, book: L.book, draft: confirmContent(pre.draft) });
+    await svc.formalizeLegacyBook(USER, { listId, book: L.book, draft: confirmContent(pre.draft), sourceSnapshot: pre.source_snapshot });
 
     const before = await counts();
     await assert.rejects(
-      () => svc.formalizeLegacyBook(USER, { listId, book: L.book, draft: confirmContent(pre.draft) }),
+      () => svc.formalizeLegacyBook(USER, { listId, book: L.book, draft: confirmContent(pre.draft), sourceSnapshot: pre.source_snapshot }),
       e => e.status === 409);
     assert.deepEqual(await counts(), before, '第二次不得生出第二本重複教材');
     // preview 也要擋，讓學生不會又看到一次確認畫面
@@ -205,7 +205,7 @@ describe('正式化（commit）', () => {
   test('★ DB 層唯一鍵擋得住：直接繞過 service 也插不進第二筆', async () => {
     const L = await seedLegacyBook('唯一鍵');
     const pre = await svc.getLegacyFormalizationPreview(USER, { listId, book: L.book });
-    const out = await svc.formalizeLegacyBook(USER, { listId, book: L.book, draft: confirmContent(pre.draft) });
+    const out = await svc.formalizeLegacyBook(USER, { listId, book: L.book, draft: confirmContent(pre.draft), sourceSnapshot: pre.source_snapshot });
     await assert.rejects(() => q.run(
       `INSERT INTO material_book_sources (user_id,book_id,source_kind,source_row_id) VALUES (?,?,?,?)`,
       [USER, out.book.id, 'legacy_toc', L.sourceRowIds[0]]), /UNIQUE|constraint/i);
@@ -234,7 +234,7 @@ describe('正式化（commit）', () => {
   test('★ provenance 寫入失敗 → 整棵 Material tree rollback', async () => {
     const L = await seedLegacyBook('provenance 失敗');
     const pre = await svc.getLegacyFormalizationPreview(USER, { listId, book: L.book });
-    await svc.formalizeLegacyBook(USER, { listId, book: L.book, draft: confirmContent(pre.draft) });
+    await svc.formalizeLegacyBook(USER, { listId, book: L.book, draft: confirmContent(pre.draft), sourceSnapshot: pre.source_snapshot });
 
     const before = await counts();
     // 同一批來源列再正式化一次：Material tree 會先寫，provenance 的 UNIQUE 才炸。
@@ -267,7 +267,7 @@ describe('正式化（commit）', () => {
       })),
     };
     await assert.rejects(
-      () => svc.formalizeLegacyBook(USER, { listId, book: L.book, draft: bad }),
+      () => svc.formalizeLegacyBook(USER, { listId, book: L.book, draft: bad, sourceSnapshot: pre.source_snapshot }),
       e => e.status === 400 && Array.isArray(e.problems) && e.problems.length > 0);
     assert.deepEqual(await counts(), before);
   });
@@ -276,7 +276,7 @@ describe('正式化（commit）', () => {
     const L = await seedLegacyBook('legacy 不變');
     const toc = await tocSnapshot();
     const pre = await svc.getLegacyFormalizationPreview(USER, { listId, book: L.book });
-    await svc.formalizeLegacyBook(USER, { listId, book: L.book, draft: confirmContent(pre.draft) });
+    await svc.formalizeLegacyBook(USER, { listId, book: L.book, draft: confirmContent(pre.draft), sourceSnapshot: pre.source_snapshot });
     assert.equal(await tocSnapshot(), toc, '★ toc_items 不得被 UPDATE / DELETE');
   });
 });
@@ -290,7 +290,7 @@ describe('Unified library 的去重', () => {
     assert.equal(legacyBefore[0].requires_content_confirmation, true);
 
     const pre = await svc.getLegacyFormalizationPreview(USER, { listId, book: L.book });
-    const out = await svc.formalizeLegacyBook(USER, { listId, book: L.book, draft: confirmContent(pre.draft) });
+    const out = await svc.formalizeLegacyBook(USER, { listId, book: L.book, draft: confirmContent(pre.draft), sourceSnapshot: pre.source_snapshot });
 
     const after = await listStudyMaterials(USER);
     const legacyAfter = after.books.filter(b => b.source === 'legacy' && b.title === '去重');
@@ -303,7 +303,7 @@ describe('Unified library 的去重', () => {
   test('★ 去重靠來源列 id，不是書名：同名但未正式化的另一本仍然看得到', async () => {
     const A = await seedLegacyBook('同名教材');
     const pre = await svc.getLegacyFormalizationPreview(USER, { listId, book: A.book });
-    await svc.formalizeLegacyBook(USER, { listId, book: A.book, draft: confirmContent(pre.draft) });
+    await svc.formalizeLegacyBook(USER, { listId, book: A.book, draft: confirmContent(pre.draft), sourceSnapshot: pre.source_snapshot });
 
     // 另一個科目底下有一本**同名**的舊教材，來源列不同 → 不該被連坐隱藏
     const other = await q.run('INSERT INTO lists (user_id,name) VALUES (?,?)', [USER, '物理']);
@@ -322,7 +322,7 @@ describe('正式化之後走的是正式路徑', () => {
   test('★ Plan selection 只指向正式 material_content_item_id', async () => {
     const L = await seedLegacyBook('選取');
     const pre = await svc.getLegacyFormalizationPreview(USER, { listId, book: L.book });
-    const out = await svc.formalizeLegacyBook(USER, { listId, book: L.book, draft: confirmContent(pre.draft) });
+    const out = await svc.formalizeLegacyBook(USER, { listId, book: L.book, draft: confirmContent(pre.draft), sourceSnapshot: pre.source_snapshot });
 
     const plan = await q.run(
       'INSERT INTO plans (user_id,name,status) VALUES (?,?,?)', [USER, '段考', 'active']);
@@ -351,7 +351,210 @@ describe('正式化之後走的是正式路徑', () => {
     });
     const before = await snap();
     const pre = await svc.getLegacyFormalizationPreview(USER, { listId, book: L.book });
-    await svc.formalizeLegacyBook(USER, { listId, book: L.book, draft: confirmContent(pre.draft) });
+    await svc.formalizeLegacyBook(USER, { listId, book: L.book, draft: confirmContent(pre.draft), sourceSnapshot: pre.source_snapshot });
     assert.deepEqual(await snap(), before, '★ 正式化不得碰任何排程資料');
+  });
+});
+
+/* ============ Stale preview / source-set drift ============ */
+
+describe('來源快照（stale preview / source drift）', () => {
+  const isStale = e => e.status === 409 && e.stale === true;
+
+  test('preview 回傳明確的來源快照：row_ids ＋ fingerprint', async () => {
+    const L = await seedLegacyBook('快照格式');
+    const pre = await svc.getLegacyFormalizationPreview(USER, { listId, book: L.book });
+    const snap = pre.source_snapshot;
+    assert.equal(snap.source_kind, 'legacy_toc');
+    assert.deepEqual(snap.row_ids, [...L.sourceRowIds].sort((a, b) => a - b));
+    assert.equal(typeof snap.fingerprint, 'string');
+    assert.equal(snap.fingerprint.length, 64, 'sha256 hex');
+    assert.equal(Number(snap.list_id), listId);
+    assert.equal(snap.book, L.book);
+  });
+
+  test('★ preview [A,B]，commit 前新增 C → 409，零 Material / provenance', async () => {
+    const L = await seedLegacyBook('新增 C');
+    const pre = await svc.getLegacyFormalizationPreview(USER, { listId, book: L.book });
+    const before = await counts();
+
+    // 使用者還在確認內容時，同一本書多了一章
+    const c = await q.run(
+      `INSERT INTO toc_items (user_id,list_id,title,level,sections,order_index,book,publisher)
+       VALUES (?,?,?,?,?,?,?,?)`,
+      [USER, listId, '5 新增的一章', '章', '[]', 9, L.book, '龍騰']);
+
+    await assert.rejects(() => svc.formalizeLegacyBook(USER, {
+      listId, book: L.book, draft: confirmContent(pre.draft), sourceSnapshot: pre.source_snapshot,
+    }), isStale);
+
+    assert.deepEqual(await counts(), before, '★ 不得留下任何 Material 或 provenance');
+    // ★ 最關鍵：新增的那一列絕不能被標成已正式化
+    const marked = await q.get(
+      'SELECT id FROM material_book_sources WHERE user_id=? AND source_row_id=?',
+      [USER, Number(c.lastInsertRowid)]);
+    assert.equal(marked, undefined, '★ 使用者沒看過的來源列不得進 provenance');
+  });
+
+  test('★ preview [A,B]，commit 前刪除 B → 409', async () => {
+    const L = await seedLegacyBook('刪除 B');
+    const pre = await svc.getLegacyFormalizationPreview(USER, { listId, book: L.book });
+    const before = await counts();
+    await q.run('DELETE FROM toc_items WHERE id=?', [L.sourceRowIds[1]]);
+
+    await assert.rejects(() => svc.formalizeLegacyBook(USER, {
+      listId, book: L.book, draft: confirmContent(pre.draft), sourceSnapshot: pre.source_snapshot,
+    }), isStale);
+    assert.deepEqual(await counts(), before);
+  });
+
+  test('★ commit 前改動 sections（結構變了）→ 409', async () => {
+    const L = await seedLegacyBook('改 sections');
+    const pre = await svc.getLegacyFormalizationPreview(USER, { listId, book: L.book });
+    const before = await counts();
+    await q.run('UPDATE toc_items SET sections=? WHERE id=?',
+      [JSON.stringify([{ title: '換掉的節', level: '節', children: [] }]), L.sourceRowIds[0]]);
+
+    await assert.rejects(() => svc.formalizeLegacyBook(USER, {
+      listId, book: L.book, draft: confirmContent(pre.draft), sourceSnapshot: pre.source_snapshot,
+    }), isStale);
+    assert.deepEqual(await counts(), before);
+  });
+
+  test('★ commit 前改動章名 → 409', async () => {
+    const L = await seedLegacyBook('改章名');
+    const pre = await svc.getLegacyFormalizationPreview(USER, { listId, book: L.book });
+    await q.run('UPDATE toc_items SET title=? WHERE id=?', ['改過的章名', L.sourceRowIds[0]]);
+    await assert.rejects(() => svc.formalizeLegacyBook(USER, {
+      listId, book: L.book, draft: confirmContent(pre.draft), sourceSnapshot: pre.source_snapshot,
+    }), isStale);
+  });
+
+  test('★ commit 前改動出版社 → 409（會影響 draft，必須算進指紋）', async () => {
+    const L = await seedLegacyBook('改出版社');
+    const pre = await svc.getLegacyFormalizationPreview(USER, { listId, book: L.book });
+    assert.equal(pre.draft.book.publisher, '龍騰');
+    await q.run('UPDATE toc_items SET publisher=? WHERE id=?', ['換一家', L.sourceRowIds[0]]);
+    await assert.rejects(() => svc.formalizeLegacyBook(USER, {
+      listId, book: L.book, draft: confirmContent(pre.draft), sourceSnapshot: pre.source_snapshot,
+    }), isStale);
+  });
+
+  test('★ commit 前改動順序 → 409', async () => {
+    const L = await seedLegacyBook('改順序');
+    const pre = await svc.getLegacyFormalizationPreview(USER, { listId, book: L.book });
+    await q.run('UPDATE toc_items SET order_index=? WHERE id=?', [99, L.sourceRowIds[0]]);
+    await assert.rejects(() => svc.formalizeLegacyBook(USER, {
+      listId, book: L.book, draft: confirmContent(pre.draft), sourceSnapshot: pre.source_snapshot,
+    }), isStale);
+  });
+
+  test('★ row_ids 被竄改成別人的列 → 拒絕', async () => {
+    const L = await seedLegacyBook('跨帳號竄改');
+    const pre = await svc.getLegacyFormalizationPreview(USER, { listId, book: L.book });
+    const before = await counts();
+
+    // 另一個帳號的 legacy 列
+    const other = await q.run('INSERT INTO users (email,password_hash) VALUES (?,?)', ['other@t', 'x']);
+    const otherUser = Number(other.lastInsertRowid);
+    const otherList = await q.run('INSERT INTO lists (user_id,name) VALUES (?,?)', [otherUser, '別人的科目']);
+    const otherRow = await q.run(
+      `INSERT INTO toc_items (user_id,list_id,title,level,sections,order_index,book,publisher)
+       VALUES (?,?,?,?,?,?,?,?)`,
+      [otherUser, Number(otherList.lastInsertRowid), '別人的章', '章', '[]', 0, '別人的書', '']);
+
+    await assert.rejects(() => svc.formalizeLegacyBook(USER, {
+      listId, book: L.book, draft: confirmContent(pre.draft),
+      sourceSnapshot: { ...pre.source_snapshot, row_ids: [...pre.source_snapshot.row_ids, Number(otherRow.lastInsertRowid)] },
+    }), e => e.status === 409);
+
+    assert.deepEqual(await counts(), before);
+    const leaked = await q.get(
+      'SELECT id FROM material_book_sources WHERE source_row_id=?', [Number(otherRow.lastInsertRowid)]);
+    assert.equal(leaked, undefined, '★ 別人的來源列不得被寫進 provenance');
+  });
+
+  test('★ 缺少來源快照時直接拒絕，不用 list_id + book 重新決定來源', async () => {
+    const L = await seedLegacyBook('沒有快照');
+    const pre = await svc.getLegacyFormalizationPreview(USER, { listId, book: L.book });
+    const before = await counts();
+    await assert.rejects(
+      () => svc.formalizeLegacyBook(USER, { listId, book: L.book, draft: confirmContent(pre.draft) }),
+      e => e.status === 400);
+    assert.deepEqual(await counts(), before);
+  });
+
+  test('★ snapshot 裡已被正式化的列 → 409', async () => {
+    const L = await seedLegacyBook('已正式化');
+    const pre = await svc.getLegacyFormalizationPreview(USER, { listId, book: L.book });
+    await svc.formalizeLegacyBook(USER, {
+      listId, book: L.book, draft: confirmContent(pre.draft), sourceSnapshot: pre.source_snapshot });
+    const before = await counts();
+    await assert.rejects(() => svc.formalizeLegacyBook(USER, {
+      listId, book: L.book, draft: confirmContent(pre.draft), sourceSnapshot: pre.source_snapshot,
+    }), e => e.status === 409);
+    assert.deepEqual(await counts(), before);
+  });
+
+  test('★ 完全一致的 snapshot → atomic success，provenance 只含快照裡的列', async () => {
+    const L = await seedLegacyBook('一致');
+    const pre = await svc.getLegacyFormalizationPreview(USER, { listId, book: L.book });
+    const out = await svc.formalizeLegacyBook(USER, {
+      listId, book: L.book, draft: confirmContent(pre.draft), sourceSnapshot: pre.source_snapshot });
+    const sources = await q.all(
+      'SELECT source_row_id FROM material_book_sources WHERE user_id=? AND book_id=?',
+      [USER, out.book.id]);
+    assert.deepEqual(sources.map(s => Number(s.source_row_id)).sort((a, b) => a - b),
+      pre.source_snapshot.row_ids);
+  });
+
+  test('★ stale 失敗之後 legacy row 本身仍未被改動，而且可以重新 preview 再來一次', async () => {
+    const L = await seedLegacyBook('重來');
+    const pre = await svc.getLegacyFormalizationPreview(USER, { listId, book: L.book });
+    await q.run(
+      `INSERT INTO toc_items (user_id,list_id,title,level,sections,order_index,book,publisher)
+       VALUES (?,?,?,?,?,?,?,?)`,
+      [USER, listId, '插進來的一章', '章', '[]', 9, L.book, '龍騰']);
+    await assert.rejects(() => svc.formalizeLegacyBook(USER, {
+      listId, book: L.book, draft: confirmContent(pre.draft), sourceSnapshot: pre.source_snapshot,
+    }), isStale);
+
+    // 重新 preview（拿到新的快照）之後可以正常完成——不是死路，也沒有自動 retry
+    const toc = await tocSnapshot();
+    const pre2 = await svc.getLegacyFormalizationPreview(USER, { listId, book: L.book });
+    assert.notEqual(pre2.source_snapshot.fingerprint, pre.source_snapshot.fingerprint);
+    assert.equal(pre2.source_snapshot.row_ids.length, 3);
+    const out = await svc.formalizeLegacyBook(USER, {
+      listId, book: L.book, draft: confirmContent(pre2.draft), sourceSnapshot: pre2.source_snapshot });
+    assert.ok(out.book.id);
+    assert.equal(await tocSnapshot(), toc, '★ legacy row 全程不被 UPDATE / DELETE');
+  });
+});
+
+describe('來源快照的授權邊界', () => {
+  test('★ snapshot 與 listId/book 參數不一致時，寫入的是 snapshot 描述的那一組', async () => {
+    // 兩本不同的舊教材。使用者確認的是 A，但呼叫端把參數指到 B。
+    // commit 必須以 snapshot（A）為準，絕不能改成寫 B 的來源列。
+    const A = await seedLegacyBook('參數 A');
+    const B = await seedLegacyBook('參數 B');
+    const preA = await svc.getLegacyFormalizationPreview(USER, { listId, book: A.book });
+
+    const out = await svc.formalizeLegacyBook(USER, {
+      listId, book: B.book,                       // ← 參數指到 B
+      draft: confirmContent(preA.draft),
+      sourceSnapshot: preA.source_snapshot,       // ← 但使用者確認的是 A
+    });
+
+    const written = (await q.all(
+      'SELECT source_row_id FROM material_book_sources WHERE user_id=? AND book_id=?',
+      [USER, out.book.id])).map(r => Number(r.source_row_id)).sort((a, b) => a - b);
+    assert.deepEqual(written, [...A.sourceRowIds].sort((a, b) => a - b),
+      '★ 必須寫 snapshot（A）的來源列');
+    for (const id of B.sourceRowIds) {
+      assert.equal(written.includes(id), false, '★ 不得因為參數而把 B 的來源列吃進去');
+    }
+    // B 仍然是可以正式化的舊教材，沒有被連坐標記
+    const preB = await svc.getLegacyFormalizationPreview(USER, { listId, book: B.book });
+    assert.deepEqual(preB.source_snapshot.row_ids, [...B.sourceRowIds].sort((a, b) => a - b));
   });
 });

@@ -22,6 +22,7 @@ const handle = fn => async (req, res) => {
       if (e.completed_item_ids) body.completed_item_ids = e.completed_item_ids;
       if (e.problems) body.problems = e.problems;
       if (e.already_formalized_row_ids) body.already_formalized_row_ids = e.already_formalized_row_ids;
+      if (e.stale) body.stale = true;
       return res.status(e.status || 400).json(body);
     }
     console.error('[material]', e);
@@ -202,6 +203,9 @@ router.post('/material/legacy-books/:listId/content-check', handle(async (req, r
   const b = req.body || {};
   res.status(201).json(await material.formalizeLegacyBook(req.userId, {
     listId: Number(req.params.listId), book: b.book || '', draft: b.draft,
+    // 必須把 preview 回傳的那份 source_snapshot 原樣送回來：
+    // commit 只能正式化使用者實際看過的那一份舊資料。
+    sourceSnapshot: b.source_snapshot,
   }));
 }));
 

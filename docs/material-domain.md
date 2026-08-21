@@ -354,6 +354,42 @@ UI 不得出現：legacy、migration、formalization、identity、轉換成 Mate
 **刻意不在 `material_books` 上放 `legacy_book` 之類的欄位**：書名是文字，會重複、
 會改，拿它當長期 linkage 就是 title matching 的變形。
 
+### 來源快照：commit 只能正式化使用者實際看過的那一份
+
+preview 與 commit 之間，舊資料仍可能被新增／刪除／修改。若 commit 只靠
+`(list_id, book)` 重新決定來源集合，preview 之後新增的那一列會被一起吃進
+provenance 並從教材世界消失 —— 但使用者根本沒看過它。
+
+所以 preview 回傳一份明確的來源快照：
+
+```
+source_snapshot: {
+  source_kind: 'legacy_toc',
+  list_id, book,                 // compatibility grouping，只用來「找出這一組」
+  row_ids: [toc_items.id …],     // 授權依據
+  fingerprint: '<sha256>',       // 涵蓋所有會影響 draft 的欄位
+}
+```
+
+commit 必須把它原樣送回來。指紋涵蓋每一列的
+`id / title / level / sections / order_index / publisher`，
+所以改章名、改結構、改順序、改出版社都會被抓到。
+`book` 刻意**不**放進指紋 —— 它是分組鍵，改了那一列就會離開這一組，
+成員檢查先一步抓到。
+
+commit 在**交易內**做三道各自必要的檢查：
+
+1. 快照裡有沒有哪一列已經被正式化過 → 409
+2. 目前這一組的成員是否與快照完全相同（group 查詢是 user-scoped，
+   所以「成員完全相同」同時證明了每一列都存在、都屬於這位使用者、
+   而且沒有多出／少掉）→ 不同就 409 stale
+3. 指紋是否相同 → 不同就 409 stale
+
+實際寫進 provenance 的永遠是**快照的 `row_ids`**，不是重新查出來的分組。
+
+stale 時整筆不寫、不自動 retry、不靜默更新 draft。使用者重新 preview
+（拿到新快照）之後可以正常完成 —— 不是死路。
+
 ### 原子性
 
 教材樹與 provenance 在**同一筆 transaction** 內建立：

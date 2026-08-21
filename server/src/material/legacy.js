@@ -18,6 +18,7 @@
 //   ③ legacy 巢狀 Topic 只在**呈現上**攤平成與 Section 同層；
 //      原始 path 完整保留，之後要指回原本那一列仍然精準。
 
+import crypto from 'node:crypto';
 import { q } from '../db/init.js';
 
 export const SOURCE_MATERIAL = 'material';
@@ -151,6 +152,38 @@ export async function listLegacyBooks(userId) {
 
 /* ---------- Just-in-time formalization ---------- */
 
+export const LEGACY_SOURCE_KIND = 'legacy_toc';
+
+// 一組 legacy 來源列的指紋。
+//
+// 涵蓋**所有會影響 draft 的欄位**：只要書名、出版社、章名、level、sections
+// 或順序改了，指紋就不一樣。(list_id, book) 這個分組本身也算進去，
+// 所以「preview 之後多了一列 C」同樣會讓指紋改變——這正是最危險的那個情境。
+//
+// 用途只有一個：判斷「使用者剛才看到的那份舊資料，現在還是不是同一份」。
+// 它不是 identity（identity 永遠是 source_row_id），也不做 title matching。
+export function sourceFingerprint(rows) {
+  const material = rows
+    .map(r => [
+      Number(r.id), String(r.title ?? ''), String(r.level ?? ''),
+      String(r.sections ?? ''), Number(r.order_index ?? 0),
+      // 書名（book）不放進指紋：它是分組鍵，改了那一列就會離開這一組，
+      // 成員檢查先一步抓到。放進來只是 dead code。
+      String(r.publisher ?? ''),
+    ])
+    .sort((a, b) => a[0] - b[0]);
+  return crypto.createHash('sha256').update(JSON.stringify(material)).digest('hex');
+}
+
+// 依 (list_id, book) 讀出一組 legacy 列。
+//
+// 這個分組只用來「找出／顯示一組 legacy row」——它是舊資料模型留下的
+// compatibility grouping，**不是** commit 的授權依據。真正決定要正式化哪些列的，
+// 永遠是使用者 preview 過的那份 snapshot。
+export const readLegacyGroup = (userId, listId, book = '') => q.all(
+  'SELECT * FROM toc_items WHERE user_id=? AND list_id=? AND COALESCE(book,\'\')=? ORDER BY order_index, id',
+  [userId, listId, book]);
+
 // 哪些 legacy 來源列已經被正式化過。deterministic：查的是 provenance 的
 // source_row_id，不是書名。
 export async function formalizedSourceRowIds(userId) {
@@ -174,9 +207,7 @@ export async function formalizedSourceRowIds(userId) {
 // 它不是 section 也不是 topic，硬塞就是在猜。它們列在 unsupported_nodes 裡，
 // 讓呼叫端可以如實呈現。
 export async function legacyFormalizationDraft(userId, { listId, book = '' }) {
-  const rows = await q.all(
-    'SELECT * FROM toc_items WHERE user_id=? AND list_id=? AND COALESCE(book,\'\')=? ORDER BY order_index, id',
-    [userId, listId, book]);
+  const rows = await readLegacyGroup(userId, listId, book);
   if (!rows.length) return null;
 
   const done = await formalizedSourceRowIds(userId);
@@ -217,6 +248,15 @@ export async function legacyFormalizationDraft(userId, { listId, book = '' }) {
         subject_list_id: rows[0].list_id ?? null,
       },
       chapters,
+    },
+    // 使用者實際看到的那一份來源快照。commit 必須把它原樣送回來，
+    // 伺服器才知道「這份確認是針對哪一份舊資料做的」。
+    source_snapshot: {
+      source_kind: LEGACY_SOURCE_KIND,
+      list_id: Number(listId),
+      book: String(book || ''),
+      row_ids: rows.map(r => Number(r.id)).sort((a, b) => a - b),
+      fingerprint: sourceFingerprint(rows),
     },
     source_row_ids: rows.map(r => Number(r.id)),
     already_formalized_row_ids: alreadyFormalized,
