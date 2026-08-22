@@ -66,6 +66,9 @@ export default function WizardView({
   const [matIds, setMatIds] = useState(() => new Set());
   const [matPicked, setMatPicked] = useState(() => new Map()); // id → descriptor
   const [matBooks, setMatBooks] = useState([]);
+  // 第 1 步畫面上「已選 N 項」的那個 N。它就是 selector 裡實際勾起來的數量，
+  // 也是「下一步」的唯一依據——不要再從「能不能排程」反推一次。
+  const [matSelected, setMatSelected] = useState(0);
   const [subjSpread, setSubjSpread] = useState({});   // 每科：章節打散(spread)或照順序(order)
   const [exWd, setExWd] = useState([]);               // 不排的星期 0-6
   const [exDates, setExDates] = useState([]);         // 不排的日期
@@ -662,6 +665,7 @@ export default function WizardView({
             draftIds={matIds}
             onDraftChange={setMatIds}
             onPickedChange={onMaterialPicked}
+            onSelectionChange={setMatSelected}
             lists={lists}
             onLibraryChange={() => { listBooks().then(setMatBooks).catch(() => {}); }}
             onAddSubject={async name => {
@@ -688,8 +692,11 @@ export default function WizardView({
                 )}
                 {/* 用 Design System 的 Button：舊的 .btn 沒有 :disabled 樣態，
                     停用時看起來仍像可按，使用者只會覺得「按了沒反應」。 */}
+                {/* 契約：只要至少有一個「尚未完成而且這次要讀」的內容，就走得下去。
+                    以前這裡看的是 materialItems（能不能排程），於是會出現
+                    「已選 6 項」但按鈕是灰的——兩個數字來源不同就一定會對不上。 */}
                 <Button variant="primary" style={{ marginLeft: 'auto' }}
-                  disabled={!materialItems.length} onClick={() => setStep(1)}>
+                  disabled={!matSelected} onClick={() => setStep(1)}>
                   下一步
                 </Button>
               </>

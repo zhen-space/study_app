@@ -1,6 +1,6 @@
-import { useCallback, useEffect, useState } from 'react';
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
-  listShelf, getBookTree, selectItems, selectNode,
+  listShelf, getBookTree, getPlanSelection, selectItems, selectNode, selectBookNodes,
   ITEM_LABEL, CHAPTER_LEVEL_KINDS, countSelected, collectBlocked, collectCancelled,
   applyDraftSelection, openItemIdsUnder, flattenItems, bookNeedsSubject,
 } from './material';
@@ -55,7 +55,9 @@ function SelectBox({ state, disabled, onToggle, label }) {
 const doneText = p =>
   (p && p.completed_items > 0 ? `已完成 ${p.completed_items}／${p.total_items}` : '');
 
-function ItemRow({ item, busy, onToggle }) {
+// memo：教材大一點就是兩百多列，動一個 checkbox 不該把每一列都重畫一次。
+// props 都是 stable 的（callback 都包過 useCallback），所以擋得住。
+const ItemRow = memo(function ItemRow({ item, locked, onToggle }) {
   const state = item.completed ? 'completed' : item.selected ? 'checked' : 'unchecked';
   const label = ITEM_LABEL[item.kind] || item.kind;
   // 標題本來就是「課本內容」時，底下再掛一個「課本內容」標籤是純噪音。
@@ -63,7 +65,7 @@ function ItemRow({ item, busy, onToggle }) {
   const showKind = !String(item.title).startsWith(label);
   return (
     <div className={'mt-item' + (item.completed ? ' is-done' : '')}>
-      <SelectBox state={state} disabled={busy || item.completed} label={item.title}
+      <SelectBox state={state} disabled={locked || item.completed} label={item.title}
         onToggle={() => onToggle(item)} />
       <div className="mt-item-main">
         <div className="mt-item-title">{item.title}</div>
@@ -76,17 +78,17 @@ function ItemRow({ item, busy, onToggle }) {
       </div>
     </div>
   );
-}
+});
 
 /* ---------- Section / Topic（Chapter 的同層子節點） ---------- */
 
-function ChildNode({ node, busy, onToggleNode, onToggleItem }) {
+const ChildNode = memo(function ChildNode({ node, locked, onToggleNode, onToggleItem }) {
   const items = node.content_items || [];
   const selectable = items.some(i => !i.completed);
   return (
     <div className="mt-child">
       <div className="mt-child-head">
-        <SelectBox state={selectable ? node.selection : 'completed'} disabled={busy || !selectable}
+        <SelectBox state={selectable ? node.selection : 'completed'} disabled={locked || !selectable}
           label={`${node.title}（整組）`} onToggle={() => onToggleNode(node)} />
         <div className="mt-child-main">
           <span className="mt-child-title">{node.title}</span>
@@ -96,15 +98,15 @@ function ChildNode({ node, busy, onToggleNode, onToggleItem }) {
         <span className="mt-progress-text">{doneText(node.progress)}</span>
       </div>
       <div className="mt-child-items">
-        {items.map(it => <ItemRow key={it.id} item={it} busy={busy} onToggle={onToggleItem} />)}
+        {items.map(it => <ItemRow key={it.id} item={it} locked={locked} onToggle={onToggleItem} />)}
       </div>
     </div>
   );
-}
+});
 
 /* ---------- Chapter ---------- */
 
-function ChapterNode({ node, open, onOpen, busy, onToggleNode, onToggleItem }) {
+const ChapterNode = memo(function ChapterNode({ node, open, onOpen, locked, onToggleNode, onToggleItem }) {
   const own = node.content_items || [];
   // 章自己直接掛的單元練習／歷屆試題。它們**不屬於任何 Section**，
   // 所以畫在與 Section / Topic 同一層，而且標明「本章」。
@@ -114,7 +116,7 @@ function ChapterNode({ node, open, onOpen, busy, onToggleNode, onToggleItem }) {
   return (
     <div className="mt-chapter">
       <div className="mt-chapter-head">
-        <SelectBox state={selectable ? node.selection : 'completed'} disabled={busy || !selectable}
+        <SelectBox state={selectable ? node.selection : 'completed'} disabled={locked || !selectable}
           label={`${node.title}（整章）`} onToggle={() => onToggleNode(node)} />
         <button type="button" className="mt-chapter-btn" aria-expanded={open}
           onClick={() => onOpen(!open)}>
@@ -125,22 +127,22 @@ function ChapterNode({ node, open, onOpen, busy, onToggleNode, onToggleItem }) {
       </div>
       {open && (
         <div className="mt-chapter-body">
-          {chapterReading.map(it => <ItemRow key={it.id} item={it} busy={busy} onToggle={onToggleItem} />)}
+          {chapterReading.map(it => <ItemRow key={it.id} item={it} locked={locked} onToggle={onToggleItem} />)}
           {(node.children || []).map(c => (
-            <ChildNode key={c.id} node={c} busy={busy}
+            <ChildNode key={c.id} node={c} locked={locked}
               onToggleNode={onToggleNode} onToggleItem={onToggleItem} />
           ))}
           {chapterLevel.length > 0 && (
             <div className="mt-chapter-level">
               <div className="mt-chapter-level-label">本章直屬</div>
-              {chapterLevel.map(it => <ItemRow key={it.id} item={it} busy={busy} onToggle={onToggleItem} />)}
+              {chapterLevel.map(it => <ItemRow key={it.id} item={it} locked={locked} onToggle={onToggleItem} />)}
             </div>
           )}
         </div>
       )}
     </div>
   );
-}
+});
 
 // 書櫃列表的 React key。正式教材用它自己的 id；還沒確認過內容的教材沒有
 // Material id，就用它來源座標本身當 key——**不用書名**，書名會重複。
@@ -179,13 +181,22 @@ export default function MaterialSelector({
   const [view, setView] = useState('shelf');
   const [pending, setPending] = useState(null);  // 正在確認內容的那一本
   const [openBook, setOpenBook] = useState(null);
-  const [tree, setTree] = useState(null);
-  const [rawTree, setRawTree] = useState(null);
+  const [rawTree, setRawTree] = useState(null);  // 後端給的樹：completion 的來源
   const [openCh, setOpenCh] = useState({});
-  const [busy, setBusy] = useState(false);
   const [err, setErr] = useState('');
   const [blocked, setBlocked] = useState(null);
   const [counts, setCounts] = useState({});      // book_id → 這個 Plan 已選幾項
+
+  // 「這次要讀哪些」的**唯一**一份狀態，兩個模式共用。
+  //
+  // 之前 Create 用草稿集合、Edit 用書櫃回來的 selected_count，而「下一步」
+  // 又是看第三個東西（能不能排程）。三份數字只要有一份對不上，就會出現
+  // 「已選 6 項，但下一步是灰的」這種說不通的畫面。現在只有這一份。
+  //
+  // completion 仍然完全以後端為準（在 rawTree 裡），這裡只管 selection。
+  const [sel, setSel] = useState(() => new Set(draftIds || []));
+  const selRef = useRef(sel);
+  selRef.current = sel;
 
   // 書櫃只讀一份統一的清單。前端不需要知道每一本從哪裡來，
   // 也不做任何「這兩本是不是同一本」的比對——書名不是身分。
@@ -197,78 +208,151 @@ export default function MaterialSelector({
 
   useEffect(() => { loadShelf().catch(e => setErr(e.message)); }, [loadShelf]);
 
+  // Edit：這個 Plan 目前選了哪些，一次讀回來當初始狀態。
+  // 之後畫面就以本地這一份為準，每次點擊不再重新跟後端要一次。
+  useEffect(() => {
+    if (draft || planId == null) return;
+    let alive = true;
+    getPlanSelection(planId)
+      .then(rows => {
+        if (!alive) return;
+        setSel(new Set(rows
+          .filter(r => r.selected && !r.material_completed)
+          .map(r => r.content_item_id)));
+      })
+      .catch(e => setErr(e.message));   // 讀不到就說出來，不要靜靜地顯示 0
+    return () => { alive = false; };
+  }, [draft, planId]);
+
+  // Create：外面的草稿集合是同一份東西，跟著它走。
+  useEffect(() => { if (draft) setSel(new Set(draftIds || [])); }, [draft, draftIds]);
+
+  // 只在「打開一本教材」時抓樹。選取不再重抓——樹裡跟選取有關的部分
+  // 本來就能用同一組規則在本地算出來（applyDraftSelection 與後端 buildTree 一致），
+  // completion 則完全沒有被 selection 改變過。
   const loadTree = useCallback(async bookId => {
     const raw = await getBookTree(bookId, { planId: draft ? null : planId });
-    const t = draft ? applyDraftSelection(raw, draftIds) : raw;
     setRawTree(raw);
-    setTree(t);
-    setCounts(c => ({ ...c, [bookId]: countSelected(t) }));
-    return t;
-  }, [planId, draft, draftIds]);
+    return raw;
+  }, [planId, draft]);
 
-  // 每次選取後重讀整棵樹：tri-state 與 progress 都以後端為準，
-  // 前端不自己推算下一個狀態（那就是第二套 truth 的起點）。
-  const refresh = useCallback(async (...responses) => {
-    const b = collectBlocked(...responses);
-    if (b.length) setBlocked({ blocked: b, cancelled: collectCancelled(...responses) });
-    if (openBook != null) {
-      const t = await loadTree(openBook);
-      onSelectionChange?.(t);
-    }
-  }, [openBook, loadTree, onSelectionChange]);
+  // 樹載入時（帶 plan_id）本身就帶著後端對這本書的答案。把它合併進本地那一份，
+  // 這本書就以剛拿到的伺服器狀態為準；其他書維持原樣。
+  //
+  // 只在 rawTree 換掉時跑——樂觀更新不會重抓樹，所以不會把剛點的那一下蓋回去。
+  useEffect(() => {
+    if (draft || !rawTree) return;
+    const items = flattenItems(rawTree);
+    setSel(prev => {
+      const next = new Set(prev);
+      for (const i of items) {
+        if (i.completed || !i.selected) next.delete(i.id);
+        else next.add(i.id);
+      }
+      return next;
+    });
+  }, [draft, rawTree]);
 
-  const toggleItem = async item => {
-    if (item.completed) return;                 // 已完成的教材不參與 selection
-    if (draft) {
-      onDraftChange?.(toggleDraft(draftIds, [item.id], !item.selected));
-      reportPicked([item], !item.selected);
-      return;
-    }
-    setBusy(true); setErr('');
-    try { await refresh(await selectItems(planId, [item.id], !item.selected)); }
-    catch (e) { setErr(e.message); }
-    finally { setBusy(false); }
-  };
+  // 畫面上的樹＝後端的 completion ＋ 本地的 selection。
+  const tree = useMemo(
+    () => (rawTree ? applyDraftSelection(rawTree, sel) : null), [rawTree, sel]);
 
-  // 節點 checkbox 永遠只做批次 selection。partial 與 none 都往「全選」走，
-  // all 才是取消——這是最不會讓人意外的方向。
-  const toggleNode = async node => {
-    const want = node.selection !== 'all';
-    // 草稿模式也只動「尚未完成」的項目，與後端 selectNode 的行為一致
-    if (draft) {
-      const ids = openItemIdsUnder(node);
-      onDraftChange?.(toggleDraft(draftIds, ids, want));
-      reportPicked(flattenItems({ nodes: [node] }).filter(i => ids.includes(i.id)), want);
-      return;
-    }
-    setBusy(true); setErr('');
-    try { await refresh(await selectNode(planId, node.id, want)); }
-    catch (e) { setErr(e.message); }
-    finally { setBusy(false); }
-  };
+  // 這本書選了幾項，跟著本地選取即時更新。
+  useEffect(() => {
+    if (!tree?.book) return;
+    setCounts(c => ({ ...c, [tree.book.id]: countSelected(tree) }));
+  }, [tree]);
 
-  // 把被選／取消的項目描述往上送。descriptor 只用於排程與顯示，
-  // identity 永遠是 content_item_id——不用 title 當 key。
+  // 把選取的變化往上送。identity 永遠是 content_item_id，不用 title 當 key。
   const reportPicked = useCallback((items, selected) => {
-    if (!onPickedChange) return;
+    if (!onPickedChange || !items.length) return;
     onPickedChange(items.map(i => ({
       id: i.id,
       title: i.title,
       kind: i.kind,
       estimated_minutes: i.estimated_minutes ?? null,
-      book_id: rawTree?.book?.id ?? tree?.book?.id ?? null,
-      book_title: rawTree?.book?.title ?? tree?.book?.title ?? '',
+      book_id: rawTree?.book?.id ?? null,
+      book_title: rawTree?.book?.title ?? '',
       path: i.path || [],
     })), selected);
-  }, [onPickedChange, rawTree, tree]);
+  }, [onPickedChange, rawTree]);
 
-  // 草稿選取改變時重算這一棵樹（不重新打 API：completion 沒變）
-  useEffect(() => {
-    if (!draft || !rawTree) return;
-    const t = applyDraftSelection(rawTree, draftIds);
-    setTree(t);
-    setCounts(c => ({ ...c, [rawTree.book.id]: countSelected(t) }));
-  }, [draft, rawTree, draftIds]);
+  // 先改畫面，再送出去。
+  //
+  // 之前每點一下都是「POST → 等 → 重抓整棵樹 → 等 → 才更新畫面」，而且整棵樹
+  // 在等待期間全部 disabled。在本機看起來還好，在真的網路上就是每按一次卡一下。
+  //
+  // 現在畫面立刻反應，請求在背景走。失敗就把剛才那一步收回來並說明——
+  // 不會留下「畫面說選了、後端其實沒有」的假象。
+  const applyLocal = useCallback((ids, selected) => {
+    if (!ids.length) return;
+    setSel(prev => {
+      const next = new Set(prev);
+      for (const id of ids) { if (selected) next.add(id); else next.delete(id); }
+      return next;
+    });
+  }, []);
+
+  const rollback = useCallback((ids, selected) => {
+    applyLocal(ids, !selected);
+    if (draft) onDraftChange?.(toggleDraft(selRef.current, ids, !selected));
+  }, [applyLocal, draft, onDraftChange]);
+
+  // 背景同步。回應裡的 blocked / task_exits 一定要浮出來，不能靜默吞掉。
+  const sync = useCallback(async (ids, selected, send) => {
+    if (draft) return;                       // Plan 還不存在，沒有東西可以同步
+    try {
+      const r = await send();
+      const bl = collectBlocked(r);
+      if (bl.length) setBlocked({ blocked: bl, cancelled: collectCancelled(r) });
+      // 後端回報有東西被擋住時，以後端為準重新對一次——那是本地算不出來的狀態
+      if (bl.length && openBook != null) await loadTree(openBook).catch(() => {});
+    } catch (e) {
+      setErr(e.message);
+      rollback(ids, selected);
+    }
+  }, [draft, openBook, loadTree, rollback]);
+
+  const toggleItem = useCallback(item => {
+    if (item.completed) return;                 // 已完成的教材不參與 selection
+    const want = !sel.has(item.id);
+    applyLocal([item.id], want);
+    reportPicked([item], want);
+    if (draft) { onDraftChange?.(toggleDraft(sel, [item.id], want)); return; }
+    sync([item.id], want, () => selectItems(planId, [item.id], want));
+  }, [sel, applyLocal, reportPicked, draft, onDraftChange, sync, planId]);
+
+  // 節點 checkbox 永遠只做批次選取。partial 與 none 都往「全選」走，
+  // all 才是取消——這是最不會讓人意外的方向。
+  //
+  // **一次一個請求**：後端的 node 端點自己會展開底下所有未完成的 ContentItem。
+  // 前端絕對不在這裡跑迴圈逐項送。
+  const toggleNode = useCallback(node => {
+    const want = node.selection !== 'all';
+    const ids = openItemIdsUnder(node);          // 只動尚未完成的，與後端一致
+    if (!ids.length) return;
+    applyLocal(ids, want);
+    reportPicked(flattenItems({ nodes: [node] }).filter(i => ids.includes(i.id)), want);
+    if (draft) { onDraftChange?.(toggleDraft(sel, ids, want)); return; }
+    sync(ids, want, () => selectNode(planId, node.id, want));
+  }, [sel, applyLocal, reportPicked, draft, onDraftChange, sync, planId]);
+
+  // 整本教材的快速選取（全選章／全選節／全選主題／清除）。
+  // 同樣是一個請求：後端一次算完，不是每一章各打一次。
+  const quickSelect = useCallback((nodeKinds, want) => {
+    if (!tree) return;
+    const all = flattenItems(tree);
+    const scoped = nodeKinds == null
+      ? all
+      : all.filter(i => nodeKinds.includes(i.node?.kind));
+    // 已完成的永遠不參與：使用者按的是「全選節」，不是在對已完成的項目表態。
+    const ids = scoped.filter(i => !i.completed).map(i => i.id);
+    if (!ids.length) return;
+    applyLocal(ids, want);
+    reportPicked(scoped.filter(i => ids.includes(i.id)), want);
+    if (draft) { onDraftChange?.(toggleDraft(sel, ids, want)); return; }
+    sync(ids, want, () => selectBookNodes(planId, tree.book.id, { selected: want, nodeKinds }));
+  }, [tree, sel, applyLocal, reportPicked, draft, onDraftChange, sync, planId]);
 
   // 打開一本教材。還沒確認過內容的，先問一次「這本教材裡有哪些內容」——
   // 那是學生第一次真的要用它的時候，不是另外一個要他自己去找的管理動作。
@@ -276,6 +360,7 @@ export default function MaterialSelector({
     setErr('');
     if (book.requires_content_confirmation) { setPending(book); setView('check'); return; }
     setOpenBook(book.material_book_id);
+    setRawTree(null);
     setView('book');
     loadTree(book.material_book_id).catch(e => setErr(e.message));
   };
@@ -290,15 +375,53 @@ export default function MaterialSelector({
     if (b) openShelfBook(b); else setView('shelf');
   };
 
+  // 書櫃依科目分堆。只有一個科目時不畫分組標題——一個標題底下放全部，
+  // 那只是多一行字。沒有指定科目的排在最後，並在列上直接標示。
+  const grouped = useMemo(() => {
+    const byId = new Map(lists.map(l => [String(l.id), l.name]));
+    const m = new Map();
+    for (const b of books) {
+      const k = b.subject_list_id == null ? '' : String(b.subject_list_id);
+      if (!m.has(k)) m.set(k, []);
+      m.get(k).push(b);
+    }
+    const named = [...m.entries()].filter(([k]) => k !== '');
+    const none = m.get('') || [];
+    const single = named.length <= 1 && !none.length;
+    const out = named
+      .sort((a, b2) => (byId.get(a[0]) || '').localeCompare(byId.get(b2[0]) || '', 'zh-Hant'))
+      .map(([k, bs]) => ({ key: k, name: single ? '' : (byId.get(k) || '其他'), books: bs }));
+    if (none.length) out.push({ key: 'none', name: '還沒指定科目', books: none });
+    return out;
+  }, [books, lists]);
+
+  // 這本教材實際上有哪幾層。沒有主題的書就不該出現「全選主題」——
+  // 按了什麼都不會發生的按鈕比沒有按鈕更糟。
+  const quickKinds = useMemo(() => {
+    if (!tree) return [];
+    const kinds = new Set();
+    for (const ch of tree.nodes || []) {
+      if ((ch.content_items || []).some(i => !i.completed)) kinds.add('chapter');
+      for (const c of ch.children || []) {
+        if ((c.content_items || []).some(i => !i.completed)) kinds.add(c.kind);
+      }
+    }
+    const out = [];
+    if (kinds.size > 1) out.push({ key: 'all', label: '全選', kinds: null });
+    if (kinds.has('chapter')) out.push({ key: 'chapter', label: '全選章', kinds: ['chapter'] });
+    if (kinds.has('section')) out.push({ key: 'section', label: '全選節', kinds: ['section'] });
+    if (kinds.has('topic')) out.push({ key: 'topic', label: '全選主題', kinds: ['topic'] });
+    return out;
+  }, [tree]);
+
   // 沒有指定科目的書：可以看內容，但不能選取（選了也排不進去）
   const locked = openBook != null
     && bookNeedsSubject(books.find(b => b.material_book_id === openBook));
 
-  // 草稿模式的總數直接來自草稿集合。Edit 模式要把「還沒打開過的書」也算進去——
-  // 只加總已展開過的書會讓一進來就顯示「已選 0 項」，但書單上明明寫著已選 3。
-  const total = draft
-    ? (draftIds ? draftIds.size : 0)
-    : books.reduce((n, b) => n + bookCount(b, counts, draft), 0);
+  // 「已選 N 項」與「下一步」用的是同一個數字，而且就是畫面上那些勾的數量。
+  // 這是整個第 1 步唯一的 selection source of truth。
+  const total = sel.size;
+  useEffect(() => { onSelectionChange?.(total); }, [total, onSelectionChange]);
 
   if (err && !tree && view === 'shelf' && !books.length) {
     return <div className="mt-err" role="alert">{err}</div>;
@@ -340,27 +463,34 @@ export default function MaterialSelector({
           ) : (
             <>
               <div className="mt-section-label">選擇要讀的內容</div>
-              <div className="mt-booklist">
-                {books.map(b => (
-                  <button key={bookKey(b)} type="button" className="mt-book"
-                    onClick={() => openShelfBook(b)}>
-                    <span className="mt-book-main">
-                      <span className="mt-book-title">{b.title}</span>
-                      {b.publisher && <span className="mt-book-sub">{b.publisher}</span>}
-                      {/* 沒有科目就排不進計畫。在第一層就講，不要等到排程最後才失敗。 */}
-                      {bookNeedsSubject(b) && <span className="mt-warn">需要先指定科目</span>}
-                    </span>
-                    <span className="mt-book-meta">
-                      {doneText(b.progress) && (
-                        <span className="mt-progress-text">{doneText(b.progress)}</span>
-                      )}
-                      {bookCount(b, counts, draft) > 0 && (
-                        <span className="mt-badge">已選 {bookCount(b, counts, draft)}</span>
-                      )}
-                    </span>
-                  </button>
-                ))}
-              </div>
+              {/* 依科目分組。科目是教材已經有的正式欄位（material_books.subject_list_id
+                  → lists.id），這裡只是照它分堆——不是另一套要學生自己維護的分類。 */}
+              {grouped.map(g => (
+                <div key={g.key} className="mt-subject-group">
+                  <div className="mt-subject-name">{g.name}</div>
+                  <div className="mt-booklist">
+                    {g.books.map(b => (
+                      <button key={bookKey(b)} type="button" className="mt-book"
+                        onClick={() => openShelfBook(b)}>
+                        <span className="mt-book-main">
+                          <span className="mt-book-title">{b.title}</span>
+                          {b.publisher && <span className="mt-book-sub">{b.publisher}</span>}
+                          {/* 沒有科目就排不進計畫。在第一層就講，不要等到排程最後才失敗。 */}
+                          {bookNeedsSubject(b) && <span className="mt-warn">需要先指定科目</span>}
+                        </span>
+                        <span className="mt-book-meta">
+                          {doneText(b.progress) && (
+                            <span className="mt-progress-text">{doneText(b.progress)}</span>
+                          )}
+                          {bookCount(b, counts, draft) > 0 && (
+                            <span className="mt-badge">已選 {bookCount(b, counts, draft)}</span>
+                          )}
+                        </span>
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              ))}
               <button type="button" className="mt-add-book" onClick={() => setView('add')}>
                 ＋ 加入教材
               </button>
@@ -371,7 +501,7 @@ export default function MaterialSelector({
         <>
           <div className="mt-tree-head">
             <Button size="sm" variant="tertiary"
-              onClick={() => { setOpenBook(null); setTree(null); setView('shelf'); }}>
+              onClick={() => { setOpenBook(null); setRawTree(null); setView('shelf'); }}>
               ← 所有教材
             </Button>
             <span className="mt-tree-title">{tree?.book?.title}</span>
@@ -383,6 +513,21 @@ export default function MaterialSelector({
               請到「更多 → 教材庫」為它設定科目後再回來。
             </div>
           )}
+          {tree && tree.nodes.length > 0 && !locked && (
+            <div className="mt-quick">
+              {/* 快速選取：只動「尚未完成」的內容，一次一個請求。
+                  教材裡沒有那一層時整顆按鈕就不出現，按了不會出錯。 */}
+              <span className="mt-quick-label">快速選取</span>
+              {quickKinds.map(q => (
+                <button key={q.key} type="button" className="mt-quick-btn"
+                  onClick={() => quickSelect(q.kinds, true)}>{q.label}</button>
+              ))}
+              {total > 0 && (
+                <button type="button" className="mt-quick-btn mt-quick-btn--clear"
+                  onClick={() => quickSelect(null, false)}>清除</button>
+              )}
+            </div>
+          )}
           {!tree ? <div className="mt-loading">載入中…</div>
             : !tree.nodes.length ? (
               <EmptyState title="這本教材還沒有內容"
@@ -390,7 +535,7 @@ export default function MaterialSelector({
             ) : (
               <div className="mt-tree">
                 {tree.nodes.map(ch => (
-                  <ChapterNode key={ch.id} node={ch} busy={busy || locked}
+                  <ChapterNode key={ch.id} node={ch} locked={locked}
                     open={!!openCh[ch.id]}
                     onOpen={v => setOpenCh(s => ({ ...s, [ch.id]: v }))}
                     onToggleNode={toggleNode} onToggleItem={toggleItem} />

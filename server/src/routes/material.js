@@ -148,6 +148,16 @@ router.post('/plans/:id/material-nodes/:nodeId', handle(async (req, res) => {
   res.json(await material.selectNode(req.userId, req.params.id, req.params.nodeId, body.selected !== false));
 }));
 
+// 整本教材的快速選取（全選章／節／主題／清除）。一次算完，不是每一章打一次。
+// node_kinds 省略＝整本；指定時只動那幾種節點底下的內容。
+router.post('/plans/:id/material-books/:bookId', handle(async (req, res) => {
+  const body = req.body || {};
+  const kinds = Array.isArray(body.node_kinds) ? body.node_kinds : null;
+  res.json(await material.selectBookNodes(req.userId, req.params.id, req.params.bookId, {
+    selected: body.selected !== false, nodeKinds: kinds,
+  }));
+}));
+
 /* ---------- 正式 Material import：preview → 使用者確認 → atomic commit ---------- */
 
 // Preview：呼叫正式 parser、回 canonical draft。

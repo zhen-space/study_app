@@ -29,19 +29,28 @@ export const SOURCE_LEGACY = 'legacy';
 const SECTION_LEVELS = ['節', '小節', '單元'];
 const TOPIC_LEVELS = ['主題', '重點'];
 
-// 「焦點」這類 level 在正式 Material 沒有對應的 kind。
-// production 有 25 筆。不猜成 reading / example / example_problem / unit_exercise——
-// 猜錯就是把使用者的教材結構改掉，而且沒有任何回頭路。
-//
-// 保守契約：投影成 kind='legacy_node' 的顯示節點，原始 level 原樣保留在
-// legacy_level，並標明 completion_supported: false、selectable: false。
-// 它不是正式 Material 節點，也不會有 Material identity。
+// 對不上任何已知 level 名稱、而且連位置都判斷不出來的節點。
+// 實務上不會發生（巢狀深度一定是 0 或 1），保留是為了讓 projectLevel 有一個
+// 明確的「我真的不知道」出口，而不是隨便回一個 kind。
 export const LEGACY_NODE_KIND = 'legacy_node';
 
-export function projectLevel(level) {
+// 一個 legacy 節點對應到哪一種正式節點。
+//
+// level 是自由文字（課本上印什麼就填什麼），「焦點」「單元」「Part」都有可能。
+// 但**位置是 deterministic 的**：舊資料的 sections JSON 裡，
+//   ・頂層（depth 0）＝與「節」同一層
+//   ・巢狀一層（depth 1）＝掛在某個節底下，也就是「主題」那一層
+// 正式 hierarchy 裡 Section 與 Topic 都是 Chapter 的同層子節點，兩者都合法，
+// 所以**位置就足以決定 kind**——不需要為了名稱叫「焦點」就反覆問使用者。
+//
+// 名稱明確對得上時優先用名稱（課本自己說了它是節還是主題）；對不上就用位置。
+// 這不是猜：它是把已經存在於資料裡的巢狀結構讀出來而已。
+export function projectLevel(level, depth = 0) {
   const l = String(level || '').trim();
   if (SECTION_LEVELS.includes(l)) return 'section';
   if (TOPIC_LEVELS.includes(l)) return 'topic';
+  if (depth === 0) return 'section';
+  if (depth === 1) return 'topic';
   return LEGACY_NODE_KIND;
 }
 
@@ -71,7 +80,7 @@ export function projectChapter(row) {
   sections.forEach((sec, si) => {
     children.push({
       source: SOURCE_LEGACY,
-      kind: projectLevel(sec.level),
+      kind: projectLevel(sec.level, 0),
       legacy_level: String(sec.level || ''),
       title: sec.title,
       order_index: si,
@@ -84,7 +93,7 @@ export function projectChapter(row) {
     (sec.children || []).map(normNode).forEach((topic, ti) => {
       children.push({
         source: SOURCE_LEGACY,
-        kind: projectLevel(topic.level),
+        kind: projectLevel(topic.level, 1),
         legacy_level: String(topic.level || ''),
         title: topic.title,
         order_index: si + (ti + 1) / 1000,   // 緊跟在自己原本的父節點之後

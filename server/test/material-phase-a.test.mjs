@@ -364,7 +364,8 @@ describe('A5 Legacy compatibility（純投影，不改資料）', () => {
 
   test('巢狀 Topic 在呈現上攤平成與 Section 同層', () => {
     const ch = projectChapter(legacyRow());
-    assert.deepEqual(ch.children.map(c => c.kind), ['section', 'topic', 'topic', LEGACY_NODE_KIND]);
+    // 「焦點一」在頂層，所以與「節」同一層；巢狀的兩個主題是主題那一層。
+    assert.deepEqual(ch.children.map(c => c.kind), ['section', 'topic', 'topic', 'section']);
     // 攤平之後主題緊跟在原本的父節點後面，順序不會亂掉
     assert.deepEqual(ch.children.map(c => c.title),
       ['壹 大氣的性質', '主題1 大氣的成分', '主題2 垂直分布', '焦點一 溫室效應']);
@@ -403,25 +404,30 @@ describe('A5 Legacy compatibility（純投影，不改資料）', () => {
     }
   });
 
-  test('「焦點」保守處理：不猜成任何正式 Material kind', () => {
-    assert.equal(projectLevel('焦點'), LEGACY_NODE_KIND);
+  test('「焦點」用它在資料裡的位置決定層級，不是猜、也不反覆問使用者', () => {
     assert.equal(ITEM_KINDS.includes(LEGACY_NODE_KIND), false,
       'legacy_node 不得是正式 Material content kind');
     const ch = projectChapter(legacyRow());
     const focus = ch.children.find(c => c.title.startsWith('焦點'));
-    assert.equal(focus.kind, LEGACY_NODE_KIND);
+    // 它印在 sections 的頂層，也就是與「節」同一層
+    assert.equal(focus.kind, 'section');
     assert.equal(focus.legacy_level, '焦點', '原始 level 原樣保留');
     assert.equal(focus.completion_supported, false);
   });
 
-  test('明確對得上的 level 才投影成 section / topic，其他一律保守', () => {
-    assert.equal(projectLevel('節'), 'section');
-    assert.equal(projectLevel('小節'), 'section');
-    assert.equal(projectLevel('主題'), 'topic');
-    assert.equal(projectLevel('重點'), 'topic');
+  test('level 名稱優先；名稱對不上就看巢狀深度', () => {
+    // 課本自己說了是節還是主題，就照它說的
+    assert.equal(projectLevel('節', 1), 'section', '名稱優先於位置');
+    assert.equal(projectLevel('小節', 1), 'section');
+    assert.equal(projectLevel('主題', 0), 'topic');
+    assert.equal(projectLevel('重點', 0), 'topic');
+    // 名稱對不上：頂層＝節那一層，巢狀一層＝主題那一層
     for (const l of ['焦點', '', '課', '補充', undefined]) {
-      assert.equal(projectLevel(l), LEGACY_NODE_KIND, `${l} 不該被猜成正式種類`);
+      assert.equal(projectLevel(l, 0), 'section', `${l} 在頂層就是節那一層`);
+      assert.equal(projectLevel(l, 1), 'topic', `${l} 巢狀一層就是主題那一層`);
     }
+    // 真的判斷不出來（不可能發生的深度）才回「我不知道」
+    assert.equal(projectLevel('焦點', 2), LEGACY_NODE_KIND);
   });
 
   test('最早期的字串陣列格式也讀得動', () => {
