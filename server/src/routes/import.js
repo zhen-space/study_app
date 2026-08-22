@@ -9,7 +9,7 @@ const router = Router();
 router.use(requireAuth);
 
 // 把上傳檔案轉成 Claude 內容區塊（PDF/圖片/Excel/Word/文字）
-async function toContentBlock(filename, mime, data) {
+export async function toContentBlock(filename, mime, data) {
   const ext = filename.toLowerCase().split('.').pop();
   if (['pages', 'numbers', 'key'].includes(ext)) {
     throw new Error('Pages/Numbers 是 Apple 專用格式，請先在檔案 App 中「輸出成 PDF」再上傳');
@@ -45,7 +45,7 @@ const isFastModeIssue = e =>
   /fast[\s_-]?mode/i.test(String(e.error?.error?.message || ''));
 
 // Fast Mode：同一顆 Opus 4.8 但輸出快很多（research preview）；帳戶沒權限就自動退回一般模式
-async function createFast(client, params) {
+export async function createFast(client, params) {
   try {
     return await client.beta.messages.create({ ...params, betas: ['fast-mode-2026-02-01'], speed: 'fast' });
   } catch (e) {
@@ -70,7 +70,7 @@ async function createSmart(client, params) {
   }
 }
 // 結構化輸出的 JSON 安全解析：被 max_tokens 截斷或格式錯誤時給明確訊息
-function parseStructuredObj(response) {
+export function parseStructuredObj(response) {
   if (response.stop_reason === 'max_tokens') {
     const e = new Error('內容太多一次讀不完，請分幾次匯入（一次少幾張照片）');
     e.friendly = true;
@@ -86,7 +86,7 @@ function parseStructuredObj(response) {
 }
 const parseStructured = (response, key) => parseStructuredObj(response)[key] || [];
 
-function aiError(err) {
+export function aiError(err) {
   if (err.friendly) return err.message;
   if (String(err.message || '').includes('credit balance is too low')) {
     return 'AI 帳戶餘額不足：請到 console.anthropic.com 的 Billing 儲值後再試（儲值完直接重試即可）';

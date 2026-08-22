@@ -51,9 +51,12 @@ export const addBookToCategory = (categoryId, bookId) =>
 /* ---------- 純函式：只做「呈現」需要的整理，不重算 truth ---------- */
 
 export const NODE_LABEL = { chapter: '章', section: '節', topic: '主題' };
+// 與後端 material/tree.js 的 ITEM_KIND_LABEL 一字不差。
+// 「範例」與「例題」是兩種不同的東西，不能合成一項。
 export const ITEM_LABEL = {
-  reading: '內文',
-  example: '範例／例題',
+  reading: '課本內容',
+  example: '範例',
+  example_problem: '例題',
   unit_exercise: '單元練習',
   past_exam: '歷屆試題',
 };

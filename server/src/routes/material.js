@@ -2,6 +2,9 @@ import { Router } from 'express';
 import { requireAuth } from '../middleware/auth.js';
 import * as material from '../material/service.js';
 import { MaterialInputError } from '../material/service.js';
+import { listStudyMaterials } from '../material/library.js';
+import { parseMaterialImage, toDraftInput } from '../material/parser.js';
+import { toContentBlock, createFast, parseStructuredObj, aiError } from './import.js';
 
 // Material domain API。所有邏輯都在 material/service.js，這一層只負責
 // HTTP 形狀與錯誤碼——路由裡不寫任何 SQL，也不重算 derived 數字。
@@ -17,6 +20,9 @@ const handle = fn => async (req, res) => {
       const body = { error: e.message };
       if (e.references) body.references = e.references;
       if (e.completed_item_ids) body.completed_item_ids = e.completed_item_ids;
+      if (e.problems) body.problems = e.problems;
+      if (e.already_formalized_row_ids) body.already_formalized_row_ids = e.already_formalized_row_ids;
+      if (e.stale) body.stale = true;
       return res.status(e.status || 400).json(body);
     }
     console.error('[material]', e);
@@ -120,6 +126,99 @@ router.post('/plans/:id/material-items', handle(async (req, res) => {
 router.post('/plans/:id/material-nodes/:nodeId', handle(async (req, res) => {
   const body = req.body || {};
   res.json(await material.selectNode(req.userId, req.params.id, req.params.nodeId, body.selected !== false));
+}));
+
+/* ---------- 正式 Material import：preview → 使用者確認 → atomic commit ---------- */
+
+// Preview：呼叫正式 parser、回 canonical draft。
+//
+// **完全不寫資料庫**：不建 Book、不建 Node、不建 ContentItem，也不碰 legacy
+// toc_items。這一步只是「AI 讀到了什麼，你要不要」。
+router.post('/material/import/preview', handle(async (req, res) => {
+  if (!process.env.ANTHROPIC_API_KEY) {
+    return res.status(500).json({ error: '伺服器尚未設定 AI 金鑰（ANTHROPIC_API_KEY）' });
+  }
+  const b = req.body || {};
+  const files = b.files?.length
+    ? b.files
+    : (b.data ? [{ filename: b.filename || '', mime: b.mime || '', data: b.data }] : []);
+  if (!files.length) return res.status(400).json({ error: '沒有收到檔案' });
+  if (files.length > 12) return res.status(400).json({ error: '一次最多 12 張照片' });
+  if (b.subject_list_id != null) {
+    const l = await material.assertSubject(req.userId, b.subject_list_id);
+    if (!l) return res.status(400).json({ error: '找不到這個科目' });
+  }
+
+  const blocks = [];
+  for (let i = 0; i < files.length; i++) {
+    if (files.length > 1) blocks.push({ type: 'text', text: `【第 ${i + 1} 張／共 ${files.length} 張】` });
+    blocks.push(await toContentBlock(files[i].filename, files[i].mime, files[i].data));
+  }
+
+  let parsed;
+  try {
+    const response = await parseMaterialImage(blocks, { createFn: createFast });
+    if (response.stop_reason === 'refusal') {
+      return res.status(400).json({ error: 'AI 無法處理這份檔案，請換一張更清楚的照片' });
+    }
+    parsed = parseStructuredObj(response);
+  } catch (err) {
+    console.error('material import parse error:', err.message);
+    return res.status(500).json({ error: aiError(err) });
+  }
+
+  const input = toDraftInput(parsed, {
+    subjectListId: num(b.subject_list_id),
+    fallbackTitle: b.title || '',
+  });
+  // validateDraft 會把不合法的結構（例如 Topic 巢狀在 Section 底下、
+  // 單元練習被塞進節裡）逐條列出來，不讓它進到 commit。
+  res.json(material.previewMaterialDraft(input));
+}));
+
+// Commit：把使用者確認過的 canonical draft 一次建立完整教材樹。
+// 全成功或全不做——不會留下半本教材。
+router.post('/material/import/commit', handle(async (req, res) => {
+  res.status(201).json(await material.commitMaterialDraft(req.userId, req.body?.draft ?? req.body));
+}));
+
+/* ---------- 舊教材的 just-in-time 整理 ---------- */
+
+// 學生第一次真的要用這本舊教材時才走這裡。
+//
+// 回傳的 draft 已經把能 deterministic 判斷的結構填好（書名、出版社、科目、
+// 章、節／主題，含巢狀 Topic 的攤平結果），但每個節點的 content_items 都是空的：
+// 舊資料完全沒有存「課本內容／範例／例題」這種資訊，系統不猜。
+//
+// 這一步**不寫任何東西**。使用者取消就什麼都不會發生。
+router.get('/material/legacy-books/:listId/content-check', handle(async (req, res) => {
+  res.json(await material.getLegacyFormalizationPreview(req.userId, {
+    listId: Number(req.params.listId), book: req.query.book || '',
+  }));
+}));
+
+// 使用者確認內容之後：教材樹與來源記錄在同一筆交易內建立。
+// 之後這本教材就是正式 Material，Step 1 只使用正式的 material_content_item_id。
+router.post('/material/legacy-books/:listId/content-check', handle(async (req, res) => {
+  const b = req.body || {};
+  res.status(201).json(await material.formalizeLegacyBook(req.userId, {
+    listId: Number(req.params.listId), book: b.book || '', draft: b.draft,
+    // 必須把 preview 回傳的那份 source_snapshot 原樣送回來：
+    // commit 只能正式化使用者實際看過的那一份舊資料。
+    sourceSnapshot: b.source_snapshot,
+  }));
+}));
+
+/* ---------- Unified student-facing library ---------- */
+
+// 學生只看到一個「教材」的世界：正式 Material 與 legacy 目錄同一個形狀回來，
+// 但每一筆都標明 source 與各自的 identity，兩邊永遠不互轉。
+// legacy 沒有正式完成度時回 completion_supported: false，不捏造 0%。
+router.get('/study-materials', handle(async (req, res) => {
+  res.json(await listStudyMaterials(req.userId, {
+    planId: num(req.query.plan_id),
+    includeLegacy: req.query.legacy !== '0',
+  }));
 }));
 
 export default router;

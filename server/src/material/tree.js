@@ -14,9 +14,12 @@ const ALLOWED_PARENT = {
   topic: ['chapter'],
 };
 
-export const ITEM_KINDS = ['reading', 'example', 'unit_exercise', 'past_exam'];
+// 「範例」與「例題」是課本上兩種不同的東西：範例是講解過的示範，
+// 例題是要自己動手做的題目。學生會想「這章只讀課本內容」或「只做例題」，
+// 所以它們必須是各自獨立的 ContentItem，不能合成一種。
+export const ITEM_KINDS = ['reading', 'example', 'example_problem', 'unit_exercise', 'past_exam'];
 
-// 契約 7：範例／例題掛在節或主題底下；單元練習／歷屆試題直接屬於章。
+// 範例／例題掛在節或主題底下；單元練習／歷屆試題直接屬於章。
 //
 // 這條規則存在的唯一理由，是不要為了「讓題目有個 parent」而生出假的節。
 // 假節會污染每一個 derived 數字：章的完成率、tri-state、教材樹的層數，
@@ -24,16 +27,22 @@ export const ITEM_KINDS = ['reading', 'example', 'unit_exercise', 'past_exam'];
 const ALLOWED_ITEM_PARENT = {
   reading: ['chapter', 'section', 'topic'],
   example: ['section', 'topic'],
+  example_problem: ['section', 'topic'],
   unit_exercise: ['chapter'],
   past_exam: ['chapter'],
 };
 
+// 學生看到的字。這是唯一一份對照表，前後端都以它為準。
 export const ITEM_KIND_LABEL = {
-  reading: '內文',
-  example: '範例／例題',
+  reading: '課本內容',
+  example: '範例',
+  example_problem: '例題',
   unit_exercise: '單元練習',
   past_exam: '歷屆試題',
 };
+
+// 只能掛在 Section / Topic 底下的類型（章底下不會有）
+const SECTION_LEVEL_KINDS = ['example', 'example_problem'];
 
 // 回傳錯誤訊息字串；合法回 null。
 export function nodePlacementProblem(kind, parentKind) {
@@ -51,7 +60,7 @@ export function itemPlacementProblem(kind, parentKind) {
   if (!ITEM_KINDS.includes(kind)) return '教材項目類型不正確';
   if (parentKind == null) return '教材項目必須掛在章、節或主題底下';
   if (!ALLOWED_ITEM_PARENT[kind].includes(parentKind)) {
-    if (kind === 'example') return '範例／例題只能放在節或主題底下';
+    if (SECTION_LEVEL_KINDS.includes(kind)) return `${ITEM_KIND_LABEL[kind]}只能放在節或主題底下`;
     return `${ITEM_KIND_LABEL[kind]}直接屬於章，不要為它建立節`;
   }
   return null;
