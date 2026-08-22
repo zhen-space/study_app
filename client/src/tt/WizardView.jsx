@@ -8,7 +8,7 @@ import { parseICS } from './ics';
 import { fileToPayload } from './vocabImport';
 import FeasibilityGap from './FeasibilityGap';
 import MaterialSelector from './MaterialSelector';
-import { listBooks, getPlanSelection, selectItems, materialSchedulingItems } from './material';
+import { listBooks, getPlanSelection, selectItems, materialSchedulingItems, createSubject } from './material';
 import { Button } from './ui';
 
 const LIST_COLORS = ['#0086CC', '#e03131', '#16a34a', '#f59f00', '#9333ea', '#0891b2'];
@@ -664,6 +664,11 @@ export default function WizardView({
             onPickedChange={onMaterialPicked}
             lists={lists}
             onLibraryChange={() => { listBooks().then(setMatBooks).catch(() => {}); }}
+            onAddSubject={async name => {
+              const created = await createSubject(name);
+              await reload();          // 讓科目立刻出現在整個 App，不只這個畫面
+              return created;
+            }}
             header={
               <div className="wz-plan-name">
                 <label htmlFor="wz-plan-name">這次要準備什麼？</label>

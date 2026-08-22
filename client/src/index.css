@@ -1009,3 +1009,9 @@ select { -webkit-appearance: none; appearance: none; padding-right: 26px;
 }
 .me-x { flex: 0 0 auto; min-width: 44px; min-height: 44px; background: none; border: 0; color: var(--text-2); }
 .me-foot { display: flex; border-top: 1px solid var(--separator); padding-top: var(--sp-3); }
+.md-newsubject { display: flex; align-items: center; gap: var(--sp-2); flex-wrap: wrap; }
+.md-newsubject input {
+  flex: 1; min-width: 120px; min-height: 44px; font-size: 16px; padding: 0 var(--sp-3);
+  border: 1px solid var(--accent); border-radius: var(--radius-sm);
+  background: var(--surface-2); color: var(--text);
+}

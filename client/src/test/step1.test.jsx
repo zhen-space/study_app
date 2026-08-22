@@ -13,7 +13,7 @@
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { render, screen, waitFor, fireEvent } from '@testing-library/react';
-import { act } from 'react';
+import React, { act } from 'react';
 import * as fx from './fixtures';
 
 vi.mock('../api', () => ({ api: vi.fn() }));
@@ -334,7 +334,7 @@ describe('第一次要用某本教材時就地確認內容', () => {
 describe('加入教材', () => {
   const openAdd = async () => {
     shelf = () => EMPTY_SHELF;
-    render(<MaterialSelector lists={fx.lists} />);
+    render(<MaterialSelector lists={fx.lists} onAddSubject={async n => ({ id: 9, name: n })} />);
     await waitFor(() => expect(screen.queryByText('還沒有教材')).toBeTruthy());
     await click(btn(/加入教材/));
     await flush();
@@ -370,6 +370,54 @@ describe('加入教材', () => {
     expect(d.chapters[0].children[0].content_items.map(i => i.kind)).toEqual(['reading', 'example']);
     // 節底下不會再有節或主題
     expect(d.chapters[0].children[0].children).toBeUndefined();
+    noCrash();
+  });
+
+  it('一個科目都沒有的新帳號，可以就地新增科目——不然第一次使用就是死路', async () => {
+    let reloaded = 0;
+    shelf = () => EMPTY_SHELF;
+    // 照實際情況：新增科目之後上層會 reload，科目清單才跟著更新
+    function Host() {
+      const [ls, setLs] = React.useState([]);
+      return (
+        <MaterialSelector lists={ls}
+          onAddSubject={async name => {
+            reloaded++;
+            const made = { id: 9, name };
+            setLs([made]);
+            return made;
+          }} />
+      );
+    }
+    render(<Host />);
+    await waitFor(() => expect(screen.queryByText('還沒有教材')).toBeTruthy());
+    await click(btn(/加入教材/));
+    await flush();
+    await click(btn(/自己建立教材/));
+    await flush();
+
+    const sel = screen.getByLabelText('科目');
+    // 一個科目都沒有，但看得到「可以新增一個」
+    expect([...sel.options].map(o => o.textContent)).toEqual(['請選擇', '＋ 新增科目…']);
+    fireEvent.change(sel, { target: { value: '__new' } });
+    await flush();
+    fireEvent.change(screen.getByLabelText('新科目名稱'), { target: { value: '數學' } });
+    await click(btn(/^新增$/));
+    await flush();
+
+    expect(reloaded).toBe(1);
+    // 建好之後直接選起來：學生要的是「這本書是數學」，不是「我新增了一個科目」
+    expect(screen.getByLabelText('科目').value).toBe('9');
+    expect(screen.queryByLabelText('新科目名稱')).toBeNull();
+    noCrash();
+  });
+
+  it('已經有科目時不強迫新增，原本的選項照常在', async () => {
+    await openAdd();
+    await click(btn(/自己建立教材/));
+    await flush();
+    const opts = [...screen.getByLabelText('科目').options].map(o => o.textContent);
+    expect(opts).toEqual(['請選擇', '物理', '地科', '＋ 新增科目…']);
     noCrash();
   });
 

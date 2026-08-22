@@ -12,7 +12,7 @@ import { Button } from './ui';
 //
 // 中途取消：什麼都不會建立。AI 讀完的階段也還沒寫任何東西。
 
-export default function AddMaterialFlow({ lists = [], onCancel, onCreated }) {
+export default function AddMaterialFlow({ lists = [], onCancel, onCreated, onAddSubject = null }) {
   const [mode, setMode] = useState(null);      // null｜'photo'｜'manual'
   const [draft, setDraft] = useState(null);
   const [busy, setBusy] = useState(false);
@@ -55,7 +55,7 @@ export default function AddMaterialFlow({ lists = [], onCancel, onCreated }) {
       <div className="am">
         <h3 className="am-title">{mode === 'photo' ? '確認讀到的內容' : '自己建立教材'}</h3>
         {mode === 'photo' && <p className="am-lead">有讀錯或漏掉的地方可以直接改。</p>}
-        <MaterialDraftEditor value={draft} onChange={setDraft} lists={lists}
+        <MaterialDraftEditor value={draft} onChange={setDraft} lists={lists} onAddSubject={onAddSubject}
           busy={busy} error={err} problems={problems}
           submitLabel="建立教材" onSubmit={create}
           onCancel={() => { setDraft(null); setMode(null); setErr(''); setProblems([]); }} />

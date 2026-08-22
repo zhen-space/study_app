@@ -87,6 +87,10 @@ export const deleteNode = nodeId => api(`/material/nodes/${nodeId}`, { method: '
 export const deleteContentItem = itemId =>
   api(`/material/content-items/${itemId}`, { method: 'DELETE' });
 
+// 建立一個科目（lists）。剛註冊的帳號一個都沒有，而沒有科目就排不進計畫。
+export const createSubject = name =>
+  api('/lists', { method: 'POST', body: { name, color: '#5E6AD2' } });
+
 export const createCategory = name => api('/material/categories', { method: 'POST', body: { name } });
 export const createBook = body => api('/material/books', { method: 'POST', body });
 export const updateBook = (bookId, body) =>

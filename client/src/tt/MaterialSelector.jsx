@@ -171,6 +171,7 @@ function toggleDraft(current, ids, selected) {
 export default function MaterialSelector({
   planId = null, draftIds = null, onDraftChange = null, onSelectionChange = null,
   onPickedChange = null, footer = null, header = null, lists = [], onLibraryChange = null,
+  onAddSubject = null,
 }) {
   const draft = planId == null;
   const [books, setBooks] = useState([]);
@@ -316,7 +317,7 @@ export default function MaterialSelector({
   if (view === 'add') {
     return (
       <div className="mt-selector">
-        <AddMaterialFlow lists={lists}
+        <AddMaterialFlow lists={lists} onAddSubject={onAddSubject}
           onCancel={() => setView('shelf')}
           onCreated={r => afterCreated(r?.book?.id)} />
       </div>
