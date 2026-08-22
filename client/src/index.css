@@ -682,12 +682,15 @@ select { -webkit-appearance: none; appearance: none; padding-right: 26px;
   display: inline-flex; align-items: center; justify-content: center;
   position: relative; color: var(--success);
 }
+/* 已完成的東西不是這次要做的事，視覺權重要低於還沒勾的項目——
+   但形狀（圓形）仍然與 checkbox（方形）不同，不能只靠顏色或濃淡分辨。 */
 .mt-done::before {
   content: ''; position: absolute; width: 22px; height: 22px;
-  border: 2px solid var(--success); border-radius: 999px; background: transparent;
+  border: 1.5px solid var(--text-3); border-radius: 999px; background: transparent;
 }
+.mt-done { color: var(--text-2); }
 .mt-done > span { position: relative; z-index: 1; font-size: 13px; font-weight: 700; }
-.mt-done-text { color: var(--success); font-weight: 600; }
+.mt-done-text { color: var(--text-2); font-weight: 600; }
 
 /* ---- 內容列 ---- */
 .mt-item, .ml-item {

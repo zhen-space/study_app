@@ -50,18 +50,29 @@ function SelectBox({ state, disabled, onToggle, label }) {
 
 /* ---------- 單一 ContentItem ---------- */
 
+// 完成度只在真的有進度時才寫出來。「已完成 0／3」對學生沒有任何用處，
+// 只是每一列都多一組看不懂的數字。
+const doneText = p =>
+  (p && p.completed_items > 0 ? `已完成 ${p.completed_items}／${p.total_items}` : '');
+
 function ItemRow({ item, busy, onToggle }) {
   const state = item.completed ? 'completed' : item.selected ? 'checked' : 'unchecked';
+  const label = ITEM_LABEL[item.kind] || item.kind;
+  // 標題本來就是「課本內容」時，底下再掛一個「課本內容」標籤是純噪音。
+  // 只有標題與種類講的不是同一件事才需要標出來。
+  const showKind = !String(item.title).startsWith(label);
   return (
     <div className={'mt-item' + (item.completed ? ' is-done' : '')}>
       <SelectBox state={state} disabled={busy || item.completed} label={item.title}
         onToggle={() => onToggle(item)} />
       <div className="mt-item-main">
         <div className="mt-item-title">{item.title}</div>
-        <div className="mt-item-meta">
-          <span className="mt-kind">{ITEM_LABEL[item.kind] || item.kind}</span>
-          {item.completed && <span className="mt-done-text">已完成</span>}
-        </div>
+        {(showKind || item.completed) && (
+          <div className="mt-item-meta">
+            {showKind && <span className="mt-kind">{label}</span>}
+            {item.completed && <span className="mt-done-text">已完成</span>}
+          </div>
+        )}
       </div>
     </div>
   );
@@ -82,9 +93,7 @@ function ChildNode({ node, busy, onToggleNode, onToggleItem }) {
           {/* Section 與 Topic 是同層。標籤要寫出來，學生才不會以為主題被包在節底下 */}
           <span className={'mt-tag mt-tag--' + node.kind}>{node.kind === 'section' ? '節' : '主題'}</span>
         </div>
-        <span className="mt-progress-text">
-          {node.progress.completed_items}/{node.progress.total_items}
-        </span>
+        <span className="mt-progress-text">{doneText(node.progress)}</span>
       </div>
       <div className="mt-child-items">
         {items.map(it => <ItemRow key={it.id} item={it} busy={busy} onToggle={onToggleItem} />)}
@@ -111,9 +120,7 @@ function ChapterNode({ node, open, onOpen, busy, onToggleNode, onToggleItem }) {
           onClick={() => onOpen(!open)}>
           <span className="mt-caret" aria-hidden="true">{open ? '▾' : '▸'}</span>
           <span className="mt-chapter-title">{node.title}</span>
-          <span className="mt-progress-text">
-            {node.progress.completed_items}/{node.progress.total_items}
-          </span>
+          <span className="mt-progress-text">{doneText(node.progress)}</span>
         </button>
       </div>
       {open && (
@@ -286,9 +293,11 @@ export default function MaterialSelector({
   const locked = openBook != null
     && bookNeedsSubject(books.find(b => b.material_book_id === openBook));
 
+  // 草稿模式的總數直接來自草稿集合。Edit 模式要把「還沒打開過的書」也算進去——
+  // 只加總已展開過的書會讓一進來就顯示「已選 0 項」，但書單上明明寫著已選 3。
   const total = draft
     ? (draftIds ? draftIds.size : 0)
-    : Object.values(counts).reduce((a, b) => a + b, 0);
+    : books.reduce((n, b) => n + bookCount(b, counts, draft), 0);
 
   if (err && !tree && view === 'shelf' && !books.length) {
     return <div className="mt-err" role="alert">{err}</div>;
@@ -341,10 +350,8 @@ export default function MaterialSelector({
                       {bookNeedsSubject(b) && <span className="mt-warn">需要先指定科目</span>}
                     </span>
                     <span className="mt-book-meta">
-                      {b.progress && (
-                        <span className="mt-progress-text">
-                          {b.progress.completed_items}/{b.progress.total_items}
-                        </span>
+                      {doneText(b.progress) && (
+                        <span className="mt-progress-text">{doneText(b.progress)}</span>
                       )}
                       {bookCount(b, counts, draft) > 0 && (
                         <span className="mt-badge">已選 {bookCount(b, counts, draft)}</span>

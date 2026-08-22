@@ -20,6 +20,7 @@ vi.mock('../api', () => ({ api: vi.fn() }));
 const { api } = await import('../api');
 const MaterialSelector = (await import('../tt/MaterialSelector')).default;
 const WizardView = (await import('../tt/WizardView')).default;
+const PlanDetailView = (await import('../tt/PlanDetailView')).default;
 
 /* ---------- 尚未確認內容的教材 ---------- */
 
@@ -420,6 +421,98 @@ describe('加入教材', () => {
     await flush();
     // 有章名但一項內容都沒有 → 仍然不能建立
     expect(btn(/^建立教材$/)).toBeDisabled();
+    noCrash();
+  });
+});
+
+/* ============ 5. 這次選了幾項（Edit 一進來就要對） ============ */
+
+describe('已選數量', () => {
+  it('Edit 一進來就顯示正確總數，不必先打開每一本書', async () => {
+    // 書單說這本已選 3 項，但一本都還沒展開過
+    shelf = () => ({
+      books: [{ ...fx.materialShelf.books[0], selected_count: 3 },
+        { ...fx.materialShelf.books[1], selected_count: 1 }],
+      counts: { material: 2, legacy: 0 },
+    });
+    render(<MaterialSelector planId={55} />);
+    await waitFor(() => expect(screen.queryByText('新大滿貫')).toBeTruthy());
+    expect(document.querySelector('.mt-count').textContent).toBe('已選 4 項');
+    noCrash();
+  });
+
+  it('Create 的草稿模式只認草稿集合，不理會別的計畫選了什麼', async () => {
+    shelf = () => ({
+      books: [{ ...fx.materialShelf.books[0], selected_count: 3 }],
+      counts: { material: 1, legacy: 0 },
+    });
+    render(<MaterialSelector draftIds={new Set([101])} onDraftChange={() => {}} />);
+    await waitFor(() => expect(screen.queryByText('新大滿貫')).toBeTruthy());
+    expect(document.querySelector('.mt-count').textContent).toBe('已選 1 項');
+    noCrash();
+  });
+});
+
+/* ============ 6. Plan Detail 的教材脈絡 ============ */
+
+describe('Plan Detail', () => {
+  const PLAN = {
+    id: 70, user_id: 1, name: '第一次段考', description: '', goal_id: null, primary_list_id: 1,
+    start_date: fx.TODAY, target_date: fx.TODAY, status: 'active', source: 'manual',
+    created_at: '', updated_at: '', completed_at: null, archived_at: null,
+    task_count: 3, completed_task_count: 0,
+  };
+  // 教材任務的標題是「書名｜章｜節｜內容」——**沒有**科目那一段
+  const mt = (id, title, extra = {}) => ({
+    id, list_id: 1, plan_id: 70, title, due_date: fx.TODAY, due_time: null, priority: 0,
+    completed: 0, tags: ['讀書計劃'], subtasks: [], recurring: null, deadline_date: null,
+    order_index: id, deleted: 0, material_book_id: 1, material_content_item_id: id, ...extra,
+  });
+  const TASKS = [
+    mt(81, '新大滿貫｜第 1 章 數與式｜1-1 數與數線｜課本內容'),
+    mt(82, '新大滿貫｜第 1 章 數與式｜單元練習'),
+    // 手動任務：完全沒有教材 linkage，仍然要正常顯示
+    { ...mt(83, '買參考書'), material_book_id: null, material_content_item_id: null },
+  ];
+
+  const mount = async () => {
+    setApi({ '/plans': [PLAN], '/tasks': TASKS });
+    render(<PlanDetailView planKey="plan:70" tasks={TASKS} lists={fx.lists} apiPlans={[PLAN]}
+      reload={() => {}} onBack={() => {}} goWizard={() => {}} adjustPlan={() => {}} />);
+    await waitFor(() => expect(screen.queryByText('第一次段考')).toBeTruthy());
+    await flush();
+  };
+
+  it('教材任務保留「章」，不會只剩下「單元練習」', async () => {
+    await mount();
+    // 舊的前綴切法會把章一起砍掉，那樣就看不出是哪一章的單元練習
+    expect(screen.getByText('第 1 章 數與式｜單元練習')).toBeTruthy();
+    expect(screen.getByText('第 1 章 數與式｜1-1 數與數線｜課本內容')).toBeTruthy();
+    noCrash();
+  });
+
+  it('書名寫在段落標頭，一段只寫一次，不在每一列重複', async () => {
+    await mount();
+    expect(screen.getAllByText('新大滿貫').length).toBe(1);
+    expect(document.body.textContent.match(/新大滿貫/g).length).toBe(1);
+    noCrash();
+  });
+
+  it('整段只有一本書時，書名仍然要寫出來——列上已經看不到它了', async () => {
+    // 只有教材任務、只有一本書：這正是「多本才顯示標頭」會漏掉的情況
+    const only = TASKS.filter(t => t.material_book_id != null);
+    setApi({ '/plans': [PLAN], '/tasks': only });
+    render(<PlanDetailView planKey="plan:70" tasks={only} lists={fx.lists} apiPlans={[PLAN]}
+      reload={() => {}} onBack={() => {}} goWizard={() => {}} adjustPlan={() => {}} />);
+    await waitFor(() => expect(screen.queryByText('第一次段考')).toBeTruthy());
+    await flush();
+    expect(screen.getAllByText('新大滿貫').length).toBe(1);
+    noCrash();
+  });
+
+  it('沒有教材 linkage 的手動任務照常顯示，不被硬塞進某一本書', async () => {
+    await mount();
+    expect(screen.getByText('買參考書')).toBeTruthy();
     noCrash();
   });
 });

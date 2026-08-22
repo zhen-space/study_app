@@ -225,7 +225,7 @@ export default function MaterialContentCheck({ book, onCancel, onDone }) {
                             系統不替他決定，讓他自己說這是一節還是一個主題。 */}
                         <div className="mc-ask">
                           <span className="mc-ask-label">
-                            這是{u.legacy_level ? `（課本上寫「${u.legacy_level}」）` : ''}
+                            {u.legacy_level ? `課本上寫「${u.legacy_level}」，` : ''}這是節還是主題？
                           </span>
                           {NODE_KINDS.map(n => (
                             <button key={n.value} type="button" role="radio"

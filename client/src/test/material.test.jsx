@@ -292,6 +292,50 @@ describe('正式 hierarchy', () => {
     expect(screen.getByText('主題')).toBeTruthy();
   });
 
+  it('一項都還沒完成時不寫「已完成 0／N」——那是每一列都多一組看不懂的數字', async () => {
+    treeResponse = () => {
+      const t = makeTree();
+      // 整本都還沒開始：章、節、主題的完成數都是 0
+      t.progress = prog(5, 0);
+      t.nodes[0].progress = prog(5, 0);
+      t.nodes[0].children[0].progress = prog(2, 0);
+      t.nodes[0].children[0].content_items[1].completed = false;
+      t.nodes[0].children[1].progress = prog(1, 0);
+      return t;
+    };
+    await openChapter({ planId: 55 });
+    expect(document.body.textContent).not.toMatch(/已完成 0/);
+    expect([...document.querySelectorAll('.mt-progress-text')].every(e => e.textContent === '')).toBe(true);
+  });
+
+  it('有進度時才寫出來，而且寫成看得懂的話', async () => {
+    await openChapter({ planId: 55 });
+    // 預設的樹：整章 5 項完成 1 項、1-1 兩項完成 1 項
+    const texts = [...document.querySelectorAll('.mt-progress-text')]
+      .map(e => e.textContent).filter(Boolean);
+    expect(texts).toContain('已完成 1／5');
+    expect(texts).toContain('已完成 1／2');
+    expect(document.body.textContent).not.toMatch(/\b1\/5\b/);
+  });
+
+  it('標題本身就是內容種類時，不再重複掛一個一模一樣的標籤', async () => {
+    treeResponse = () => {
+      const t = makeTree();
+      // 學生實際會看到的樣子：這一項的名字就叫「課本內容」
+      t.nodes[0].children[0].content_items = [
+        item(101, '課本內容', 'reading'), item(106, '第 3 節補充', 'reading'),
+      ];
+      return t;
+    };
+    await openChapter({ planId: 55 });
+    const rows = [...document.querySelectorAll('.mt-item')];
+    const plain = rows.find(r => r.querySelector('.mt-item-title').textContent === '課本內容');
+    expect(plain.querySelector('.mt-kind')).toBeNull();
+    // 名字與種類講的不是同一件事時，種類仍然要標出來
+    const other = rows.find(r => r.querySelector('.mt-item-title').textContent === '第 3 節補充');
+    expect(other.querySelector('.mt-kind').textContent).toBe('課本內容');
+  });
+
   it('Chapter-level 單元練習不屬於任何 Section', async () => {
     await openChapter({ planId: 55 });
     const section = screen.getByText('1-1').closest('.mt-child');
