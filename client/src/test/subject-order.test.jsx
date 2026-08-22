@@ -210,3 +210,57 @@ describe('順序會被記住', () => {
     noCrash();
   });
 });
+
+/* ============ 第 2 步的設定必須真的送到排程 ============ */
+
+describe('打散平均／照章節順序', () => {
+  it('每一科各自送出自己的 spread，不是寫死的', async () => {
+    await mountWizard();
+    await toStep2();
+    // 物理改成「打散平均」，地科維持預設「照章節順序」
+    const rows = [...document.querySelectorAll('.row')]
+      .filter(r => /打散平均/.test(r.textContent));
+    const phys = rows.find(r => /物理/.test(r.textContent));
+    await click([...phys.querySelectorAll('label')].find(l => /打散平均/.test(l.textContent)).querySelector('input'));
+    await click(btn(/產生排程/));
+    await flush();
+
+    const items = previewBody().items;
+    expect(items.length).toBeGreaterThan(0);
+    const bySid = sid => items.filter(i => String(i.subject_id) === String(sid));
+    expect(bySid(1).length).toBeGreaterThan(0);
+    expect(bySid(2).length).toBeGreaterThan(0);
+    expect(bySid(1).every(i => i.spread === true)).toBe(true);
+    expect(bySid(2).every(i => i.spread === false)).toBe(true);
+    noCrash();
+  });
+
+  it('沒動過就是照章節順序（後端看 spread=false）', async () => {
+    await mountWizard();
+    await toStep2();
+    await click(btn(/產生排程/));
+    await flush();
+    expect(previewBody().items.every(i => i.spread === false)).toBe(true);
+    noCrash();
+  });
+});
+
+describe('各科目用不同日期範圍', () => {
+  it('勾了之後每一科真的出現自己的日期欄位', async () => {
+    await mountWizard();
+    await toStep2();
+    const dateCount = () =>
+      document.querySelectorAll('#wz-sec-deadline input[type=date]').length;
+    const before = dateCount();
+    const box = [...document.querySelectorAll('label')]
+      .find(l => /各科目用不同日期範圍/.test(l.textContent)).querySelector('input');
+    await click(box);
+    await flush();
+    // 兩科各多出一組起訖日期；勾了卻什麼都沒多出來就是「按了沒作用」
+    expect(dateCount()).toBe(before + 4);
+    const sec = document.querySelector('#wz-sec-deadline').textContent;
+    expect(sec).toContain('物理');
+    expect(sec).toContain('地科');
+    noCrash();
+  });
+});

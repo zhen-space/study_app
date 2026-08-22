@@ -35,7 +35,7 @@ export default function AddMaterialFlow({ lists = [], onCancel, onCreated }) {
       setDraft(normalize(r.draft));
       setProblems(r.problems || []);
       setStatus('');
-    } catch (e2) { setErr(e2.message); setStatus(''); }
+    } catch (e2) { setErr(readable(e2)); setStatus(''); }
     finally { setBusy(false); }
   };
 
@@ -45,7 +45,7 @@ export default function AddMaterialFlow({ lists = [], onCancel, onCreated }) {
       const r = await commitDraft(draft);
       onCreated?.(r);
     } catch (e2) {
-      setErr(e2.message);
+      setErr(readable(e2));
       setProblems(e2.payload?.problems || []);
     } finally { setBusy(false); }
   };
@@ -93,6 +93,16 @@ export default function AddMaterialFlow({ lists = [], onCancel, onCreated }) {
       </div>
     </div>
   );
+}
+
+// 學生不需要知道伺服器缺哪一把金鑰，他只需要知道現在能做什麼。
+// 原始訊息仍然留在伺服器的 log 裡，不是被丟掉。
+function readable(e) {
+  const m = String(e?.message || '');
+  if (/ANTHROPIC_API_KEY|AI 金鑰/.test(m)) {
+    return '目前沒辦法自動讀照片，請先用「自己建立教材」輸入。';
+  }
+  return m || '發生錯誤';
 }
 
 // parser 回來的 draft 已經是正式形狀，這裡只補齊編輯器需要的欄位，

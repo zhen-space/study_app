@@ -6,6 +6,7 @@ import {
 } from './material';
 import { Button, EmptyState, PageHeader, SegmentedControl, ProgressBar } from './ui';
 import BlockedNotice from './BlockedNotice';
+import MaterialBookEditor from './MaterialBookEditor';
 
 // 教材庫：長期教材 identity、目錄與完成度的正式入口。
 //
@@ -95,6 +96,7 @@ export default function MaterialLibraryView({ goPlans = null, lists = [] }) {
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState('');
   const [blocked, setBlocked] = useState(null);
+  const [editing, setEditing] = useState(false);
   const [adding, setAdding] = useState('');
   const [addSubject, setAddSubject] = useState('');
 
@@ -107,6 +109,7 @@ export default function MaterialLibraryView({ goPlans = null, lists = [] }) {
 
   const openTree = async bookId => {
     setOpenBook(bookId);
+    setEditing(false);
     setTree(null);
     try { setTree(await getBookTree(bookId)); } catch (e) { setErr(e.message); }
   };
@@ -173,12 +176,19 @@ export default function MaterialLibraryView({ goPlans = null, lists = [] }) {
         <PageHeader title={tree?.book?.title || book?.title || '教材'}
           subtitle={book?.publisher || ''}
           back={<button className="page-back"
-            onClick={() => { setOpenBook(null); setTree(null); }}>← 教材庫</button>} />
+            onClick={() => { setOpenBook(null); setTree(null); setEditing(false); }}>← 教材庫</button>}
+          actions={tree ? (
+            <Button size="sm" variant="tertiary" onClick={() => setEditing(v => !v)}>
+              {editing ? '完成編輯' : '編輯'}
+            </Button>
+          ) : null} />
         <div className="main-body ml-view">
         {blocked && <BlockedNotice data={blocked} onClose={() => setBlocked(null)} />}
         {err && <div className="mt-err" role="alert">{err}</div>}
         {/* 科目是排程的前提，所以直接放在教材頁最上面，隨時可改。
-            存的是 lists.id，不是名稱。 */}
+            存的是 lists.id，不是名稱。
+            編輯模式底下有自己的科目欄位，這裡就不再重複一個。 */}
+        {!editing && (
         <div className={'ml-subject' + (bookNeedsSubject(book) ? ' needs' : '')}>
           <label htmlFor="ml-subject-select">科目</label>
           <select id="ml-subject-select" value={book?.subject_list_id ?? ''} disabled={busy}
@@ -190,13 +200,19 @@ export default function MaterialLibraryView({ goPlans = null, lists = [] }) {
             <span className="mt-warn">未指定科目的教材無法排入計畫</span>
           )}
         </div>
-        {inCats.length > 1 && (
+        )}
+        {!editing && inCats.length > 1 && (
           <div className="ml-samebook">
             這本教材同時列在 {inCats.map(n => `「${n}」`).join('、')}，
             但只有一份目錄與一份完成度。
           </div>
         )}
-        {tree && (
+        {editing && tree && (
+          <MaterialBookEditor book={book} tree={tree} lists={lists}
+            onChanged={async () => { setTree(await getBookTree(openBook)); await load(); }}
+            onDone={() => setEditing(false)} />
+        )}
+        {!editing && tree && (
           <div className="ml-bookprog">
             <ProgressBar value={tree.progress.completed_items} max={tree.progress.total_items}
               label="教材完成度" />
@@ -205,7 +221,8 @@ export default function MaterialLibraryView({ goPlans = null, lists = [] }) {
             </span>
           </div>
         )}
-        {!tree ? <div className="mt-loading">載入中…</div>
+        {editing ? null
+          : !tree ? <div className="mt-loading">載入中…</div>
           : !tree.nodes.length
             ? <EmptyState title="這本教材還沒有目錄" description="目前沒有章節內容。" />
             : (

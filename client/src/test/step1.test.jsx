@@ -399,6 +399,33 @@ describe('加入教材', () => {
     noCrash();
   });
 
+  it('伺服器沒有 AI 金鑰時，講學生聽得懂的話，而且不留下半本教材', async () => {
+    setApi({
+      '/material/import/preview': () => {
+        const e = new Error('伺服器尚未設定 AI 金鑰（ANTHROPIC_API_KEY）');
+        e.status = 500;
+        return Promise.reject(e);
+      },
+    });
+    await openAdd();
+    // 用 PDF：圖片會先走瀏覽器的解碼／轉正，那條路在 jsdom 裡沒有實作。
+    // 兩者之後走的是同一個 handler。
+    const file = new File([new Uint8Array([37, 80, 68, 70])], 'toc.pdf', { type: 'application/pdf' });
+    const input = document.querySelector('input[type=file]');
+    // jsdom 的 file input 不能直接指派 files，要自己掛上去
+    Object.defineProperty(input, 'files', { value: [file], configurable: true });
+    await act(async () => { fireEvent.change(input); });
+    await waitFor(() => expect(screen.queryByRole('alert')).toBeTruthy());
+    const msg = screen.getByRole('alert').textContent;
+    expect(msg).toContain('自己建立教材');
+    expect(msg).not.toMatch(/ANTHROPIC|API_KEY|金鑰/);
+    // 卡住的讀取提示要消失，而且什麼都沒建立
+    expect(screen.queryByText(/AI 讀取/)).toBeNull();
+    expect(sent('/material/import/commit', 'POST')).toEqual([]);
+    expect(sent('/material/books', 'POST')).toEqual([]);
+    noCrash();
+  });
+
   it('取消匯入：一本教材都沒有被建立', async () => {
     await openAdd();
     await click(btn(/自己建立教材/));
