@@ -187,6 +187,115 @@ export async function createContentItem(userId, body = {}) {
   return q.get('SELECT * FROM material_content_items WHERE id=?', [r.lastInsertRowid]);
 }
 
+/* ---------- 改名與刪除（打錯字要有得救） ---------- */
+
+// 章／節／主題改名。**只改 title**：kind 換了會讓底下的內容變成非法擺放
+// （例如節底下的例題，換成章之後就不合法），那不是「改名」，是重建結構。
+export async function updateNode(userId, id, body = {}) {
+  const node = await mustNode(userId, id);
+  const title = String(body.title ?? '').trim();
+  if (!title) throw new MaterialInputError('請輸入名稱');
+  await q.run('UPDATE material_nodes SET title=? WHERE id=? AND user_id=?', [title, node.id, userId]);
+  return q.get('SELECT * FROM material_nodes WHERE id=?', [node.id]);
+}
+
+// ContentItem 改名或改種類。改種類要重驗 placement——把「範例」改成「單元練習」
+// 但它掛在節底下，那是非法的（單元練習只屬於章）。
+//
+// identity 不變：改的是同一筆 ContentItem，所以完成度、Plan selection、
+// 既有 Task 的 linkage 全部原樣保留。改名不是換一個東西。
+export async function updateContentItem(userId, id, body = {}) {
+  const it = await mustItem(userId, id);
+  const node = await mustNode(userId, it.node_id);
+  const title = body.title === undefined ? it.title : String(body.title ?? '').trim();
+  if (!title) throw new MaterialInputError('請輸入名稱');
+  const kind = body.kind === undefined ? it.kind : String(body.kind);
+  if (!ITEM_KINDS.includes(kind)) throw new MaterialInputError('教材項目類型不正確');
+  const problem = itemPlacementProblem(kind, node.kind);
+  if (problem) throw new MaterialInputError(problem);
+  const est = body.estimated_minutes === undefined
+    ? it.estimated_minutes
+    : (body.estimated_minutes == null || body.estimated_minutes === '' ? null : Number(body.estimated_minutes));
+  if (est != null && (!Number.isFinite(est) || est <= 0)) throw new MaterialInputError('預估時間不正確');
+  await q.run(
+    'UPDATE material_content_items SET title=?,kind=?,estimated_minutes=? WHERE id=? AND user_id=?',
+    [title, kind, est, it.id, userId]);
+  return q.get('SELECT * FROM material_content_items WHERE id=?', [it.id]);
+}
+
+// 一筆 ContentItem 身上掛著哪些「不能無聲消失」的歷史。
+// 與 bookReferences 同一個判準，只是縮到單一項目。
+export async function contentItemReferences(userId, itemIds) {
+  const ids = (Array.isArray(itemIds) ? itemIds : [itemIds]).map(Number).filter(Number.isFinite);
+  if (!ids.length) return { progress: 0, plan_selections: 0, tasks: 0 };
+  const holes = ids.map(() => '?').join(',');
+  const one = async (sql) => Number((await q.get(sql, [userId, ...ids]))?.n ?? 0);
+  return {
+    progress: await one(
+      `SELECT COUNT(*) n FROM material_progress
+        WHERE user_id=? AND completed=1 AND content_item_id IN (${holes})`),
+    plan_selections: await one(
+      `SELECT COUNT(*) n FROM plan_material_items
+        WHERE user_id=? AND selected=1 AND content_item_id IN (${holes})`),
+    tasks: await one(
+      `SELECT COUNT(*) n FROM tasks
+        WHERE user_id=? AND COALESCE(deleted,0)=0 AND material_content_item_id IN (${holes})`),
+  };
+}
+
+const blockedByHistory = (refs, what) => {
+  const blocking = Object.entries(refs).filter(([, n]) => n > 0);
+  if (!blocking.length) return null;
+  const err = new MaterialInputError(
+    `${what}已經有使用紀錄（完成度、計畫選取或任務），不能刪除`, 409);
+  err.references = refs;
+  return err;
+};
+
+// 刪一筆 ContentItem。有任何歷史就不刪——硬刪等於偽造「這件事沒發生過」。
+export async function deleteContentItem(userId, id) {
+  const it = await mustItem(userId, id);
+  const blocked = blockedByHistory(await contentItemReferences(userId, it.id), '這個項目');
+  if (blocked) throw blocked;
+  await q.run('DELETE FROM material_content_items WHERE id=? AND user_id=?', [it.id, userId]);
+  return { deleted: true, id: it.id };
+}
+
+// 刪一個章／節／主題，連同底下的內容。同樣的判準，但看的是**整棵子樹**：
+// 底下任何一筆有歷史就整個不刪，不做「刪一半」。
+export async function deleteNode(userId, id) {
+  const node = await mustNode(userId, id);
+  const all = await q.all(
+    'SELECT id,parent_id FROM material_nodes WHERE user_id=? AND book_id=?', [userId, node.book_id]);
+  const subtree = new Set([node.id]);
+  let grew = true;
+  while (grew) {
+    grew = false;
+    for (const n of all) {
+      if (n.parent_id != null && subtree.has(n.parent_id) && !subtree.has(n.id)) {
+        subtree.add(n.id); grew = true;
+      }
+    }
+  }
+  const nodeIds = [...subtree];
+  const holes = nodeIds.map(() => '?').join(',');
+  const items = await q.all(
+    `SELECT id FROM material_content_items WHERE user_id=? AND node_id IN (${holes})`,
+    [userId, ...nodeIds]);
+  const blocked = blockedByHistory(
+    await contentItemReferences(userId, items.map(r => r.id)), '這一段');
+  if (blocked) throw blocked;
+  // 內容與節點要嘛一起消失、要嘛都不動：中途失敗會留下沒有歸屬的孤兒項目。
+  await q.tx(async tx => {
+    await tx.run(
+      `DELETE FROM material_content_items WHERE user_id=? AND node_id IN (${holes})`,
+      [userId, ...nodeIds]);
+    await tx.run(
+      `DELETE FROM material_nodes WHERE user_id=? AND id IN (${holes})`, [userId, ...nodeIds]);
+  });
+  return { deleted: true, id: node.id, nodes: nodeIds.length, content_items: items.length };
+}
+
 /* ---------- 教材樹（含 derived 完成度與 tri-state 選取） ---------- */
 
 const treeInputs = async (userId, bookId, planId) => {

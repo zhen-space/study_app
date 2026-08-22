@@ -72,6 +72,25 @@ export const selectItems = (planId, contentItemIds, selected) =>
 export const selectNode = (planId, nodeId, selected) =>
   api(`/plans/${planId}/material-nodes/${nodeId}`, { method: 'POST', body: { selected } });
 
+/* ---------- 錯誤修正：改名、改種類、刪除 ---------- */
+
+// 改名不換 identity：完成度、Plan selection 與既有 Task 的 linkage 全部留著。
+export const updateNode = (nodeId, body) =>
+  api(`/material/nodes/${nodeId}`, { method: 'PATCH', body });
+
+export const updateContentItem = (itemId, body) =>
+  api(`/material/content-items/${itemId}`, { method: 'PATCH', body });
+
+// 刪除只在完全沒有使用紀錄時才成立。後端擋下來時會回 409 與 references，
+// 呼叫端要把「為什麼不能刪」講出來，不要只說失敗。
+export const deleteNode = nodeId => api(`/material/nodes/${nodeId}`, { method: 'DELETE' });
+export const deleteContentItem = itemId =>
+  api(`/material/content-items/${itemId}`, { method: 'DELETE' });
+
+// 建立一個科目（lists）。剛註冊的帳號一個都沒有，而沒有科目就排不進計畫。
+export const createSubject = name =>
+  api('/lists', { method: 'POST', body: { name, color: '#5E6AD2' } });
+
 export const createCategory = name => api('/material/categories', { method: 'POST', body: { name } });
 export const createBook = body => api('/material/books', { method: 'POST', body });
 export const updateBook = (bookId, body) =>

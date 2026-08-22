@@ -982,3 +982,36 @@ select { -webkit-appearance: none; appearance: none; padding-right: 26px;
   border-top: 1px solid var(--separator); padding-top: var(--sp-3);
 }
 .md-total { font-size: 14px; color: var(--text-2); margin-right: auto; }
+
+/* ---- 編輯教材：只做修正，不做完成度 ---- */
+.me { display: flex; flex-direction: column; gap: var(--sp-3); min-width: 0; }
+.me-head { display: flex; flex-direction: column; gap: 2px; }
+.me-title { font-size: 18px; font-weight: 700; margin: 0; }
+.me-lead { font-size: 13px; color: var(--text-2); margin: 0; }
+.me-book { display: flex; flex-direction: column; gap: var(--sp-2); }
+.me-chapter {
+  display: flex; flex-direction: column; gap: var(--sp-2);
+  border-top: 1px solid var(--separator); padding-top: var(--sp-3);
+}
+.me-child { display: flex; flex-direction: column; gap: var(--sp-2); padding-left: 12px; }
+.me-chapter-level { display: flex; flex-direction: column; gap: var(--sp-2); padding-left: 12px; }
+.me-row { display: flex; align-items: center; gap: var(--sp-2); min-width: 0; }
+.me-row--item { padding-left: 12px; }
+.me-row input, .me-row select {
+  min-height: 44px; font-size: 15px; padding: 0 var(--sp-2); min-width: 0; flex: 1;
+  border: 1px solid var(--border); border-radius: var(--radius-sm);
+  background: var(--surface-2); color: var(--text);
+}
+.me-row select { flex: 0 0 auto; max-width: 40%; }
+.me-tag {
+  flex: 0 0 auto; font-size: 11px; font-weight: 600; color: var(--text-2);
+  border: 1px solid var(--border); border-radius: var(--radius-pill); padding: 2px 8px;
+}
+.me-x { flex: 0 0 auto; min-width: 44px; min-height: 44px; background: none; border: 0; color: var(--text-2); }
+.me-foot { display: flex; border-top: 1px solid var(--separator); padding-top: var(--sp-3); }
+.md-newsubject { display: flex; align-items: center; gap: var(--sp-2); flex-wrap: wrap; }
+.md-newsubject input {
+  flex: 1; min-width: 120px; min-height: 44px; font-size: 16px; padding: 0 var(--sp-3);
+  border: 1px solid var(--accent); border-radius: var(--radius-sm);
+  background: var(--surface-2); color: var(--text);
+}

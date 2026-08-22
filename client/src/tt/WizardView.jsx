@@ -8,17 +8,11 @@ import { parseICS } from './ics';
 import { fileToPayload } from './vocabImport';
 import FeasibilityGap from './FeasibilityGap';
 import MaterialSelector from './MaterialSelector';
-import { listBooks, getPlanSelection, selectItems, materialSchedulingItems } from './material';
+import { listBooks, getPlanSelection, selectItems, materialSchedulingItems, createSubject } from './material';
 import { Button } from './ui';
 
 const LIST_COLORS = ['#0086CC', '#e03131', '#16a34a', '#f59f00', '#9333ea', '#0891b2'];
-const TYPE_OPTIONS = ['範例', '例題', '單元練習', '歷屆試題'];
-// 範例/例題跟著小節/主題；單元練習/歷屆試題是「每章一份」
-const CH_TYPES = ['單元練習', '歷屆試題'];
 // 合理預設：不調整也能直接產生——範例+例題一組、單元練習+歷屆試題一組
-const DEF_TYPES = ['範例', '例題', '單元練習', '歷屆試題'];
-const DEF_COMBINE = 'custom';
-const DEF_TG = { 範例: 0, 例題: 0, 單元練習: 1, 歷屆試題: 1 };
 const WD = '日一二三四五六';
 
 // 把多筆同名同時段的行程統整成一列
@@ -68,41 +62,25 @@ export default function WizardView({
   const [settings, setSettings] = useState(null);
   const [follow, setFollow] = useState(true);
   const [shift, setShift] = useState({ sleep_start: '', sleep_end: '' });
-  // 舊版第 1 步的勾選清單。新版第 1 步只用正式教材，所以它永遠是空的——
-  // 第 2 步依賴它的那幾段（題型展開、各單元設定）因此自然不會出現。
-  // 保留這個常數是為了不動到排程流程本身：Material 選取是在展開之後才附加的。
-  const [items] = useState([]);
   // 正式 Material 選取。Create 模式是草稿（Plan 還不存在），Edit 模式直接寫正式 API。
   const [matIds, setMatIds] = useState(() => new Set());
   const [matPicked, setMatPicked] = useState(() => new Map()); // id → descriptor
   const [matBooks, setMatBooks] = useState([]);
-  const [tocs] = useState([]);   // 第 1 步已經不讀舊目錄；留空集合讓第 2 步的舊查表自然落空
   const [subjSpread, setSubjSpread] = useState({});   // 每科：章節打散(spread)或照順序(order)
-  const [typeRef, setTypeRef] = useState({});         // 每科題型：'self'或跟哪個 sid 相同
-  const [typesBy, setTypesBy] = useState({});         // 分科題型 sid→types[]
-  const [combineBy, setCombineBy] = useState({});
-  const [typeGroupBy, setTypeGroupBy] = useState({});
-  const [finals, setFinals] = useState({});           // 壓軸項目
-  const [firstsSel, setFirstsSel] = useState({});     // 要先完成的項目
-  const [plainSel, setPlainSel] = useState({});       // 純題目：不套題型、照順序（如模考）
-  const [skipTypes, setSkipTypes] = useState({});     // 「key|組序」→ 'first'先完成｜'final'壓軸｜'off'不寫；沒設＝正常排
   const [exWd, setExWd] = useState([]);               // 不排的星期 0-6
   const [exDates, setExDates] = useState([]);         // 不排的日期
   const [exDateInput, setExDateInput] = useState(today());
-  const [levelMin, setLevelMin] = useState({});       // 使用者固定的各層級時數
   const [busyHours, setBusyHours] = useState(0);      // 既定行程超過幾小時就不排（0=不限）
   const [timed, setTimed] = useState(true);           // 是否計算時間
   const [limitPerDay, setLimitPerDay] = useState(false); // 不計時模式是否限制每天數量
   const [perDay, setPerDay] = useState(3);            // 每天幾項
   const [pace, setPace] = useState('even');           // even=平均分配 front=盡早排完（前面多排）
-  const [groupSize, setGroupSize] = useState({});     // 每科：把連續 N 個單位綁成一組（0/1=不綁）
   // 科目先後順序（2C-P6-B）：使用者排「數學 → 化學 → 英文」。
   // 語意是 priority 不是 dependency——優先取得排程位置，但不要求前一科排完
   // 才能開始下一科。存的是科目 id 由前到後。
   const [subjOrder, setSubjOrder] = useState([]);
   const [bySubject, setBySubject] = useState(false);
-  const [byGroup, setByGroup] = useState(false);
-  const [dGlobal, setDGlobal] = useState({ start: today(), end: addDays(today(), 6) });
+    const [dGlobal, setDGlobal] = useState({ start: today(), end: addDays(today(), 6) });
   const [dMap, setDMap] = useState({});               // `${sid}|${gi}` → {start,end}
   const [preview, setPreview] = useState(null);
   const [redoUndone, setRedoUndone] = useState(true); // 要不要一起重新安排
@@ -140,27 +118,15 @@ export default function WizardView({
       const d = JSON.parse(localStorage.getItem(draftKey) || 'null');
       if (d) {
         d.subjSpread && setSubjSpread(d.subjSpread);
-        d.typeRef && setTypeRef(d.typeRef);
-        d.typesBy && setTypesBy(d.typesBy);
-        d.combineBy && setCombineBy(d.combineBy);
-        d.typeGroupBy && setTypeGroupBy(d.typeGroupBy);
-        d.finals && setFinals(d.finals);
-        d.firstsSel && setFirstsSel(d.firstsSel);
-        d.plainSel && setPlainSel(d.plainSel);
-        d.skipTypes && setSkipTypes(Object.fromEntries(
-          Object.entries(d.skipTypes).map(([k, v]) => [k, v === true ? 'off' : v]).filter(([, v]) => v))); // 舊草稿 true＝不寫
         d.exWd && setExWd(d.exWd);
         d.exDates && setExDates(d.exDates);
-        d.levelMin && setLevelMin(d.levelMin);
         d.busyHours != null && setBusyHours(d.busyHours);
         d.timed != null && setTimed(d.timed);
         d.limitPerDay != null && setLimitPerDay(d.limitPerDay);
         d.perDay != null && setPerDay(d.perDay);
         d.pace && setPace(d.pace);
-        d.groupSize && setGroupSize(d.groupSize);
         Array.isArray(d.subjOrder) && setSubjOrder(d.subjOrder);
         d.bySubject != null && setBySubject(d.bySubject);
-        d.byGroup != null && setByGroup(d.byGroup);
         // 整體範圍：過期的不還原；開始日一律不早於今天（過去的日期沒意義）
         if (d.dGlobal && d.dGlobal.end >= today()) {
           setDGlobal({ start: d.dGlobal.start < today() ? today() : d.dGlobal.start, end: d.dGlobal.end });
@@ -184,14 +150,12 @@ export default function WizardView({
     if (!draftLoaded.current) return;
     try {
       localStorage.setItem(draftKey, JSON.stringify({
-        items, subjSpread, typeRef, typesBy, combineBy, typeGroupBy, finals, firstsSel, plainSel, skipTypes,
-        exWd, exDates, levelMin, busyHours, timed, limitPerDay, perDay, pace, groupSize, subjOrder,
-        bySubject, byGroup, dGlobal, dMap, step,
+        subjSpread, exWd, exDates, busyHours, timed, limitPerDay, perDay, pace, subjOrder,
+        bySubject, dGlobal, dMap, step,
       }));
     } catch {}
-  }, [draftKey, items, subjSpread, typeRef, typesBy, combineBy, typeGroupBy, finals, firstsSel, plainSel, skipTypes,
-    exWd, exDates, levelMin, busyHours, timed, limitPerDay, perDay, pace, groupSize, subjOrder,
-    bySubject, byGroup, dGlobal, dMap, step]);
+  }, [draftKey, subjSpread, exWd, exDates, busyHours, timed, limitPerDay, perDay, pace, subjOrder,
+    bySubject, dGlobal, dMap, step]);
 
   const evGroups = useMemo(() => groupEvents(events), [events]);
 
@@ -213,30 +177,12 @@ export default function WizardView({
         && ((Array.isArray(t.tags) && t.tags.includes('讀書計劃')) || (t.title || '').includes('｜')))),
     [isEdit, livePlanTasks, tasks]);
 
-  /* ---------- 題型組別（可全域或分科） ---------- */
-  const calcGroups = (ts, cb, tg) => {
-    if (!ts.length) return [null];
-    if (cb === 'together') return [ts];
-    if (cb === 'separate') return ts.map(t => [t]);
-    const m = {};
-    ts.forEach(t => { const g = tg[t] ?? 0; (m[g] = m[g] || []).push(t); });
-    return Object.values(m);
-  };
-  const groupsFor = sid => {
-    const r = typeRef[sid];
-    const ref = (r && r !== 'self' && lists.some(l => String(l.id) === String(r))) ? r : sid;
-    // 沒動過的科目用預設兩組（範例+例題／單元練習+歷屆）；清空過的（[]）尊重使用者
-    return calcGroups(typesBy[ref] ?? DEF_TYPES, combineBy[ref] ?? DEF_COMBINE, typeGroupBy[ref] ?? DEF_TG);
-  };
-  const gLabel = g => g ? g.join('+') : '';
-
-  // 各科／各題型的日期：只有「使用者自己動過的那一欄」才記在 dMap，
+  // 各科的日期：只有「使用者自己動過的那一欄」才記在 dMap，
   // 其他一律跟著整體範圍走（改整體範圍時會自動跟著變）
   const mergeWin = k => {
     const o = dMap[k] || {};
     return { start: o.start || dGlobal.start, end: o.end || dGlobal.end };
   };
-  const winOf = (sid, gi) => mergeWin(`${bySubject ? sid : 'all'}|${byGroup ? gi : 'all'}`);
 
   /* ---------- 檔案 ---------- */
 
@@ -361,16 +307,11 @@ export default function WizardView({
     }).catch(() => {});
   }, [isEdit, planId, matBooks]);
 
-  // 取單位標記（標題第一個詞，如「主題1」「壹」），供合併命名
-  const unitTok = title => title.split(/[\s　]/)[0] || title;
 
   /* ---------- 科目先後順序 ---------- */
   // 這次真的選到的科目（去重，維持出現順序）
-  // 這次真的選到的科目。教材選取也算進來——不然「先讀哪一科」這種設定
-  // 會因為舊版勾選清單是空的而整段消失。
-  const selectedSubjectIds = [...new Set([
-    ...items.map(i => i.subject_id), ...materialItems.map(i => i.subject_id),
-  ])];
+  // 這次真的選到的科目：直接來自教材選取。
+  const selectedSubjectIds = [...new Set(materialItems.map(i => i.subject_id))];
   // 畫面上顯示的順序：使用者排過的優先，沒排到的接在後面。
   // 已經不在這次選取範圍的科目自動消失，不用另外清理。
   const orderedSubjectIds = [
@@ -402,34 +343,8 @@ export default function WizardView({
 
   async function genPreview() {
     setErr('');
-    // 舊版勾選清單的展開流程。items 現在永遠是空的（新版第 1 步只用正式教材），
-    // 所以底下這一整段實際上不會產生任何項目；Material 選取是在展開之後才附加的。
-    const sortedItems = [...items];
-    // 先依各科「N 個一組」把連續章節單位合併
-    const merged = [];
-    const bySub = {};
-    sortedItems.forEach(it => (bySub[it.subject_id] = bySub[it.subject_id] || []).push(it));
-    Object.entries(bySub).forEach(([sid, list]) => {
-      const n = groupSize[sid] || 1;
-      if (n <= 1) { merged.push(...list); return; }
-      for (let i = 0; i < list.length; i += n) {
-        const grp = list.slice(i, i + n);
-        if (grp.length === 1) { merged.push(grp[0]); continue; }
-        merged.push({
-          ...grp[0],
-          key: grp.map(x => x.key).join('+'),
-          title: `${unitTok(grp[0].title)}～${unitTok(grp[grp.length - 1].title)}`,
-          minutes: grp.reduce((a, x) => a + (x.minutes || 0), 0),
-          _members: grp.map(x => x.key),
-        });
-      }
-    });
-    const anyFlag = (m, sel) => (m._members || [m.key]).some(k => sel[k]);
-
-    // 展開順序＝「一個題型組一個題型組」：先送出全科所有章的第 1 組（如範例+例題），
-    // 再送第 2 組（如單元練習+歷屆試題）。這樣同一範圍內會先做完整輪第 1 組再進第 2 組；
-    // 若各組有自己的日期範圍，則各在自己的範圍內平均鋪滿。
-    // 無效的日期範圍自動修正：開始＞結束就對調；整段已過期（草稿記住的舊設定）就退回整體範圍
+    // 使用者自己設的日期範圍不一定合理：顛倒、只填一邊、整段已經過去。
+    // 這些情況一律退回整體範圍，不要讓排程拿著一個排不出東西的窗口去試。
     const fixWin = w => {
       let { start, end } = w || {};
       if (!start || !end) return { start: dGlobal.start, end: dGlobal.end };
@@ -437,86 +352,10 @@ export default function WizardView({
       if (end < today()) return { start: dGlobal.start, end: dGlobal.end };
       return { start, end };
     };
+    // 這次要排的項目。Material 的 ContentItem 本身就是原子單位（某一份單元練習、
+    // 某一題例題），一項對一項直接產生排程項目，不需要舊版的「題型展開」——
+    // 那是為了把抽象的章節拆成可排的份數而存在的。
     const expanded2 = [];
-    const mergedBySub = {};
-    merged.forEach(it => { (mergedBySub[it.subject_id] = mergedBySub[it.subject_id] || []).push(it); });
-    const chapTitle = {};
-    tocs.forEach(r => { chapTitle[`toc-${r.id}`] = r.title; });
-    // 同一科有多本課本時，任務標題前面加書名，才知道是哪一本
-    const bookByToc = {};
-    tocs.forEach(r => { bookByToc[`toc-${r.id}`] = r.book || ''; });
-    const bookPrefix = (sid, key) => {
-      if (new Set(tocs.filter(t => t.list_id === sid).map(t => t.book || '')).size < 2) return '';
-      const b = bookByToc[String(key).split('+')[0].split('.')[0]];
-      return b ? `${b}｜` : '';
-    };
-    Object.values(mergedBySub).forEach(list => {
-      const sid = list[0].subject_id; // 保留原始型別（Object 的 key 會變字串，導致比對失敗、沒顏色）
-      const normal = list.filter(it => !anyFlag(it, plainSel));
-      const plains = list.filter(it => anyFlag(it, plainSel));
-      groupsFor(sid).forEach((g, gi) => {
-        const w = fixWin(winOf(sid, gi));
-        const gNode = g ? g.filter(t => !CH_TYPES.includes(t)) : null;   // 跟著節/主題的題型
-        const gChap = g ? g.filter(t => CH_TYPES.includes(t)) : [];      // 以章為單位的題型
-        // 每單元每組題型的狀態：'off'不寫｜'first'先完成｜'final'壓軸｜沒設＝正常排
-        const modeOf = it => {
-          const ms = (it._members || [it.key]).map(k => skipTypes[`${k}|${gi}`]);
-          if (ms.length && ms.every(m => m === 'off')) return 'off';
-          return ms.find(m => m === 'first' || m === 'final') || null;
-        };
-        const skipped = it => g && gNode.length && modeOf(it) === 'off';
-        if (!g || gNode.length) normal.filter(it => !skipped(it)).forEach(it => expanded2.push({
-          subject_id: sid,
-          // 標題含章名稱：勾的是節/主題時，前面加上所屬章（如「3 大氣｜主題1 …」）
-          title: (() => {
-            const base = String((it._members?.[0]) ?? it.key).split('+')[0].split('.')[0];
-            const ch = base.startsWith('toc-') && base !== String(it.key).split('+')[0] ? chapTitle[base] : '';
-            return bookPrefix(sid, it.key) + (ch ? `${ch}｜` : '') + it.title + (gNode?.length ? `｜${gNode.join('+')}` : '');
-          })(),
-          minutes: it.minutes,
-          start: w.start, end: w.end,
-          final: anyFlag(it, finals) || modeOf(it) === 'final',
-          first: anyFlag(it, firstsSel) || modeOf(it) === 'first',
-          spread: (subjSpread[sid] ?? 'order') === 'spread',
-        }));
-        if (gChap.length) {
-          const seen = new Set();
-          normal.forEach(it => {
-            // 找出這個項目所屬的章：key 形如 toc-12.0.2 → 章＝toc-12
-            const base = String((it._members?.[0]) ?? it.key).split('+')[0].split('.')[0];
-            const chKey = base.startsWith('toc-') ? base : String(it.key);
-            if (seen.has(chKey)) return;
-            seen.add(chKey);
-            const chMode = skipTypes[`ch:${chKey}|${gi}`];
-            if (chMode === 'off') return; // 這章的練習/歷屆標「不寫」
-            expanded2.push({
-              subject_id: sid,
-              title: `${bookPrefix(sid, chKey)}${chapTitle[chKey] || it.title}｜${gChap.join('+')}`,
-              minutes: 120,
-              start: w.start, end: w.end,
-              final: chMode === 'final',
-              first: chMode === 'first',
-              spread: (subjSpread[sid] ?? 'order') === 'spread',
-              onePerDay: true, // 單元練習/歷屆試題盡量一天一課；擠不下優先讓範例+例題一天兩課
-            });
-          });
-        }
-      });
-      // 純題目（模考、學測實驗必考重點等）：不套題型、照順序、一律壓軸排最後。
-      // 日期用科目整體範圍（沒設就用全域），不能被某個題型組的前段範圍框住
-      const pw = fixWin(mergeWin(`${bySubject ? sid : 'all'}|all`));
-      plains.forEach(it => expanded2.push({
-        subject_id: sid,
-        title: it.title,
-        minutes: it.minutes,
-        start: pw.start, end: pw.end,
-        // 純題目預設壓軸，但也可以標先完成或照常排
-        final: anyFlag(it, finals),
-        first: anyFlag(it, firstsSel),
-        spread: false,
-        onePerDay: true,   // 純題目本來就是整份題目，一天只排一份
-      }));
-    });
     // 上次沒做完的一起重排：標題原樣帶回去（伺服器會自己認出純題目），
     // 已經在這次勾選裡的就不重複加
     // 這次真正被帶進排程的舊任務，逐筆記下來（連 id 一起）。
@@ -539,16 +378,17 @@ export default function WizardView({
       const w = bySubject ? fixWin(mergeWin(`${m.subject_id}|all`)) : fixWin(mergeWin('all|all'));
       expanded2.push({
         subject_id: m.subject_id, title: m.title, minutes: m.minutes,
-        start: w.start, end: w.end, spread: false,
+        start: w.start, end: w.end,
+        // 第 2 步的「打散平均／照章節順序」。後端 routes/schedule.js 讀 item.spread：
+        // false＝照順序（同科目照原本的排列），true＝打散。之前這裡寫死 false，
+        // 於是那組選項按了完全沒有作用。
+        spread: (subjSpread[m.subject_id] ?? 'order') === 'spread',
         material_content_item_id: m.material_content_item_id,
       });
     }
     setMergedLeftover(merged2);
     // 已經打勾完成的不要再排一次（想重讀才勾「已完成的也重排」）。
     // 同一科＋同一個標題才算同一件事，不同科目撞名不會誤刪。
-    // 注意：這裡不能取名 items——外面已經有一個 items（勾選的目錄項目），
-    // 在同一個函式裡再 let 一次會讓函式開頭那行的 items 落進暫時性死區，
-    // 一進 genPreview 就丟 ReferenceError，按鈕看起來像完全沒反應。
     let sendItems = expanded2;
     if (!redoDone && doneItems.length) {
       const done = new Set(doneItems.map(t => `${t.list_id}|${t.title}`));
@@ -824,6 +664,11 @@ export default function WizardView({
             onPickedChange={onMaterialPicked}
             lists={lists}
             onLibraryChange={() => { listBooks().then(setMatBooks).catch(() => {}); }}
+            onAddSubject={async name => {
+              const created = await createSubject(name);
+              await reload();          // 讓科目立刻出現在整個 App，不只這個畫面
+              return created;
+            }}
             header={
               <div className="wz-plan-name">
                 <label htmlFor="wz-plan-name">這次要準備什麼？</label>
@@ -851,38 +696,10 @@ export default function WizardView({
             } />
         )}
 
-        {/* ============ 步驟 2 之三：排程條件（題型與偏好） ============ */}
+        {/* ============ 步驟 2 之三：排程條件 ============ */}
         {step === 1 && (() => {
-          // 舊版勾選清單專用（題型展開）。新版第 1 步不產生 items，所以是空的。
-          const sids = [...new Set(items.map(i => i.subject_id))];
-          // 用字串比對：下拉選單回傳的是字串，科目 id 是數字，直接 === 會找不到名字
+          // 用字串比對：科目 id 有時是字串有時是數字，直接 === 會找不到名字
           const sname = sid => lists.find(l => String(l.id) === String(sid))?.name || '';
-          const TypePanel = ({ ts, cb, tg, onTs, onCb, onTg }) => (
-            <div>
-              <div className="row" style={{ marginTop: 6 }}>
-                {TYPE_OPTIONS.map(t => (
-                  <label key={t} className={'tag-pill' + (ts.includes(t) ? ' on' : '')} style={{ cursor: 'pointer' }}
-                    onClick={() => onTs(ts.includes(t) ? ts.filter(x => x !== t) : [...ts, t])}>{t}</label>
-                ))}
-              </div>
-              {ts.length > 1 && (
-                <div style={{ marginTop: 8 }}>
-                  <label style={{ display: 'block' }}><input type="radio" checked={cb === 'together'} onChange={() => onCb('together')} /> 一起寫</label>
-                  <label style={{ display: 'block' }}><input type="radio" checked={cb === 'separate'} onChange={() => onCb('separate')} /> 全部分開</label>
-                  <label style={{ display: 'block' }}><input type="radio" checked={cb === 'custom'} onChange={() => onCb('custom')} /> 自訂組合</label>
-                  {cb === 'custom' && ts.map(t => (
-                    <div className="row" key={t} style={{ marginTop: 4, marginLeft: 10 }}>
-                      <span style={{ minWidth: 70 }}>{t}</span>
-                      <select value={tg[t] ?? 0} onChange={e => onTg({ ...tg, [t]: +e.target.value })}>
-                        {[0, 1, 2, 3].map(n => <option key={n} value={n}>第 {n + 1} 組</option>)}
-                      </select>
-                    </div>
-                  ))}
-                  <div className="muted" style={{ marginTop: 4 }}>→ 拆成 {calcGroups(ts, cb, tg).length} 段：{calcGroups(ts, cb, tg).map(gLabel).join('｜')}</div>
-                </div>
-              )}
-            </div>
-          );
           return (
             <details className="tile" id="wz-sec-cond" open={initialSection === 'cond'} style={{ marginBottom: 10 }}>
               <summary style={{ cursor: 'pointer', fontWeight: 700 }}>排程條件</summary>
@@ -928,173 +745,8 @@ export default function WizardView({
                     <label><input type="radio" checked={(subjSpread[sid] ?? 'order') === 'order'} onChange={() => setSubjSpread(s => ({ ...s, [sid]: 'order' }))} /> 照章節順序（預設）</label>
                     <label><input type="radio" checked={subjSpread[sid] === 'spread'} onChange={() => setSubjSpread(s => ({ ...s, [sid]: 'spread' }))} /> 打散平均</label>
                   </div>
-                  <div className="row" style={{ marginTop: 4, marginLeft: 10 }}>
-                    <label><input type="checkbox" checked={(groupSize[sid] || 1) > 1} onChange={e => setGroupSize(g => ({ ...g, [sid]: e.target.checked ? 2 : 1 }))} /> 幾個單位綁一組排</label>
-                    {(groupSize[sid] || 1) > 1 && <>
-                      <input type="number" min="2" max="20" value={groupSize[sid]} style={{ width: 56 }} onChange={e => setGroupSize(g => ({ ...g, [sid]: Math.max(2, +e.target.value || 2) }))} />
-                      <span className="muted">個一組（如「主題1～主題3」一次排）</span>
-                    </>}
-                  </div>
                 </div>
               ))}
-
-              <b style={{ display: 'block', marginTop: 16 }}>教材題型</b>
-              <Help>
-                已預設好：範例+例題一組、單元練習+歷屆試題一組（以「章」為單位，每章一份）。<br />
-                不用改就能直接下一步；想調整再展開各科設定。<br />
-                ・一起寫＝每章一個時段做完所有題型<br />
-                ・全部分開＝每種題型自己一段<br />
-                ・自訂組合＝自己決定哪幾種併一組（如範例+例題）<br />
-                ・各單元設定：點題型循環 要排 → 先完成 → 壓軸 → 不寫；<br />
-                　模考類點「純題目」那顆：壓軸 → 先完成 → 照常 → 取消
-              </Help>
-              {sids.map(sid => {
-                // 指到已不存在的科目就當作「自己設定」，否則會卡在「使用「」的設定」改不掉
-                const raw = typeRef[sid];
-                const ref = raw && raw !== 'self' && sids.some(s2 => String(s2) === String(raw)) ? raw : null;
-                return (
-                  <div key={sid} style={{ marginTop: 10, borderLeft: `3px solid ${lists.find(l => l.id === sid)?.color}`, paddingLeft: 8 }}>
-                    <div className="row">
-                      <b>{sname(sid)}</b>
-                      {/* 每一科都要能選（第一科也是），不然設錯了救不回來 */}
-                      <select value={ref == null ? 'self' : String(ref)} onChange={e => setTypeRef(s => ({ ...s, [sid]: e.target.value }))}>
-                        <option value="self">自己設定</option>
-                        {sids.filter(s2 => String(s2) !== String(sid) && !(typeRef[s2] && typeRef[s2] !== 'self')).map(s2 =>
-                          <option key={s2} value={String(s2)}>跟「{sname(s2)}」一樣</option>)}
-                      </select>
-                    </div>
-                    {ref
-                      ? <div className="muted" style={{ marginTop: 4 }}>＝ 使用「{sname(ref)}」的題型設定</div>
-                      : <TypePanel ts={typesBy[sid] ?? DEF_TYPES} cb={combineBy[sid] ?? DEF_COMBINE} tg={typeGroupBy[sid] ?? DEF_TG}
-                        onTs={v => setTypesBy(s => ({ ...s, [sid]: v }))}
-                        onCb={v => setCombineBy(s => ({ ...s, [sid]: v }))}
-                      onTg={v => setTypeGroupBy(s => ({ ...s, [sid]: v }))} />}
-                  </div>
-                );
-              })}
-
-              {(() => {
-                const chapTitle = {};
-                tocs.forEach(r => { chapTitle[`toc-${r.id}`] = r.title; });
-                // 這個單元屬於哪一本書：同一科有多本課本時要標出來，才不會搞混
-                const bookByToc = {};
-                tocs.forEach(r => { bookByToc[`toc-${r.id}`] = r.book || ''; });
-                const bookOf = key => bookByToc[String(key).split('+')[0].split('.')[0]] || '';
-                const isMultiBook = sid => new Set(tocs.filter(t => t.list_id === sid).map(t => t.book || '')).size > 1;
-                // 純題目獨立一顆（五段全擠一顆要點太多次）：
-                // 沒標＝灰色；點了循環 壓軸(預設・紺青) → 先完成 → 照常 → 取消回到題型
-                const plainCycle = it => {
-                  const on = !!plainSel[it.key];
-                  const mode = !on ? null : finals[it.key] ? 'final' : firstsSel[it.key] ? 'first' : 'norm';
-                  const st = !on ? {}
-                    : mode === 'final' ? { background: '#192F60', color: '#fff' }
-                    : mode === 'first' ? { background: '#8AC4DE', color: '#fff' }
-                    : { background: '#0086CC', color: '#fff' };
-                  const onClick = () => {
-                    if (!on) { setPlainSel(f => ({ ...f, [it.key]: true })); setFinals(f => ({ ...f, [it.key]: true })); setFirstsSel(f => ({ ...f, [it.key]: false })); }
-                    else if (mode === 'final') { setFinals(f => ({ ...f, [it.key]: false })); setFirstsSel(f => ({ ...f, [it.key]: true })); }
-                    else if (mode === 'first') { setFirstsSel(f => ({ ...f, [it.key]: false })); }
-                    else { setPlainSel(f => ({ ...f, [it.key]: false })); }
-                  };
-                  return (
-                    <label className="tag-pill" style={{ cursor: 'pointer', ...st }} onClick={onClick}>
-                      純題目{mode === 'final' ? '・壓軸' : mode === 'first' ? '・先完成' : mode === 'norm' ? '・照常' : ''}
-                    </label>
-                  );
-                };
-                // 題型 pill（單元與章共用）：四段循環 要排→先完成→壓軸→不寫
-                const pill = (key, label) => {
-                  const m = skipTypes[key];
-                  const next = m === undefined ? 'first' : m === 'first' ? 'final' : m === 'final' ? 'off' : undefined;
-                  const st = m === 'off' ? { textDecoration: 'line-through', opacity: .55 }
-                    : m === 'first' ? { background: '#8AC4DE', color: '#fff' }
-                    : m === 'final' ? { background: '#005B98', color: '#fff' }
-                    : { background: '#0086CC', color: '#fff' };
-                  return (
-                    <label key={key} className="tag-pill" style={{ cursor: 'pointer', ...st }}
-                      onClick={() => setSkipTypes(s => { const n = { ...s }; if (next) n[key] = next; else delete n[key]; return n; })}>
-                      {label}{m === 'first' ? '・先完成' : m === 'final' ? '・壓軸' : m === 'off' ? '・不寫' : ''}
-                    </label>
-                  );
-                };
-                // 沒設定題型的科目用這組當後備（先完成/壓軸切換；純題目那顆共用 plainCycle）
-                const ffPills = it => <>
-                  <label className={'tag-pill' + (firstsSel[it.key] ? ' on' : '')} style={{ cursor: 'pointer' }}
-                    onClick={() => { setFirstsSel(f => ({ ...f, [it.key]: !f[it.key] })); setFinals(f => ({ ...f, [it.key]: false })); }}>先完成</label>
-                  <label className={'tag-pill' + (finals[it.key] ? ' on' : '')} style={{ cursor: 'pointer' }}
-                    onClick={() => { setFinals(f => ({ ...f, [it.key]: !f[it.key] })); setFirstsSel(f => ({ ...f, [it.key]: false })); }}>壓軸</label>
-                </>;
-                // 三層收合：科目 → 書名 → 單元（都點一下展開）
-                const blocks = sids.map(sid => {
-                  const l = lists.find(x => x.id === sid);
-                  if (!l) return null;
-                  const ord = {};
-                  const subjItems = items.filter(it => it.subject_id === sid)
-                    .sort((a, b) => (ord[String(a.key).split('+')[0]] ?? 9999) - (ord[String(b.key).split('+')[0]] ?? 9999));
-                  if (!subjItems.length) return null;
-                  const nodeGs = groupsFor(sid).map((g, gi) => [g ? g.filter(t => !CH_TYPES.includes(t)) : [], gi]).filter(([gn]) => gn.length);
-                  const chapGs = groupsFor(sid).map((g, gi) => [g ? g.filter(t => CH_TYPES.includes(t)) : [], gi]).filter(([gc]) => gc.length);
-                  // 依書分組（手動輸入的範圍歸「手動範圍」）
-                  const byBook = new Map();
-                  subjItems.forEach(it => {
-                    const bk = String(it.key).startsWith('toc-') ? (bookOf(it.key) || '未命名課本') : '手動範圍';
-                    if (!byBook.has(bk)) byBook.set(bk, []);
-                    byBook.get(bk).push(it);
-                  });
-                  const bookBlocks = [...byBook.entries()].map(([bk, list]) => {
-                    const unitRows = list.map(it => (
-                      <div key={'sk' + it.key} style={{ marginTop: 8 }}>
-                        <div>{it.title}</div>
-                        <div className="row" style={{ marginLeft: 12, marginTop: 3 }}>
-                          {!plainSel[it.key] && (nodeGs.length ? nodeGs.map(([gn, gi]) => pill(`${it.key}|${gi}`, gn.join('+'))) : ffPills(it))}
-                          {plainCycle(it)}
-                        </div>
-                      </div>
-                    ));
-                    const seenCh = new Set();
-                    const chapRows = [];
-                    if (chapGs.length) list.filter(it => !plainSel[it.key]).forEach(it => {
-                      const base = String(it.key).split('+')[0].split('.')[0];
-                      const chKey = base.startsWith('toc-') ? base : String(it.key);
-                      if (seenCh.has(chKey)) return;
-                      seenCh.add(chKey);
-                      chapRows.push(
-                        <div key={'ch' + chKey} style={{ marginTop: 8 }}>
-                          <div>{chapTitle[chKey] || it.title}</div>
-                          <div className="row" style={{ marginLeft: 12, marginTop: 3 }}>{chapGs.map(([gc, gi]) => pill(`ch:${chKey}|${gi}`, gc.join('+')))}</div>
-                        </div>
-                      );
-                    });
-                    return (
-                      <details key={'bk' + sid + bk} style={{ marginTop: 6, marginLeft: 6 }}>
-                        <summary style={{ cursor: 'pointer', fontSize: 14 }}>
-                          📘 <b>{bk}</b> <span className="muted" style={{ fontSize: 12, fontWeight: 400 }}>{list.length} 個單元</span>
-                        </summary>
-                        <div style={{ marginLeft: 10 }}>
-                          {unitRows}
-                          {chapRows.length > 0 && <div className="muted" style={{ marginTop: 8, fontSize: 12 }}>每章一份：</div>}
-                          {chapRows}
-                        </div>
-                      </details>
-                    );
-                  });
-                  return (
-                    <details key={'skb' + sid} style={{ marginTop: 8, paddingLeft: 10, borderLeft: `3px solid ${l.color}` }}>
-                      <summary style={{ cursor: 'pointer' }}>
-                        <span className="tag" style={{ background: l.color, color: '#fff', padding: '2px 10px', borderRadius: 999, fontSize: 12 }}>{l.name}</span>
-                        <span className="muted" style={{ fontSize: 12, marginLeft: 6 }}>{byBook.size > 1 ? `${byBook.size} 本・` : ''}{subjItems.length} 個單元</span>
-                      </summary>
-                      {bookBlocks}
-                    </details>
-                  );
-                }).filter(Boolean);
-                if (!blocks.length) return null;
-                return <>
-                  <b style={{ display: 'block', marginTop: 16 }}>各單元設定</b>
-                  <div className="muted" style={{ fontSize: 12 }}>點題型可循環切換狀態（說明看上面的 ⓘ）</div>
-                  {blocks}
-                </>;
-              })()}
 
             </details>
           );
@@ -1152,19 +804,12 @@ export default function WizardView({
             <label style={{ display: 'block', marginTop: 12 }}>
               <input type="checkbox" checked={bySubject} onChange={e => setBySubject(e.target.checked)} /> 各科目用不同日期範圍
             </label>
-            {[...new Set(items.map(i => i.subject_id))].some(sid => groupsFor(sid).length > 1) && (
-              <label style={{ display: 'block', marginTop: 4 }}>
-                <input type="checkbox" checked={byGroup} onChange={e => setByGroup(e.target.checked)} /> 各題型組用不同日期範圍
-              </label>
-            )}
-            {(bySubject || byGroup) && (
+            {bySubject && (
               <div style={{ marginTop: 10 }}>
-                {(bySubject ? [...new Set(items.map(i => i.subject_id))] : ['all']).map(sid => {
-                  const sname = sid === 'all' ? '' : lists.find(l => l.id === sid)?.name || '';
-                  const gs = groupsFor(sid === 'all' ? [...new Set(items.map(i => i.subject_id))][0] : sid);
-                  return (byGroup ? gs.map((g, gi) => dateInput(`${bySubject ? sid : 'all'}|${gi}`, `${sname}${sname && g ? '・' : ''}${gLabel(g) || `第${gi + 1}組`}`))
-                    : [dateInput(`${sid}|all`, sname || '全部')]);
-                })}
+                {/* 科目清單要跟這次真的選到的教材一致，否則勾了「各科目用不同
+                    日期範圍」卻一個欄位都沒出現，看起來就像按了沒反應。 */}
+                {selectedSubjectIds.map(sid =>
+                  dateInput(`${sid}|all`, lists.find(l => String(l.id) === String(sid))?.name || '全部'))}
                 <div className="muted" style={{ marginTop: 6 }}>沒填的會用整體範圍</div>
               </div>
             )}

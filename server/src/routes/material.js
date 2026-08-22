@@ -78,6 +78,26 @@ router.post('/material/content-items', handle(async (req, res) => {
   res.status(201).json(await material.createContentItem(req.userId, req.body || {}));
 }));
 
+// 打錯字要有得救。改名不換 identity——完成度、Plan selection 與既有 Task
+// 的 linkage 全部原樣保留，改的是同一筆東西的名字，不是換一個東西。
+router.patch('/material/nodes/:id', handle(async (req, res) => {
+  res.json(await material.updateNode(req.userId, req.params.id, req.body || {}));
+}));
+
+router.patch('/material/content-items/:id', handle(async (req, res) => {
+  res.json(await material.updateContentItem(req.userId, req.params.id, req.body || {}));
+}));
+
+// 刪除只在完全沒有使用紀錄時才成立。有完成度／計畫選取／任務的一律 409，
+// 並把 references 一起回去讓畫面說得出「為什麼不能刪」。
+router.delete('/material/nodes/:id', handle(async (req, res) => {
+  res.json(await material.deleteNode(req.userId, req.params.id));
+}));
+
+router.delete('/material/content-items/:id', handle(async (req, res) => {
+  res.json(await material.deleteContentItem(req.userId, req.params.id));
+}));
+
 /* ---------- Completion（ContentItem 專屬，跨 Plan 全域） ---------- */
 
 // 只有 ContentItem 有這個端點。Chapter / Section / Topic 沒有對應的 completion

@@ -1,4 +1,4 @@
-import { useMemo } from 'react';
+import { useMemo, useState } from 'react';
 import { ITEM_LABEL } from './material';
 import { Button } from './ui';
 
@@ -50,9 +50,12 @@ function ItemPills({ items, kinds, onAdd, onRemove, label }) {
 
 export default function MaterialDraftEditor({
   value, onChange, lists = [], busy = false, error = '', problems = [],
-  submitLabel = '建立教材', onSubmit, onCancel,
+  submitLabel = '建立教材', onSubmit, onCancel, onAddSubject = null,
 }) {
   const d = value;
+  // 剛註冊的帳號一個科目都沒有。沒有科目就選不了科目，選不了科目就排不進計畫——
+  // 如果只能「請到別的頁面新增」，第一次使用的人就走進死路了。所以就地能加。
+  const [newSubject, setNewSubject] = useState(null);   // null＝沒在新增
   const set = patch => onChange({ ...d, ...patch });
   const setBook = patch => onChange({ ...d, book: { ...d.book, ...patch } });
   const setChapters = fn => onChange({ ...d, chapters: fn(d.chapters) });
@@ -67,6 +70,15 @@ export default function MaterialDraftEditor({
 
   const ready = d.book.title.trim() && d.chapters.some(c => c.title.trim()) && total > 0;
 
+  // 建好之後直接選起來：學生要的是「這本書是數學」，不是「我新增了一個科目」。
+  const addSubject = async () => {
+    const name = newSubject.trim();
+    if (!name) return;
+    const created = await onAddSubject(name);
+    setNewSubject(null);
+    if (created?.id != null) setBook({ subject_list_id: Number(created.id) });
+  };
+
   return (
     <div className="md">
       <div className="md-book">
@@ -78,12 +90,26 @@ export default function MaterialDraftEditor({
         <label className="md-field">
           <span>科目</span>
           {/* 科目用的是既有科目的 id。名稱可以重複、可以改，不是身分。 */}
-          <select value={d.book.subject_list_id ?? ''}
-            onChange={e => setBook({ subject_list_id: e.target.value === '' ? null : Number(e.target.value) })}>
+          <select value={d.book.subject_list_id ?? ''} disabled={busy}
+            onChange={e => {
+              if (e.target.value === '__new') { setNewSubject(''); return; }
+              setBook({ subject_list_id: e.target.value === '' ? null : Number(e.target.value) });
+            }}>
             <option value="">請選擇</option>
             {lists.map(l => <option key={l.id} value={l.id}>{l.name}</option>)}
+            {onAddSubject && <option value="__new">＋ 新增科目…</option>}
           </select>
         </label>
+        {newSubject != null && (
+          <div className="md-newsubject">
+            <input autoFocus value={newSubject} placeholder="科目名稱，例如：數學"
+              aria-label="新科目名稱" disabled={busy}
+              onChange={e => setNewSubject(e.target.value)}
+              onKeyDown={e => { if (e.key === 'Enter') { e.preventDefault(); addSubject(); } }} />
+            <Button size="sm" onClick={addSubject} disabled={busy || !newSubject.trim()}>新增</Button>
+            <Button size="sm" variant="tertiary" onClick={() => setNewSubject(null)} disabled={busy}>取消</Button>
+          </div>
+        )}
         <label className="md-field">
           <span>出版社</span>
           <input value={d.book.publisher || ''} placeholder="可以不填"

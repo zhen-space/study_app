@@ -624,3 +624,83 @@ describe('Material-backed Task 的最終 subject 與 linkage', () => {
     expect(created.every(c => c.list_id === 1)).toBe(true);
   });
 });
+
+/* ============ 編輯教材：打錯字要有得救 ============ */
+
+describe('編輯教材', () => {
+  const openEditor = async () => {
+    render(<MaterialLibraryView lists={LISTS} />);
+    await waitFor(() => expect(screen.queryByText('新大滿貫')).toBeTruthy());
+    await click(screen.getByRole('button', { name: /新大滿貫/ }));
+    await flush();
+    await click(screen.getByRole('button', { name: '編輯' }));
+    await flush();
+  };
+
+  it('章／節／主題與內容項目都改得動，離開欄位才送出', async () => {
+    await openEditor();
+    const input = screen.getByLabelText('第一章 的名稱');
+    fireEvent.change(input, { target: { value: '第 1 章 力學' } });
+    // 打字當下不打 API——每敲一個字送一次會讓游標跳掉
+    expect(sent('/material/nodes/', 'PATCH')).toEqual([]);
+    fireEvent.blur(input);
+    await flush();
+    const patch = sent('/material/nodes/10', 'PATCH');
+    expect(patch.length).toBe(1);
+    expect(patch[0][1].body).toEqual({ title: '第 1 章 力學' });
+  });
+
+  it('內容種類改得動，而且只在同一層裡換', async () => {
+    await openEditor();
+    // 節底下的內文只能在課本內容／範例／例題之間換
+    const sel = screen.getByLabelText('內文A 的內容種類');
+    expect([...sel.options].map(o => o.textContent)).toEqual(['課本內容', '範例', '例題']);
+    fireEvent.change(sel, { target: { value: 'example_problem' } });
+    await flush();
+    expect(sent('/material/content-items/101', 'PATCH')[0][1].body).toEqual({ kind: 'example_problem' });
+    // 章底下的單元練習只在單元練習／歷屆試題之間換
+    expect([...screen.getByLabelText('單元練習 的內容種類').options].map(o => o.textContent))
+      .toEqual(['單元練習', '歷屆試題']);
+  });
+
+  it('編輯模式不出現完成度勾選框——改名字不該有機會誤按成已完成', async () => {
+    await openEditor();
+    expect(screen.queryByLabelText(/點擊標記完成/)).toBeNull();
+    expect(completionCalls()).toEqual([]);
+  });
+
+  it('名字沒真的改就不送出，也不會送空白名稱', async () => {
+    await openEditor();
+    const input = screen.getByLabelText('第一章 的名稱');
+    fireEvent.blur(input);                                  // 完全沒動
+    fireEvent.change(input, { target: { value: '   ' } });   // 只有空白
+    fireEvent.blur(input);
+    await flush();
+    expect(sent('/material/nodes/', 'PATCH')).toEqual([]);
+  });
+
+  it('刪不掉的時候說出原因，不是只說失敗', async () => {
+    setApi({
+      '/material/content-items/101': () => {
+        const e = new Error('這個項目已經有使用紀錄（完成度、計畫選取或任務），不能刪除');
+        e.status = 409;
+        e.payload = { references: { progress: 1, plan_selections: 0, tasks: 2 } };
+        return Promise.reject(e);
+      },
+    });
+    await openEditor();
+    await click(screen.getByRole('button', { name: '刪除 內文A' }));
+    await flush();
+    const msg = screen.getByRole('alert').textContent;
+    expect(msg).toContain('已經標記完成');
+    expect(msg).toContain('已經排進任務');
+    expect(msg).not.toContain('正被計畫選取');
+  });
+
+  it('乾淨的項目刪得掉，走的是正式 DELETE', async () => {
+    await openEditor();
+    await click(screen.getByRole('button', { name: '刪除 內文A' }));
+    await flush();
+    expect(sent('/material/content-items/101', 'DELETE').length).toBe(1);
+  });
+});

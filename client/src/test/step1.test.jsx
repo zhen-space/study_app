@@ -13,7 +13,7 @@
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { render, screen, waitFor, fireEvent } from '@testing-library/react';
-import { act } from 'react';
+import React, { act } from 'react';
 import * as fx from './fixtures';
 
 vi.mock('../api', () => ({ api: vi.fn() }));
@@ -334,7 +334,7 @@ describe('第一次要用某本教材時就地確認內容', () => {
 describe('加入教材', () => {
   const openAdd = async () => {
     shelf = () => EMPTY_SHELF;
-    render(<MaterialSelector lists={fx.lists} />);
+    render(<MaterialSelector lists={fx.lists} onAddSubject={async n => ({ id: 9, name: n })} />);
     await waitFor(() => expect(screen.queryByText('還沒有教材')).toBeTruthy());
     await click(btn(/加入教材/));
     await flush();
@@ -373,6 +373,54 @@ describe('加入教材', () => {
     noCrash();
   });
 
+  it('一個科目都沒有的新帳號，可以就地新增科目——不然第一次使用就是死路', async () => {
+    let reloaded = 0;
+    shelf = () => EMPTY_SHELF;
+    // 照實際情況：新增科目之後上層會 reload，科目清單才跟著更新
+    function Host() {
+      const [ls, setLs] = React.useState([]);
+      return (
+        <MaterialSelector lists={ls}
+          onAddSubject={async name => {
+            reloaded++;
+            const made = { id: 9, name };
+            setLs([made]);
+            return made;
+          }} />
+      );
+    }
+    render(<Host />);
+    await waitFor(() => expect(screen.queryByText('還沒有教材')).toBeTruthy());
+    await click(btn(/加入教材/));
+    await flush();
+    await click(btn(/自己建立教材/));
+    await flush();
+
+    const sel = screen.getByLabelText('科目');
+    // 一個科目都沒有，但看得到「可以新增一個」
+    expect([...sel.options].map(o => o.textContent)).toEqual(['請選擇', '＋ 新增科目…']);
+    fireEvent.change(sel, { target: { value: '__new' } });
+    await flush();
+    fireEvent.change(screen.getByLabelText('新科目名稱'), { target: { value: '數學' } });
+    await click(btn(/^新增$/));
+    await flush();
+
+    expect(reloaded).toBe(1);
+    // 建好之後直接選起來：學生要的是「這本書是數學」，不是「我新增了一個科目」
+    expect(screen.getByLabelText('科目').value).toBe('9');
+    expect(screen.queryByLabelText('新科目名稱')).toBeNull();
+    noCrash();
+  });
+
+  it('已經有科目時不強迫新增，原本的選項照常在', async () => {
+    await openAdd();
+    await click(btn(/自己建立教材/));
+    await flush();
+    const opts = [...screen.getByLabelText('科目').options].map(o => o.textContent);
+    expect(opts).toEqual(['請選擇', '物理', '地科', '＋ 新增科目…']);
+    noCrash();
+  });
+
   it('節與主題是同層的兩個選項，不是上下層', async () => {
     await openAdd();
     await click(btn(/自己建立教材/));
@@ -396,6 +444,33 @@ describe('加入教材', () => {
     expect(btn(/加入單元練習/)).toBeTruthy();
     expect(btn(/加入歷屆試題/)).toBeTruthy();
     expect(document.body.textContent).not.toMatch(/其他|練習區/);
+    noCrash();
+  });
+
+  it('伺服器沒有 AI 金鑰時，講學生聽得懂的話，而且不留下半本教材', async () => {
+    setApi({
+      '/material/import/preview': () => {
+        const e = new Error('伺服器尚未設定 AI 金鑰（ANTHROPIC_API_KEY）');
+        e.status = 500;
+        return Promise.reject(e);
+      },
+    });
+    await openAdd();
+    // 用 PDF：圖片會先走瀏覽器的解碼／轉正，那條路在 jsdom 裡沒有實作。
+    // 兩者之後走的是同一個 handler。
+    const file = new File([new Uint8Array([37, 80, 68, 70])], 'toc.pdf', { type: 'application/pdf' });
+    const input = document.querySelector('input[type=file]');
+    // jsdom 的 file input 不能直接指派 files，要自己掛上去
+    Object.defineProperty(input, 'files', { value: [file], configurable: true });
+    await act(async () => { fireEvent.change(input); });
+    await waitFor(() => expect(screen.queryByRole('alert')).toBeTruthy());
+    const msg = screen.getByRole('alert').textContent;
+    expect(msg).toContain('自己建立教材');
+    expect(msg).not.toMatch(/ANTHROPIC|API_KEY|金鑰/);
+    // 卡住的讀取提示要消失，而且什麼都沒建立
+    expect(screen.queryByText(/AI 讀取/)).toBeNull();
+    expect(sent('/material/import/commit', 'POST')).toEqual([]);
+    expect(sent('/material/books', 'POST')).toEqual([]);
     noCrash();
   });
 
