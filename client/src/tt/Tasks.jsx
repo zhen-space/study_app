@@ -5,6 +5,21 @@ import VocabCard from './VocabCard';
 import MemoCard from './MemoCard';
 
 const WDC = '日一二三四五六';
+
+// 一科的項數與逾期數。逾期是紅的，其餘是次要資訊——這一行要能一眼看出
+// 「哪一科欠最多」，而不是變成又一排同樣重的數字。
+export function overdueCount(list, td = today()) {
+  return list.filter(t => !t.completed && !t.deleted && t.due_date && t.due_date < td).length;
+}
+export function SubjectCounts({ list }) {
+  const od = overdueCount(list);
+  return (
+    <>
+      <span className="muted" style={{ marginLeft: 8, fontWeight: 400 }}>{list.length} 項</span>
+      {od > 0 && <span style={{ marginLeft: 6, color: 'var(--red)', fontWeight: 400 }}>逾期 {od}</span>}
+    </>
+  );
+}
 export function repeatLabel(r, dueDate) {
   if (!r) return '不重複';
   if (r === 'daily') return '每天';
@@ -208,8 +223,10 @@ function TaskRow({ t, lists, sel, onSel, onToggle, onDragStart, onDropOn, onSwip
         {t.priority > 0 && <span className={PRI[t.priority][1]}>⚑</span>}
         <span className="title">{t.title}</span>
         {t.subtasks.length > 0 && <span className="chip">{t.subtasks.filter(s => s.done).length}/{t.subtasks.length}</span>}
-        {t.tags.map(tag => <span key={tag} className="chip">#{tag}</span>)}
-        {t.due_date && <span className="muted" style={overdue ? { color: 'var(--red)' } : {}}>{t.due_date.slice(5)}{t.due_time ? ' ' + t.due_time : ''}</span>}
+        {/* chip--tag：手機上要收起來。每一筆排進來的讀書任務都掛著同一個
+            「讀書計劃」標籤，那一格寬度換不到任何資訊，卻把長標題擠成好幾行。 */}
+        {t.tags.map(tag => <span key={tag} className="chip chip--tag">#{tag}</span>)}
+        {t.due_date && <span className="muted trow-due" style={overdue ? { color: 'var(--red)' } : {}}>{t.due_date.slice(5)}{t.due_time ? ' ' + t.due_time : ''}</span>}
         {list && <span className="dot" style={{ background: list.color }} title={list.name} />}
       </div>
     </div>
@@ -592,7 +609,12 @@ export default function Tasks({ view, tasks, lists, filters, habits = [], reload
               const canDrag = sortBy === 'default';
               return (
                 <div className="tgroup" key={label}>
-                  <div className="glabel">{label}</div>
+                  <div className="glabel">
+                    {label}
+                    {/* 照科目分堆時，日期分組不見了，「這一科欠了幾項」就沒地方看。
+                        分堆的用途正是這個，所以把每一科的項數與逾期數寫在標頭上。 */}
+                    {sortBy === 'subjectGroup' && <SubjectCounts list={sorted} />}
+                  </div>
                   {sorted.map(t => <TaskRow key={t.id} t={t} lists={lists} sel={t.id === selId} onSel={x => setSelId(x.id)} onToggle={toggle}
                     onDragStart={canDrag ? setDragT : undefined}
                     onDropOn={canDrag ? x => dropOn(x, sorted) : undefined}

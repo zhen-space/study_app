@@ -291,6 +291,13 @@ select { -webkit-appearance: none; appearance: none; padding-right: 26px;
   .quad { padding: 8px; font-size: 13px; }
   .quad .trow { padding: 6px 4px; gap: 6px; }
   .quick-add { display: none; }
+  /* 教材任務的標題天生就長（書名｜章｜節｜內容）。標籤與日期都不會縮，
+     標題拿到的就只剩下十幾像素寬，一列被拆成六行，整頁沒辦法掃。
+     手機上的任務清單是主畫面：標籤收起來（每一筆都是同一個「讀書計劃」，
+     佔了寬度卻換不到資訊，要看標籤到詳情頁），日期不折行。
+     .quad（矩陣）自己有更窄的版面，不套這一組。 */
+  .tgroup .trow .chip--tag { display: none; }
+  .tgroup .trow .trow-due { white-space: nowrap; flex-shrink: 0; }
   .main-head { padding-top: calc(14px + env(safe-area-inset-top)); padding-left: 54px; }
   .main-head h2 { font-size: 24px; }
   .main-body { padding-bottom: calc(84px + env(safe-area-inset-bottom)); }
