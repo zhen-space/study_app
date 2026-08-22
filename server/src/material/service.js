@@ -548,6 +548,42 @@ export async function selectNode(userId, planId, nodeId, selected) {
   return selectItems(userId, planId, ids, false);
 }
 
+// 整本教材的快速選取：全選章／全選節／全選主題／清除。
+//
+// 為什麼是一支 API 而不是讓前端對每一章各打一次 selectNode：
+// 12 章就是 12 個 request，而且它們會各自 reconcile、各自回一份 task_exits，
+// 使用者看到的是一連串閃動。這裡一次算完要動哪些 ContentItem，走同一支
+// selectItems，所以 reconciliation 與 Lock 的行為完全一樣。
+//
+// nodeKinds 省略＝整本（章直屬的內容也算）。指定時只取那些 kind 的節點底下的內容，
+// 例如 ['section'] 就是「全選節」。教材裡沒有那一層時回空結果，不是錯誤——
+// 不是每一本書都有主題。
+export async function selectBookNodes(userId, planId, bookId, { selected = true, nodeKinds = null } = {}) {
+  const book = await mustBook(userId, bookId);
+  const items = await q.all(
+    `SELECT i.id, i.node_id, n.kind AS node_kind
+       FROM material_content_items i
+       JOIN material_nodes n ON n.id=i.node_id AND n.user_id=i.user_id
+      WHERE i.user_id=? AND i.book_id=?`, [userId, book.id]);
+  const wanted = nodeKinds == null
+    ? items
+    : items.filter(r => nodeKinds.includes(r.node_kind));
+  const ids = wanted.map(r => Number(r.id));
+  if (!ids.length) return { selected: [], deselected: [], task_exits: { cancelled: [], blocked: [] } };
+
+  if (selected) {
+    // 已完成的安靜跳過：使用者按的是「全選節」，不是在對已完成的項目表態。
+    const open = await q.all(
+      `SELECT i.id FROM material_content_items i
+         LEFT JOIN material_progress p ON p.content_item_id=i.id AND p.user_id=i.user_id
+        WHERE i.user_id=? AND i.id IN (${ids.map(() => '?').join(',')}) AND COALESCE(p.completed,0)=0`,
+      [userId, ...ids]);
+    if (!open.length) return { selected: [], deselected: [], task_exits: { cancelled: [], blocked: [] } };
+    return selectItems(userId, planId, open.map(r => r.id), true);
+  }
+  return selectItems(userId, planId, ids, false);
+}
+
 export { NODE_KINDS, ITEM_KINDS };
 
 // 科目必須是這位使用者自己的 lists.id。用名稱比對是不行的。

@@ -109,19 +109,37 @@ describe('內容確認（preview）', () => {
     const L = await seedLegacyBook('巢狀');
     const out = await svc.getLegacyFormalizationPreview(USER, { listId, book: L.book });
     const ch = out.draft.chapters[0];
-    assert.deepEqual(ch.children.map(c => c.kind), ['section', 'topic']);
+    // 「壹 大氣的性質」（節）、底下巢狀的「主題1」、以及頂層的「焦點一」
+    assert.deepEqual(ch.children.map(c => c.kind), ['section', 'topic', 'section']);
     // 正式 draft 裡的節點底下沒有再一層 children —— 不建假 Section，也不巢狀
     for (const c of ch.children) assert.equal('children' in c, false);
   });
 
-  test('對不上正式種類的節點（焦點）不進 draft，而是如實列出', async () => {
+  test('level 名稱對不上時用巢狀位置判斷，不反覆問使用者', async () => {
     const L = await seedLegacyBook('焦點');
     const out = await svc.getLegacyFormalizationPreview(USER, { listId, book: L.book });
-    assert.equal(out.draft.chapters[0].children.some(c => c.title.startsWith('焦點')), false,
-      '焦點不得被猜成 section 或 topic');
-    assert.equal(out.unsupported_nodes.length, 1);
-    assert.equal(out.unsupported_nodes[0].legacy_level, '焦點');
-    assert.ok(out.unsupported_nodes[0].legacy_ref.toc_id);
+    // 「焦點一」在 sections JSON 的頂層 → 與「節」同一層。這不是猜：
+    // 位置本來就在資料裡，讀出來就好。
+    const focus = out.draft.chapters[0].children.find(c => c.title.startsWith('焦點'));
+    assert.ok(focus, '焦點要進得了 draft，不能變成永遠不能用的節點');
+    assert.equal(focus.kind, 'section');
+    // 位置判斷得出來就沒有 ambiguity，不需要再問一次
+    assert.deepEqual(out.unsupported_nodes, []);
+  });
+
+  test('巢狀在節底下、名稱也對不上的節點判成主題', async () => {
+    const rows = [];
+    const r = await q.run(
+      `INSERT INTO toc_items (user_id,list_id,title,level,sections,order_index,book,publisher)
+       VALUES (?,?,?,?,?,?,?,?)`,
+      [USER, listId, '1 章', '章', JSON.stringify([
+        { title: 'Part A', level: 'Part', children: [{ title: 'Focus 1', level: 'Focus', children: [] }] },
+      ]), 0, '英文書名', '南一']);
+    rows.push(Number(r.lastInsertRowid));
+    const out = await svc.getLegacyFormalizationPreview(USER, { listId, book: '英文書名' });
+    assert.deepEqual(out.draft.chapters[0].children.map(c => [c.title, c.kind]),
+      [['Part A', 'section'], ['Focus 1', 'topic']]);
+    assert.deepEqual(out.unsupported_nodes, []);
   });
 
   test('preview 完全不寫任何東西', async () => {

@@ -504,15 +504,35 @@ describe('加入教材', () => {
 
 describe('已選數量', () => {
   it('Edit 一進來就顯示正確總數，不必先打開每一本書', async () => {
-    // 書單說這本已選 3 項，但一本都還沒展開過
-    shelf = () => ({
-      books: [{ ...fx.materialShelf.books[0], selected_count: 3 },
-        { ...fx.materialShelf.books[1], selected_count: 1 }],
-      counts: { material: 2, legacy: 0 },
+    // 這個 Plan 跨兩本書選了 4 項，而且一本都還沒展開過
+    setApi({
+      '/plans/55/material-items': [
+        { content_item_id: 101, book_id: 1, kind: 'reading', title: 'a', selected: true, material_completed: false },
+        { content_item_id: 102, book_id: 1, kind: 'reading', title: 'b', selected: true, material_completed: false },
+        { content_item_id: 103, book_id: 1, kind: 'reading', title: 'c', selected: true, material_completed: false },
+        { content_item_id: 201, book_id: 2, kind: 'reading', title: 'd', selected: true, material_completed: false },
+        // 取消掉的、以及已完成的都不算進「這次要讀幾項」
+        { content_item_id: 104, book_id: 1, kind: 'reading', title: 'e', selected: false, material_completed: false },
+        { content_item_id: 105, book_id: 1, kind: 'reading', title: 'f', selected: true, material_completed: true },
+      ],
     });
     render(<MaterialSelector planId={55} />);
+    await waitFor(() => expect(document.querySelector('.mt-count')?.textContent).toBe('已選 4 項'));
+    noCrash();
+  });
+
+  it('「已選 N 項」與往上回報的數字是同一個，不會各說各話', async () => {
+    const seen = [];
+    render(<MaterialSelector draftIds={new Set()} onDraftChange={() => {}}
+      onSelectionChange={n => seen.push(n)} />);
     await waitFor(() => expect(screen.queryByText('新大滿貫')).toBeTruthy());
-    expect(document.querySelector('.mt-count').textContent).toBe('已選 4 項');
+    await click(btn(/新大滿貫/));
+    await flush();
+    await click(screen.getByRole('checkbox', { name: '單元1 力學（整章）' }));
+    await flush();
+    const shown = Number(document.querySelector('.mt-count').textContent.match(/\d+/)[0]);
+    expect(seen.at(-1)).toBe(shown);
+    expect(shown).toBeGreaterThan(0);
     noCrash();
   });
 
@@ -588,6 +608,285 @@ describe('Plan Detail', () => {
   it('沒有教材 linkage 的手動任務照常顯示，不被硬塞進某一本書', async () => {
     await mount();
     expect(screen.getByText('買參考書')).toBeTruthy();
+    noCrash();
+  });
+});
+
+/* ============ 7. 互動不能等 server round-trip ============ */
+
+describe('操作要立刻反應', () => {
+  // 教材大一點時，一個節點底下有很多 ContentItem。整章／全選如果在前端展開成
+  // 每項一個 request，在真的網路上就是點一下卡好幾秒。
+  const big = () => {
+    const items = (n, base, tag) => Array.from({ length: n }, (_, i) => ({
+      id: base + i, title: `${tag}內容${i}`, kind: 'reading', estimated_minutes: null,
+      order_index: i, completed: false, selected: false,
+    }));
+    const prog = t => ({ total_items: t, completed_items: 0, percent: 0 });
+    return {
+      book: { id: 1, title: '新大滿貫', publisher: '龍騰' },
+      progress: prog(20), selection: 'none',
+      nodes: [{
+        id: 10, kind: 'chapter', title: '第一章', parent_id: null, order_index: 0,
+        progress: prog(20), selection: 'none', content_items: items(4, 900, '章'),
+        children: [
+          { id: 11, kind: 'section', title: '1-1', parent_id: 10, order_index: 0,
+            progress: prog(8), selection: 'none', children: [], content_items: items(8, 100, '節') },
+          { id: 12, kind: 'topic', title: '主題一', parent_id: 10, order_index: 1,
+            progress: prog(8), selection: 'none', children: [], content_items: items(8, 200, '題') },
+        ],
+      }],
+    };
+  };
+
+  const openBig = async (extra = {}) => {
+    setApi({ '/material/books/1/tree': big(), '/plans/55/material-items': [] });
+    render(<MaterialSelector {...extra} />);
+    await waitFor(() => expect(screen.queryByText('新大滿貫')).toBeTruthy());
+    await click(btn(/新大滿貫/));
+    await flush();
+    await click(btn(/第一章/));
+    await flush();
+  };
+
+  it('Create：勾一個項目完全不打 API，畫面立刻更新', async () => {
+    let ids = new Set();
+    await openBig({ draftIds: ids, onDraftChange: s => { ids = s; } });
+    calls.length = 0;
+    await click(screen.getByRole('checkbox', { name: '節內容0' }));
+    expect(calls).toEqual([]);
+    expect([...ids].length).toBe(1);
+    noCrash();
+  });
+
+  it('Edit：整章 20 項只送 1 個請求，不是逐項展開', async () => {
+    await openBig({ planId: 55 });
+    calls.length = 0;
+    await click(screen.getByRole('checkbox', { name: '第一章（整章）' }));
+    await flush();
+    const writes = calls.filter(([, o]) => (o?.method || 'GET') !== 'GET');
+    expect(writes.length, `不該逐項送：${JSON.stringify(writes.map(w => w[0]))}`).toBe(1);
+    expect(writes[0][0]).toBe('/plans/55/material-nodes/10');
+    // 逐項的端點一次都不該被呼叫
+    expect(sent('/plans/55/material-items', 'POST')).toEqual([]);
+  });
+
+  it('Edit：勾選後畫面不等 server，也不重抓整棵樹', async () => {
+    await openBig({ planId: 55 });
+    calls.length = 0;
+    await click(screen.getByRole('checkbox', { name: '節內容0' }));
+    // 還沒 flush（server 還沒回）畫面就已經是勾起來的
+    expect(screen.getByRole('checkbox', { name: '節內容0' }).getAttribute('aria-checked')).toBe('true');
+    await flush();
+    // 一次寫入，而且沒有為了看結果再抓一次整棵樹
+    expect(sent('/material/books/1/tree', 'GET')).toEqual([]);
+    expect(sent('/plans/55/material-items', 'POST').length).toBe(1);
+  });
+
+  it('Edit：寫入失敗時把畫面收回來並說明，不留下假的勾', async () => {
+    await openBig({ planId: 55 });
+    setApi({
+      '/material/books/1/tree': big(),
+      '/plans/55/material-items': (opts) => {
+        if ((opts?.method || 'GET') === 'POST') return Promise.reject(new Error('網路怪怪的'));
+        return Promise.resolve([]);
+      },
+    });
+    await click(screen.getByRole('checkbox', { name: '節內容0' }));
+    await flush();
+    expect(screen.getByRole('checkbox', { name: '節內容0' }).getAttribute('aria-checked')).toBe('false');
+    expect(screen.getByRole('alert').textContent).toContain('網路怪怪的');
+    expect(document.querySelector('.mt-count').textContent).toBe('已選 0 項');
+  });
+
+  it('展開與收合完全不打 API', async () => {
+    await openBig({ planId: 55 });
+    calls.length = 0;
+    await click(btn(/第一章/));      // 收
+    await click(btn(/第一章/));      // 開
+    expect(calls).toEqual([]);
+  });
+});
+
+/* ============ 8. 快速選取 ============ */
+
+describe('教材內容頁的快速選取', () => {
+  const openBook = async (extra = {}) => {
+    render(<MaterialSelector {...extra} />);
+    await waitFor(() => expect(screen.queryByText('新大滿貫')).toBeTruthy());
+    await click(btn(/新大滿貫/));
+    await flush();
+  };
+
+  it('Edit：全選節只送一個請求，而且帶的是節這一層', async () => {
+    setApi({ '/plans/55/material-items': [] });
+    await openBook({ planId: 55 });
+    calls.length = 0;
+    await click(btn(/^全選節$/));
+    await flush();
+    const writes = calls.filter(([, o]) => (o?.method || 'GET') !== 'GET');
+    expect(writes.length).toBe(1);
+    expect(writes[0][0]).toBe('/plans/55/material-books/1');
+    expect(writes[0][1].body).toEqual({ selected: true, node_kinds: ['section'] });
+  });
+
+  it('Create：快速選取完全不打 API', async () => {
+    let ids = new Set();
+    await openBook({ draftIds: ids, onDraftChange: s => { ids = s; } });
+    calls.length = 0;
+    await click(btn(/^全選節$/));
+    expect(calls).toEqual([]);
+    expect([...ids].length).toBeGreaterThan(0);
+  });
+
+  it('教材沒有主題那一層時，就不出現「全選主題」', async () => {
+    setApi({
+      '/material/books/1/tree': {
+        book: { id: 1, title: '新大滿貫' },
+        progress: { total_items: 1, completed_items: 0, percent: 0 }, selection: 'none',
+        nodes: [{ id: 10, kind: 'chapter', title: '第一章', parent_id: null, order_index: 0,
+          progress: { total_items: 1, completed_items: 0, percent: 0 }, selection: 'none',
+          content_items: [], children: [
+            { id: 11, kind: 'section', title: '1-1', parent_id: 10, order_index: 0,
+              progress: { total_items: 1, completed_items: 0, percent: 0 }, selection: 'none',
+              children: [], content_items: [{ id: 101, title: '課本內容', kind: 'reading',
+                estimated_minutes: null, order_index: 0, completed: false, selected: false }] }] }],
+      },
+    });
+    await openBook({ draftIds: new Set(), onDraftChange: () => {} });
+    expect(screen.getByRole('button', { name: '全選節' })).toBeTruthy();
+    expect(screen.queryByRole('button', { name: '全選主題' })).toBeNull();
+    expect(screen.queryByRole('button', { name: '全選章' })).toBeNull();
+  });
+
+  it('已完成的項目不會被快速選取重新選起來', async () => {
+    let ids = new Set();
+    const prog = (t, c) => ({ total_items: t, completed_items: c, percent: 0 });
+    setApi({
+      '/material/books/1/tree': {
+        book: { id: 1, title: '新大滿貫' }, progress: prog(2, 1), selection: 'none',
+        nodes: [{ id: 10, kind: 'chapter', title: '第一章', parent_id: null, order_index: 0,
+          progress: prog(2, 1), selection: 'none', content_items: [], children: [
+            { id: 11, kind: 'section', title: '1-1', parent_id: 10, order_index: 0,
+              progress: prog(2, 1), selection: 'none', children: [], content_items: [
+                { id: 101, title: '已經讀完的', kind: 'reading', estimated_minutes: null,
+                  order_index: 0, completed: true, selected: false },
+                { id: 102, title: '還沒讀的', kind: 'reading', estimated_minutes: null,
+                  order_index: 1, completed: false, selected: false }] }] }],
+      },
+    });
+    await openBook({ draftIds: ids, onDraftChange: s2 => { ids = s2; } });
+    await click(btn(/^全選節$/));
+    // 只選了還沒讀的那一項；已完成的沒有被拉進來
+    expect([...ids]).toEqual([102]);
+    expect(document.querySelector('.mt-count').textContent).toBe('已選 1 項');
+  });
+});
+
+/* ============ 9.「下一步」與「已選 N 項」必須是同一個依據 ============ */
+
+describe('下一步的啟用條件', () => {
+  const pickChapter = async () => {
+    await click(btn(/新大滿貫/));
+    await flush();
+    await click(screen.getByRole('checkbox', { name: '單元1 力學（整章）' }));
+    await flush();
+  };
+
+  it('選了至少一項就走得下去', async () => {
+    await mountWizard();
+    expect(btn(/^下一步$/)).toBeDisabled();
+    await pickChapter();
+    expect(document.querySelector('.mt-count').textContent).not.toBe('已選 0 項');
+    expect(btn(/^下一步$/)).not.toBeDisabled();
+    noCrash();
+  });
+
+  it('取消回 0 項就again停用', async () => {
+    await mountWizard();
+    await pickChapter();
+    await click(screen.getByRole('checkbox', { name: '單元1 力學（整章）' }));
+    await flush();
+    expect(document.querySelector('.mt-count').textContent).toBe('已選 0 項');
+    expect(btn(/^下一步$/)).toBeDisabled();
+    noCrash();
+  });
+
+  it('在教材內容頁裡也能直接下一步，不用先返回書櫃', async () => {
+    await mountWizard();
+    await pickChapter();
+    // 還停在這本教材的內容頁
+    expect(screen.getByRole('button', { name: /所有教材/ })).toBeTruthy();
+    expect(btn(/^下一步$/)).not.toBeDisabled();
+    await click(btn(/^下一步$/));
+    await flush();
+    expect(screen.getByText('步驟 2／3：怎麼安排')).toBeTruthy();
+    noCrash();
+  });
+
+  it('排程用的清單暫時算不出東西，也不會讓已經選好的內容按不下去', async () => {
+    // 這是實機上「已選 6 項，但下一步是灰的」的形狀：畫面上明明勾了，
+    // 但另一份用來排程的清單是空的。兩個數字來源不同就會這樣。
+    setApi({ '/material/books': [] });     // 排程用的教材清單拿不到
+    await mountWizard();
+    await pickChapter();
+    expect(document.querySelector('.mt-count').textContent).not.toBe('已選 0 項');
+    expect(btn(/^下一步$/)).not.toBeDisabled();
+    noCrash();
+  });
+});
+
+/* ============ 10. 書櫃依科目整理 ============ */
+
+describe('教材依科目分堆', () => {
+  const shelfOf = books => ({ books, counts: {} });
+  const bk = (id, title, subject) => ({
+    source: 'material', material_book_id: id, title, publisher: '',
+    subject_list_id: subject, progress: { total_items: 1, completed_items: 0, percent: 0 },
+    completion_supported: true, requires_content_confirmation: false,
+    selectable: true, chapter_count: 1, selected_count: 0,
+  });
+
+  it('多科時分堆，用的是教材自己的科目欄位而不是書名', async () => {
+    shelf = () => shelfOf([
+      bk(1, '對話式', 1), bk(2, '週攻略', 2), bk(3, '智慧型', 1), bk(4, '新關鍵', 2),
+    ]);
+    render(<MaterialSelector lists={fx.lists} />);
+    await waitFor(() => expect(screen.queryByText('對話式')).toBeTruthy());
+    const groups = [...document.querySelectorAll('.mt-subject-group')].map(g => ({
+      name: g.querySelector('.mt-subject-name').textContent,
+      books: [...g.querySelectorAll('.mt-book-title')].map(b => b.textContent),
+    }));
+    expect(groups).toEqual([
+      { name: '地科', books: ['週攻略', '新關鍵'] },
+      { name: '物理', books: ['對話式', '智慧型'] },
+    ]);
+    noCrash();
+  });
+
+  it('只有一個科目時不畫分組標題——一個標題底下放全部只是多一行字', async () => {
+    shelf = () => shelfOf([bk(1, '對話式', 1), bk(3, '智慧型', 1)]);
+    render(<MaterialSelector lists={fx.lists} />);
+    await waitFor(() => expect(screen.queryByText('對話式')).toBeTruthy());
+    expect([...document.querySelectorAll('.mt-subject-name')].map(n => n.textContent)).toEqual(['']);
+    noCrash();
+  });
+
+  it('沒指定科目的排在最後，而且明說它還沒有科目', async () => {
+    shelf = () => shelfOf([bk(1, '對話式', 1), bk(9, '還沒設的', null)]);
+    render(<MaterialSelector lists={fx.lists} />);
+    await waitFor(() => expect(screen.queryByText('還沒設的')).toBeTruthy());
+    const names = [...document.querySelectorAll('.mt-subject-name')].map(n => n.textContent);
+    expect(names.at(-1)).toBe('還沒指定科目');
+    expect(screen.getByText('需要先指定科目')).toBeTruthy();
+    noCrash();
+  });
+
+  it('分堆不呼叫分類 API——學生不必為了排程去維護分類', async () => {
+    shelf = () => shelfOf([bk(1, '對話式', 1), bk(2, '週攻略', 2)]);
+    render(<MaterialSelector lists={fx.lists} />);
+    await waitFor(() => expect(screen.queryByText('對話式')).toBeTruthy());
+    expect(calls.filter(([p]) => p.startsWith('/material/categories'))).toEqual([]);
     noCrash();
   });
 });

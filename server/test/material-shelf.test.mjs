@@ -199,3 +199,91 @@ describe('確認過內容之後', () => {
       [{ title: '1-1 正弦', level: '節', children: [] }]);
   });
 });
+
+describe('整本教材的快速選取', () => {
+  // 一支 API 一次算完。前端不該為了「全選節」對每一章各打一次。
+  let quickPlan = 0;
+  let quickBook = 0;
+  let byKind = {};
+
+  before(async () => {
+    quickPlan = Number((await q.run('INSERT INTO plans (user_id,name) VALUES (?,?)',
+      [USER, '快速選取'])).lastInsertRowid);
+    const out = await svc.commitMaterialDraft(USER, {
+      book: { title: '快速選取用書', subject_list_id: listId },
+      chapters: [1, 2, 3].map(c => ({
+        title: `第 ${c} 章`,
+        content_items: [{ kind: 'unit_exercise', title: '單元練習' }],
+        children: [
+          { kind: 'section', title: `${c}-1`, content_items: [{ kind: 'reading', title: '課本內容' }] },
+          { kind: 'topic', title: `主題 ${c}`, content_items: [{ kind: 'example_problem', title: '例題' }] },
+        ],
+      })),
+    });
+    quickBook = out.book.id;
+    const rows = await q.all(
+      `SELECT i.id, n.kind FROM material_content_items i
+         JOIN material_nodes n ON n.id=i.node_id
+        WHERE i.user_id=? AND i.book_id=?`, [USER, quickBook]);
+    byKind = rows.reduce((m, r) => { (m[r.kind] = m[r.kind] || []).push(r.id); return m; }, {});
+  });
+
+  const selectedIds = async () => (await q.all(
+    `SELECT content_item_id FROM plan_material_items
+      WHERE user_id=? AND plan_id=? AND selected=1`, [USER, quickPlan]))
+    .map(r => Number(r.content_item_id)).sort((a, b) => a - b);
+
+  test('只選「節」底下的內容，章與主題不受影響', async () => {
+    await svc.selectBookNodes(USER, quickPlan, quickBook, { selected: true, nodeKinds: ['section'] });
+    assert.deepEqual(await selectedIds(), [...byKind.section].sort((a, b) => a - b));
+  });
+
+  test('只選「主題」底下的內容', async () => {
+    await svc.selectBookNodes(USER, quickPlan, quickBook, { selected: false });   // 先清空
+    await svc.selectBookNodes(USER, quickPlan, quickBook, { selected: true, nodeKinds: ['topic'] });
+    assert.deepEqual(await selectedIds(), [...byKind.topic].sort((a, b) => a - b));
+  });
+
+  test('不指定種類＝整本，章直屬的單元練習也算進來', async () => {
+    await svc.selectBookNodes(USER, quickPlan, quickBook, { selected: false });
+    await svc.selectBookNodes(USER, quickPlan, quickBook, { selected: true });
+    const all = [...byKind.chapter, ...byKind.section, ...byKind.topic].sort((a, b) => a - b);
+    assert.deepEqual(await selectedIds(), all);
+  });
+
+  test('清除把整本的選取拿掉', async () => {
+    await svc.selectBookNodes(USER, quickPlan, quickBook, { selected: true });
+    await svc.selectBookNodes(USER, quickPlan, quickBook, { selected: false });
+    assert.deepEqual(await selectedIds(), []);
+  });
+
+  test('已完成的項目不會被全選重新選起來', async () => {
+    await svc.selectBookNodes(USER, quickPlan, quickBook, { selected: false });
+    const done = byKind.section[0];
+    await svc.setCompletion(USER, done, { completed: true });
+    await svc.selectBookNodes(USER, quickPlan, quickBook, { selected: true });
+    const sel = await selectedIds();
+    assert.equal(sel.includes(done), false, '已完成的不該被重新選取');
+    // 而且它的完成度沒有被動到
+    const p = await q.get(
+      'SELECT completed FROM material_progress WHERE user_id=? AND content_item_id=?', [USER, done]);
+    assert.equal(Number(p.completed), 1);
+    await svc.setCompletion(USER, done, { completed: false });
+  });
+
+  test('教材裡沒有那一層時回空結果，不是錯誤', async () => {
+    const flat = await svc.commitMaterialDraft(USER, {
+      book: { title: '只有章的書', subject_list_id: listId },
+      chapters: [{ title: '第 1 章', content_items: [{ kind: 'past_exam', title: '歷屆試題' }], children: [] }],
+    });
+    const r = await svc.selectBookNodes(USER, quickPlan, flat.book.id,
+      { selected: true, nodeKinds: ['topic'] });
+    assert.deepEqual(r.selected, []);
+    assert.deepEqual(r.task_exits, { cancelled: [], blocked: [] });
+  });
+
+  test('別人的教材動不了', async () => {
+    await assert.rejects(
+      () => svc.selectBookNodes(OTHER, quickPlan, quickBook, { selected: true }), /找不到/);
+  });
+});

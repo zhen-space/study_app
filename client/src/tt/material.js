@@ -72,6 +72,15 @@ export const selectItems = (planId, contentItemIds, selected) =>
 export const selectNode = (planId, nodeId, selected) =>
   api(`/plans/${planId}/material-nodes/${nodeId}`, { method: 'POST', body: { selected } });
 
+// 整本教材的快速選取（全選章／節／主題／清除）。**一個請求**——
+// 不是前端對每一章各打一次；後端一次算完要動哪些 ContentItem。
+// node_kinds 省略＝整本。
+export const selectBookNodes = (planId, bookId, { selected = true, nodeKinds = null } = {}) =>
+  api(`/plans/${planId}/material-books/${bookId}`, {
+    method: 'POST',
+    body: { selected, ...(nodeKinds ? { node_kinds: nodeKinds } : {}) },
+  });
+
 /* ---------- 錯誤修正：改名、改種類、刪除 ---------- */
 
 // 改名不換 identity：完成度、Plan selection 與既有 Task 的 linkage 全部留著。
