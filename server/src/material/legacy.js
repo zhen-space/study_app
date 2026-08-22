@@ -217,6 +217,10 @@ export async function legacyFormalizationDraft(userId, { listId, book = '' }) {
   const chapters = rows.map((row, ci) => {
     const projected = projectChapter(row);
     const children = [];
+    // 對不上正式種類的節點也要讓使用者看得到——它就印在他的課本上。
+    // 掛在自己那一章底下（而不是只有一份全域清單），確認畫面才能照原本的
+    // 位置呈現，使用者不必自己回想「這個焦點是第幾章的」。
+    const chapterUnsupported = [];
     for (const c of projected.children) {
       if (c.kind === 'section' || c.kind === 'topic') {
         children.push({
@@ -228,7 +232,9 @@ export async function legacyFormalizationDraft(userId, { listId, book = '' }) {
           legacy_ref: c.legacy_ref,
         });
       } else {
-        unsupported.push({ title: c.title, legacy_level: c.legacy_level, legacy_ref: c.legacy_ref });
+        const u = { title: c.title, legacy_level: c.legacy_level, legacy_ref: c.legacy_ref };
+        unsupported.push(u);
+        chapterUnsupported.push(u);
       }
     }
     return {
@@ -236,6 +242,7 @@ export async function legacyFormalizationDraft(userId, { listId, book = '' }) {
       order: ci,
       content_items: [],
       children,
+      unsupported_nodes: chapterUnsupported,
       legacy_ref: { toc_id: Number(row.id), path: [] },
     };
   });

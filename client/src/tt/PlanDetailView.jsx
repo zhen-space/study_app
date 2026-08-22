@@ -146,6 +146,19 @@ export default function PlanDetailView({ planKey, tasks, lists, apiPlans = [], r
     ? (matBooks.get(t.material_book_id)?.title || '教材')
     : bookOf(t.title));
 
+  // 列上顯示的標題。書名已經是這一段的標頭，不用每一列再寫一次。
+  //
+  // 舊任務的標題是「科目｜書名｜…」，所以 shortTitle 砍前兩段。教材任務沒有
+  // 科目那一段（「書名｜章｜節｜內容」），照砍兩段會把「章」一起砍掉——
+  // 於是列上只剩「單元練習」，看不出是哪一章的單元練習。
+  // 有正式 linkage 的就照 linkage 砍掉書名那一段，不用位置去猜。
+  const rowTitle = t => {
+    if (t.material_book_id == null) return shortTitle(t.title);
+    const book = matBooks.get(t.material_book_id)?.title;
+    const seg = String(t.title || '').split('｜');
+    return book && seg[0] === book && seg.length > 1 ? seg.slice(1).join('｜') : t.title;
+  };
+
   const groups = plan.subjects.length
     ? plan.subjects.map(s => ({
         subject: s,
@@ -162,10 +175,10 @@ export default function PlanDetailView({ planKey, tasks, lists, apiPlans = [], r
     return (
       <ListRow key={t.id} muted={!!t.completed}
         leading={<input type="checkbox" aria-label={t.title} checked={!!t.completed} onChange={() => toggle(t)} />}
-        title={shortTitle(t.title)}
+        title={rowTitle(t)}
         trailing={t.due_date
           ? (block
-            ? <button className="row-adjust" aria-label={`調整「${shortTitle(t.title)}」的時間`}
+            ? <button className="row-adjust" aria-label={`調整「${rowTitle(t)}」的時間`}
                 style={late ? { color: 'var(--danger)' } : undefined}
                 onClick={() => setAdjustBlock({ block, task: t })}>{md(t.due_date)}</button>
             : <span style={late ? { color: 'var(--danger)' } : undefined}>{md(t.due_date)}</span>)
@@ -282,14 +295,17 @@ export default function PlanDetailView({ planKey, tasks, lists, apiPlans = [], r
                 <div className="ui-section-title" style={{ marginBottom: 0 }}>{subject?.name || '未分科目'}</div>
                 <span className="ui-meta" style={{ marginLeft: 'auto' }}>{items.length - undone} / {items.length}</span>
               </div>
-              {books.length > 1
-                ? books.map(b => (
-                    <div key={b}>
-                      <div className="ui-meta" style={{ padding: 'var(--sp-2) 0 0' }}>{b}</div>
-                      {list.filter(t => bookLabelOf(t) === b).map(Row)}
-                    </div>
-                  ))
-                : list.map(Row)}
+              {/* 書名寫在段落標頭，一段只寫一次。只有一本書時也要寫——
+                  列上的標題已經把書名拿掉了，這裡不寫就再也看不到是哪一本。
+                  「其他」是沒有教材脈絡的任務（手動任務），不用假標頭。 */}
+              {books.map(b => (
+                <div key={b}>
+                  {b !== '其他' && (
+                    <div className="ui-meta" style={{ padding: 'var(--sp-2) 0 0' }}>{b}</div>
+                  )}
+                  {list.filter(t => bookLabelOf(t) === b).map(Row)}
+                </div>
+              ))}
             </section>
           );
         })}

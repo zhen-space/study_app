@@ -17,27 +17,28 @@ const { api } = await import('../api');
 const WizardView = (await import('../tt/WizardView')).default;
 const { buildSchedulePreviewRequest, readConfirmedConditions } = await import('../tt/schedulePreview');
 
-// 兩科各一章：科目順序才有得排
-const TWO_SUBJECT_TOC = [
-  { id: 101, list_id: 1, book: '新大滿貫', publisher: '龍騰', title: '單元1 力學', level: '章',
-    sections: [{ title: '節1 直線運動', level: '節', children: [] }] },
-  { id: 201, list_id: 2, book: '新關鍵', publisher: '翰林', title: '單元1 大氣', level: '章',
-    sections: [{ title: '節1 對流層', level: '節', children: [] }] },
-];
+// 兩科各一本教材（見 fixtures.materialShelf）：科目順序才有得排
 
 let calls;
 const setApi = (over = {}) => {
   api.mockImplementation((raw, opts) => {
     calls.push([raw, opts]);
-    const path = raw.startsWith('/plans?') ? '/plans' : raw;
+    const path = raw.startsWith('/plans?') ? '/plans' : raw.split('?')[0];
     if (path in over) {
       const v = over[path];
       return Promise.resolve(typeof v === 'function' ? v(opts) : v);
     }
     if (path === '/schedule/preview') return Promise.resolve(fx.preview);
+    if (path.endsWith('/material-items') && (opts?.method || 'GET') === 'GET') {
+      return Promise.resolve(fx.materialPlanSelection);
+    }
+    if (path === '/study-materials') return Promise.resolve(fx.materialShelf);
+    if (path === '/material/books') return Promise.resolve(fx.materialBooks);
+    if (path.startsWith('/material/books/') && path.endsWith('/tree')) {
+      return Promise.resolve(fx.materialTrees[+path.split('/')[3]]);
+    }
     if (path === '/plans') return Promise.resolve({ id: 99 });
-    if (path === '/import/toc') return Promise.resolve(TWO_SUBJECT_TOC);
-    if (path in fx.responses) return Promise.resolve(fx.responses[path]);
+        if (path in fx.responses) return Promise.resolve(fx.responses[path]);
     if (path.startsWith('/plans/') || path.startsWith('/tasks/')) return Promise.resolve({ ok: true });
     return Promise.resolve([]);
   });
@@ -66,19 +67,26 @@ const previewBody = () => calls.filter(([p, o]) => p === '/schedule/preview' && 
 async function mountWizard(props = {}) {
   const r = render(<WizardView lists={fx.lists} reload={() => Promise.resolve()}
     goTasks={() => {}} goCalendar={() => {}} {...props} />);
-  await waitFor(() => expect(calls.some(([p]) => p === '/import/toc')).toBe(true));
+  await waitFor(() => expect(calls.some(([p]) => p === '/settings')).toBe(true));
   await flush();
   return r;
 }
 
-const checkChapter = async label =>
-  click(screen.getByText(label).closest('.row').querySelector('input[type=checkbox]'));
+// 打開一本教材、整章勾起來，再回到書櫃
+async function pickChapter(bookName, chapterTitle) {
+  await click(btn(new RegExp(bookName)));
+  await flush();
+  await click(screen.getByRole('checkbox', { name: `${chapterTitle}（整章）` }));
+  await flush();
+  await click(btn(/所有教材/));
+  await flush();
+}
 
 // 勾兩科各一章 → 第 2 步
 async function toStep2({ both = true } = {}) {
-  await checkChapter('單元1 力學');
-  if (both) await checkChapter('單元1 大氣');
-  await click(btn(/下一步：怎麼安排/));
+  await pickChapter('新大滿貫', '單元1 力學');
+  if (both) await pickChapter('新關鍵', '單元1 大氣');
+  await click(btn(/^下一步$/));
 }
 
 const orderRows = () => [...document.querySelectorAll('.row')]

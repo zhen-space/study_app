@@ -26,12 +26,20 @@ let calls;
 const setApi = (over = {}) => {
   api.mockImplementation((raw, opts) => {
     calls.push([raw, opts]);
-    const path = raw.startsWith('/plans?') ? '/plans' : raw;
+    const path = raw.startsWith('/plans?') ? '/plans' : raw.split('?')[0];
     if (path in over) {
       const v = over[path];
       return Promise.resolve(typeof v === 'function' ? v(opts) : v);
     }
     if (path === '/schedule/preview') return Promise.resolve(fx.preview);
+    if (path.endsWith('/material-items') && (opts?.method || 'GET') === 'GET') {
+      return Promise.resolve(fx.materialPlanSelection);
+    }
+    if (path === '/study-materials') return Promise.resolve(fx.materialShelf);
+    if (path === '/material/books') return Promise.resolve(fx.materialBooks);
+    if (path.startsWith('/material/books/') && path.endsWith('/tree')) {
+      return Promise.resolve(fx.materialTrees[+path.split('/')[3]]);
+    }
     if (path === '/plans') return Promise.resolve({ id: 99 });
     if (path in fx.responses) return Promise.resolve(fx.responses[path]);
     if (path.startsWith('/plans/') || path.startsWith('/tasks/')) return Promise.resolve({ ok: true });
@@ -64,14 +72,23 @@ const sentPrefix = (prefix, method) => calls.filter(([p, o]) => p.startsWith(pre
 async function mountWizard(props = {}) {
   const r = render(<WizardView lists={fx.lists} reload={() => Promise.resolve()}
     goTasks={() => {}} goCalendar={() => {}} {...props} />);
-  await waitFor(() => expect(calls.some(([p]) => p === '/import/toc')).toBe(true));
+  await waitFor(() => expect(calls.some(([p]) => p === '/settings')).toBe(true));
   await flush();
   return r;
 }
+// 第 1 步：打開一本教材、整章勾起來，再回到書櫃
+async function pickChapter(bookName, chapterTitle) {
+  await click(btn(new RegExp(bookName)));
+  await flush();
+  await click(screen.getByRole('checkbox', { name: `${chapterTitle}（整章）` }));
+  await flush();
+  await click(btn(/所有教材/));
+  await flush();
+}
 // 第 1 步勾一章 → 第 2 步 → 產生排程 → 第 3 步
 async function toStep2() {
-  await click(screen.getByText('單元1 力學').closest('.row').querySelector('input[type=checkbox]'));
-  await click(btn(/下一步：怎麼安排/));
+  await pickChapter('新大滿貫', '單元1 力學');
+  await click(btn(/^下一步$/));
 }
 async function toResult() {
   await toStep2();
@@ -87,12 +104,15 @@ describe('三步驟結構', () => {
     noCrash();
   });
 
-  it('2. 第 1 步是選讀什麼：課本目錄勾得到', async () => {
+  it('2. 第 1 步只問兩件事：這次要準備什麼、要讀哪些內容', async () => {
     await mountWizard();
+    expect(screen.getByLabelText('這次要準備什麼？')).toBeInTheDocument();
+    expect(screen.getByText('選擇要讀的內容')).toBeInTheDocument();
     expect(screen.getByText('新大滿貫')).toBeInTheDocument();
-    expect(screen.getByText('單元1 力學')).toBeInTheDocument();
+    // 學生不該在這裡看到任何系統內部的字
+    expect(document.body.textContent).not.toMatch(/legacy|migration|舊版目錄|教材庫\/|identity|正式教材/i);
     // 還沒勾任何東西時不能往下走
-    expect(btn(/下一步：怎麼安排/)).toBeDisabled();
+    expect(btn(/^下一步$/)).toBeDisabled();
     noCrash();
   });
 
@@ -436,8 +456,8 @@ describe('Edit Mode', () => {
     await mountEdit();
     // 回第 1 步加一點內容，否則這次根本沒有東西可排
     await click(btn(/^上一步$/));
-    await click(screen.getByText('單元1 力學').closest('.row').querySelector('input[type=checkbox]'));
-    await click(btn(/下一步：怎麼安排/));
+    await pickChapter('新大滿貫', '單元1 力學');
+    await click(btn(/^下一步$/));
     await click(screen.getByText(/維持原本日期不動/).closest('label').querySelector('input'));
     await click(btn(/產生排程/));
     await flush();

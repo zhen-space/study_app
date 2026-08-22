@@ -2,7 +2,7 @@ import { Router } from 'express';
 import { requireAuth } from '../middleware/auth.js';
 import * as material from '../material/service.js';
 import { MaterialInputError } from '../material/service.js';
-import { listStudyMaterials } from '../material/library.js';
+import { listStudyMaterials, listStudyMaterialShelf } from '../material/library.js';
 import { parseMaterialImage, toDraftInput } from '../material/parser.js';
 import { toContentBlock, createFast, parseStructuredObj, aiError } from './import.js';
 
@@ -215,10 +215,13 @@ router.post('/material/legacy-books/:listId/content-check', handle(async (req, r
 // 但每一筆都標明 source 與各自的 identity，兩邊永遠不互轉。
 // legacy 沒有正式完成度時回 completion_supported: false，不捏造 0%。
 router.get('/study-materials', handle(async (req, res) => {
-  res.json(await listStudyMaterials(req.userId, {
+  const opts = {
     planId: num(req.query.plan_id),
     includeLegacy: req.query.legacy !== '0',
-  }));
+  };
+  // shelf=1：只要書單。畫一份書單不需要把每一本的完整教材樹都建起來。
+  if (req.query.shelf === '1') return res.json(await listStudyMaterialShelf(req.userId, opts));
+  res.json(await listStudyMaterials(req.userId, opts));
 }));
 
 export default router;
