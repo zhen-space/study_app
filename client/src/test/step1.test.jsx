@@ -139,7 +139,7 @@ describe('計畫名稱', () => {
     await flush();
     await click(screen.getByRole('checkbox', { name: '單元1 力學（整章）' }));
     await flush();
-    await click(btn(/所有教材/));
+    await click(btn(/^完成選擇$/));
     await flush();
     await click(btn(/^下一步$/));
     await click(btn(/產生排程/));
@@ -786,14 +786,17 @@ describe('教材內容頁的快速選取', () => {
 /* ============ 9.「下一步」與「已選 N 項」必須是同一個依據 ============ */
 
 describe('下一步的啟用條件', () => {
-  const pickChapter = async () => {
+  // 選範圍在教材裡，決定「挑完了」在書櫃。兩者分開，才不會在還沒展開章節
+  // 之前就下意識按下醒目的下一步而離開第 1 步。
+  const pickChapter = async ({ back = true } = {}) => {
     await click(btn(/新大滿貫/));
     await flush();
     await click(screen.getByRole('checkbox', { name: '單元1 力學（整章）' }));
     await flush();
+    if (back) { await click(btn(/^完成選擇$/)); await flush(); }
   };
 
-  it('選了至少一項就走得下去', async () => {
+  it('選了至少一項，回到所有教材就走得下去', async () => {
     await mountWizard();
     expect(btn(/^下一步$/)).toBeDisabled();
     await pickChapter();
@@ -802,25 +805,53 @@ describe('下一步的啟用條件', () => {
     noCrash();
   });
 
-  it('取消回 0 項就again停用', async () => {
+  it('取消回 0 項就重新停用', async () => {
     await mountWizard();
-    await pickChapter();
+    await pickChapter({ back: false });
     await click(screen.getByRole('checkbox', { name: '單元1 力學（整章）' }));
+    await flush();
+    await click(btn(/^完成選擇$/));
     await flush();
     expect(document.querySelector('.mt-count').textContent).toBe('已選 0 項');
     expect(btn(/^下一步$/)).toBeDisabled();
     noCrash();
   });
 
-  it('在教材內容頁裡也能直接下一步，不用先返回書櫃', async () => {
+  it('教材內容頁只有「完成選擇」，沒有真正的下一步', async () => {
+    await mountWizard();
+    await click(btn(/新大滿貫/));
+    await flush();
+    // 還停在這本教材的內容頁：這裡不該出現會離開第 1 步的 CTA
+    expect(screen.queryByRole('button', { name: /^下一步$/ })).toBeNull();
+    expect(btn(/^完成選擇$/)).toBeTruthy();
+    noCrash();
+  });
+
+  it('「完成選擇」只回到所有教材，不會直接進第 2 步', async () => {
     await mountWizard();
     await pickChapter();
-    // 還停在這本教材的內容頁
-    expect(screen.getByRole('button', { name: /所有教材/ })).toBeTruthy();
-    expect(btn(/^下一步$/)).not.toBeDisabled();
+    expect(screen.getByText('步驟 1／3：讀什麼')).toBeTruthy();
+    expect(screen.getByText('選擇要讀的內容')).toBeTruthy();
+    // 回到書櫃之後才有真正的下一步
     await click(btn(/^下一步$/));
     await flush();
     expect(screen.getByText('步驟 2／3：怎麼安排')).toBeTruthy();
+    noCrash();
+  });
+
+  it('可以反覆進出不同教材改選取，直到自己確認選完', async () => {
+    await mountWizard();
+    await pickChapter();
+    const first = document.querySelector('.mt-count').textContent;
+    // 再進去一次，取消掉
+    await click(btn(/新大滿貫/));
+    await flush();
+    await click(screen.getByRole('checkbox', { name: '單元1 力學（整章）' }));
+    await flush();
+    await click(btn(/^完成選擇$/));
+    await flush();
+    expect(document.querySelector('.mt-count').textContent).not.toBe(first);
+    expect(document.querySelector('.mt-count').textContent).toBe('已選 0 項');
     noCrash();
   });
 
@@ -888,5 +919,156 @@ describe('教材依科目分堆', () => {
     await waitFor(() => expect(screen.queryByText('對話式')).toBeTruthy());
     expect(calls.filter(([p]) => p.startsWith('/material/categories'))).toEqual([]);
     noCrash();
+  });
+});
+
+/* ============ 11. 快速選取是 toggle ============ */
+
+describe('快速選取按第二次要取消', () => {
+  const openBook = async (extra = {}) => {
+    render(<MaterialSelector {...extra} />);
+    await waitFor(() => expect(screen.queryByText('新大滿貫')).toBeTruthy());
+    await click(btn(/新大滿貫/));
+    await flush();
+  };
+
+  it('Create：按一次全選、再按一次全部取消', async () => {
+    let ids = new Set();
+    await openBook({ draftIds: ids, onDraftChange: s => { ids = s; } });
+    await click(btn(/^全選節$/));
+    await flush();
+    expect([...ids].length).toBeGreaterThan(0);
+    // 文案跟著狀態走，而且 aria-pressed 說得出目前是哪一種
+    const on = btn(/^取消全選節$/);
+    expect(on.getAttribute('aria-pressed')).toBe('true');
+    await click(on);
+    await flush();
+    expect([...ids]).toEqual([]);
+    expect(btn(/^全選節$/).getAttribute('aria-pressed')).toBe('false');
+    noCrash();
+  });
+
+  it('Edit：取消也是一個請求，不會退回逐項', async () => {
+    setApi({ '/plans/55/material-items': [] });
+    await openBook({ planId: 55 });
+    await click(btn(/^全選節$/));
+    await flush();
+    calls.length = 0;
+    await click(btn(/^取消全選節$/));
+    await flush();
+    const writes = calls.filter(([, o]) => (o?.method || 'GET') !== 'GET');
+    expect(writes.length).toBe(1);
+    expect(writes[0][0]).toBe('/plans/55/material-books/1');
+    expect(writes[0][1].body).toEqual({ selected: false, node_kinds: ['section'] });
+  });
+
+  it('已完成的不會因為 toggle 被重新選起來', async () => {
+    let ids = new Set();
+    const prog = (t, c) => ({ total_items: t, completed_items: c, percent: 0 });
+    setApi({
+      '/material/books/1/tree': {
+        book: { id: 1, title: '新大滿貫' }, progress: prog(2, 1), selection: 'none',
+        nodes: [{ id: 10, kind: 'chapter', title: '第一章', parent_id: null, order_index: 0,
+          progress: prog(2, 1), selection: 'none', content_items: [], children: [
+            { id: 11, kind: 'section', title: '1-1', parent_id: 10, order_index: 0,
+              progress: prog(2, 1), selection: 'none', children: [], content_items: [
+                { id: 101, title: '已經讀完的', kind: 'reading', estimated_minutes: null,
+                  order_index: 0, completed: true, selected: false },
+                { id: 102, title: '還沒讀的', kind: 'reading', estimated_minutes: null,
+                  order_index: 1, completed: false, selected: false }] }] }],
+      },
+    });
+    await openBook({ draftIds: ids, onDraftChange: s => { ids = s; } });
+    await click(btn(/^全選節$/));       // 只會選到 102
+    await flush();
+    expect([...ids]).toEqual([102]);
+    await click(btn(/^取消全選節$/));
+    await flush();
+    expect([...ids]).toEqual([]);
+    // 全程都沒有碰過完成度
+    expect(calls.filter(([p]) => p.includes('/completion'))).toEqual([]);
+    noCrash();
+  });
+});
+
+/* ============ 12. 教材內容之後還能補 ============ */
+
+describe('第一次確認之後仍然能編輯教材內容', () => {
+  const openBook = async () => {
+    render(<MaterialSelector lists={fx.lists} draftIds={new Set()} onDraftChange={() => {}} />);
+    await waitFor(() => expect(screen.queryByText('新大滿貫')).toBeTruthy());
+    await click(btn(/新大滿貫/));
+    await flush();
+  };
+
+  it('教材內容頁有入口，而且是另一個畫面，不跟勾選混在一起', async () => {
+    await openBook();
+    await click(btn(/編輯教材內容/));
+    await flush();
+    expect(screen.getByText('編輯教材內容')).toBeTruthy();
+    // 編輯畫面裡沒有 Plan 的選取框，也沒有快速選取
+    expect(screen.queryByRole('checkbox')).toBeNull();
+    expect(screen.queryByText('快速選取')).toBeNull();
+    noCrash();
+  });
+
+  it('可以補一個之前漏掉的節', async () => {
+    await openBook();
+    await click(btn(/編輯教材內容/));
+    await flush();
+    calls.length = 0;
+    await click(btn(/單元1 力學：加一節/));
+    await flush();
+    const post = sent('/material/nodes', 'POST');
+    expect(post.length).toBe(1);
+    expect(post[0][1].body).toEqual({ book_id: 1, parent_id: 10, kind: 'section', title: '新的節' });
+    // 補完之後重新讀樹，新內容才會出現在選取畫面
+    expect(sent('/material/books/1/tree', 'GET').length).toBeGreaterThan(0);
+  });
+
+  it('可以補一份漏掉的例題，掛在既有的節底下', async () => {
+    await openBook();
+    await click(btn(/編輯教材內容/));
+    await flush();
+    calls.length = 0;
+    await click(btn(/節1 直線運動：加入例題/));
+    await flush();
+    expect(sent('/material/content-items', 'POST')[0][1].body)
+      .toEqual({ node_id: 11, kind: 'example_problem', title: '例題' });
+  });
+
+  it('單元練習補在章底下，不造一個假的節', async () => {
+    await openBook();
+    await click(btn(/編輯教材內容/));
+    await flush();
+    calls.length = 0;
+    await click(btn(/單元1 力學：加入單元練習/));
+    await flush();
+    const body = sent('/material/content-items', 'POST')[0][1].body;
+    expect(body.node_id).toBe(10);          // 章，不是節
+    expect(body.kind).toBe('unit_exercise');
+  });
+
+  it('編輯完回到選取畫面，不是回到書櫃、也不用重跑建立流程', async () => {
+    await openBook();
+    await click(btn(/編輯教材內容/));
+    await flush();
+    await click(btn(/^完成編輯$/));
+    await flush();
+    expect(screen.getByText('快速選取')).toBeTruthy();
+    expect(btn(/^完成選擇$/)).toBeTruthy();
+    noCrash();
+  });
+
+  it('編輯教材內容全程不碰任何 Plan selection 或完成度端點', async () => {
+    await openBook();
+    await click(btn(/編輯教材內容/));
+    await flush();
+    calls.length = 0;
+    await click(btn(/單元1 力學：加一節/));
+    await flush();
+    expect(calls.filter(([p]) => p.includes('/material-items')
+      || p.includes('/material-nodes/') || p.includes('/material-books/'))).toEqual([]);
+    expect(calls.filter(([p]) => p.includes('/completion'))).toEqual([]);
   });
 });

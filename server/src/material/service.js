@@ -155,6 +155,15 @@ export async function hardDeleteBook(userId, id) {
 
 /* ---------- Node / ContentItem ---------- */
 
+// 同層目前最後一個位置的下一個。用來把後來補的東西接在後面，而不是插到最前面。
+const nextOrder = async (table, parentCol, parentId, userId, bookId) => {
+  const r = await q.get(
+    `SELECT MAX(order_index) AS m FROM ${table}
+      WHERE user_id=? AND book_id=? AND ${parentId == null ? `${parentCol} IS NULL` : `${parentCol}=?`}`,
+    parentId == null ? [userId, bookId] : [userId, bookId, parentId]);
+  return Number(r?.m ?? -1) + 1;
+};
+
 export async function createNode(userId, body = {}) {
   const book = await mustBook(userId, body.book_id);
   const title = String(body.title || '').trim();
@@ -166,9 +175,14 @@ export async function createNode(userId, body = {}) {
   }
   const problem = nodePlacementProblem(body.kind, parent?.kind ?? null);
   if (problem) throw new MaterialInputError(problem);
+  // 沒指定位置就接在同層最後面。之前一律填 0，於是「後來才發現漏掉的那一節」
+  // 會插到整章最前面——使用者補一節反而把順序弄亂了。
+  const order = body.order_index == null || body.order_index === ''
+    ? await nextOrder('material_nodes', 'parent_id', parent?.id ?? null, userId, book.id)
+    : Number(body.order_index);
   const r = await q.run(
     'INSERT INTO material_nodes (user_id,book_id,parent_id,kind,title,order_index) VALUES (?,?,?,?,?,?)',
-    [userId, book.id, parent?.id ?? null, body.kind, title, Number(body.order_index) || 0]);
+    [userId, book.id, parent?.id ?? null, body.kind, title, order]);
   return q.get('SELECT * FROM material_nodes WHERE id=?', [r.lastInsertRowid]);
 }
 
@@ -180,10 +194,13 @@ export async function createContentItem(userId, body = {}) {
   if (problem) throw new MaterialInputError(problem);
   const est = body.estimated_minutes == null || body.estimated_minutes === '' ? null : Number(body.estimated_minutes);
   if (est != null && (!Number.isFinite(est) || est <= 0)) throw new MaterialInputError('預估時間不正確');
+  const order = body.order_index == null || body.order_index === ''
+    ? await nextOrder('material_content_items', 'node_id', node.id, userId, node.book_id)
+    : Number(body.order_index);
   const r = await q.run(
     `INSERT INTO material_content_items (user_id,book_id,node_id,kind,title,estimated_minutes,order_index)
      VALUES (?,?,?,?,?,?,?)`,
-    [userId, node.book_id, node.id, body.kind, title, est, Number(body.order_index) || 0]);
+    [userId, node.book_id, node.id, body.kind, title, est, order]);
   return q.get('SELECT * FROM material_content_items WHERE id=?', [r.lastInsertRowid]);
 }
 

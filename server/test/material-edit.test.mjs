@@ -235,3 +235,80 @@ describe('刪一整段', () => {
     assert.ok(await q.get('SELECT id FROM material_nodes WHERE id=?', [B.section.id]));
   });
 });
+
+describe('之後才發現漏掉的內容，要補得回來', () => {
+  // 「這本教材有哪些內容」與「這次要讀哪些」是兩件事。第一次確認之後
+  // 結構不能就此鎖死——漏掉一個節、一份例題，之後一定要補得上。
+  test('補一個節：接在同層最後面，不是插到最前面', async () => {
+    const sec = await svc.createNode(USER, {
+      book_id: B.bookId, parent_id: B.chapter.id, kind: 'section', title: '1-3 後來才發現的',
+    });
+    const tree = await svc.getBookTree(USER, B.bookId);
+    assert.deepEqual(tree.nodes[0].children.map(c => c.title),
+      ['1-1 數與數線', '主題 陷阱', '1-3 後來才發現的']);
+    assert.equal(sec.kind, 'section');
+  });
+
+  test('補一份例題到既有的節底下', async () => {
+    await svc.createContentItem(USER, {
+      node_id: B.section.id, kind: 'example_problem', title: '例題 2',
+    });
+    const tree = await svc.getBookTree(USER, B.bookId);
+    const sec = tree.nodes[0].children.find(c => c.title === '1-1 數與數線');
+    assert.deepEqual(sec.content_items.map(i => i.title), ['課本內容', '範例', '例題', '例題 2']);
+  });
+
+  test('補章底下的單元練習／歷屆試題，不用假造一個節', async () => {
+    await svc.createContentItem(USER, {
+      node_id: B.chapter.id, kind: 'past_exam', title: '歷屆試題',
+    });
+    const tree = await svc.getBookTree(USER, B.bookId);
+    assert.deepEqual(tree.nodes[0].content_items.map(i => i.kind), ['unit_exercise', 'past_exam']);
+  });
+
+  test('補內容不會動到既有的完成度——不得把整章 reset', async () => {
+    await svc.setCompletion(USER, B.reading.id, { completed: true });
+    await svc.setCompletion(USER, B.example.id, { completed: true });
+    const before = await svc.getBookTree(USER, B.bookId);
+    const doneBefore = before.nodes[0].progress.completed_items;
+
+    await svc.createNode(USER, {
+      book_id: B.bookId, parent_id: B.chapter.id, kind: 'topic', title: '主題 補充',
+    });
+    await svc.createContentItem(USER, { node_id: B.section.id, kind: 'example', title: '範例 3' });
+
+    const after = await svc.getBookTree(USER, B.bookId);
+    // 原本完成的還是完成的
+    const flat = n => [...(n.content_items || []), ...(n.children || []).flatMap(flat)];
+    const items = after.nodes.flatMap(flat);
+    assert.equal(items.find(i => i.id === B.reading.id).completed, true);
+    assert.equal(items.find(i => i.id === B.example.id).completed, true);
+    // 完成的數量沒有變少（新增的預設未完成，只會讓分母變大）
+    assert.equal(after.nodes[0].progress.completed_items, doneBefore);
+    assert.ok(after.nodes[0].progress.total_items > before.nodes[0].progress.total_items);
+    assert.equal(items.find(i => i.title === '範例 3').completed, false, '新增的預設未完成');
+  });
+
+  test('補內容不會改變任何 Plan 的選取', async () => {
+    await svc.selectItems(USER, planId, [B.reading.id], true);
+    const before = await svc.getPlanSelection(USER, planId);
+    await svc.createContentItem(USER, { node_id: B.section.id, kind: 'reading', title: '補充講義' });
+    const after = await svc.getPlanSelection(USER, planId);
+    assert.deepEqual(
+      after.map(r => [r.content_item_id, r.selected]),
+      before.map(r => [r.content_item_id, r.selected]),
+      '新增內容不該把別人的選取改掉，也不該自動被選起來');
+  });
+
+  test('補的東西仍然要守 placement：單元練習不能掛在節底下', async () => {
+    await assert.rejects(() => svc.createContentItem(USER, {
+      node_id: B.section.id, kind: 'unit_exercise', title: '單元練習',
+    }));
+  });
+
+  test('節底下不能再長出節或主題', async () => {
+    await assert.rejects(() => svc.createNode(USER, {
+      book_id: B.bookId, parent_id: B.section.id, kind: 'topic', title: '巢狀主題',
+    }));
+  });
+});

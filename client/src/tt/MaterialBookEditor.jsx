@@ -1,15 +1,16 @@
 import { useState } from 'react';
 import {
   updateBook, updateNode, updateContentItem, deleteNode, deleteContentItem,
-  ITEM_LABEL, CHAPTER_LEVEL_KINDS,
+  createNode, createContentItem, ITEM_LABEL, CHAPTER_LEVEL_KINDS,
 } from './material';
 import { Button } from './ui';
 
 // 「編輯教材」。學生自己建立教材之後一定會打錯字——沒有修正的路，
 // 那本教材就永遠壞著。
 //
-// 這個畫面只做**修正**，不做完成度：完成度在同一頁的閱讀模式，兩件事不混在
-// 一起，免得「我只是想改個名字」變成不小心把它標成讀完了。
+// 這個畫面只做**結構**：這本教材裡有哪些章、節／主題、內容。
+// 它不做完成度，也不做「這次要讀哪些」——那兩件事各自有自己的畫面。
+// 第一次確認完內容之後結構不會就此鎖死：漏掉的節、漏掉的例題，之後補得回來。
 //
 // 兩條線：
 //   ① 改名不換 identity。改的是同一筆東西的名字，完成度、計畫選取、
@@ -99,6 +100,15 @@ export default function MaterialBookEditor({ book, tree, lists = [], onChanged, 
   // blur 才送出：打字中不打 API
   const itemBlur = item => () => renameItem(item, valueOf('i', item.id, item.title));
 
+  // 補一個之後才發現漏掉的東西。只是新增：既有的完成度、計畫選取、任務關聯
+  // 完全不受影響，新增的預設未完成。
+  const addChild = (chapter, kind) => run(() => createNode({
+    book_id: book.id, parent_id: chapter.id, kind, title: kind === 'section' ? '新的節' : '新的主題',
+  }));
+  const addItem = (node, kind) => run(() => createContentItem({
+    node_id: node.id, kind, title: ITEM_LABEL[kind],
+  }));
+
   const nodeProps = (node, label) => ({
     node, label, busy,
     value: valueOf('n', node.id, node.title),
@@ -110,8 +120,8 @@ export default function MaterialBookEditor({ book, tree, lists = [], onChanged, 
   return (
     <div className="me">
       <div className="me-head">
-        <h3 className="me-title">編輯教材</h3>
-        <p className="me-lead">改名不會影響完成度或已經排好的任務。</p>
+        <h3 className="me-title">編輯教材內容</h3>
+        <p className="me-lead">補內容或改名都不會影響已完成的部分，也不會動到任何計畫。</p>
       </div>
       {err && <div className="mt-err" role="alert">{err}</div>}
 
@@ -162,16 +172,35 @@ export default function MaterialBookEditor({ book, tree, lists = [], onChanged, 
                 {(c.content_items || []).map(it => (
                   <div key={it.id} onBlur={itemBlur(it)}><ItemRow {...itemProps(it)} /></div>
                 ))}
+                <div className="me-add-row">
+                  {CHILD_KINDS.map(k => (
+                    <button key={k} type="button" className="md-add-pill" disabled={busy}
+                      aria-label={`${c.title}：加入${ITEM_LABEL[k]}`}
+                      onClick={() => addItem(c, k)}>＋{ITEM_LABEL[k]}</button>
+                  ))}
+                </div>
               </div>
             ))}
-            {chapterLevel.length > 0 && (
-              <div className="me-chapter-level">
-                <span className="md-chapter-level-label">本章</span>
-                {chapterLevel.map(it => (
-                  <div key={it.id} onBlur={itemBlur(it)}><ItemRow {...itemProps(it)} /></div>
+            <div className="me-add-row">
+              <button type="button" className="md-add-pill" disabled={busy}
+                aria-label={`${ch.title}：加一節`} onClick={() => addChild(ch, 'section')}>＋ 加一節</button>
+              <button type="button" className="md-add-pill" disabled={busy}
+                aria-label={`${ch.title}：加一主題`} onClick={() => addChild(ch, 'topic')}>＋ 加一主題</button>
+            </div>
+            {/* 單元練習與歷屆試題直接屬於這一章，不為它們造一個假的節 */}
+            <div className="me-chapter-level">
+              <span className="md-chapter-level-label">本章</span>
+              {chapterLevel.map(it => (
+                <div key={it.id} onBlur={itemBlur(it)}><ItemRow {...itemProps(it)} /></div>
+              ))}
+              <div className="me-add-row">
+                {CHAPTER_LEVEL_KINDS.map(k => (
+                  <button key={k} type="button" className="md-add-pill" disabled={busy}
+                    aria-label={`${ch.title}：加入${ITEM_LABEL[k]}`}
+                    onClick={() => addItem(ch, k)}>＋{ITEM_LABEL[k]}</button>
                 ))}
               </div>
-            )}
+            </div>
           </div>
         );
       })}

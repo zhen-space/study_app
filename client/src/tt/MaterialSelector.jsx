@@ -8,6 +8,7 @@ import { Button, EmptyState } from './ui';
 import BlockedNotice from './BlockedNotice';
 import MaterialContentCheck from './MaterialContentCheck';
 import AddMaterialFlow from './AddMaterialFlow';
+import MaterialBookEditor from './MaterialBookEditor';
 
 // Create Plan 與 Edit Plan **共用的同一個**教材選取畫面。
 // 兩邊只差在初始狀態從哪裡來——那由後端 tree 的 plan_id 決定，不是兩套元件。
@@ -339,20 +340,27 @@ export default function MaterialSelector({
 
   // 整本教材的快速選取（全選章／全選節／全選主題／清除）。
   // 同樣是一個請求：後端一次算完，不是每一章各打一次。
-  const quickSelect = useCallback((nodeKinds, want) => {
-    if (!tree) return;
+  // 這一層有哪些「可以被選」的內容（已完成的永遠不算——它是教材的長期完成
+  // 狀態，不是這次要不要排）。
+  const eligibleIds = useCallback(nodeKinds => {
+    if (!tree) return [];
     const all = flattenItems(tree);
-    const scoped = nodeKinds == null
-      ? all
-      : all.filter(i => nodeKinds.includes(i.node?.kind));
-    // 已完成的永遠不參與：使用者按的是「全選節」，不是在對已完成的項目表態。
-    const ids = scoped.filter(i => !i.completed).map(i => i.id);
-    if (!ids.length) return;
+    const scoped = nodeKinds == null ? all : all.filter(i => nodeKinds.includes(i.node?.kind));
+    return scoped.filter(i => !i.completed);
+  }, [tree]);
+
+  // 快速選取是 toggle：還沒全選就全選，已經全選就整層取消。
+  // 按同一顆按鈕兩次要回到原點，這是按鈕最基本的預期。
+  const quickSelect = useCallback(nodeKinds => {
+    const items = eligibleIds(nodeKinds);
+    if (!items.length) return;
+    const ids = items.map(i => i.id);
+    const want = !ids.every(id => sel.has(id));   // 全選了才是取消
     applyLocal(ids, want);
-    reportPicked(scoped.filter(i => ids.includes(i.id)), want);
+    reportPicked(items, want);
     if (draft) { onDraftChange?.(toggleDraft(sel, ids, want)); return; }
     sync(ids, want, () => selectBookNodes(planId, tree.book.id, { selected: want, nodeKinds }));
-  }, [tree, sel, applyLocal, reportPicked, draft, onDraftChange, sync, planId]);
+  }, [tree, sel, eligibleIds, applyLocal, reportPicked, draft, onDraftChange, sync, planId]);
 
   // 打開一本教材。還沒確認過內容的，先問一次「這本教材裡有哪些內容」——
   // 那是學生第一次真的要用它的時候，不是另外一個要他自己去找的管理動作。
@@ -414,6 +422,12 @@ export default function MaterialSelector({
     return out;
   }, [tree]);
 
+  // 這一層已經全選了嗎——決定按鈕現在該說「全選節」還是「取消全選節」。
+  const quickOn = useCallback(nodeKinds => {
+    const items = eligibleIds(nodeKinds);
+    return items.length > 0 && items.every(i => sel.has(i.id));
+  }, [eligibleIds, sel]);
+
   // 沒有指定科目的書：可以看內容，但不能選取（選了也排不進去）
   const locked = openBook != null
     && bookNeedsSubject(books.find(b => b.material_book_id === openBook));
@@ -433,6 +447,18 @@ export default function MaterialSelector({
         <MaterialContentCheck book={pending}
           onCancel={() => { setPending(null); setView('shelf'); }}
           onDone={r => afterCreated(r?.book?.id)} />
+      </div>
+    );
+  }
+
+  // 「編輯教材內容」是**另一個畫面**，不是把結構編輯塞進勾選畫面裡。
+  // 這本教材有哪些內容，跟這次要讀哪些，是兩件事。
+  if (view === 'edit' && tree) {
+    return (
+      <div className="mt-selector">
+        <MaterialBookEditor book={tree.book} tree={tree} lists={lists}
+          onChanged={async () => { await loadTree(openBook).catch(() => {}); await loadShelf().catch(() => {}); }}
+          onDone={() => setView('book')} />
       </div>
     );
   }
@@ -505,6 +531,11 @@ export default function MaterialSelector({
               ← 所有教材
             </Button>
             <span className="mt-tree-title">{tree?.book?.title}</span>
+            {tree && (
+              <button type="button" className="mt-edit-link" onClick={() => setView('edit')}>
+                編輯教材內容
+              </button>
+            )}
           </div>
           {err && <div className="mt-err" role="alert">{err}</div>}
           {locked && (
@@ -518,14 +549,17 @@ export default function MaterialSelector({
               {/* 快速選取：只動「尚未完成」的內容，一次一個請求。
                   教材裡沒有那一層時整顆按鈕就不出現，按了不會出錯。 */}
               <span className="mt-quick-label">快速選取</span>
-              {quickKinds.map(q => (
-                <button key={q.key} type="button" className="mt-quick-btn"
-                  onClick={() => quickSelect(q.kinds, true)}>{q.label}</button>
-              ))}
-              {total > 0 && (
-                <button type="button" className="mt-quick-btn mt-quick-btn--clear"
-                  onClick={() => quickSelect(null, false)}>清除</button>
-              )}
+              {quickKinds.map(q => {
+                const on = quickOn(q.kinds);
+                return (
+                  <button key={q.key} type="button"
+                    className={'mt-quick-btn' + (on ? ' on' : '')}
+                    aria-pressed={on}
+                    onClick={() => quickSelect(q.kinds)}>
+                    {on ? `取消${q.label}` : q.label}
+                  </button>
+                );
+              })}
             </div>
           )}
           {!tree ? <div className="mt-loading">載入中…</div>
@@ -547,7 +581,17 @@ export default function MaterialSelector({
 
       <div className="mt-footer">
         <span className="mt-count" aria-live="polite">已選 {total} 項</span>
-        {footer}
+        {/* 打開一本教材時只給「完成選擇」——它只是回到書櫃。
+            真正的「下一步」只存在書櫃，因為那裡才看得到所有教材的選取結果。
+            兩者放在同一個位置會讓人在還沒挑完就離開第 1 步。 */}
+        {view === 'book'
+          ? (
+            <Button variant="primary" style={{ marginLeft: 'auto' }}
+              onClick={() => { setOpenBook(null); setRawTree(null); setView('shelf'); }}>
+              完成選擇
+            </Button>
+          )
+          : footer}
       </div>
     </div>
   );
