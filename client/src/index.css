@@ -1036,3 +1036,9 @@ select { -webkit-appearance: none; appearance: none; padding-right: 26px;
   padding: var(--sp-3) 0 2px;
 }
 .mt-subject-name:empty { display: none; }
+.me-add-row { display: flex; flex-wrap: wrap; gap: 6px; padding-left: 12px; }
+.mt-quick-btn.on { background: var(--accent-soft); border-color: var(--accent); }
+.mt-edit-link {
+  margin-left: auto; min-height: 36px; padding: 0 var(--sp-2);
+  background: none; border: 0; color: var(--accent); font-size: 13px; font-weight: 600;
+}

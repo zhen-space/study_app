@@ -529,6 +529,9 @@ describe('排程條件的生命週期（不人工 seed）', () => {
     await flush();
     await click(screen.getByRole('checkbox', { name: '單元1 力學（整章）' }));
     await flush();
+    // 教材內容頁只有「完成選擇」；真正的下一步在所有教材總覽
+    await click(screen.getByRole('button', { name: /^完成選擇$/ }));
+    await flush();
     await click(screen.getByRole('button', { name: /^下一步$/ }));
     // 用學生語言選排法（不是 timed=false）
     if (daily) await click(screen.getByText(/只安排每天要做什麼/).closest('label').querySelector('input'));

@@ -78,7 +78,7 @@ async function pickChapter(bookName, chapterTitle) {
   await flush();
   await click(screen.getByRole('checkbox', { name: `${chapterTitle}（整章）` }));
   await flush();
-  await click(btn(/所有教材/));
+  await click(btn(/^完成選擇$/));
   await flush();
 }
 

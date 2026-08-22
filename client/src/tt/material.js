@@ -96,6 +96,12 @@ export const deleteNode = nodeId => api(`/material/nodes/${nodeId}`, { method: '
 export const deleteContentItem = itemId =>
   api(`/material/content-items/${itemId}`, { method: 'DELETE' });
 
+// 補一個之後才發現漏掉的節／主題，或一份內容。
+// **只是新增**：既有內容的完成度、Plan 選取、任務關聯完全不受影響，
+// 新增的預設未完成、也不會被自動選進任何計畫。
+export const createNode = body => api('/material/nodes', { method: 'POST', body });
+export const createContentItem = body => api('/material/content-items', { method: 'POST', body });
+
 // 建立一個科目（lists）。剛註冊的帳號一個都沒有，而沒有科目就排不進計畫。
 export const createSubject = name =>
   api('/lists', { method: 'POST', body: { name, color: '#5E6AD2' } });
