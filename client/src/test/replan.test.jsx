@@ -54,13 +54,21 @@ let calls;
 const setApi = (over = {}) => {
   api.mockImplementation((raw, opts) => {
     calls.push([raw, opts]);
-    const path = raw.startsWith('/plans?') ? '/plans' : raw;
+    const path = raw.startsWith('/plans?') ? '/plans' : raw.split('?')[0];
     if (path in over) {
       const v = over[path];
       if (typeof v === 'function') return v(opts);
       return Promise.resolve(v);
     }
     if (path === '/schedule/preview') return Promise.resolve(REPLAN);
+    if (path.endsWith('/material-items') && (opts?.method || 'GET') === 'GET') {
+      return Promise.resolve(fx.materialPlanSelection);
+    }
+    if (path === '/study-materials') return Promise.resolve(fx.materialShelf);
+    if (path === '/material/books') return Promise.resolve(fx.materialBooks);
+    if (path.startsWith('/material/books/') && path.endsWith('/tree')) {
+      return Promise.resolve(fx.materialTrees[+path.split('/')[3]]);
+    }
     if (path in fx.responses) return Promise.resolve(fx.responses[path]);
     if (path.endsWith('/attachments')) return Promise.resolve([]);
     if (path.startsWith('/plans/') || path.startsWith('/tasks/')) return Promise.resolve({ ok: true });
@@ -515,10 +523,13 @@ describe('排程條件的生命週期（不人工 seed）', () => {
       },
     });
     renderWizard({ mode, planId, planTitle: mode === 'edit' ? PLAN.name : '', planTasks: tasks, onDone: () => {} });
-    await waitFor(() => expect(calls.some(([p]) => p === '/import/toc')).toBe(true));
+    await waitFor(() => expect(calls.some(([p]) => p === '/settings')).toBe(true));
     await flush();
-    await click(screen.getByText('單元1 力學').closest('.row').querySelector('input[type=checkbox]'));
-    await click(screen.getByRole('button', { name: /下一步：怎麼安排/ }));
+    await click(screen.getByRole('button', { name: /新大滿貫/ }));
+    await flush();
+    await click(screen.getByRole('checkbox', { name: '單元1 力學（整章）' }));
+    await flush();
+    await click(screen.getByRole('button', { name: /^下一步$/ }));
     // 用學生語言選排法（不是 timed=false）
     if (daily) await click(screen.getByText(/只安排每天要做什麼/).closest('label').querySelector('input'));
     if (front) await click(screen.getByText(/盡早排完/).closest('label').querySelector('input'));

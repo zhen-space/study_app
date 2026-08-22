@@ -827,15 +827,10 @@ select { -webkit-appearance: none; appearance: none; padding-right: 26px;
 .ml-addrow input { flex: 1; min-width: 0; min-height: 44px; }
 .ml-addrow--cat { margin-top: var(--sp-4); padding-top: var(--sp-4); border-top: 1px solid var(--separator); }
 
-/* ---- Wizard 教材來源分界：正式教材 vs 舊版目錄 ---- */
+/* ---- 需要學生處理的提示（例如教材還沒指定科目） ---- */
 .mt-source-note {
   font-size: 13px; color: var(--text-2); background: var(--fill);
   border-radius: var(--radius-sm); padding: var(--sp-3); overflow-wrap: anywhere;
-}
-.mt-legacy-tag {
-  display: inline-block; font-size: 11px; font-weight: 600; padding: 1px 7px;
-  border-radius: var(--radius-pill); border: 1px dashed var(--text-3); color: var(--text-2);
-  margin-left: var(--sp-2); white-space: nowrap;
 }
 
 /* ---- Plan Detail：教材脈絡分組 ---- */
@@ -846,3 +841,141 @@ select { -webkit-appearance: none; appearance: none; padding-right: 26px;
 }
 .pd-mgroup-book { font-weight: 600; color: var(--text); overflow-wrap: anywhere; }
 .pd-mgroup-ctx { overflow-wrap: anywhere; }
+
+/* ============================================================
+   Step 1：這次要準備什麼 ＋ 選擇要讀的內容
+   畫面上只有這兩件事。教材是從哪裡來的、系統怎麼記的，不出現在這裡。
+   ============================================================ */
+
+.wz-plan-name { display: flex; flex-direction: column; gap: var(--sp-2); }
+.wz-plan-name label { font-size: 17px; font-weight: 700; }
+.wz-plan-name input {
+  width: 100%; min-height: 48px; font-size: 16px; padding: 0 var(--sp-3);
+  border: 1px solid var(--border); border-radius: var(--radius-sm);
+  background: var(--surface-2); color: var(--text);
+}
+.mt-section-label {
+  font-size: 17px; font-weight: 700; margin-top: var(--sp-2);
+}
+.mt-empty { display: flex; flex-direction: column; align-items: center; gap: var(--sp-3); }
+.mt-add-book {
+  align-self: flex-start; min-height: 44px; padding: 0 var(--sp-3);
+  background: none; border: 0; color: var(--accent); font-size: 15px; font-weight: 600;
+}
+
+/* ---- 確認教材內容（學生第一次要用某本教材時） ---- */
+.mc { display: flex; flex-direction: column; gap: var(--sp-3); min-width: 0; }
+.mc-head { display: flex; flex-direction: column; gap: 2px; }
+.mc-title { font-size: 20px; font-weight: 700; margin: 0; }
+.mc-book { font-size: 15px; font-weight: 600; overflow-wrap: anywhere; }
+.mc-lead { font-size: 14px; color: var(--text-2); margin: var(--sp-1) 0 0; }
+.mc-notice {
+  font-size: 14px; background: var(--warning-soft); border: 1px solid var(--warning);
+  border-radius: var(--radius-sm); padding: var(--sp-3); overflow-wrap: anywhere;
+}
+.mc-bulk {
+  display: flex; flex-direction: column; gap: var(--sp-2);
+  background: var(--fill); border-radius: var(--radius-sm); padding: var(--sp-3);
+}
+.mc-bulk-label { font-size: 13px; color: var(--text-2); font-weight: 600; }
+.mc-kinds { display: flex; flex-wrap: wrap; gap: var(--sp-2); }
+.mc-chip {
+  display: inline-flex; align-items: center; gap: 6px; min-height: 40px;
+  padding: 0 var(--sp-3); border: 1px solid var(--border); border-radius: var(--radius-pill);
+  background: var(--surface-2); color: var(--text); font-size: 14px;
+}
+.mc-chip.on { background: var(--accent-soft); border-color: var(--accent); color: var(--accent); font-weight: 600; }
+.mc-chip:disabled { opacity: .45; }
+.mc-chip-box {
+  width: 16px; height: 16px; border-radius: 4px; border: 2px solid currentColor;
+  display: inline-flex; align-items: center; justify-content: center;
+  font-size: 11px; font-weight: 700; line-height: 1;
+}
+.mc-list { display: flex; flex-direction: column; }
+.mc-chapter { border-top: 1px solid var(--separator); }
+.mc-chapter-head {
+  display: flex; align-items: center; gap: var(--sp-2); width: 100%; min-width: 0;
+  min-height: 48px; padding: 8px 2px; background: none; border: 0;
+  text-align: left; color: var(--text); font-size: 16px; font-weight: 600;
+}
+.mc-chapter-title { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+.mc-chapter-count { font-size: 12px; color: var(--accent); font-weight: 600; white-space: nowrap; }
+.mc-chapter-body { display: flex; flex-direction: column; gap: var(--sp-3); padding: 0 0 var(--sp-3) 12px; }
+.mc-node { display: flex; flex-direction: column; gap: var(--sp-2); min-width: 0; }
+.mc-node-title { font-size: 15px; overflow-wrap: anywhere; }
+.mc-node--chapter .mc-node-title { color: var(--text-2); font-size: 13px; font-weight: 600; }
+.mc-ask { display: flex; align-items: center; flex-wrap: wrap; gap: var(--sp-2); }
+.mc-ask-label { font-size: 13px; color: var(--text-2); overflow-wrap: anywhere; }
+.mc-foot {
+  display: flex; align-items: center; gap: var(--sp-2); flex-wrap: wrap;
+  border-top: 1px solid var(--separator); padding-top: var(--sp-3);
+}
+.mc-total { font-size: 15px; font-weight: 600; margin-right: auto; }
+
+/* ---- 加入教材 ---- */
+.am { display: flex; flex-direction: column; gap: var(--sp-3); min-width: 0; }
+.am-title { font-size: 20px; font-weight: 700; margin: 0; }
+.am-lead { font-size: 14px; color: var(--text-2); margin: 0; }
+.am-status { font-size: 14px; color: var(--text-2); background: var(--fill); border-radius: var(--radius-sm); padding: var(--sp-3); }
+.am-choices { display: flex; flex-direction: column; gap: var(--sp-2); }
+.am-choice {
+  display: flex; align-items: center; gap: var(--sp-3); width: 100%; min-width: 0;
+  min-height: 68px; padding: var(--sp-3); text-align: left;
+  border: 1px solid var(--border); border-radius: var(--radius-sm);
+  background: var(--surface-2); color: var(--text); cursor: pointer;
+}
+.am-choice.is-busy, .am-choice:disabled { opacity: .5; cursor: default; }
+.am-choice-icon { font-size: 22px; flex: 0 0 auto; }
+.am-choice-main { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.am-choice-title { font-size: 16px; font-weight: 600; overflow-wrap: anywhere; }
+.am-choice-sub { font-size: 13px; color: var(--text-2); overflow-wrap: anywhere; }
+.am-foot { display: flex; }
+
+/* ---- 教材編輯器（拍照匯入與自己建立共用） ---- */
+.md { display: flex; flex-direction: column; gap: var(--sp-3); min-width: 0; }
+.md-book { display: flex; flex-direction: column; gap: var(--sp-2); }
+.md-field { display: flex; flex-direction: column; gap: 4px; }
+.md-field > span { font-size: 13px; color: var(--text-2); font-weight: 600; }
+.md-field input, .md-field select {
+  width: 100%; min-height: 44px; font-size: 16px; padding: 0 var(--sp-3);
+  border: 1px solid var(--border); border-radius: var(--radius-sm);
+  background: var(--surface-2); color: var(--text);
+}
+.md-hint { font-size: 13px; color: var(--text-2); margin: 0; }
+.md-problems { font-size: 13px; color: var(--danger); margin: 0; padding-left: 1.2em; }
+.md-chapter {
+  display: flex; flex-direction: column; gap: var(--sp-2);
+  border-top: 1px solid var(--separator); padding-top: var(--sp-3);
+}
+.md-chapter-head, .md-node-head { display: flex; align-items: center; gap: var(--sp-2); min-width: 0; }
+.md-chapter-head input, .md-node-head input, .md-node-head select {
+  min-height: 44px; font-size: 15px; padding: 0 var(--sp-2); min-width: 0;
+  border: 1px solid var(--border); border-radius: var(--radius-sm);
+  background: var(--surface-2); color: var(--text);
+}
+.md-chapter-title { flex: 1; font-weight: 600; }
+.md-node-head input { flex: 1; }
+.md-node { display: flex; flex-direction: column; gap: var(--sp-2); padding-left: 12px; }
+.md-x { flex: 0 0 auto; min-width: 40px; min-height: 40px; background: none; border: 0; color: var(--text-2); }
+.md-items { display: flex; flex-wrap: wrap; gap: 6px; padding-left: 12px; }
+.md-pill {
+  display: inline-flex; align-items: center; gap: 4px; font-size: 13px;
+  background: var(--accent-soft); color: var(--accent); font-weight: 600;
+  border-radius: var(--radius-pill); padding: 4px 6px 4px 10px;
+}
+.md-pill-x { background: none; border: 0; color: inherit; min-width: 28px; min-height: 28px; }
+.md-add-pill, .md-add {
+  min-height: 36px; padding: 0 var(--sp-3); font-size: 13px;
+  border: 1px dashed var(--border); border-radius: var(--radius-pill);
+  background: none; color: var(--text-2);
+}
+.md-add { align-self: flex-start; min-height: 40px; font-size: 14px; margin-left: 12px; }
+.md-add--chapter { margin-left: 0; }
+.md-chapter-level { display: flex; align-items: center; gap: var(--sp-2); flex-wrap: wrap; padding-left: 12px; }
+.md-chapter-level-label { font-size: 12px; font-weight: 600; color: var(--text-2); }
+.md-chapter-level .md-items { padding-left: 0; }
+.md-foot {
+  display: flex; align-items: center; gap: var(--sp-2); flex-wrap: wrap;
+  border-top: 1px solid var(--separator); padding-top: var(--sp-3);
+}
+.md-total { font-size: 14px; color: var(--text-2); margin-right: auto; }

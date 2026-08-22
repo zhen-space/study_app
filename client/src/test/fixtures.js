@@ -112,3 +112,53 @@ export const responses = {
   '/plan-tasks': tasks.filter(t => !t.completed && t.tags.includes('讀書計劃')),
   '/plan-tasks?done=1': tasks.filter(t => t.completed && t.tags.includes('讀書計劃')),
 };
+
+/* ---------- 新版第 1 步：統一教材書櫃（GET /study-materials?shelf=1） ---------- */
+// 兩科各一本，各一章一節一項內容——科目先後順序才有得排。
+const mprog = (t, c) => ({ total_items: t, completed_items: c, percent: t ? Math.round(c / t * 100) : 0 });
+
+export const materialShelf = {
+  books: [
+    { source: 'material', material_book_id: 1, title: '新大滿貫', publisher: '龍騰',
+      subject_list_id: 1, progress: mprog(1, 0), completion_supported: true,
+      requires_content_confirmation: false, selectable: true, chapter_count: 1, selected_count: 0 },
+    { source: 'material', material_book_id: 2, title: '新關鍵', publisher: '翰林',
+      subject_list_id: 2, progress: mprog(1, 0), completion_supported: true,
+      requires_content_confirmation: false, selectable: true, chapter_count: 1, selected_count: 0 },
+  ],
+  counts: { material: 2, legacy: 0 },
+};
+
+export const materialBooks = [
+  { id: 1, title: '新大滿貫', publisher: '龍騰', subject_list_id: 1, progress: mprog(1, 0) },
+  { id: 2, title: '新關鍵', publisher: '翰林', subject_list_id: 2, progress: mprog(1, 0) },
+];
+
+const mtree = (bookId, title, chapter, section, itemId, itemTitle) => ({
+  book: { id: bookId, title },
+  progress: mprog(1, 0),
+  selection: 'none',
+  nodes: [{
+    id: bookId * 10, kind: 'chapter', title: chapter, parent_id: null, order_index: 0,
+    progress: mprog(1, 0), selection: 'none', content_items: [],
+    children: [{
+      id: bookId * 10 + 1, kind: 'section', title: section, parent_id: bookId * 10, order_index: 0,
+      progress: mprog(1, 0), selection: 'none', children: [],
+      content_items: [{
+        id: itemId, title: itemTitle, kind: 'reading', estimated_minutes: null,
+        order_index: 0, completed: false, selected: false,
+      }],
+    }],
+  }],
+});
+
+export const materialTrees = {
+  1: mtree(1, '新大滿貫', '單元1 力學', '節1 直線運動', 101, '課本內容'),
+  2: mtree(2, '新關鍵', '單元1 大氣', '節1 對流層', 201, '課本內容'),
+};
+
+// Edit Plan 進來時讀回的既有選取（GET /plans/:id/material-items）
+export const materialPlanSelection = [
+  { content_item_id: 101, title: '課本內容', kind: 'reading', selected: 1,
+    material_completed: 0, book_id: 1 },
+];

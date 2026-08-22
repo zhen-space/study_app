@@ -64,6 +64,22 @@ const makeTree = (over = {}) => ({
 });
 
 const BOOKS = [{ id: 1, title: '新大滿貫', publisher: '龍騰', subject_list_id: 1, progress: prog(5, 1) }];
+// 統一書櫃（GET /study-materials?shelf=1）：正式教材與尚未確認內容的教材同一份清單，
+// 同一個形狀。前端不知道、也不需要知道哪一本原本存在哪裡。
+const shelfBook = (over = {}) => ({
+  source: 'material', material_book_id: 1, title: '新大滿貫', publisher: '龍騰',
+  subject_list_id: 1, progress: prog(5, 1), completion_supported: true,
+  requires_content_confirmation: false, selectable: true, chapter_count: 1, selected_count: 0,
+  ...over,
+});
+const SHELF = { books: [shelfBook()], counts: { material: 1, legacy: 0 } };
+// 還沒確認過內容的教材：沒有 material_book_id、沒有 progress，
+// 而且標明第一次要用時得先確認一次內容。
+const NEEDS_CHECK = {
+  source: 'legacy', legacy_ref: { list_id: 1, book: '舊講義' }, title: '舊講義',
+  publisher: '', subject_list_id: 1, completion_supported: false,
+  requires_content_confirmation: true, selectable: false, chapter_count: 2,
+};
 const CATEGORIES = [
   { id: 7, name: '第一次段考', books: [{ id: 1, title: '新大滿貫' }] },
   { id: 8, name: '複習', books: [{ id: 1, title: '新大滿貫' }] },
@@ -77,6 +93,7 @@ const setApi = (over = {}) => {
     const path = raw.split('?')[0];
     const hit = raw in over ? over[raw] : (path in over ? over[path] : undefined);
     if (hit !== undefined) return Promise.resolve(typeof hit === 'function' ? hit(opts, raw) : hit);
+    if (path === '/study-materials') return Promise.resolve(SHELF);
     if (path === '/material/categories') return Promise.resolve(CATEGORIES);
     if (path === '/material/books') return Promise.resolve(BOOKS);
     if (path === '/material/books/1/tree') return Promise.resolve(treeResponse());
@@ -300,13 +317,15 @@ describe('正式 hierarchy', () => {
 /* ============ 13–14. Category ↔ Book ============ */
 
 describe('Category 與 Book identity', () => {
-  it('Category → Book：切換分類只換篩選，不換書', async () => {
+  it('Step 1 完全沒有分類 UI：不切分類、不新增分類、也不讀分類 API', async () => {
     render(<MaterialSelector planId={55} />);
     await waitFor(() => expect(screen.queryByText('新大滿貫')).toBeTruthy());
-    expect(screen.getByRole('tab', { name: '所有教材' })).toBeTruthy();
-    await click(screen.getByRole('tab', { name: '第一次段考' }));
-    await flush();
-    expect(screen.getAllByText('新大滿貫').length).toBe(1);
+    expect(screen.queryAllByRole('tab')).toEqual([]);
+    expect(screen.queryByText('所有教材')).toBeNull();
+    expect(screen.queryByText('第一次段考')).toBeNull();
+    expect(document.body.textContent).not.toMatch(/分類/);
+    // 分類 domain 在後端還在，但第 1 步一次都不碰它
+    expect(calls.filter(([p]) => p.startsWith('/material/categories'))).toEqual([]);
   });
 
   it('同一本書出現在兩個分類仍是同一個 identity，不畫成兩本', async () => {
@@ -395,7 +414,8 @@ describe('legacy 共存邊界', () => {
   it('Material selector 只讀 Material API，完全不碰 legacy toc 端點', async () => {
     await openChapter({ planId: 55 });
     expect(calls.filter(([p]) => p.includes('/import/toc'))).toEqual([]);
-    expect(calls.every(([p]) => p.startsWith('/material/') || p.startsWith('/plans/'))).toBe(true);
+    expect(calls.every(([p]) =>
+      p.startsWith('/study-materials') || p.startsWith('/material/') || p.startsWith('/plans/'))).toBe(true);
   });
 });
 
@@ -440,14 +460,14 @@ describe('教材的科目（Subject）', () => {
   });
 
   it('沒有科目的教材在 selector 第一層就標示出來，不是排到最後才失敗', async () => {
-    setApi({ '/material/books': [{ ...BOOKS[0], subject_list_id: null }] });
+    setApi({ '/study-materials': { books: [shelfBook({ subject_list_id: null })], counts: {} } });
     render(<MaterialSelector planId={55} />);
     await waitFor(() => expect(screen.queryByText('新大滿貫')).toBeTruthy());
     expect(screen.getByText('需要先指定科目')).toBeTruthy();
   });
 
   it('打開沒有科目的教材時，選取被鎖住並說明原因', async () => {
-    setApi({ '/material/books': [{ ...BOOKS[0], subject_list_id: null }] });
+    setApi({ '/study-materials': { books: [shelfBook({ subject_list_id: null })], counts: {} } });
     render(<MaterialSelector planId={55} />);
     await waitFor(() => expect(screen.queryByText('新大滿貫')).toBeTruthy());
     await click(screen.getByRole('button', { name: /新大滿貫/ }));

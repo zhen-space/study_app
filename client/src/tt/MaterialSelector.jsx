@@ -1,19 +1,24 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import {
-  listCategories, listBooks, getBookTree, selectItems, selectNode,
+  listShelf, getBookTree, selectItems, selectNode,
   ITEM_LABEL, CHAPTER_LEVEL_KINDS, countSelected, collectBlocked, collectCancelled,
   applyDraftSelection, openItemIdsUnder, flattenItems, bookNeedsSubject,
 } from './material';
-import { Button, EmptyState, SegmentedControl } from './ui';
+import { Button, EmptyState } from './ui';
 import BlockedNotice from './BlockedNotice';
+import MaterialContentCheck from './MaterialContentCheck';
+import AddMaterialFlow from './AddMaterialFlow';
 
-// Create Plan 與 Edit Plan **共用的同一個** Material selector。
+// Create Plan 與 Edit Plan **共用的同一個**教材選取畫面。
 // 兩邊只差在初始狀態從哪裡來——那由後端 tree 的 plan_id 決定，不是兩套元件。
+//
+// 學生在這裡只看到一件事：他的教材，以及這次要讀哪些內容。
+// 資料底層是正式教材還是以前拍照留下的目錄，是系統自己的事，不外洩到畫面上。
 //
 // 這個元件的硬性規則：
 //   ・checkbox 改的永遠是 Plan selection，絕對不呼叫 completion endpoint
 //   ・completed 不畫成 checked checkbox，而且不只靠顏色區分
-//   ・節點 checkbox 只做 tri-state 批次選取，狀態直接用後端算好的 selection
+//   ・節點 checkbox 只做批次選取，狀態直接用後端算好的 selection
 //   ・Section 與 Topic 是 Chapter 的同層子節點；chapter-level 內容
 //     （單元練習／歷屆試題）直接畫在 Chapter 底下，不縮排成 Section 的樣子
 
@@ -130,6 +135,20 @@ function ChapterNode({ node, open, onOpen, busy, onToggleNode, onToggleItem }) {
   );
 }
 
+// 書櫃列表的 React key。正式教材用它自己的 id；還沒確認過內容的教材沒有
+// Material id，就用它來源座標本身當 key——**不用書名**，書名會重複。
+const bookKey = b => (b.material_book_id != null
+  ? `m${b.material_book_id}`
+  : `s${b.legacy_ref?.list_id}|${b.legacy_ref?.book ?? ''}`);
+
+// 這本書這次選了幾項。打開過的以剛算出來的為準，沒打開過的用清單帶回來的。
+const bookCount = (b, counts, draft) => {
+  const id = b.material_book_id;
+  if (id == null) return 0;
+  if (counts[id] !== undefined) return counts[id];
+  return draft ? 0 : (b.selected_count ?? 0);
+};
+
 // 草稿選取集合的更新。回傳新的 Set，不就地修改——React 才看得到變化。
 function toggleDraft(current, ids, selected) {
   const next = new Set(current || []);
@@ -144,12 +163,13 @@ function toggleDraft(current, ids, selected) {
 // planId != null → Edit Plan：每一次點擊都直接寫正式 selection API，狀態以後端為準
 export default function MaterialSelector({
   planId = null, draftIds = null, onDraftChange = null, onSelectionChange = null,
-  onPickedChange = null, footer = null,
+  onPickedChange = null, footer = null, header = null, lists = [], onLibraryChange = null,
 }) {
   const draft = planId == null;
-  const [categories, setCategories] = useState([]);
   const [books, setBooks] = useState([]);
-  const [scope, setScope] = useState('all');     // 'all' 或 category id
+  // 'shelf' 書櫃｜'book' 打開一本｜'check' 確認教材內容｜'add' 加入教材
+  const [view, setView] = useState('shelf');
+  const [pending, setPending] = useState(null);  // 正在確認內容的那一本
   const [openBook, setOpenBook] = useState(null);
   const [tree, setTree] = useState(null);
   const [rawTree, setRawTree] = useState(null);
@@ -159,11 +179,15 @@ export default function MaterialSelector({
   const [blocked, setBlocked] = useState(null);
   const [counts, setCounts] = useState({});      // book_id → 這個 Plan 已選幾項
 
-  useEffect(() => {
-    Promise.all([listCategories(), listBooks()])
-      .then(([c, b]) => { setCategories(c); setBooks(b); })
-      .catch(e => setErr(e.message));
-  }, []);
+  // 書櫃只讀一份統一的清單。前端不需要知道每一本從哪裡來，
+  // 也不做任何「這兩本是不是同一本」的比對——書名不是身分。
+  const loadShelf = useCallback(async () => {
+    const r = await listShelf({ planId: draft ? null : planId });
+    setBooks(r.books || []);
+    return r.books || [];
+  }, [planId, draft]);
+
+  useEffect(() => { loadShelf().catch(e => setErr(e.message)); }, [loadShelf]);
 
   const loadTree = useCallback(async bookId => {
     const raw = await getBookTree(bookId, { planId: draft ? null : planId });
@@ -238,63 +262,108 @@ export default function MaterialSelector({
     setCounts(c => ({ ...c, [rawTree.book.id]: countSelected(t) }));
   }, [draft, rawTree, draftIds]);
 
-  const visibleBooks = useMemo(() => {
-    if (scope === 'all') return books;
-    const cat = categories.find(c => String(c.id) === String(scope));
-    const ids = new Set((cat?.books || []).map(b => b.id));
-    return books.filter(b => ids.has(b.id));
-  }, [scope, books, categories]);
+  // 打開一本教材。還沒確認過內容的，先問一次「這本教材裡有哪些內容」——
+  // 那是學生第一次真的要用它的時候，不是另外一個要他自己去找的管理動作。
+  const openShelfBook = book => {
+    setErr('');
+    if (book.requires_content_confirmation) { setPending(book); setView('check'); return; }
+    setOpenBook(book.material_book_id);
+    setView('book');
+    loadTree(book.material_book_id).catch(e => setErr(e.message));
+  };
 
-  // 草稿模式的總數直接來自草稿集合——只算已開過的書會少算。
-  // 沒有指定科目的書：可以瀏覽目錄，但不能選取（選了也排不進去）
-  const locked = openBook != null && bookNeedsSubject(books.find(b => b.id === openBook));
+  // 教材剛剛建立或剛確認完內容：重讀書櫃，然後直接打開它。
+  // 學生的下一個動作一定是「選這本裡面的內容」，不該再被丟回書單自己找一次。
+  const afterCreated = async bookId => {
+    const list = await loadShelf().catch(() => []);
+    onLibraryChange?.();
+    const b = list.find(x => x.material_book_id === bookId);
+    setPending(null);
+    if (b) openShelfBook(b); else setView('shelf');
+  };
+
+  // 沒有指定科目的書：可以看內容，但不能選取（選了也排不進去）
+  const locked = openBook != null
+    && bookNeedsSubject(books.find(b => b.material_book_id === openBook));
 
   const total = draft
     ? (draftIds ? draftIds.size : 0)
     : Object.values(counts).reduce((a, b) => a + b, 0);
 
-  if (err && !tree) return <div className="mt-err" role="alert">{err}</div>;
+  if (err && !tree && view === 'shelf' && !books.length) {
+    return <div className="mt-err" role="alert">{err}</div>;
+  }
+
+  if (view === 'check' && pending) {
+    return (
+      <div className="mt-selector">
+        <MaterialContentCheck book={pending}
+          onCancel={() => { setPending(null); setView('shelf'); }}
+          onDone={r => afterCreated(r?.book?.id)} />
+      </div>
+    );
+  }
+
+  if (view === 'add') {
+    return (
+      <div className="mt-selector">
+        <AddMaterialFlow lists={lists}
+          onCancel={() => setView('shelf')}
+          onCreated={r => afterCreated(r?.book?.id)} />
+      </div>
+    );
+  }
 
   return (
     <div className="mt-selector">
       {blocked && <BlockedNotice data={blocked} onClose={() => setBlocked(null)} />}
 
-      {openBook == null ? (
+      {view === 'shelf' ? (
         <>
-          {/* 首層：Category → Book。「所有教材」永遠在最前面 */}
-          <SegmentedControl ariaLabel="教材分類" block value={String(scope)}
-            onChange={setScope}
-            options={[{ value: 'all', label: '所有教材' },
-              ...categories.map(c => ({ value: String(c.id), label: c.name }))]} />
-          {!visibleBooks.length ? (
-            <EmptyState title="還沒有教材"
-              description="到「更多 → 教材庫」建立教材，或先用下方的舊版目錄匯入。" />
-          ) : (
-            <div className="mt-booklist">
-              {visibleBooks.map(b => (
-                <button key={b.id} type="button" className="mt-book"
-                  onClick={() => { setOpenBook(b.id); loadTree(b.id).catch(e => setErr(e.message)); }}>
-                  <span className="mt-book-main">
-                    <span className="mt-book-title">{b.title}</span>
-                    {b.publisher && <span className="mt-book-sub">{b.publisher}</span>}
-                    {/* 沒有科目就排不進計畫。在第一層就講，不要等到排程最後才失敗。 */}
-                    {bookNeedsSubject(b) && <span className="mt-warn">需要先指定科目</span>}
-                  </span>
-                  <span className="mt-book-meta">
-                    <span className="mt-progress-text">
-                      {b.progress.completed_items}/{b.progress.total_items}
-                    </span>
-                    {counts[b.id] > 0 && <span className="mt-badge">已選 {counts[b.id]}</span>}
-                  </span>
-                </button>
-              ))}
+          {header}
+          {!books.length ? (
+            <div className="mt-empty">
+              <EmptyState title="還沒有教材"
+                description="加入你的第一本教材，就可以選擇要安排的內容。" />
+              <Button variant="primary" onClick={() => setView('add')}>＋ 加入教材</Button>
             </div>
+          ) : (
+            <>
+              <div className="mt-section-label">選擇要讀的內容</div>
+              <div className="mt-booklist">
+                {books.map(b => (
+                  <button key={bookKey(b)} type="button" className="mt-book"
+                    onClick={() => openShelfBook(b)}>
+                    <span className="mt-book-main">
+                      <span className="mt-book-title">{b.title}</span>
+                      {b.publisher && <span className="mt-book-sub">{b.publisher}</span>}
+                      {/* 沒有科目就排不進計畫。在第一層就講，不要等到排程最後才失敗。 */}
+                      {bookNeedsSubject(b) && <span className="mt-warn">需要先指定科目</span>}
+                    </span>
+                    <span className="mt-book-meta">
+                      {b.progress && (
+                        <span className="mt-progress-text">
+                          {b.progress.completed_items}/{b.progress.total_items}
+                        </span>
+                      )}
+                      {bookCount(b, counts, draft) > 0 && (
+                        <span className="mt-badge">已選 {bookCount(b, counts, draft)}</span>
+                      )}
+                    </span>
+                  </button>
+                ))}
+              </div>
+              <button type="button" className="mt-add-book" onClick={() => setView('add')}>
+                ＋ 加入教材
+              </button>
+            </>
           )}
         </>
       ) : (
         <>
           <div className="mt-tree-head">
-            <Button size="sm" variant="tertiary" onClick={() => { setOpenBook(null); setTree(null); }}>
+            <Button size="sm" variant="tertiary"
+              onClick={() => { setOpenBook(null); setTree(null); setView('shelf'); }}>
               ← 所有教材
             </Button>
             <span className="mt-tree-title">{tree?.book?.title}</span>
@@ -308,7 +377,7 @@ export default function MaterialSelector({
           )}
           {!tree ? <div className="mt-loading">載入中…</div>
             : !tree.nodes.length ? (
-              <EmptyState title="這本教材還沒有目錄"
+              <EmptyState title="這本教材還沒有內容"
                 description="到「更多 → 教材庫」加入章、節／主題與內容。" />
             ) : (
               <div className="mt-tree">

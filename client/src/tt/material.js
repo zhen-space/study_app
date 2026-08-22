@@ -24,6 +24,37 @@ export const getBookTree = (bookId, { planId = null } = {}) =>
 
 export const getPlanSelection = planId => api(`/plans/${planId}/material-items`);
 
+// 學生的教材書櫃。正式教材與舊資料一起回來，同一個形狀、同一份清單。
+// 前端不分辨兩者「是不是同一本」——那需要書名比對，而書名不是 identity。
+// 唯一的差別是 requires_content_confirmation：還沒確認過內容的教材，
+// 第一次要用的時候會先請學生確認一次。
+export const listShelf = ({ planId = null } = {}) =>
+  api('/study-materials?shelf=1' + (planId != null ? `&plan_id=${planId}` : ''));
+
+// 還沒確認過內容的教材：讀回系統已經知道的結構（書名、出版社、科目、章、
+// 節／主題），以及一份 source_snapshot。這一步不寫任何東西。
+export const getContentCheck = (listId, book = '') =>
+  api(`/material/legacy-books/${listId}/content-check?book=${encodeURIComponent(book)}`);
+
+// 學生確認完內容之後才寫入。source_snapshot 必須原樣送回——
+// 確認的是他剛剛實際看到的那一份，不是送出當下重新查到的。
+export const commitContentCheck = (listId, { book = '', draft, sourceSnapshot }) =>
+  api(`/material/legacy-books/${listId}/content-check`, {
+    method: 'POST', body: { book, draft, source_snapshot: sourceSnapshot },
+  });
+
+/* ---------- 加入教材 ---------- */
+
+// 拍照／PDF：AI 讀完先回一份 draft 讓學生確認，這一步完全不寫資料庫。
+export const importPreview = ({ files, subjectListId = null, title = '' }) =>
+  api('/material/import/preview', {
+    method: 'POST', body: { files, subject_list_id: subjectListId, title },
+  });
+
+// 確認之後整本一次建立（全成功或全不做）。手動建立教材走的是同一支——
+// 前端也不維護第二套「建立整本教材」的路徑。
+export const commitDraft = draft => api('/material/import/commit', { method: 'POST', body: { draft } });
+
 /* ---------- 寫入 ---------- */
 
 // 教材完成度。**只有**教材庫的完成操作可以呼叫這支；
