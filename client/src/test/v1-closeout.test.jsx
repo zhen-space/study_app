@@ -6,7 +6,7 @@
 //   3. 「照科目分堆」看不出哪一科欠最多——分堆的用途正是這個。
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import { render, screen, within, fireEvent } from '@testing-library/react';
+import { render, screen, within, fireEvent, waitFor } from '@testing-library/react';
 import { act } from 'react';
 import { today, addDays } from '../tt/helpers';
 import * as fx from './fixtures';
@@ -156,5 +156,60 @@ describe('任務頁：照科目分堆看得出各科逾期幾項', () => {
     const overdue = screen.getByText('已逾期').closest('.glabel');
     expect(within(overdue).queryByText(/^\d+ 項$/)).toBeNull();
     expect(errors).toEqual([]);
+  });
+});
+
+/* ---------------- 補登 ---------------- */
+
+describe('讀書：補登', () => {
+  const some = [
+    { id: 70, title: '數學 1-1', due_date: TD, due_time: '09:00', completed: 0, deleted: 0 },
+    { id: 71, title: '物理 2-1', due_date: addDays(TD, 1), due_time: null, completed: 0, deleted: 0 },
+  ];
+
+  it('正在讀書時補登入口仍然在——補登記的是已經讀完的事', async () => {
+    setApi({ '/study-sessions': [{ id: 1, status: 'running', task_id: 70, started_at: new Date().toISOString(), task_title: '數學 1-1' }] });
+    await draw(<StudyView.default tasks={some} />);
+    expect(await screen.findByText('正在讀書：數學 1-1')).toBeTruthy();
+    expect(screen.getByRole('button', { name: /補登/ })).toBeTruthy();
+    expect(errors).toEqual([]);
+  });
+
+  it('一項任務都沒有時不給補登入口（沒東西可補）', async () => {
+    await draw(<StudyView.default tasks={[]} />);
+    expect(screen.queryByRole('button', { name: /補登/ })).toBeNull();
+  });
+
+  it('送出的是 backfill 端點，帶著日期、開始時間與分鐘數', async () => {
+    await draw(<StudyView.default tasks={some} />);
+    fireEvent.click(screen.getByRole('button', { name: /補登/ }));
+    fireEvent.change(await screen.findByLabelText('讀了幾分鐘'), { target: { value: '45' } });
+    fireEvent.change(screen.getByLabelText('日期'), { target: { value: addDays(TD, -1) } });
+    fireEvent.click(screen.getByRole('button', { name: '補登' }));
+    await waitFor(() => {
+      expect(api).toHaveBeenCalledWith('/study-sessions/backfill', expect.objectContaining({
+        method: 'POST',
+        body: expect.objectContaining({ task_id: 70, date: addDays(TD, -1), minutes: 45 }),
+      }));
+    });
+    expect(errors).toEqual([]);
+  });
+
+  it('日期選不到未來（補的是已經發生的事）', async () => {
+    await draw(<StudyView.default tasks={some} />);
+    fireEvent.click(screen.getByRole('button', { name: /補登/ }));
+    expect((await screen.findByLabelText('日期')).getAttribute('max')).toBe(TD);
+  });
+
+  it('後端擋下來時把原因說出來，不是安靜地關掉', async () => {
+    api.mockImplementation(path => {
+      if (path === '/study-sessions/backfill') return Promise.reject(new Error('不能補登還沒發生的時間'));
+      if (path in fx.responses) return Promise.resolve(fx.responses[path]);
+      return Promise.resolve([]);
+    });
+    await draw(<StudyView.default tasks={some} />);
+    fireEvent.click(screen.getByRole('button', { name: /補登/ }));
+    fireEvent.click(await screen.findByRole('button', { name: '補登' }));
+    expect(await screen.findByRole('alert')).toHaveTextContent('不能補登還沒發生的時間');
   });
 });

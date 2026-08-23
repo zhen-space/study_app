@@ -44,6 +44,53 @@ router.post('/study-sessions', async (req, res) => {
   res.status(201).json(await readSession(r.lastInsertRowid, req.userId));
 });
 
+// POST /api/study-sessions/backfill：補登。
+//
+// 補登＝真的讀了，只是當下沒開計時器，事後補記這段學習紀錄。
+// 所以它是**正式的 StudySession**：分鐘數要算進 actual_minutes、今日／本週
+// 讀書時間、科目分項，跟即時計時完全一樣。
+//
+// 但它不是 live session：
+//   ・直接以 completed 寫入，不會有 running / paused 的中間狀態
+//   ・因此不佔用、也不受「同時只能有一個進行中」的限制——那條 invariant
+//     管的是「正在讀」，補登講的是「已經讀完了」
+//   ・不碰 Material completion：讀了多久跟教材完成與否是兩件事，
+//     actual_minutes > 0 不能推論教材做完了。要標完成走既有 completion 流程。
+//   ・不碰 Plan selection、不碰 ScheduledBlock / ScheduleVersion。
+//
+// 時間：使用者填的是台灣時間的日期與時刻，存進去是 UTC ISO，
+// 統計再用 twDayOf 換回台灣的那一天。三邊一致才不會出現「凌晨讀的算前一天」。
+const DATE_RE = /^\d{4}-\d\d-\d\d$/;
+const TIME_RE = /^([01]\d|2[0-3]):[0-5]\d$/;
+const MAX_BACKFILL_MINUTES = 24 * 60;
+
+router.post('/study-sessions/backfill', async (req, res) => {
+  const b = req.body || {};
+  const task = await ownTask(req.userId, Number(b.task_id));
+  if (!task || task.deleted) return res.status(400).json({ error: '找不到這個任務' });
+
+  const date = String(b.date || '');
+  const startTime = String(b.start_time || '');
+  const minutes = Number(b.minutes);
+  if (!DATE_RE.test(date)) return res.status(400).json({ error: '日期格式要像 2026-08-23' });
+  if (!TIME_RE.test(startTime)) return res.status(400).json({ error: '開始時間格式要像 19:30' });
+  if (!Number.isInteger(minutes) || minutes <= 0) return res.status(400).json({ error: '請填實際讀了幾分鐘' });
+  if (minutes > MAX_BACKFILL_MINUTES) return res.status(400).json({ error: '一次補登不能超過 24 小時' });
+
+  // 台灣時間 → UTC：減 8 小時。
+  const began = new Date(Date.parse(`${date}T${startTime}:00Z`) - 8 * 3600e3);
+  if (Number.isNaN(began.getTime())) return res.status(400).json({ error: '時間不正確' });
+  const ended = new Date(began.getTime() + minutes * 60000);
+  // 補登的是「已經發生的事」，未來的時間不該補得出來。
+  if (ended.getTime() > Date.now() + 60000) return res.status(400).json({ error: '不能補登還沒發生的時間' });
+
+  const r = await q.run(`INSERT INTO study_sessions
+    (user_id,task_id,scheduled_block_id,task_title_snapshot,started_at,ended_at,actual_minutes,running_since,status,source)
+    VALUES (?,?,?,?,?,?,?,?,?,?)`,
+    [req.userId, task.id, null, task.title, began.toISOString(), ended.toISOString(), minutes, null, 'completed', 'backfill']);
+  res.status(201).json(await readSession(r.lastInsertRowid, req.userId));
+});
+
 // PATCH /api/study-sessions/:id：pause/resume/complete/cancel。完成時才固定 actual_minutes。
 router.patch('/study-sessions/:id', async (req, res) => {
   const session = await q.get('SELECT * FROM study_sessions WHERE id=? AND user_id=?', [req.params.id, req.userId]);
