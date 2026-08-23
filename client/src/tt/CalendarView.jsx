@@ -28,7 +28,7 @@ function ColorPicker({ value, onPick }) {
     <div style={{ marginTop: 10 }}>
       <div className="row" style={{ marginBottom: 4 }}>
         <span className="muted">顏色</span>
-        <span className={'swatch' + (!value ? ' on' : '')} style={{ background: '#fff', border: '1px solid var(--border)' }} title="白底黑字" onClick={() => onPick('')} />
+        <span className={'swatch' + (!value ? ' on' : '')} style={{ background: 'var(--surface-2)', border: '1px solid var(--border)' }} title="不指定顏色（跟著主題）" onClick={() => onPick('')} />
         {value && <span className="swatch on" style={{ background: value }} />}
       </div>
       {PALETTE.map(g => (
@@ -558,8 +558,9 @@ export default function CalendarView({ tasks, reload }) {
             {eventsOn(d).map(e => {
               const top = yOf(toMin(e.start_time));
               const height = Math.max(16, yOf(toMin(e.end_time)) - top);
-              const bg = e.color || '#ffffff';
-              const dark = textOn(e.color) === '#fff';
+              // 沒指定顏色就走主題色票；硬寫白底黑字會在深色模式變成一整塊白。
+              const bg = e.color || 'var(--surface-2)';
+              const dark = !!e.color && textOn(e.color) === '#fff';
               return (
                 <div key={'e' + e.id}
                   onClick={ev => { ev.stopPropagation(); if (suppressClick.current) { suppressClick.current = false; return; } setEditEv({ ...e }); }}
@@ -573,7 +574,7 @@ export default function CalendarView({ tasks, reload }) {
                   onTouchStart={ev => onEvTouchStart(ev, e)} onTouchMove={onEvTouchMove} onTouchEnd={onEvTouchEnd}
                   style={{
                     position: 'absolute', top, height, left: 2, right: 2, zIndex: 2,
-                    background: bg, color: textOn(e.color), border: `1px solid ${e.color || 'var(--border)'}`,
+                    background: bg, color: e.color ? textOn(e.color) : 'var(--text)', border: `1px solid ${e.color || 'var(--border)'}`,
                     borderLeft: `3px solid ${e.color || '#c7c7cc'}`, borderRadius: 6, padding: '2px 5px',
                     fontSize: 11, lineHeight: 1.15, overflow: 'hidden', cursor: 'pointer', textAlign: 'center',
                     touchAction: 'none', userSelect: 'none', WebkitUserSelect: 'none', WebkitTouchCallout: 'none',
@@ -668,7 +669,7 @@ export default function CalendarView({ tasks, reload }) {
               ))}
               {eventsOn(c.ds).slice(0, 2).map(e => (
                 <div key={'e' + e.id} className="cal-ev" title={e.title}
-                  style={e.color ? { background: e.color, color: textOn(e.color) } : { background: '#fff', color: '#111', border: '1px solid var(--border)' }}
+                  style={e.color ? { background: e.color, color: textOn(e.color) } : { background: 'var(--surface-2)', color: 'var(--text)', border: '1px solid var(--border)' }}
                   onClick={ev => { ev.stopPropagation(); setEditEv({ ...e }); }}>
                   {e.title}
                 </div>

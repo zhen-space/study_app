@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { api } from '../api';
 import { matchView, today } from './helpers';
 import Tasks from './Tasks';
@@ -19,8 +19,10 @@ import LocksView from './LocksView';
 import RoutinesView from './RoutinesView';
 import GoalsView from './GoalsView';
 import MaterialLibraryView from './MaterialLibraryView';
+import SettingsView from './SettingsView';
 import Companion from './Companion';
 import Icon, { LIST_ICONS, LIST_COLORS } from './Icons';
+import { dueNotifications, notify } from './notify';
 
 export default function Shell({ onLogout }) {
   // 資訊架構：今天（執行）｜計畫（計畫管理）｜讀書（主要動作）｜任務（任務管理）｜行事曆（時間管理）
@@ -58,10 +60,8 @@ export default function Shell({ onLogout }) {
   };
   useEffect(() => { reload(); }, []);
   useEffect(() => { api('/pet').then(setPetData).catch(() => {}); }, [view.type]);
-  // 提醒通知需要授權（之前從沒請求過，通知一直發不出來）
-  useEffect(() => {
-    try { if ('Notification' in window && Notification.permission === 'default') Notification.requestPermission(); } catch {}
-  }, []);
+  // 通知權限改成使用者自己到「設定」按才要。一進 App 就跳系統對話框，
+  // 大部分人會直接按拒絕——之後就再也問不到了。
   // Siri 捷徑/小工具替代：開 https://…/?add=買牛奶 就直接建一筆今天的任務
   useEffect(() => {
     const p = new URLSearchParams(window.location.search);
@@ -72,26 +72,28 @@ export default function Shell({ onLogout }) {
         .catch(() => {});
     }
     const go = p.get('go'); // App 圖示快速選單（manifest shortcuts）
-    if (go && ['wizard', 'vocab', 'memo', 'calendar', 'pomo', 'habits', 'pet', 'stats', 'today', 'plans', 'study', 'tasks'].includes(go)) {
+    if (go && ['wizard', 'vocab', 'memo', 'calendar', 'pomo', 'habits', 'pet', 'stats', 'today', 'plans', 'study', 'tasks', 'settings'].includes(go)) {
       setViewRaw({ type: go });
       window.history.replaceState({}, '', window.location.pathname);
     }
   }, []);
 
-  // due-time reminders (while app open)
+  // 提醒（只在 App 開著時）：到期、快要開始讀書、逾期。
+  // 每一種都可以在「設定」關掉；送過的記在 sentRef，同一則不會每 30 秒再響一次。
+  const sentRef = useRef(new Set());
+  const [blocks, setBlocks] = useState([]);
+  useEffect(() => { api('/schedule/active').then(v => setBlocks(v?.blocks || [])).catch(() => {}); }, [view.type]);
   useEffect(() => {
-    const iv = setInterval(() => {
-      const now = new Date();
-      const hm = now.toTimeString().slice(0, 5);
-      tasks.forEach(t => {
-        if (!t.completed && t.due_date === today() && t.due_time === hm && !t._notified) {
-          t._notified = true;
-          try { new Notification('任務提醒', { body: t.title }); } catch {}
-        }
-      });
-    }, 30000);
+    const tick = () => {
+      for (const n of dueNotifications({ tasks, blocks, today: today(), sent: sentRef.current })) {
+        if (notify(n.kind, n.title, n.body)) sentRef.current.add(n.key);
+        else sentRef.current.add(n.key);   // 沒權限也記下來，不要每 30 秒重試一次
+      }
+    };
+    tick();
+    const iv = setInterval(tick, 30000);
     return () => clearInterval(iv);
-  }, [tasks]);
+  }, [tasks, blocks]);
 
   // 自訂標籤（存在帳號設定）＋任務上實際出現的標籤；防髒資料：tags 一定要是陣列
   const [customTags, setCustomTags] = useState([]);
@@ -168,7 +170,7 @@ export default function Shell({ onLogout }) {
   // 主導航（桌面側邊欄也照同一套 IA）
   const mainNav = [['today', 'today', '今天'], ['plans', 'wizard', '計畫'], ['study', 'pomo', '讀書'], ['tasks', 'all', '任務'], ['calendar', 'calendar', '行事曆']];
   // 不屬於五大主導航的既有功能：一個都沒刪，收在「更多」
-  const pages = [['wizard', 'wizard', '排程精靈'], ['schedule-history', 'calendar', '排程紀錄'], ['locks', 'calendar', '排程鎖定'], ['routines', 'calendar', '我的固定時間'], ['material', 'book', '教材庫'], ['goals', 'wizard', '目標'], ['vocab', 'book', '單字本'], ['memo', 'note', '備忘錄'], ['matrix', 'matrix', '矩陣'], ['habits', 'habit', '習慣'], ['pet', 'paw', '寵物'], ['stats', 'stats', '統計']];
+  const pages = [['wizard', 'wizard', '排程精靈'], ['schedule-history', 'calendar', '排程紀錄'], ['locks', 'calendar', '排程鎖定'], ['routines', 'calendar', '我的固定時間'], ['material', 'book', '教材庫'], ['goals', 'wizard', '目標'], ['vocab', 'book', '單字本'], ['memo', 'note', '備忘錄'], ['matrix', 'matrix', '矩陣'], ['habits', 'habit', '習慣'], ['pet', 'paw', '寵物'], ['stats', 'stats', '統計'], ['settings', 'settings', '設定']];
 
   const is = v => JSON.stringify(view) === JSON.stringify(v);
   const titleOf = () => {
@@ -286,6 +288,7 @@ export default function Shell({ onLogout }) {
         : view.type === 'matrix' ? <MatrixView tasks={tasks.filter(t => !t.deleted)} reload={reload} />
         : view.type === 'habits' ? <HabitsView habits={habits} reload={reload} />
         : view.type === 'stats' ? <StatsView />
+        : view.type === 'settings' ? <SettingsView />
         : view.type === 'pet' ? <PetView />
         // key：建立／調整不同計畫要當成不同的精靈重新開始，
         // 否則 React 會沿用同一個實例，草稿與既有任務都會是上一個計畫的

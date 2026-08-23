@@ -10,7 +10,7 @@ export default function StatsView() {
   const days = [...Array(30)].map((_, i) => addDays(today(), i - 29));
   const maxC = Math.max(1, ...days.map(d => s.completedByDay[d] || 0));
   const maxStudy = Math.max(1, ...days.map(d => s.actualByDay?.[d] || 0));
-  const heat = v => v === 0 ? '#eef1f4' : `rgba(71,114,250,${0.25 + 0.75 * v / maxC})`;
+  const heat = v => v === 0 ? 'var(--fill)' : `rgba(71,114,250,${0.25 + 0.75 * v / maxC})`;
   const streak = (() => {
     let n = 0, d = today();
     if (!s.completedByDay[d]) d = addDays(d, -1);
@@ -34,7 +34,7 @@ export default function StatsView() {
         </div>
         <div className="tile" style={{ marginTop: 12 }}>
           <div className="muted">近 30 天實際讀書時間</div>
-          <div className="heat">{days.map(d => <div key={d} className="hcell" title={`${d}：${s.actualByDay?.[d] || 0} 分鐘`} style={{ background: (s.actualByDay?.[d] || 0) ? `rgba(22,163,74,${.25 + .75 * (s.actualByDay[d] || 0) / maxStudy})` : '#eef1f4' }} />)}</div>
+          <div className="heat">{days.map(d => <div key={d} className="hcell" title={`${d}：${s.actualByDay?.[d] || 0} 分鐘`} style={{ background: (s.actualByDay?.[d] || 0) ? `rgba(22,163,74,${.25 + .75 * (s.actualByDay[d] || 0) / maxStudy})` : 'var(--fill)' }} />)}</div>
           <div className="muted" style={{ marginTop: 8 }}>尚未安排的計畫任務：{s.unplaced || 0} 項</div>
         </div>
         {(subjectNames.length > 0 || planNames.length > 0) && <div className="tile" style={{ marginTop: 12 }}>
