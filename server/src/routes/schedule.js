@@ -4,6 +4,7 @@ import { requireAuth } from '../middleware/auth.js';
 import { addDays, dayOfWeek, todayTW } from '../util/date.js';
 import * as sched from '../schedule/persistence.js';
 import { feasibilityGap } from '../schedule/feasibility-gap.js';
+import { explainSchedule, explainSentences } from '../schedule/explain.js';
 
 const router = Router();
 router.use(requireAuth);
@@ -1195,6 +1196,68 @@ router.post('/versions/:id/restore', async (req, res) => {
   } catch (e) {
     res.status(e.status || 500).json({ error: e.message });
   }
+});
+
+// GET /api/schedule/explain：「為什麼這樣排」。
+//
+// 分兩層，順序刻意如此：
+//   ① facts + sentences —— 完全確定性，從 active ScheduleVersion、Lock 與
+//      已確認的排程條件算出來。沒有 AI 也完整可用。
+//   ② narrative —— 選配。AI 拿 ① 的摘要寫成一段人話。
+//
+// AI 在這裡只讀不寫：它拿到的是「已經決定好的結果」，不參與決定。
+// 它不能改 Material completion、不能改 Plan selection、不能繞過 Lock、
+// 不能改動任何 block。排程真相永遠是 ScheduledBlock。
+// 任何 AI 失敗（沒金鑰、逾時、回話異常）都只是少了 narrative，
+// ① 照常回傳，狀態碼仍是 200。
+const AI_EXPLAIN_TIMEOUT_MS = 12000;
+
+router.get('/explain', async (req, res) => {
+  const active = await sched.getActiveSchedule(req.userId);
+  const [tasks, lists, locks] = await Promise.all([
+    q.all('SELECT id,list_id,plan_id,completed,cancelled,deleted FROM tasks WHERE user_id=?', [req.userId]),
+    q.all('SELECT id,name FROM lists WHERE user_id=?', [req.userId]),
+    q.all('SELECT * FROM schedule_locks WHERE user_id=? AND released_at IS NULL', [req.userId]),
+  ]);
+  // 只取「使用者已確認」的條件；未確認或不支援的不在這裡假裝生效。
+  let constraints = {};
+  if (active.version?.plan_id != null) {
+    const row = await q.get('SELECT intent_json FROM plan_constraints WHERE plan_id=? AND user_id=? AND confirmed_at IS NOT NULL',
+      [active.version.plan_id, req.userId]);
+    if (row) { try { constraints = JSON.parse(row.intent_json || '{}'); } catch { constraints = {}; } }
+  }
+
+  const facts = explainSchedule({
+    blocks: active.blocks, tasks, lists, locks, constraints, today: todayTW(),
+  });
+  const sentences = explainSentences(facts);
+  const out = { active: active.active, facts, sentences, narrative: null, ai: { available: false, reason: '' } };
+
+  if (!process.env.ANTHROPIC_API_KEY) {
+    out.ai.reason = 'no_api_key';
+    return res.json(out);
+  }
+  if (!facts.total_blocks) {           // 沒東西可解釋就別浪費一次 AI 呼叫
+    out.ai.reason = 'nothing_to_explain';
+    return res.json(out);
+  }
+  try {
+    const { default: Anthropic } = await import('@anthropic-ai/sdk');
+    const response = await new Anthropic().messages.create({
+      model: 'claude-opus-4-8', max_tokens: 400,
+      system: '你在對一位高中生解釋他的讀書排程。只根據使用者訊息裡的 JSON 事實說明，'
+        + '不得自行推論、不得建議修改排程、不得虛構數字。用繁體中文，三到五句話，語氣平實。',
+      messages: [{ role: 'user', content: JSON.stringify(facts) }],
+    }, { timeout: AI_EXPLAIN_TIMEOUT_MS });
+    const text = response.content.find(x => x.type === 'text')?.text?.trim();
+    if (text) { out.narrative = text; out.ai.available = true; }
+    else out.ai.reason = 'empty_response';
+  } catch (e) {
+    // AI 掛掉不能讓整支端點掛掉——確定性的部分仍要送出去。
+    out.ai.reason = 'error';
+    out.ai.detail = String(e?.message || '').slice(0, 120);
+  }
+  res.json(out);
 });
 
 // Wizard 建立與 AI 重排的正式寫入點。Task 的內容異動、軟刪除、版本、

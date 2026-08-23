@@ -213,3 +213,60 @@ describe('讀書：補登', () => {
     expect(await screen.findByRole('alert')).toHaveTextContent('不能補登還沒發生的時間');
   });
 });
+
+/* ---------------- 為什麼這樣排（AI Insights） ---------------- */
+
+const ExplainSheet = (await import('../tt/ExplainSheet')).default;
+
+describe('為什麼這樣排', () => {
+  const facts = { total_blocks: 3, unplaced_count: 0 };
+  const base = { active: true, facts, sentences: ['這份安排從 9/1 到 9/3，共 2 天、3 個時段。', '平均每天約 75 分鐘。'] };
+
+  const withExplain = payload => {
+    api.mockImplementation(path => {
+      if (path === '/schedule/explain') return Promise.resolve(payload);
+      if (path in fx.responses) return Promise.resolve(fx.responses[path]);
+      return Promise.resolve([]);
+    });
+  };
+
+  it('沒有 AI 金鑰時仍然看得到確定性的說明，而且講清楚為什麼沒有 AI', async () => {
+    withExplain({ ...base, narrative: null, ai: { available: false, reason: 'no_api_key' } });
+    await draw(<ExplainSheet onClose={() => {}} />);
+    expect(await screen.findByText(/共 2 天、3 個時段/)).toBeTruthy();
+    expect(screen.getByText(/AI 補充說明目前沒有開啟/)).toBeTruthy();
+    expect(errors).toEqual([]);
+  });
+
+  it('有 AI 說明時補在確定性內容後面，不是取代它', async () => {
+    withExplain({ ...base, narrative: 'AI 寫的一段話', ai: { available: true, reason: '' } });
+    await draw(<ExplainSheet onClose={() => {}} />);
+    expect(await screen.findByText('AI 寫的一段話')).toBeTruthy();
+    expect(screen.getByText(/共 2 天、3 個時段/)).toBeTruthy();   // 確定性的仍在
+  });
+
+  it('AI 出錯時只是少一段話，確定性說明照樣顯示，並給重試', async () => {
+    withExplain({ ...base, narrative: null, ai: { available: false, reason: 'error' } });
+    await draw(<ExplainSheet onClose={() => {}} />);
+    expect(await screen.findByText(/共 2 天、3 個時段/)).toBeTruthy();
+    expect(screen.getByText(/AI 這次沒有回應/)).toBeTruthy();
+    expect(screen.getByRole('button', { name: '再試一次' })).toBeTruthy();
+  });
+
+  it('整支端點失敗時說得出來，並給重試——不是一片空白', async () => {
+    api.mockImplementation(path => {
+      if (path === '/schedule/explain') return Promise.reject(new Error('伺服器沒有回應'));
+      if (path in fx.responses) return Promise.resolve(fx.responses[path]);
+      return Promise.resolve([]);
+    });
+    await draw(<ExplainSheet onClose={() => {}} />);
+    expect(await screen.findByRole('alert')).toHaveTextContent('伺服器沒有回應');
+    expect(screen.getByRole('button', { name: '重試' })).toBeTruthy();
+  });
+
+  it('明講這裡不會改動安排（AI 不是排程真相）', async () => {
+    withExplain({ ...base, narrative: null, ai: { available: false, reason: 'no_api_key' } });
+    await draw(<ExplainSheet onClose={() => {}} />);
+    expect(await screen.findByText(/不會改動你的安排/)).toBeTruthy();
+  });
+});
