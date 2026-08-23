@@ -183,3 +183,30 @@ describe('設定頁', () => {
     expect(errors).toEqual([]);
   });
 });
+
+/* ---------------- 統計：今天／本週 ---------------- */
+
+const stats = await import('../tt/StatsView');
+
+describe('統計的今天／本週讀書時間', () => {
+  it('只加總範圍內的日子，資料一律取自 actualByDay（不自己推估）', () => {
+    const abd = { [addDays(TD, -9)]: 30, [addDays(TD, -1)]: 45, [TD]: 25 };
+    expect(stats.studyMinutes(abd, TD, TD)).toBe(25);
+    expect(stats.studyMinutes(abd, addDays(TD, -1), TD)).toBe(70);
+    expect(stats.studyMinutes({}, TD, TD)).toBe(0);
+    expect(stats.studyMinutes(undefined, TD, TD)).toBe(0);
+  });
+
+  it('本週從週一算起', () => {
+    // 2026-08-26 是週三 → 該週的週一是 08-24
+    expect(stats.weekStart('2026-08-26')).toBe('2026-08-24');
+    // 週日要算成「上一個週一那一週」，不是隔天開始的新一週
+    expect(stats.weekStart('2026-08-23')).toBe('2026-08-17');
+    expect(stats.weekStart('2026-08-24')).toBe('2026-08-24');
+  });
+
+  it('壞掉的分鐘數不會讓整頁變成 NaN', () => {
+    expect(stats.studyMinutes({ [TD]: null }, TD, TD)).toBe(0);
+    expect(stats.studyMinutes({ [TD]: 'x' }, TD, TD)).toBe(0);
+  });
+});
