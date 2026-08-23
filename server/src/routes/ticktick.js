@@ -2,7 +2,7 @@ import { Router } from 'express';
 import { q } from '../db/init.js';
 import { requireAuth } from '../middleware/auth.js';
 import { calculateScheduleDiff } from '../schedule/diff.js';
-import { todayTW } from '../util/date.js';
+import { todayTW, twDayOf } from '../util/date.js';
 import { transitionTaskOutcome } from '../schedule/persistence.js';
 import { setCompletion } from '../material/service.js';
 
@@ -569,12 +569,13 @@ router.get('/tstats', async (req, res) => {
   const year = String(new Date().getFullYear());
   const byMonth = Array(12).fill(0), actualByMonth = Array(12).fill(0);
   for (const [d, n] of Object.entries(days)) if (d.startsWith(year)) byMonth[+d.slice(5, 7) - 1] += n;
-  for (const s of sessions) if (s.ended_at?.startsWith(year)) actualByMonth[+s.ended_at.slice(5, 7) - 1] += s.actual_minutes;
+  // 月份也要照台灣時間分桶，否則每個月頭尾那幾個小時會落到隔壁月
+  for (const s of sessions) { const d = twDayOf(s.ended_at); if (d?.startsWith(year)) actualByMonth[+d.slice(5, 7) - 1] += s.actual_minutes; }
   const topLists = await q.all(`SELECT l.name, l.color, COUNT(*) c FROM tasks t JOIN lists l ON l.id=t.list_id
     WHERE t.user_id=? AND t.completed=1 GROUP BY l.id ORDER BY c DESC LIMIT 5`, [req.userId]);
   const actualByDay = {}, bySubject = {}, byPlan = {};
   for (const s of sessions) {
-    const d = (s.ended_at || s.started_at).slice(0, 10);
+    const d = twDayOf(s.ended_at || s.started_at);
     actualByDay[d] = (actualByDay[d] || 0) + s.actual_minutes;
     if (s.list_name) bySubject[s.list_name] = (bySubject[s.list_name] || 0) + s.actual_minutes;
     if (s.plan_name) byPlan[s.plan_name] = (byPlan[s.plan_name] || 0) + s.actual_minutes;

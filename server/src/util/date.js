@@ -19,3 +19,10 @@ export const addDays = (ds, n) => {
 export const dayOfWeek = ds => parseDay(ds).getUTCDay();
 // 台灣時區的今天
 export const todayTW = () => fmtDay(new Date(Date.now() + 8 * 3600e3));
+
+// 一個 UTC 時間戳屬於「台灣的哪一天」。
+//
+// study_sessions.started_at / ended_at 存的是 UTC ISO，但整個 App 的「今天」
+// 是台灣時間（todayTW）。直接 .slice(0, 10) 取 UTC 日期，凌晨 0–8 點讀的書
+// 會被算到前一天去——統計上的「今天讀了多久」就會少一段、前一天多一段。
+export const twDayOf = iso => (iso ? fmtDay(new Date(Date.parse(iso) + 8 * 3600e3)) : null);
