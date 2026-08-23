@@ -395,6 +395,25 @@ CREATE TABLE IF NOT EXISTS study_sessions (
   updated_at TEXT DEFAULT CURRENT_TIMESTAMP
 );
 
+-- Google Calendar（v1：單向唯讀）。
+-- 只存「怎麼跟 Google 要資料」所需的憑證，不鏡射任何事件。
+-- 沒有 google_calendar_events / google_busy_events：忙碌時段每次排程當下去問，
+-- 不落地就不會有「資料庫那份過期了」的問題，也少一份可外洩的行程資料。
+-- token 一律是 AES-256-GCM 密文；encryption_version 留給將來換金鑰用。
+CREATE TABLE IF NOT EXISTS google_calendar_connections (
+  user_id INTEGER PRIMARY KEY,
+  access_token_encrypted TEXT,
+  refresh_token_encrypted TEXT NOT NULL,
+  access_token_expires_at TEXT,
+  scope TEXT NOT NULL,
+  token_type TEXT,
+  encryption_version INTEGER NOT NULL DEFAULT 1,
+  connected_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  last_success_at TEXT,
+  last_error_code TEXT
+);
+
 -- ===== Material domain =====================================================
 -- 教材是「長期存在的東西」，Plan 是「這一次要做的事」。兩者刻意分開：
 --   ・完成度的最小單位永遠是 ContentItem，而且是跨 Plan 的全域長期狀態

@@ -3,6 +3,7 @@ import { api } from '../api';
 import { Button, PageHeader, SurfaceCard, SegmentedControl, ListRow } from './ui';
 import { THEMES, getTheme, setTheme } from './theme';
 import { getNotifyPrefs, setNotifyPrefs, permissionState, requestPermission, NOTIFY_KINDS } from './notify';
+import GoogleCalendarCard from './GoogleCalendarCard';
 
 // 「設定」。在這頁出現以前，作息時間只能在排程精靈第 2 步裡改——想調睡覺時間
 // 得先開一個計畫走到第二步。這裡只收跟「App 怎麼運作」有關的設定，
@@ -49,11 +50,13 @@ export default function SettingsView() {
   const addMeal = () => setS(x => ({ ...x, meal_windows: [...x.meal_windows, ['18:00', '18:30']] }));
   const delMeal = i => setS(x => ({ ...x, meal_windows: x.meal_windows.filter((_, k) => k !== i) }));
 
-  // 時區不是 App 自己存的設定：排程、日期邊界全部跟著這台裝置的時區走。
-  // 顯示出來是為了讓「日期怎麼算的」有跡可循，不是給人改的欄位。
-  const tz = (() => {
+  // 排程與日期邊界一律用台灣時間（Asia/Taipei），這是後端的既定 contract，
+  // 不是跟著裝置走——先前這裡寫「跟著裝置時區」是錯的，會讓人以為出國就會跟著變。
+  // 順帶顯示裝置時區，兩者不同時使用者才知道為什麼日期看起來怪怪的。
+  const deviceTz = (() => {
     try { return Intl.DateTimeFormat().resolvedOptions().timeZone || '未知'; } catch { return '未知'; }
   })();
+  const SCHEDULE_TZ = 'Asia/Taipei';
 
   return (
     <div className="main">
@@ -146,11 +149,22 @@ export default function SettingsView() {
           )}
         </section>
 
+        {/* ---------- 連結 ---------- */}
+        <section className="ui-section">
+          <div className="ui-section-title">連結</div>
+          <GoogleCalendarCard />
+        </section>
+
         {/* ---------- 這台裝置 ---------- */}
         <section className="ui-section">
           <div className="ui-section-title">這台裝置</div>
           <SurfaceCard>
-            <ListRow title="時區" subtitle="日期與排程都照這個時區計算" trailing={<span className="ui-meta">{tz}</span>} />
+            <ListRow title="排程時區" subtitle="日期與排程一律以台灣時間計算"
+              trailing={<span className="ui-meta">{SCHEDULE_TZ}</span>} />
+            {deviceTz !== SCHEDULE_TZ && (
+              <ListRow title="這台裝置的時區" subtitle="與排程時區不同，畫面上的時間可能跟你的當地時間有落差"
+                trailing={<span className="ui-meta">{deviceTz}</span>} />
+            )}
             <ListRow title="版本" trailing={<span className="ui-meta">{window.APP_VER || '—'}</span>} />
           </SurfaceCard>
         </section>
