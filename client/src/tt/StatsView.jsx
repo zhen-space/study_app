@@ -2,6 +2,21 @@ import { useEffect, useState } from 'react';
 import { api } from '../api';
 import { today, addDays } from './helpers';
 
+// 今天與本週的實際讀書時間。資料一律取自 /tstats 的 actualByDay
+// （來源是已完成的 StudySession），前端不自己另外推估。
+// 「本週」照學生的習慣從週一算起。
+export function weekStart(d) {
+  const x = new Date(d + 'T00:00:00');
+  x.setDate(x.getDate() - ((x.getDay() + 6) % 7));
+  return `${x.getFullYear()}-${String(x.getMonth() + 1).padStart(2, '0')}-${String(x.getDate()).padStart(2, '0')}`;
+}
+export function studyMinutes(actualByDay = {}, from, to) {
+  return Object.entries(actualByDay)
+    .filter(([d]) => d >= from && d <= to)
+    .reduce((n, [, m]) => n + (Number(m) || 0), 0);
+}
+const hm = m => (m >= 60 ? `${Math.floor(m / 60)} 小時 ${m % 60} 分` : `${m} 分`);
+
 export default function StatsView() {
   const [s, setS] = useState(null);
   useEffect(() => { api('/tstats').then(setS); }, []);
@@ -10,13 +25,15 @@ export default function StatsView() {
   const days = [...Array(30)].map((_, i) => addDays(today(), i - 29));
   const maxC = Math.max(1, ...days.map(d => s.completedByDay[d] || 0));
   const maxStudy = Math.max(1, ...days.map(d => s.actualByDay?.[d] || 0));
-  const heat = v => v === 0 ? '#eef1f4' : `rgba(71,114,250,${0.25 + 0.75 * v / maxC})`;
+  const heat = v => v === 0 ? 'var(--fill)' : `rgba(71,114,250,${0.25 + 0.75 * v / maxC})`;
   const streak = (() => {
     let n = 0, d = today();
     if (!s.completedByDay[d]) d = addDays(d, -1);
     while (s.completedByDay[d]) { n++; d = addDays(d, -1); }
     return n;
   })();
+  const todayMin = studyMinutes(s.actualByDay, today(), today());
+  const weekMin = studyMinutes(s.actualByDay, weekStart(today()), today());
   const subjectNames = [...new Set([...Object.keys(s.plannedBySubject || {}), ...Object.keys(s.bySubject || {})])];
   const planNames = [...new Set([...Object.keys(s.plannedByPlan || {}), ...Object.keys(s.byPlan || {})])];
 
@@ -25,6 +42,8 @@ export default function StatsView() {
       <div className="main-head"><h2>統計</h2></div>
       <div className="main-body">
         <div className="stat-tiles">
+          <div className="tile"><div className="muted">今天讀了</div><div className="num">{hm(todayMin)}</div></div>
+          <div className="tile"><div className="muted">本週讀了</div><div className="num">{hm(weekMin)}</div><div className="muted">從週一起算</div></div>
           <div className="tile"><div className="muted">已完成任務</div><div className="num">{s.done}</div><div className="muted">共 {s.total} 項</div></div>
           <div className="tile"><div className="muted">完成率</div><div className="num">{s.total ? Math.round(s.done / s.total * 100) : 0}%</div></div>
           <div className="tile"><div className="muted">連續完成天數</div><div className="num">🔥 {streak}</div></div>
@@ -34,7 +53,7 @@ export default function StatsView() {
         </div>
         <div className="tile" style={{ marginTop: 12 }}>
           <div className="muted">近 30 天實際讀書時間</div>
-          <div className="heat">{days.map(d => <div key={d} className="hcell" title={`${d}：${s.actualByDay?.[d] || 0} 分鐘`} style={{ background: (s.actualByDay?.[d] || 0) ? `rgba(22,163,74,${.25 + .75 * (s.actualByDay[d] || 0) / maxStudy})` : '#eef1f4' }} />)}</div>
+          <div className="heat">{days.map(d => <div key={d} className="hcell" title={`${d}：${s.actualByDay?.[d] || 0} 分鐘`} style={{ background: (s.actualByDay?.[d] || 0) ? `rgba(22,163,74,${.25 + .75 * (s.actualByDay[d] || 0) / maxStudy})` : 'var(--fill)' }} />)}</div>
           <div className="muted" style={{ marginTop: 8 }}>尚未安排的計畫任務：{s.unplaced || 0} 項</div>
         </div>
         {(subjectNames.length > 0 || planNames.length > 0) && <div className="tile" style={{ marginTop: 12 }}>

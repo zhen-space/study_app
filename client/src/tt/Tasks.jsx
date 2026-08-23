@@ -46,10 +46,9 @@ export function repeatLabel(r, dueDate) {
   } catch { return r; }
 }
 
-// v1 學生端先不露出「重複任務」：只隱藏 UI 入口。
-// RepeatPicker、repeatLabel、以及後端的 nextDate()／recurring 欄位全部保留，
-// 既有的重複任務照常運作，之後要放回來把這個改成 true 就好。
-const RECURRING_UI = false;
+// 重複任務 v1 開放。domain 一直都在（nextDate()、recurring 欄位、miss_policy、
+// 完成後自動長出下一筆），先前只是把 UI 入口關掉。開回來不需要任何 schema 變更。
+const RECURRING_UI = true;
 
 // 詳細重複設定（完整 TickTick 式）：每天/週/月/年/平日/記憶曲線/自訂；
 // 月可「按日期多選＋最後一天」或「第 N 個星期 X」；可設結束條件與完成後起算

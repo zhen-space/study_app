@@ -73,10 +73,13 @@
   --shadow: var(--shadow-subtle);
   --radius: var(--radius-md);
 }
-/* Dark Mode：只覆寫基礎 token，別名自動跟著走。
-   架構先立好，細節 polish 留給 UI-R7。 */
+/* Dark Mode 的 token 只在這裡定義一次的兩種入口：
+     ① 沒有明確選過（data-theme 沒設或不是 light）→ 跟隨系統
+     ② 使用者在設定頁選了「深色」→ data-theme="dark"，不管系統偏好
+   淺色是 :root 的預設值，所以 data-theme="light" 什麼都不用做，
+   只要讓 ① 的 :not([data-theme="light"]) 把它排除掉就好。 */
 @media (prefers-color-scheme: dark) {
-  :root {
+  :root:not([data-theme="light"]) {
     --app-bg: #000000;
     --surface: rgba(28,28,30,.92);
     --surface-2: #1C1C1E;
@@ -95,6 +98,25 @@
     --danger: #FF6369;
     --shadow-subtle: 0 2px 12px rgba(0,0,0,.5);
   }
+}
+:root[data-theme="dark"] {
+  --app-bg: #000000;
+  --surface: rgba(28,28,30,.92);
+  --surface-2: #1C1C1E;
+  --separator: rgba(84,84,88,.44);
+  --fill: rgba(118,118,128,.20);
+  --fill-strong: rgba(118,118,128,.32);
+  --text: #FFFFFF;
+  --text-2: rgba(235,235,245,.62);
+  --text-3: rgba(235,235,245,.40);
+  --accent: #8B93E8;
+  --accent-soft: rgba(139,147,232,.20);
+  --accent-contrast: #14142B;
+  --success: #48C08B;
+  --warning: #E0A143;
+  --warning-soft: rgba(224,161,67,.18);
+  --danger: #FF6369;
+  --shadow-subtle: 0 2px 12px rgba(0,0,0,.5);
 }
 @media (prefers-reduced-motion: reduce) {
   :root { --motion-fast: 0ms; --motion-normal: 0ms; --motion-slow: 0ms; }
