@@ -56,7 +56,7 @@ test('連結端點需要登入；沒設定 Google 環境變數時回 503', async
 });
 
 test('callback 拒絕無效 state，而且不會因此建立任何連結', async () => {
-  const { base, H, stop } = await startServer(GOOGLE_ENV);
+  const { base, H, stop } = await startServer({ env: GOOGLE_ENV });
   try {
     const r = await fetch(`${base}/integrations/google-calendar/callback?code=abc&state=forged`, { redirect: 'manual' });
     assert.ok([301, 302, 303, 307, 308].includes(r.status), '應該導回 App');
@@ -68,7 +68,7 @@ test('callback 拒絕無效 state，而且不會因此建立任何連結', async
 });
 
 test('callback 不接受沒有 code 的請求', async () => {
-  const { base, stop } = await startServer(GOOGLE_ENV);
+  const { base, stop } = await startServer({ env: GOOGLE_ENV });
   try {
     const r = await fetch(`${base}/integrations/google-calendar/callback`, { redirect: 'manual' });
     assert.ok(r.headers.get('location').includes('google=failed'));
@@ -76,7 +76,7 @@ test('callback 不接受沒有 code 的請求', async () => {
 });
 
 test('資料庫裡存的是密文，看不到 token 明文；A 讀不到也中斷不了 B', async () => {
-  const { base, H, stop, connectGoogle, rawConnection, secondUser } = await startServer(GOOGLE_ENV);
+  const { base, H, stop, connectGoogle, rawConnection, secondUser } = await startServer({ env: GOOGLE_ENV });
   try {
     await connectGoogle(1, { refresh_token: 'PLAINTEXT-REFRESH-XYZ', access_token: 'PLAINTEXT-ACCESS-XYZ', expires_in: 3600 });
 
@@ -106,7 +106,7 @@ test('資料庫裡存的是密文，看不到 token 明文；A 讀不到也中�
 test('中斷連結一定會刪掉本地憑證，remote revoke 失敗也一樣', async () => {
   // 測試環境連不到 accounts.google.com，revoke 必定失敗——這正是要驗的情境：
   // 網路壞掉不能變成「使用者想中斷卻中斷不了」。
-  const { base, H, stop, connectGoogle, rawConnection } = await startServer(GOOGLE_ENV);
+  const { base, H, stop, connectGoogle, rawConnection } = await startServer({ env: GOOGLE_ENV });
   try {
     await connectGoogle(1, { refresh_token: 'r-1', access_token: 'a-1', expires_in: 3600 });
     assert.ok(await rawConnection(1));
@@ -122,7 +122,7 @@ test('中斷連結一定會刪掉本地憑證，remote revoke 失敗也一樣', 
 });
 
 test('中斷連結不刪任何 Plan / Task / 行程', async () => {
-  const { base, H, stop, connectGoogle } = await startServer(GOOGLE_ENV);
+  const { base, H, stop, connectGoogle } = await startServer({ env: GOOGLE_ENV });
   try {
     await post(base, H, '/lists', { name: '數學' });
     await post(base, H, '/tasks', { title: '不該被刪的任務', due_date: day(1) });
@@ -152,7 +152,7 @@ test('沒連結 Google 時，排程行為跟這個功能不存在完全一樣', 
 
 test('連結了但讀不到 Google 時，preview fail closed（503），不給假的安全排程', async () => {
   // 測試環境連不到 googleapis.com，FreeBusy 必定失敗
-  const { base, H, stop, connectGoogle } = await startServer(GOOGLE_ENV);
+  const { base, H, stop, connectGoogle } = await startServer({ env: GOOGLE_ENV });
   try {
     await connectGoogle(1, { refresh_token: 'r', access_token: 'a', expires_in: 3600 });
     const r = await fetch(base + '/schedule/preview', {
@@ -171,7 +171,7 @@ test('連結了但讀不到 Google 時，preview fail closed（503），不給�
 });
 
 test('Google 整合不寫 fixed_events、不建 StudySession、不動 Material / Plan selection', async () => {
-  const { base, H, stop, connectGoogle, tableNames } = await startServer(GOOGLE_ENV);
+  const { base, H, stop, connectGoogle, tableNames } = await startServer({ env: GOOGLE_ENV });
   try {
     const before = {
       events: (await get(base, H, '/events')).body,
