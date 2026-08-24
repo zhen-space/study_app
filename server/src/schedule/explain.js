@@ -114,6 +114,6 @@ export function explainSentences(f) {
     out.push('各科分配：' + f.subjects.map(s => `${s.subject} ${s.minutes} 分鐘`).join('、') + '。');
   }
   if (f.locks.length) out.push(`目前有 ${f.locks.length} 個未解除的鎖定紀錄。`);
-  if (f.unplaced_count) out.push(`還有 ${f.unplaced_count} 項沒排進來——通常是時間不夠，可以放寬期限或減少這次的範圍。`);
+  if (f.unplaced_count) out.push(`還有 ${f.unplaced_count} 項尚未排進目前的安排。`);
   return out;
 }

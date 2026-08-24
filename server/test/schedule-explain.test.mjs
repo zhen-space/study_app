@@ -139,9 +139,10 @@ test('說明句子只講事實裡有的數字', () => {
   assert.ok(text.includes('3 個時段'));
   assert.ok(text.includes('75 分鐘'));
   assert.ok(text.includes('數學 120 分鐘'));
-  assert.ok(text.includes('還有 1 項沒排進來'));
+  assert.ok(text.includes('還有 1 項尚未排進目前的安排。'));
   assert.ok(!text.includes('已避開既定行程'), '沒有 availability facts 時不能宣稱已避開固定行程');
   assert.ok(!text.includes('重新排程時不會被動到'), '未推導 lock feasibility 時不能宣稱鎖一定生效');
+  assert.ok(!/通常是時間不夠|放寬期限|減少這次的範圍/.test(text), 'unplaced 只可陳述事實，不可臆測原因或給 remediation 建議');
 });
 
 /* ---------- 端點：沒有金鑰時的行為 ---------- */
