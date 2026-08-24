@@ -12,6 +12,23 @@
 
 const HM = t => (t || '').slice(0, 5);
 const minutesOf = t => (t ? +t.slice(0, 2) * 60 + +t.slice(3, 5) : 0);
+const configured = value => value != null && !(Array.isArray(value) && value.length === 0);
+
+// Explain API 的 constraint 是「目前已確認、且 active schedule 真的涉及的
+// Plan」的脈絡，不是 ScheduleVersion 的欄位，更不是全域設定。保留 Plan
+// attribution，才不會把不同計畫的條件混成一條原因。
+function constraintAttribution(constraints) {
+  const entries = Array.isArray(constraints)
+    ? constraints
+    : [{ plan_id: null, plan_name: null, constraints: constraints || {} }];
+  return entries.map(entry => ({
+    plan_id: entry.plan_id ?? null,
+    plan_name: entry.plan_name ?? null,
+    constraints: Object.entries(entry.constraints || {})
+      .filter(([, value]) => configured(value))
+      .map(([key, value]) => ({ key, value })),
+  })).filter(entry => entry.constraints.length > 0);
+}
 
 // 把一份 active schedule 整理成「可以直接唸出來」的事實。
 // 全部來自傳進來的資料，不做任何推測。
@@ -58,6 +75,7 @@ export function explainSchedule({ blocks = [], tasks = [], lists = [], locks = [
   const unplaced = tasks.filter(t =>
     t.plan_id != null && !t.completed && !t.deleted && !t.cancelled && !placed.has(Number(t.id)));
 
+  const constraintsByPlan = constraintAttribution(constraints);
   return {
     range,
     total_blocks: live.length,
@@ -72,9 +90,8 @@ export function explainSchedule({ blocks = [], tasks = [], lists = [], locks = [
     locks: activeLocks.map(l => ({ type: l.type, date: l.date || null, task_id: l.task_id ?? null })),
     unplaced_count: unplaced.length,
     // 只列使用者真的設過、而且排程器支援的條件。不支援的不在這裡假裝生效。
-    applied_constraints: Object.entries(constraints || {})
-      .filter(([, v]) => v != null && !(Array.isArray(v) && v.length === 0))
-      .map(([k, v]) => ({ key: k, value: v })),
+    // 每一組都保留它所屬的 Plan，不能把多 Plan schedule 說成同一份全域條件。
+    current_confirmed_constraints_by_plan: constraintsByPlan,
     today,
   };
 }
@@ -91,12 +108,12 @@ export function explainSentences(f) {
   if (f.range) out.push(`這份安排從 ${md(f.range.start)} 到 ${md(f.range.end)}，共 ${f.days_used} 天、${f.total_blocks} 個時段。`);
   out.push(`平均每天約 ${f.avg_minutes_per_day} 分鐘。`);
   if (f.busiest_day) out.push(`最滿的是 ${md(f.busiest_day.date)}，那天有 ${f.busiest_day.count} 項、共 ${f.busiest_day.minutes} 分鐘。`);
-  if (f.time_window) out.push(`時段落在 ${f.time_window.earliest}–${f.time_window.latest} 之間，已避開既定行程與睡覺、吃飯時間。`);
+  if (f.time_window) out.push(`已排定時段落在 ${f.time_window.earliest}–${f.time_window.latest} 之間。`);
   else out.push('這份安排只決定每天要做什麼，沒有綁定幾點到幾點。');
   if (f.subjects.length > 1) {
     out.push('各科分配：' + f.subjects.map(s => `${s.subject} ${s.minutes} 分鐘`).join('、') + '。');
   }
-  if (f.locks.length) out.push(`有 ${f.locks.length} 個鎖定，重新排程時不會被動到。`);
+  if (f.locks.length) out.push(`目前有 ${f.locks.length} 個未解除的鎖定紀錄。`);
   if (f.unplaced_count) out.push(`還有 ${f.unplaced_count} 項沒排進來——通常是時間不夠，可以放寬期限或減少這次的範圍。`);
   return out;
 }

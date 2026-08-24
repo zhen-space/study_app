@@ -21,15 +21,15 @@ export const day = n => {
 // 開一台只給這次測試用的伺服器：隨機埠、暫存 SQLite、跟正式/開發資料完全隔離。
 // 起不來就換個埠再試（最多 3 次）——CI 上多個測試檔並行、每個檔又可能開好幾台，
 // 隨機埠偶爾會撞在一起，撞到就整組 hook 掛掉。重試比擴大埠範圍可靠。
-export async function startServer() {
+export async function startServer({ env = {} } = {}) {
   let lastErr;
   for (let attempt = 1; attempt <= 3; attempt++) {
-    try { return await bootOnce(); } catch (e) { lastErr = e; }
+    try { return await bootOnce(env); } catch (e) { lastErr = e; }
   }
   throw lastErr;
 }
 
-async function bootOnce() {
+async function bootOnce(extraEnv = {}) {
   const dir = mkdtempSync(path.join(tmpdir(), 'studyapp-test-'));
   const port = 3400 + Math.floor(Math.random() * 500);
   const proc = spawn(process.execPath, ['src/index.js'], {
@@ -42,6 +42,8 @@ async function bootOnce() {
       INTERNAL_MIGRATION_TOKEN: 'test-internal-migration-token',
       TURSO_DATABASE_URL: '',        // 確保不會連到雲端資料庫
       TURSO_AUTH_TOKEN: '',
+      ANTHROPIC_API_KEY: '',         // explain 的 graceful degradation 測試不可依賴外部環境
+      ...extraEnv,
     },
     stdio: ['ignore', 'pipe', 'pipe'],
   });
@@ -99,7 +101,7 @@ async function bootOnce() {
     proc.kill('SIGKILL');
     try { rmSync(dir, { recursive: true, force: true }); } catch {}
   };
-  return { base, H, plan, stop, log: () => log };
+  return { base, H, plan, stop, dbFile: path.join(dir, 'test.sqlite'), log: () => log };
 }
 
 /* ---------- 建立測試項目的小工具 ---------- */

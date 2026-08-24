@@ -16,6 +16,38 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { startServer, day } from './helpers.mjs';
 import { explainSchedule, explainSentences } from '../src/schedule/explain.js';
+import { createClient } from '@libsql/client';
+
+async function api(S, path, opts = {}) {
+  const r = await fetch(S.base + path, {
+    ...opts,
+    headers: S.H,
+    body: opts.body ? JSON.stringify(opts.body) : undefined,
+  });
+  return { status: r.status, body: await r.json() };
+}
+
+async function planWithActiveBlock(S, { name, constraint, start_time = '19:00', end_time = '20:00' } = {}) {
+  const plan = await api(S, '/plans', { method: 'POST', body: { name, status: 'active' } });
+  assert.equal(plan.status, 200);
+  const task = await api(S, '/tasks', { method: 'POST', body: { title: `${name} 任務`, plan_id: plan.body.id } });
+  assert.equal(task.status, 200);
+  if (constraint) {
+    const saved = await api(S, `/plans/${plan.body.id}/constraints`, { method: 'PUT', body: { intent: constraint } });
+    assert.equal(saved.status, 200);
+  }
+  const applied = await api(S, '/schedule/apply', { method: 'POST', body: {
+    plan_id: plan.body.id, source: 'initial',
+    blocks: [{ task_id: task.body.id, date: day(3), start_time, end_time }],
+  } });
+  assert.equal(applied.status, 200, JSON.stringify(applied.body));
+  return { plan: plan.body, task: task.body };
+}
+
+async function mutateTestDb(S, sql, args) {
+  const db = createClient({ url: `file:${S.dbFile}` });
+  try { await db.execute({ sql, args }); } finally { db.close?.(); }
+}
 
 /* ---------- 純函式：事實怎麼算出來的 ---------- */
 
@@ -75,11 +107,12 @@ test('只列已解除以外的鎖定，而且只列使用者真的設過的條�
   });
   assert.equal(f.locks.length, 1);
   assert.equal(f.locks[0].type, 'day');
-  const keys = f.applied_constraints.map(c => c.key);
+  const keys = f.current_confirmed_constraints_by_plan.flatMap(plan => plan.constraints.map(c => c.key));
   assert.ok(keys.includes('max_per_day'));
   assert.ok(keys.includes('spread'), 'false 是使用者真的選過的值，要保留');
   assert.ok(!keys.includes('exclude_weekdays'), '空陣列＝沒設，不該假裝生效');
   assert.ok(!keys.includes('subject_order'), 'null＝沒設');
+  assert.equal(f.current_confirmed_constraints_by_plan.length, 1, '純函式的單一 constraint 也有明確 attribution 容器');
 });
 
 test('只排每天做什麼、沒綁時間時要說得出來，不能謊稱有時段', () => {
@@ -107,6 +140,8 @@ test('說明句子只講事實裡有的數字', () => {
   assert.ok(text.includes('75 分鐘'));
   assert.ok(text.includes('數學 120 分鐘'));
   assert.ok(text.includes('還有 1 項沒排進來'));
+  assert.ok(!text.includes('已避開既定行程'), '沒有 availability facts 時不能宣稱已避開固定行程');
+  assert.ok(!text.includes('重新排程時不會被動到'), '未推導 lock feasibility 時不能宣稱鎖一定生效');
 });
 
 /* ---------- 端點：沒有金鑰時的行為 ---------- */
@@ -124,6 +159,77 @@ test('沒有 ANTHROPIC_API_KEY 時仍回 200，並說得出為什麼沒有 AI �
     assert.ok(Array.isArray(j.sentences) && j.sentences.length > 0, '確定性的說明一定要有');
     assert.ok(j.facts, '事實摘要一定要有');
   } finally { stop(); }
+});
+
+test('AI 連線失敗時仍回 200，確定性 explanation 不受影響', async () => {
+  const S = await startServer({ env: {
+    ANTHROPIC_API_KEY: 'test-key-that-must-never-reach-a-real-service',
+    ANTHROPIC_BASE_URL: 'http://127.0.0.1:1',
+  } });
+  try {
+    await planWithActiveBlock(S, { name: 'AI 失敗仍可解釋' });
+    const r = await api(S, '/schedule/explain');
+    assert.equal(r.status, 200);
+    assert.equal(r.body.narrative, null);
+    assert.equal(r.body.ai.available, false);
+    assert.equal(r.body.ai.reason, 'error');
+    assert.ok(r.body.facts.total_blocks > 0);
+    assert.ok(r.body.sentences.length > 0);
+  } finally { S.stop(); }
+});
+
+test('單一 Plan 的 confirmed supported constraint 依 active block 正確標記', async () => {
+  const S = await startServer();
+  try {
+    const { plan } = await planWithActiveBlock(S, { name: '數學計畫', constraint: { max_per_day: 2 } });
+    const r = await api(S, '/schedule/explain');
+    assert.equal(r.status, 200);
+    assert.deepEqual(r.body.facts.current_confirmed_constraints_by_plan, [{
+      plan_id: plan.id, plan_name: '數學計畫', constraints: [{ key: 'max_per_day', value: 2 }],
+    }]);
+    assert.equal(r.body.ai.reason, 'no_api_key');
+    assert.ok(r.body.sentences.length > 0, 'AI 不可用時確定性 facts / sentences 仍完整可用');
+  } finally { S.stop(); }
+});
+
+test('多 Plan explanation 保留各自 confirmed constraint attribution，不混成全域設定', async () => {
+  const S = await startServer();
+  try {
+    const a = await planWithActiveBlock(S, { name: '數學衝刺', constraint: { max_per_day: 1 } });
+    const b = await planWithActiveBlock(S, { name: '英文複習', constraint: { spread: true }, start_time: '20:00', end_time: '21:00' });
+    const r = await api(S, '/schedule/explain');
+    assert.equal(r.status, 200);
+    assert.deepEqual(r.body.facts.current_confirmed_constraints_by_plan, [
+      { plan_id: a.plan.id, plan_name: '數學衝刺', constraints: [{ key: 'max_per_day', value: 1 }] },
+      { plan_id: b.plan.id, plan_name: '英文複習', constraints: [{ key: 'spread', value: true }] },
+    ]);
+    assert.equal(r.body.facts.current_confirmed_constraints_by_plan.every(x => x.plan_id != null), true);
+  } finally { S.stop(); }
+});
+
+test('unconfirmed 或 unsupported constraint 不得出現在 active schedule explanation', async () => {
+  const S = await startServer();
+  try {
+    const unconfirmed = await planWithActiveBlock(S, { name: '尚未確認', constraint: { max_per_day: 1 } });
+    const unsupported = await planWithActiveBlock(S, { name: '不支援條件', constraint: { spread: true }, start_time: '20:00', end_time: '21:00' });
+    await mutateTestDb(S, 'UPDATE plan_constraints SET confirmed_at=NULL WHERE plan_id=?', [unconfirmed.plan.id]);
+    await mutateTestDb(S, 'UPDATE plan_constraints SET intent_json=? WHERE plan_id=?', [
+      JSON.stringify({ strict_dependency: [{ before: 'A', after: 'B' }] }), unsupported.plan.id,
+    ]);
+    const r = await api(S, '/schedule/explain');
+    assert.equal(r.status, 200);
+    assert.deepEqual(r.body.facts.current_confirmed_constraints_by_plan, []);
+  } finally { S.stop(); }
+});
+
+test('沒有任何 constraint 時 explain 正常回傳空 attribution', async () => {
+  const S = await startServer();
+  try {
+    await planWithActiveBlock(S, { name: '無條件計畫' });
+    const r = await api(S, '/schedule/explain');
+    assert.equal(r.status, 200);
+    assert.deepEqual(r.body.facts.current_confirmed_constraints_by_plan, []);
+  } finally { S.stop(); }
 });
 
 test('解釋排程不會改動任何資料（AI 只讀不寫）', async () => {
