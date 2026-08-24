@@ -9,6 +9,7 @@ import { useActiveSchedule, blocksForTask } from './scheduleAdjust';
 import AdjustBlockSheet from './AdjustBlockSheet';
 import ReplanSheet from './ReplanSheet';
 import ConstraintSheet from './ConstraintSheet';
+import ExplainSheet from './ExplainSheet';
 import { Button, IconButton, PageHeader, SurfaceCard, ProgressBar, ListRow, BottomSheet, EmptyState } from './ui';
 
 // 單一計畫的內容。
@@ -335,6 +336,8 @@ export default function PlanDetailView({ planKey, tasks, lists, apiPlans = [], r
               onClick={() => { setEdit({ name: plan.name, description: raw?.description || '', start_date: raw?.start_date || '', target_date: raw?.target_date || '' }); setSheet('edit'); }} />
             <ListRow title="AI 排程條件" subtitle="先確認 AI 解讀，再交給排程器"
               role="button" tabIndex={0} style={{ cursor: 'pointer' }} onClick={() => setSheet('constraints')} />
+            <ListRow title="為什麼這樣排" subtitle="看懂這份安排的依據，不會改動任何東西"
+              role="button" tabIndex={0} style={{ cursor: 'pointer' }} onClick={() => setSheet('explain')} />
             {plan.status === 'completed' && <ListRow title="重新開始" subtitle="回到進行中，保留全部任務"
               role="button" tabIndex={0} style={{ cursor: 'pointer' }} onClick={restart} />}
             {plan.status !== 'completed' && plan.status !== 'archived' && (
@@ -385,6 +388,7 @@ export default function PlanDetailView({ planKey, tasks, lists, apiPlans = [], r
         </BottomSheet>
       )}
       {sheet === 'constraints' && <ConstraintSheet planId={plan.planId} onClose={close} />}
+      {sheet === 'explain' && <ExplainSheet onClose={close} />}
       {sheet === 'legacy' && <BottomSheet onClose={close} label="轉成正式計畫"><b>安全轉成正式計畫</b><div className="ui-meta" style={{ marginTop: 8 }}>{legacyPreview?.warning}</div><div className="ui-meta" style={{ marginTop: 8 }}>找到 {legacyPreview?.candidates?.length || 0} 項可人工確認的舊任務。系統不會猜分群，也不會直接搬動資料。</div><div className="row" style={{ marginTop: 16 }}><Button onClick={close}>取消</Button><Button variant="primary" style={{ marginLeft: 'auto' }} onClick={async () => { await api('/plans', { method: 'POST', body: { name: `${plan.name}（正式計畫）`, description: '由舊資料手動轉換；請逐筆確認任務歸屬。', source: 'legacy_migration' } }); await reload(); close(); onBack(); }}>建立正式計畫草稿</Button></div></BottomSheet>}
 
       {/* ---------- 完成確認：後端 needs_confirm 語意完全不變 ---------- */}
