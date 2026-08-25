@@ -6,6 +6,7 @@ import * as sched from '../schedule/persistence.js';
 import { feasibilityGap } from '../schedule/feasibility-gap.js';
 import { explainSchedule, explainSentences } from '../schedule/explain.js';
 import { normalizeConstraints } from '../schedule/constraints.js';
+import { loadGoogleBusy, GoogleCalendarError } from '../integrations/google-calendar.js';
 
 const router = Router();
 router.use(requireAuth);
@@ -22,8 +23,12 @@ function intersectSlots(slots, allowed) {
   return out;
 }
 
-function freeSlotsForDay(dateStr, events, settings, availability = null) {
+// externalBusy：外部行事曆（目前只有 Google）當天的 [起分, 迄分] 陣列。
+// 它直接以數字區間進來，刻意不包成假的 fixed_event——那樣會讓一段「別人系統裡的
+// 忙碌時間」看起來像使用者自己建的行程，之後很容易被誤存、誤刪或誤顯示。
+export function freeSlotsForDay(dateStr, events, settings, availability = null, externalBusy = null) {
   const busy = [];
+  if (externalBusy?.length) for (const [a, b] of externalBusy) busy.push([a, b]);
   const sleepStart = toMin(settings.sleep_start);
   const sleepEnd = toMin(settings.sleep_end);
   if (sleepStart > sleepEnd) busy.push([0, sleepEnd], [sleepStart, 1440]);
@@ -64,7 +69,7 @@ function freeSlotsForDay(dateStr, events, settings, availability = null) {
 // { items:[{subject_id, title, minutes, start, end, final}], mode:'order'|'spread', startDate?, endDate? }
 // 每個項目可有自己的日期範圍；final=true 的項目（壓軸）會排在其他項目全部結束之後
 // 某天既定行程（含週期）的總分鐘數
-function busyMinutesForDay(dateStr, events) {
+export function busyMinutesForDay(dateStr, events, externalBusy = null) {
   const dow = dayOfWeek(dateStr);
   let m = 0;
   for (const e of events) {
@@ -73,6 +78,8 @@ function busyMinutesForDay(dateStr, events) {
       : e.date === dateStr;
     if (applies) m += toMin(e.end_time) - toMin(e.start_time);
   }
+  // 「這天既定行程太滿就不排」也要看外部行事曆，否則整天在外面的日子仍會被排滿
+  if (externalBusy?.length) for (const [a, b] of externalBusy) m += b - a;
   return m;
 }
 
@@ -275,15 +282,31 @@ router.post('/preview', async (req, res) => {
     }
   }
 
+  // 外部行事曆：連結了就一定要讀得到。
+  //
+  // 讀不到時「當作沒有忙碌時段」是最危險的失敗方式——會產出一份看起來完全可行、
+  // 實際上跟使用者真實行程撞滿的安排，而且使用者不會知道。所以這裡 fail closed：
+  // 寧可這次排不出來，也不給一份假的安全排程。
+  let googleBusy = null;
+  try {
+    googleBusy = await loadGoogleBusy(req.userId, minD, maxD);
+  } catch (e) {
+    if (e instanceof GoogleCalendarError) {
+      return res.status(503).json({ error: '暫時無法讀取 Google Calendar', code: 'GOOGLE_CALENDAR_UNAVAILABLE' });
+    }
+    throw e;
+  }
+
   const days = [];
   for (let ds = minD; ds <= maxD; ds = addDays(ds, 1)) {
     if (ds < today) continue;
     if (excludeDates.includes(ds)) continue;                      // 指定不排的日期
     if (excludeWeekdays.includes(dayOfWeek(ds))) continue;        // 不排的星期
-    if (skipIfBusyHours > 0 && busyMinutesForDay(ds, events) >= skipIfBusyHours * 60) continue; // 既定行程太滿
+    const gBusy = googleBusy?.get(ds) || null;
+    if (skipIfBusyHours > 0 && busyMinutesForDay(ds, events, gBusy) >= skipIfBusyHours * 60) continue; // 既定行程太滿
     const override = availabilityOverrideByDate.get(ds);
     const availability = override || (hasAvailabilityRoutine ? (availabilityByDate.get(ds) || []) : null);
-    let slots = freeSlotsForDay(ds, events, settings, availability);
+    let slots = freeSlotsForDay(ds, events, settings, availability, gBusy);
     if (confirmedConstraints.preferred_time_ranges?.length) {
       slots = intersectSlots(slots, confirmedConstraints.preferred_time_ranges.map(x => [toMin(x.start_time), toMin(x.end_time)]));
     }

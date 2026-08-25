@@ -21,6 +21,8 @@ export const day = n => {
 // 開一台只給這次測試用的伺服器：隨機埠、暫存 SQLite、跟正式/開發資料完全隔離。
 // 起不來就換個埠再試（最多 3 次）——CI 上多個測試檔並行、每個檔又可能開好幾台，
 // 隨機埠偶爾會撞在一起，撞到就整組 hook 掛掉。重試比擴大埠範圍可靠。
+// env：讓需要特定環境變數的測試（例如 Google Calendar 的 client id、加密金鑰）
+// 自己開一台帶著那些設定的伺服器，而不是污染全域 process.env。
 export async function startServer({ env = {} } = {}) {
   let lastErr;
   for (let attempt = 1; attempt <= 3; attempt++) {
@@ -42,7 +44,7 @@ async function bootOnce(extraEnv = {}) {
       INTERNAL_MIGRATION_TOKEN: 'test-internal-migration-token',
       TURSO_DATABASE_URL: '',        // 確保不會連到雲端資料庫
       TURSO_AUTH_TOKEN: '',
-      ANTHROPIC_API_KEY: '',         // explain 的 graceful degradation 測試不可依賴外部環境
+      ANTHROPIC_API_KEY: '',         // graceful degradation 的測試不可依賴外部環境
       ...extraEnv,
     },
     stdio: ['ignore', 'pipe', 'pipe'],
@@ -101,7 +103,55 @@ async function bootOnce(extraEnv = {}) {
     proc.kill('SIGKILL');
     try { rmSync(dir, { recursive: true, force: true }); } catch {}
   };
-  return { base, H, plan, stop, dbFile: path.join(dir, 'test.sqlite'), log: () => log };
+
+  // 直接讀這台伺服器的 SQLite 檔。用途是驗「資料庫裡到底存了什麼」——
+  // 例如 token 是不是真的以密文落地。走 API 看不到這一層。
+  const dbFile = path.join(dir, 'test.sqlite');
+  const openDb = async () => {
+    const { createClient } = await import('@libsql/client');
+    return createClient({ url: 'file:' + dbFile });
+  };
+  const rawConnection = async (userId) => {
+    const c = await openDb();
+    const r = await c.execute({ sql: 'SELECT * FROM google_calendar_connections WHERE user_id=?', args: [userId] });
+    if (!r.rows[0]) return undefined;
+    return Object.fromEntries(r.columns.map((col, i) => [col, r.rows[0][i]]));
+  };
+  const tableNames = async () => {
+    const c = await openDb();
+    const r = await c.execute("SELECT name FROM sqlite_master WHERE type='table'");
+    return r.rows.map(row => String(row[0]));
+  };
+  // 直接寫入一筆已連結的憑證。真的走一次 Google OAuth 在測試裡做不到，
+  // 但「連結之後系統怎麼表現」才是要驗的東西，所以用伺服器自己的加密函式落地。
+  const connectGoogle = async (userId, token) => {
+    const { encryptToken } = await import('../src/util/crypto.js');
+    const key = Buffer.from(extraEnv.TOKEN_ENCRYPTION_KEY || '', 'base64');
+    const c = await openDb();
+    const now = new Date().toISOString();
+    const expires = token.expires_in ? new Date(Date.now() + token.expires_in * 1000).toISOString() : null;
+    await c.execute({
+      sql: `INSERT INTO google_calendar_connections
+        (user_id,access_token_encrypted,refresh_token_encrypted,access_token_expires_at,scope,token_type,
+         encryption_version,connected_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?)`,
+      args: [userId,
+        token.access_token ? encryptToken(token.access_token, key) : null,
+        encryptToken(token.refresh_token, key),
+        expires, 'https://www.googleapis.com/auth/calendar.freebusy', 'Bearer', 1, now, now],
+    });
+  };
+  // 第二個帳號，用來驗使用者之間的隔離
+  const secondUser = async () => {
+    const email2 = `u2${Date.now()}@test.local`;
+    const r = await fetch(base + '/auth/register', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ email: email2, password: '12345678', name: '測試2' }),
+    });
+    const { token } = await r.json();
+    return { H: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + token } };
+  };
+
+  return { base, H, plan, stop, dbFile, log: () => log, rawConnection, tableNames, connectGoogle, secondUser };
 }
 
 /* ---------- 建立測試項目的小工具 ---------- */

@@ -210,3 +210,89 @@ describe('統計的今天／本週讀書時間', () => {
     expect(stats.studyMinutes({ [TD]: 'x' }, TD, TD)).toBe(0);
   });
 });
+
+/* ---------------- Google 日曆（唯讀） ---------------- */
+
+const GoogleCalendarCard = (await import('../tt/GoogleCalendarCard')).default;
+
+describe('Google 日曆連結', () => {
+  const withStatus = (status, extra = {}) => {
+    api.mockImplementation((path, opts) => {
+      if (path === '/integrations/google-calendar/status') return Promise.resolve(status);
+      if (extra[path]) return extra[path](opts);
+      if (path in fx.responses) return Promise.resolve(fx.responses[path]);
+      return Promise.resolve([]);
+    });
+  };
+
+  it('講清楚只讀忙碌時段，不讀行程內容、也不會寫回 Google', async () => {
+    withStatus({ connected: false, mode: 'read_only_busy', configured: true });
+    await draw(<GoogleCalendarCard />);
+    expect(await screen.findByText(/自動避開 Google Calendar 行程/)).toBeTruthy();
+    expect(screen.getByText(/讀不到行程名稱/)).toBeTruthy();
+    expect(screen.getByText(/不會在你的 Google 日曆上新增或修改/)).toBeTruthy();
+  });
+
+  it('未連結時給連結按鈕；已連結時給中斷連結', async () => {
+    withStatus({ connected: false, mode: 'read_only_busy', configured: true });
+    const { unmount } = render(<div />); unmount();
+    await draw(<GoogleCalendarCard />);
+    expect(await screen.findByRole('button', { name: /連結 Google 日曆/ })).toBeTruthy();
+    expect(screen.queryByRole('button', { name: '中斷連結' })).toBeNull();
+  });
+
+  it('伺服器沒啟用時不給一顆按了必定失敗的按鈕', async () => {
+    withStatus({ connected: false, mode: 'read_only_busy', configured: false });
+    await draw(<GoogleCalendarCard />);
+    expect(await screen.findByText(/還沒在伺服器上啟用/)).toBeTruthy();
+    expect(screen.queryByRole('button', { name: /連結 Google 日曆/ })).toBeNull();
+  });
+
+  it('中斷連結會打 DELETE，成功後回到未連結狀態', async () => {
+    let connected = true;
+    api.mockImplementation((path, opts) => {
+      if (path === '/integrations/google-calendar/status') {
+        return Promise.resolve(connected
+          ? { connected: true, calendar: 'primary', mode: 'read_only_busy', last_success_at: null, configured: true }
+          : { connected: false, mode: 'read_only_busy', configured: true });
+      }
+      if (path === '/integrations/google-calendar' && opts?.method === 'DELETE') {
+        connected = false; return Promise.resolve({ connected: false });
+      }
+      if (path in fx.responses) return Promise.resolve(fx.responses[path]);
+      return Promise.resolve([]);
+    });
+    await draw(<GoogleCalendarCard />);
+    fireEvent.click(await screen.findByRole('button', { name: '中斷連結' }));
+    await waitFor(() => {
+      expect(api).toHaveBeenCalledWith('/integrations/google-calendar', { method: 'DELETE' });
+    });
+    expect(await screen.findByRole('button', { name: /連結 Google 日曆/ })).toBeTruthy();
+  });
+
+  it('狀態讀不到時說得出來，不是一片空白', async () => {
+    api.mockImplementation(path => {
+      if (path === '/integrations/google-calendar/status') return Promise.reject(new Error('伺服器沒有回應'));
+      if (path in fx.responses) return Promise.resolve(fx.responses[path]);
+      return Promise.resolve([]);
+    });
+    await draw(<GoogleCalendarCard />);
+    expect(await screen.findByRole('alert')).toHaveTextContent('伺服器沒有回應');
+  });
+
+  it('前端永遠不碰 token：狀態物件裡沒有任何 token 欄位就正常運作', async () => {
+    withStatus({ connected: true, calendar: 'primary', mode: 'read_only_busy', last_success_at: '2026-09-01T01:00:00Z', configured: true });
+    await draw(<GoogleCalendarCard />);
+    expect(await screen.findByText(/已連結（主要日曆）/)).toBeTruthy();
+    expect(errors).toEqual([]);
+  });
+});
+
+describe('設定頁的時區說明', () => {
+  it('說排程用台灣時間，不是「跟著裝置時區」', async () => {
+    await draw(<SettingsView />);
+    expect(await screen.findByText('排程時區')).toBeTruthy();
+    expect(screen.getByText('Asia/Taipei')).toBeTruthy();
+    expect(screen.queryByText(/日期與排程都照這個時區計算/)).toBeNull();
+  });
+});
