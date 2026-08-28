@@ -50,6 +50,16 @@ export const AUTHORITATIVE_STATUS = 'verified';
 // 整個 verification 就沒有意義了。它們必須由伺服器端的匯入流程寫入。
 export const API_ALLOWED_PROVENANCE_SOURCES = ['user_confirmed'];
 
+// authoritative mapping 不是只要寫了 verified 就成立。不同來源要有對得上的
+// 可追溯證據：系統／manifest 來源一定要能回指原始紀錄；人為確認一定要留下誰、
+// 用哪個正式機制確認。這些規則先放在純函式，未來才算有匯入路徑也不能把殘缺列
+// 當成可以 apply 的依據。
+export const USER_CONFIRMATION_MECHANISM = 'api_user_confirmation';
+export const ADMIN_VERIFICATION_MECHANISMS = [
+  'admin_manual_verification',
+  'admin_import_verification',
+];
+
 export function isAllowedProvenanceSource(source) {
   return PROVENANCE_SOURCES.includes(source);
 }
@@ -63,7 +73,22 @@ export function hasMigrationAuthority(mapping) {
   if (!mapping) return false;
   if (mapping.verification_status !== AUTHORITATIVE_STATUS) return false;
   if (!isAllowedProvenanceSource(mapping.provenance_source)) return false;
-  return !!mapping.verified_at;
+  if (!mapping.verified_at) return false;
+
+  const provenanceRef = typeof mapping.provenance_ref === 'string' && mapping.provenance_ref.trim() !== '';
+  const verifiedBy = Number.isInteger(Number(mapping.verified_by)) && Number(mapping.verified_by) > 0;
+  const mechanism = mapping.verification_mechanism;
+
+  if (mapping.provenance_source === 'source_record' || mapping.provenance_source === 'migration_manifest') {
+    return provenanceRef;
+  }
+  if (mapping.provenance_source === 'user_confirmed') {
+    return verifiedBy && mechanism === USER_CONFIRMATION_MECHANISM;
+  }
+  if (mapping.provenance_source === 'admin_verified') {
+    return verifiedBy && ADMIN_VERIFICATION_MECHANISMS.includes(mechanism);
+  }
+  return false;
 }
 
 const isPositiveInt = v => Number.isInteger(v) && v > 0;
@@ -119,19 +144,23 @@ export function classifyPreview({ tasks = [], plans = [], mappings = [] } = {}) 
       task_title: task?.title ?? null,
     };
 
-    // 參照壞掉的優先分出來：任務不見了、被軟刪除了，或目標計畫不存在／不是本人的。
-    // 這種列即使狀態是 verified 也不能拿來遷移，所以不能留在 verified 桶裡。
+    // Task 不見或被刪除時，沒有任何可供分類的當前事實，只能是 invalid reference。
     if (!task) { buckets.invalid_reference.push({ ...row, reason: 'task_not_found' }); continue; }
     if (task.deleted) { buckets.invalid_reference.push({ ...row, reason: 'task_deleted' }); continue; }
-    if (!planIds.has(Number(m.target_plan_id))) {
-      buckets.invalid_reference.push({ ...row, reason: 'plan_not_found' });
-      continue;
-    }
 
     // 已經有 plan_id 就不是 legacy 了，不管 mapping 現在是什麼狀態。
     // 這個桶子是為了讓重跑 preview 時看得出「這筆已經處理完了」，不是錯誤。
+    // 此判斷必須早於 target Plan existence：舊 mapping 的目標即使後來不存在，也
+    // 不能抹掉 Task 已正式遷移的事實。
     if (task.plan_id != null) {
       buckets.already_migrated.push({ ...row, current_plan_id: Number(task.plan_id) });
+      continue;
+    }
+
+    // 到這裡才仍是 legacy Task。目標計畫若不存在（或不屬於該 user），mapping 才是
+    // invalid reference；絕不能進 verified 或導出 migratable count。
+    if (!planIds.has(Number(m.target_plan_id))) {
+      buckets.invalid_reference.push({ ...row, reason: 'plan_not_found' });
       continue;
     }
 

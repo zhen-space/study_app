@@ -7,6 +7,7 @@ import assert from 'node:assert/strict';
 import {
   PROVENANCE_SOURCES, FORBIDDEN_PROVENANCE_SOURCES, API_ALLOWED_PROVENANCE_SOURCES,
   VERIFICATION_STATUSES, AUTHORITATIVE_STATUS,
+  USER_CONFIRMATION_MECHANISM, ADMIN_VERIFICATION_MECHANISMS,
   isAllowedProvenanceSource, hasMigrationAuthority, validateMappingInput, classifyPreview,
 } from '../src/legacy/plan-mapping.js';
 
@@ -65,6 +66,38 @@ test('verified 但 provenance 是 heuristic 不算數', () => {
   for (const s of FORBIDDEN_PROVENANCE_SOURCES) {
     assert.equal(hasMigrationAuthority(mapping({ provenance_source: s })), false, s);
   }
+});
+
+test('不同 authoritative provenance 都必須有可追溯且符合來源的證據', () => {
+  // source_record / manifest 沒有可回查的來源編號，不能只靠 verified 假裝可 apply。
+  for (const source of ['source_record', 'migration_manifest']) {
+    assert.equal(hasMigrationAuthority(mapping({
+      provenance_source: source, provenance_ref: null, verified_by: null, verification_mechanism: null,
+    })), false, `${source} 缺 provenance_ref 不得取得 authority`);
+    assert.equal(hasMigrationAuthority(mapping({
+      provenance_source: source, provenance_ref: `${source}#42`, verified_by: null, verification_mechanism: null,
+    })), true, `${source} 有可追溯 ref 才可取得 authority`);
+  }
+
+  assert.equal(hasMigrationAuthority(mapping({
+    provenance_source: 'user_confirmed', verified_by: null,
+  })), false, '使用者確認必須留下 verifier');
+  assert.equal(hasMigrationAuthority(mapping({
+    provenance_source: 'user_confirmed', verification_mechanism: 'admin_manual_verification',
+  })), false, '使用者確認不得冒用 admin mechanism');
+  assert.equal(hasMigrationAuthority(mapping({
+    provenance_source: 'user_confirmed', verification_mechanism: USER_CONFIRMATION_MECHANISM,
+  })), true);
+
+  assert.equal(hasMigrationAuthority(mapping({
+    provenance_source: 'admin_verified', verified_by: null, verification_mechanism: ADMIN_VERIFICATION_MECHANISMS[0],
+  })), false, 'admin 查證必須留下 verifier');
+  assert.equal(hasMigrationAuthority(mapping({
+    provenance_source: 'admin_verified', verified_by: 99, verification_mechanism: USER_CONFIRMATION_MECHANISM,
+  })), false, 'admin 查證不得冒用 user mechanism');
+  assert.equal(hasMigrationAuthority(mapping({
+    provenance_source: 'admin_verified', verified_by: 99, verification_mechanism: ADMIN_VERIFICATION_MECHANISMS[0],
+  })), true);
 });
 
 /* ---------- 輸入檢查 ---------- */
@@ -160,4 +193,23 @@ test('already_migrated 優先於 rejected：任務已歸屬就不再是待判定
   });
   assert.equal(out.counts.already_migrated, 1);
   assert.equal(out.counts.rejected, 0);
+});
+
+test('已遷移 Task 即使舊 target Plan 已不存在，仍優先進 already_migrated（mutation guard）', () => {
+  const out = classifyPreview({
+    tasks: [task({ plan_id: 777 })], plans: [], mappings: [mapping({ target_plan_id: 100 })],
+  });
+  assert.equal(out.counts.already_migrated, 1);
+  assert.equal(out.counts.invalid_reference, 0);
+  assert.equal(out.migratable_task_count, 0);
+});
+
+test('尚未遷移 Task 的 target Plan 不存在才是 invalid_reference', () => {
+  const out = classifyPreview({
+    tasks: [task({ plan_id: null })], plans: [], mappings: [mapping({ target_plan_id: 100 })],
+  });
+  assert.equal(out.counts.already_migrated, 0);
+  assert.equal(out.counts.invalid_reference, 1);
+  assert.equal(out.invalid_reference[0].reason, 'plan_not_found');
+  assert.equal(out.migratable_task_count, 0);
 });

@@ -434,9 +434,11 @@ CREATE TABLE IF NOT EXISTS legacy_task_plan_mappings (
   -- 一律指得出外部於這張表的可查證來源。禁止任何 inferred / title_match /
   -- date_cluster / subject_match 之類的推論來源（見 src/legacy/plan-mapping.js）。
   provenance_source TEXT NOT NULL,
-  provenance_ref TEXT,                    -- manifest 行號、來源紀錄 id 等，可為 NULL
+  -- source_record／migration_manifest 成為 verified authority 時必填；其他來源可為 NULL
+  provenance_ref TEXT,
   verification_status TEXT NOT NULL DEFAULT 'unresolved', -- unresolved | verified | rejected
   verified_at TEXT,
+  -- user_confirmed／admin_verified 成為 verified authority 時必填，且 mechanism 必須符合來源
   verified_by INTEGER,                    -- users.id
   verification_mechanism TEXT,            -- 例如 api_user_confirmation
   created_at TEXT NOT NULL,

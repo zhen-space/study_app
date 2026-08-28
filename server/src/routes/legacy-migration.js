@@ -4,7 +4,7 @@ import { requireAuth } from '../middleware/auth.js';
 import {
   API_ALLOWED_PROVENANCE_SOURCES, PROVENANCE_SOURCES, FORBIDDEN_PROVENANCE_SOURCES,
   VERIFICATION_STATUSES, AUTHORITATIVE_STATUS,
-  validateMappingInput, classifyPreview,
+  USER_CONFIRMATION_MECHANISM, validateMappingInput, classifyPreview,
 } from '../legacy/plan-mapping.js';
 
 // Legacy Task → Plan。
@@ -19,7 +19,7 @@ import {
 const router = Router(); router.use(requireAuth);
 
 const now = () => new Date().toISOString();
-const VERIFICATION_MECHANISM = 'api_user_confirmation';
+const VERIFICATION_MECHANISM = USER_CONFIRMATION_MECHANISM;
 
 // 擁有權一律在查詢條件裡帶 user_id，不是查完再比對——少一個地方會忘記。
 const myTask = (id, userId) =>
