@@ -333,3 +333,34 @@ test('audit 缺少 credentials 時非零退出，且不建立或使用 repo data
   assert.equal(out.fatal, 'production_credentials_required');
   assert.equal(out.target_mode, 'unresolved');
 });
+
+test('CLI 對不完整 Turso credentials 與未 opt-in 的 DB_FILE 一律 fail closed', async () => {
+  const incomplete = [
+    { TURSO_DATABASE_URL: 'libsql://fixture-private.example', TURSO_AUTH_TOKEN: '', DB_FILE: '' },
+    { TURSO_DATABASE_URL: '', TURSO_AUTH_TOKEN: 'fixture-private-token', DB_FILE: '' },
+    { TURSO_DATABASE_URL: '', TURSO_AUTH_TOKEN: '', DB_FILE: '/fixture-copy.sqlite', LEGACY_AUDIT_ALLOW_LOCAL_COPY: '' },
+  ];
+  for (const env of incomplete) {
+    const r = runScript('legacy-plan-audit.mjs', env);
+    assert.equal(r.status, 2);
+    assert.ok(!`${r.stdout}${r.stderr}`.includes('fixture-private'));
+  }
+});
+
+test('CLI schema error 的 stdout／stderr 也不回顯本機副本路徑或底層錯誤', async () => {
+  const dir = mkdtempSync(path.join(os.tmpdir(), 'audit-secret-path-'));
+  const file = path.join(dir, 'fixture-private-token.sqlite');
+  const client = createClient({ url: `file:${file}` });
+  try {
+    await client.execute('CREATE TABLE unrelated (id INTEGER)');
+    const r = runScript('legacy-plan-audit.mjs', {
+      DB_FILE: file, LEGACY_AUDIT_ALLOW_LOCAL_COPY: '1', TURSO_DATABASE_URL: '', TURSO_AUTH_TOKEN: '',
+    });
+    assert.equal(r.status, 3);
+    assert.equal(JSON.parse(r.stderr).fatal, 'schema_mismatch');
+    assert.ok(!`${r.stdout}${r.stderr}`.includes('fixture-private-token'));
+  } finally {
+    client.close();
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
