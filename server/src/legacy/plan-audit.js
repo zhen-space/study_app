@@ -5,6 +5,8 @@
 //
 // 這個檔案不碰資料庫、不寫任何東西，全部是純函式。
 
+import { createHash } from 'node:crypto';
+
 // 舊的讀書計劃任務長什麼樣：標題用「｜」串起科目／書名／章節，或帶著「讀書計劃」標籤。
 // 這兩個都只用來**辨識這是不是舊資料**，不用來推論它屬於哪一個 Plan。
 export const STUDY_TAG = '讀書計劃';
@@ -83,14 +85,14 @@ export function classify(tasks, { blockRefs = new Map(), sessionRefs = new Map()
 // 人工審核用的分組。名字刻意不叫 plan_candidates：這是「請人看一眼」的清單，
 // 不是「可以照這樣建 Plan」的建議。分組鍵是 user + 科目，只為了讓人好讀，
 // 不代表任何 Plan 邊界。
-export function reviewGroups(tasks, { blockRefs = new Map(), sessionRefs = new Map() } = {}) {
+export function reviewGroups(tasks, { blockRefs = new Map(), sessionRefs = new Map(), auditSalt = '' } = {}) {
   const groups = new Map();
   for (const t of tasks.filter(isLegacyTask)) {
     const key = `${t.user_id}:${t.list_id ?? 'none'}`;
     const g = groups.get(key) || {
-      user_id: t.user_id, list_id: t.list_id ?? null, tasks: 0,
+      user_ref: auditSubjectRef(t.user_id, auditSalt), list_id: t.list_id ?? null, tasks: 0,
       active: 0, completed: 0, cancelled: 0, deleted: 0,
-      with_scheduled_block: 0, with_study_session: 0, sample_titles: [],
+      with_scheduled_block: 0, with_study_session: 0,
     };
     g.tasks += 1;
     if (t.deleted) g.deleted += 1;
@@ -99,8 +101,12 @@ export function reviewGroups(tasks, { blockRefs = new Map(), sessionRefs = new M
     else g.active += 1;
     if (blockRefs.has(t.id)) g.with_scheduled_block += 1;
     if (sessionRefs.has(t.id)) g.with_study_session += 1;
-    if (g.sample_titles.length < 3) g.sample_titles.push(t.title);
     groups.set(key, g);
   }
   return [...groups.values()].sort((a, b) => b.tasks - a.tasks);
+}
+
+// 不可逆、每次 audit-local 的使用者代號。salt 不輸出，因此外部報告無法直接還原 user_id。
+function auditSubjectRef(userId, auditSalt) {
+  return `user-${createHash('sha256').update(`${auditSalt}\u0000${userId}`).digest('hex').slice(0, 12)}`;
 }

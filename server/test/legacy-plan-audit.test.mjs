@@ -17,6 +17,14 @@ import {
   isLegacyTask, parseTags, planProvenance, isDeterministicallyMigratable,
   classify, reviewGroups, STUDY_TAG,
 } from '../src/legacy/plan-audit.js';
+import {
+  AuditSafetyError,
+  assertReadOnlyAuditSql,
+  buildAuditReport,
+  createReadOnlyAuditQuery,
+  publicAuditFailure,
+  resolveAuditTarget,
+} from '../src/legacy/audit-runtime.js';
 
 const task = (o = {}) => ({
   id: o.id ?? 1, user_id: o.user_id ?? 1, list_id: o.list_id ?? null,
@@ -154,14 +162,12 @@ test('review group 只是給人看的清單，不跨使用者、不跨科目合�
     task({ id: 3, user_id: 1, list_id: 6 }),
     task({ id: 4, user_id: 2, list_id: 5 }),
   ];
-  const groups = reviewGroups(rows);
+  const groups = reviewGroups(rows, { auditSalt: '固定的測試 salt' });
   assert.equal(groups.length, 3, 'user × 科目各自一組，不合併');
   assert.equal(groups[0].tasks, 2);
-  // 絕不可跨 user boundary
-  for (const g of groups) {
-    const members = rows.filter(t => t.user_id === g.user_id && (t.list_id ?? null) === g.list_id);
-    assert.equal(g.tasks, members.length);
-  }
+  assert.equal(new Set(groups.map(g => g.user_ref)).size, 2, '同一使用者跨科仍可在同份報告交叉對照');
+  assert.ok(groups.every(g => !Object.hasOwn(g, 'user_id') && !Object.hasOwn(g, 'sample_titles')),
+    '預設報告不得保留原始 user_id 或任務標題');
 });
 
 test('沒有 legacy 資料時一切都是 0，而且不會炸', () => {
@@ -183,9 +189,11 @@ test('已經有 plan_id 的任務完全不進入 audit', () => {
 /* ---------------- Gate：runner 必須拒絕執行 ---------------- */
 
 import { spawnSync } from 'node:child_process';
-import { readFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { createClient } from '@libsql/client';
 
 const serverDir = path.join(path.dirname(fileURLToPath(import.meta.url)), '..');
 const runScript = (file, env = {}) => spawnSync(process.execPath, [path.join('scripts', file)],
@@ -205,23 +213,123 @@ test('migration runner 即使拿到 approval 也拒絕執行', () => {
   assert.match(r.stderr, /已拒絕執行/);
 });
 
-test('audit 與 migrate 兩支腳本都不含任何寫入語句', () => {
+test('audit runner 不匯入共用 DB client，且不含任何寫入 API', () => {
   for (const f of ['legacy-plan-audit.mjs', 'legacy-plan-migrate.mjs']) {
     const src = readFileSync(path.join(serverDir, 'scripts', f), 'utf8');
     // 去掉註解再檢查，否則「刻意不呼叫 initSchema」這種說明會被誤判
     const code = src.split('\n').filter(l => !l.trim().startsWith('//')).join('\n');
-    for (const bad of ['INSERT ', 'UPDATE ', 'DELETE ', 'q.run(', 'q.tx(', 'q.batch(', 'initSchema(']) {
+    for (const bad of ['q.run(', 'q.tx(', 'q.batch(', 'initSchema(']) {
       assert.ok(!code.includes(bad), `${f} 不該出現寫入語句：${bad}`);
     }
   }
+  const auditCode = readFileSync(path.join(serverDir, 'scripts', 'legacy-plan-audit.mjs'), 'utf8');
+  assert.ok(!auditCode.includes("../src/db/init.js"), 'audit 不得匯入會 fallback 的共用 DB client');
 });
 
-test('audit script 跑得起來，而且回報 writes_performed = 0', () => {
-  const r = runScript('legacy-plan-audit.mjs', { DB_FILE: path.join(serverDir, 'test', '.audit-smoke.sqlite'), TURSO_DATABASE_URL: '' });
-  // 空資料庫沒有 tasks 表 → 應回報 schema_mismatch 而不是崩潰或假裝成功
-  assert.ok([0, 3].includes(r.status), `未預期的結束碼 ${r.status}：${r.stderr}`);
-  const out = JSON.parse(r.status === 0 ? r.stdout : r.stderr);
-  assert.equal(out.mode, 'audit_only');
-  if (r.status === 0) assert.equal(out.writes_performed, 0);
-  else assert.equal(out.fatal, 'schema_mismatch', '缺欄位要明講，不可靜默當成 0 筆');
+test('target resolver fail closed，不會將 production audit 退回本機 DB', () => {
+  const present = () => true;
+  for (const env of [{}, { TURSO_DATABASE_URL: 'libsql://only-url' }, { TURSO_AUTH_TOKEN: 'only-token' }]) {
+    assert.throws(() => resolveAuditTarget(env, { fileExists: present }), AuditSafetyError);
+  }
+  assert.throws(() => resolveAuditTarget({ DB_FILE: '/backup.sqlite' }, { fileExists: present }),
+    error => error.code === 'local_copy_opt_in_required');
+  const local = resolveAuditTarget({ DB_FILE: '/backup.sqlite', LEGACY_AUDIT_ALLOW_LOCAL_COPY: '1' }, { fileExists: present });
+  assert.equal(local.target_mode, 'local_copy');
+  const production = resolveAuditTarget({
+    TURSO_DATABASE_URL: 'libsql://private.example?secret=not-for-output', TURSO_AUTH_TOKEN: 'fake-token', DB_FILE: '/backup.sqlite', LEGACY_AUDIT_ALLOW_LOCAL_COPY: '1',
+  }, { fileExists: present });
+  assert.equal(production.target_mode, 'production_turso', '完整 Turso 憑證優先，絕不 fallback');
+  assert.ok(!production.target_identifier.includes('private.example'));
+});
+
+test('窄唯讀 query 介面拒絕所有寫入與寫入型 PRAGMA', async () => {
+  const executed = [];
+  const query = createReadOnlyAuditQuery(async sql => { executed.push(sql); return []; });
+  await query('SELECT 1');
+  await query('WITH x AS (SELECT 1) SELECT * FROM x');
+  const mutations = [
+    'CREATE TABLE x (id)', 'ALTER TABLE x ADD COLUMN a', 'DROP TABLE x', 'INSERT INTO x VALUES (1)',
+    'UPDATE x SET a=1', 'DELETE FROM x', 'REPLACE INTO x VALUES (1)', 'VACUUM', 'ATTACH DATABASE x AS y',
+    'DETACH DATABASE y', 'PRAGMA user_version=1', 'PRAGMA journal_mode=WAL',
+  ];
+  for (const sql of mutations) assert.throws(() => assertReadOnlyAuditSql(sql), AuditSafetyError, sql);
+  assert.deepEqual(executed, ['SELECT 1', 'WITH x AS (SELECT 1) SELECT * FROM x']);
+});
+
+test('sanitized 報告不輸出 fixture 的 raw user、Task title、URL 或 token', () => {
+  const rawUser = 'user-raw-777';
+  const rawTitle = '絕對不可外洩的任務標題';
+  const rawUrl = 'libsql://private.example?secret=url-secret';
+  const rawToken = 'token-secret-123';
+  const report = buildAuditReport({
+    rows: [task({ user_id: rawUser, title: rawTitle, tags: JSON.stringify([STUDY_TAG]) })],
+    target: { target_mode: 'production_turso', target_identifier: 'audit-safe-ref', url: rawUrl, token: rawToken },
+    generatedAt: '2026-01-01T00:00:00.000Z', auditSalt: 'private-audit-salt',
+  });
+  const printed = JSON.stringify(report);
+  for (const secret of [rawUser, rawTitle, rawUrl, rawToken, 'private-audit-salt']) {
+    assert.ok(!printed.includes(secret), `報告不得輸出 ${secret}`);
+  }
+  assert.match(report.review_groups[0].user_ref, /^user-[0-9a-f]{12}$/);
+});
+
+test('公開錯誤不洩漏底層 URL 或 token', () => {
+  const error = new Error('failed libsql://private.example?token=super-secret auth=super-secret');
+  const printed = JSON.stringify(publicAuditFailure(error, 'production_turso'));
+  assert.ok(!printed.includes('private.example'));
+  assert.ok(!printed.includes('super-secret'));
+  assert.equal(JSON.parse(printed).fatal, 'audit_query_failed');
+});
+
+async function withAuditDatabase(run) {
+  const dir = mkdtempSync(path.join(os.tmpdir(), 'study-app-audit-'));
+  const file = path.join(dir, 'audit.sqlite');
+  const client = createClient({ url: `file:${file}` });
+  try {
+    await client.executeMultiple(`
+      CREATE TABLE tasks (
+        id INTEGER PRIMARY KEY, user_id TEXT, list_id INTEGER, title TEXT, tags TEXT,
+        due_date TEXT, due_time TEXT, deadline_date TEXT, completed INTEGER, cancelled INTEGER,
+        deleted INTEGER, plan_id INTEGER, material_content_item_id INTEGER, material_book_id INTEGER, created_at TEXT
+      );
+      CREATE TABLE scheduled_blocks (task_id INTEGER);
+      CREATE TABLE study_sessions (task_id INTEGER);
+      INSERT INTO tasks VALUES (1, 'fixture-user-991', 2, 'fixture private title', '["讀書計劃"]', NULL, NULL, NULL, 0, 0, 0, NULL, NULL, NULL, '2026-01-02T00:00:00Z');
+      INSERT INTO tasks VALUES (2, 'fixture-user-991', 2, '正式任務', '[]', NULL, NULL, NULL, 0, 0, 0, 8, NULL, NULL, '2026-01-02T00:00:00Z');
+    `);
+    return await run({ file, client });
+  } finally {
+    client.close();
+    rmSync(dir, { recursive: true, force: true });
+    assert.equal(existsSync(dir), false, '測試結束後不得留下 sqlite 或 audit 產物');
+  }
+}
+
+test('audit 只有明確 local opt-in 才可對一次性備份副本執行，且輸出已去敏感化', async () => {
+  await withAuditDatabase(async ({ file, client }) => {
+    const beforeSchema = await client.execute("SELECT type, name, sql FROM sqlite_master ORDER BY type, name");
+    const beforeRows = await client.execute('SELECT id, user_id, title, plan_id FROM tasks ORDER BY id');
+    const r = runScript('legacy-plan-audit.mjs', {
+      DB_FILE: file, LEGACY_AUDIT_ALLOW_LOCAL_COPY: '1', TURSO_DATABASE_URL: '', TURSO_AUTH_TOKEN: '',
+    });
+    assert.equal(r.status, 0, r.stderr);
+    const out = JSON.parse(r.stdout);
+    assert.equal(out.target_mode, 'local_copy');
+    assert.equal(out.writes_performed, 0);
+    assert.equal(out.totals.tasks_with_plan, 1);
+    assert.ok(!r.stdout.includes('fixture-user-991'));
+    assert.ok(!r.stdout.includes('fixture private title'));
+    const afterSchema = await client.execute("SELECT type, name, sql FROM sqlite_master ORDER BY type, name");
+    const afterRows = await client.execute('SELECT id, user_id, title, plan_id FROM tasks ORDER BY id');
+    assert.deepEqual(afterSchema.rows, beforeSchema.rows, 'audit 前後 schema／index 狀態必須一致');
+    assert.deepEqual(afterRows.rows, beforeRows.rows, 'audit 前後資料必須完全一致');
+  });
+});
+
+test('audit 缺少 credentials 時非零退出，且不建立或使用 repo data.sqlite', () => {
+  const r = runScript('legacy-plan-audit.mjs', { TURSO_DATABASE_URL: '', TURSO_AUTH_TOKEN: '', DB_FILE: '', LEGACY_AUDIT_ALLOW_LOCAL_COPY: '' });
+  assert.equal(r.status, 2);
+  const out = JSON.parse(r.stderr);
+  assert.equal(out.fatal, 'production_credentials_required');
+  assert.equal(out.target_mode, 'unresolved');
 });
