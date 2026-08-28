@@ -100,6 +100,18 @@ test('不同 authoritative provenance 都必須有可追溯且符合來源的證
   })), true);
 });
 
+test('空白的 provenance_ref 不算可追溯的來源', () => {
+  // 「有填」跟「填得出東西」是兩回事。空字串或只有空白的 ref 回查不到任何紀錄，
+  // 拿它當 authority 等於允許一筆看起來合格、實際指不到來源的列去改 production。
+  for (const source of ['source_record', 'migration_manifest']) {
+    for (const ref of ['', '   ', '\t\n']) {
+      assert.equal(hasMigrationAuthority(mapping({
+        provenance_source: source, provenance_ref: ref, verified_by: null, verification_mechanism: null,
+      })), false, `${source} 的空白 ref（${JSON.stringify(ref)}）不得取得 authority`);
+    }
+  }
+});
+
 /* ---------- 輸入檢查 ---------- */
 
 test('缺少任務、計畫或來源都被擋下', () => {
