@@ -107,27 +107,29 @@ async function bootOnce(extraEnv = {}) {
   // 直接讀這台伺服器的 SQLite 檔。用途是驗「資料庫裡到底存了什麼」——
   // 例如 token 是不是真的以密文落地。走 API 看不到這一層。
   const dbFile = path.join(dir, 'test.sqlite');
-  const openDb = async () => {
+  // 每次用完就把 client 關掉。留著不關會讓 node --test 的 event loop 一直有活的
+  // handle，整個測試檔跑完卻不結束——症狀是 CI 上某個 TZ 的 job 卡住十幾分鐘，
+  // 而同一個 commit 的其他 TZ job 七十秒就過了。用 withDb 包起來，
+  // 之後新增的用法不會再忘記關。
+  const withDb = async (fn) => {
     const { createClient } = await import('@libsql/client');
-    return createClient({ url: 'file:' + dbFile });
+    const c = createClient({ url: 'file:' + dbFile });
+    try { return await fn(c); } finally { try { c.close(); } catch {} }
   };
-  const rawConnection = async (userId) => {
-    const c = await openDb();
+  const rawConnection = async (userId) => withDb(async c => {
     const r = await c.execute({ sql: 'SELECT * FROM google_calendar_connections WHERE user_id=?', args: [userId] });
     if (!r.rows[0]) return undefined;
     return Object.fromEntries(r.columns.map((col, i) => [col, r.rows[0][i]]));
-  };
-  const tableNames = async () => {
-    const c = await openDb();
+  });
+  const tableNames = async () => withDb(async c => {
     const r = await c.execute("SELECT name FROM sqlite_master WHERE type='table'");
     return r.rows.map(row => String(row[0]));
-  };
+  });
   // 直接寫入一筆已連結的憑證。真的走一次 Google OAuth 在測試裡做不到，
   // 但「連結之後系統怎麼表現」才是要驗的東西，所以用伺服器自己的加密函式落地。
-  const connectGoogle = async (userId, token) => {
+  const connectGoogle = async (userId, token) => withDb(async c => {
     const { encryptToken } = await import('../src/util/crypto.js');
     const key = Buffer.from(extraEnv.TOKEN_ENCRYPTION_KEY || '', 'base64');
-    const c = await openDb();
     const now = new Date().toISOString();
     const expires = token.expires_in ? new Date(Date.now() + token.expires_in * 1000).toISOString() : null;
     await c.execute({
@@ -139,7 +141,7 @@ async function bootOnce(extraEnv = {}) {
         encryptToken(token.refresh_token, key),
         expires, 'https://www.googleapis.com/auth/calendar.freebusy', 'Bearer', 1, now, now],
     });
-  };
+  });
   // 第二個帳號，用來驗使用者之間的隔離
   const secondUser = async () => {
     const email2 = `u2${Date.now()}@test.local`;

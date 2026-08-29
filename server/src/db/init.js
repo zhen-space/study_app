@@ -414,6 +414,37 @@ CREATE TABLE IF NOT EXISTS google_calendar_connections (
   last_error_code TEXT
 );
 
+-- Legacy Task → Plan 的 authoritative mapping。契約見 docs/legacy-migration.md。
+--
+-- 為什麼需要一張獨立的表：legacy 任務身上沒有任何欄位記錄過 Plan 歸屬
+-- （tasks 上唯一的 Plan 欄位就是 plan_id 本身，legacy 列是 NULL）。資料裡沒有答案，
+-- 就必須有地方明確地補上，並且記下「誰、根據什麼、什麼時候」下的這個判斷。
+--
+-- 刻意不把這些欄位加在 tasks 上：mapping 是一個待確認的**主張**，而 tasks.plan_id
+-- 是已生效的事實。混在同一列，等於每次寫入主張都在碰生產資料。
+--
+-- target_plan_id 在 rejected 的列上仍然有意義——它記錄的是「曾經被提出、
+-- 而且被否決」的那個候選，這是刻意保留的紀錄，不是殘留。
+CREATE TABLE IF NOT EXISTS legacy_task_plan_mappings (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  user_id INTEGER NOT NULL,
+  legacy_task_id INTEGER NOT NULL,
+  target_plan_id INTEGER NOT NULL,
+  -- source_record | migration_manifest | user_confirmed | admin_verified
+  -- 一律指得出外部於這張表的可查證來源。禁止任何 inferred / title_match /
+  -- date_cluster / subject_match 之類的推論來源（見 src/legacy/plan-mapping.js）。
+  provenance_source TEXT NOT NULL,
+  -- source_record／migration_manifest 成為 verified authority 時必填；其他來源可為 NULL
+  provenance_ref TEXT,
+  verification_status TEXT NOT NULL DEFAULT 'unresolved', -- unresolved | verified | rejected
+  verified_at TEXT,
+  -- user_confirmed／admin_verified 成為 verified authority 時必填，且 mechanism 必須符合來源
+  verified_by INTEGER,                    -- users.id
+  verification_mechanism TEXT,            -- 例如 api_user_confirmation
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+
 -- ===== Material domain =====================================================
 -- 教材是「長期存在的東西」，Plan 是「這一次要做的事」。兩者刻意分開：
 --   ・完成度的最小單位永遠是 ContentItem，而且是跨 Plan 的全域長期狀態
@@ -622,6 +653,11 @@ export async function initSchema() {
   // 完成度各自獨立的教材，而且沒有任何入口能合併回去。
   try { await client.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_material_book_source_row ON material_book_sources(user_id, source_kind, source_row_id)"); } catch {}
   try { await client.execute("CREATE INDEX IF NOT EXISTS idx_material_book_sources_book ON material_book_sources(book_id)"); } catch {}
+  // 一個舊任務最多只能有一筆 mapping。同一個 Task 同時「屬於 A」又「屬於 B」
+  // 就不是 authoritative 而是兩個互相矛盾的主張，這條由 schema 擋，不靠應用層自律。
+  try { await client.execute('CREATE UNIQUE INDEX IF NOT EXISTS idx_legacy_map_one ON legacy_task_plan_mappings(user_id, legacy_task_id)'); } catch {}
+  try { await client.execute('CREATE INDEX IF NOT EXISTS idx_legacy_map_user_status ON legacy_task_plan_mappings(user_id, verification_status)'); } catch {}
+  try { await client.execute('CREATE INDEX IF NOT EXISTS idx_legacy_map_plan ON legacy_task_plan_mappings(target_plan_id)'); } catch {}
   // 見 ensureStudySessionLiveIndex()：有重複 live session 時會跳過而不是靜默失敗。
   await ensureStudySessionLiveIndex();
   // 舊資料的分類補進「記住的分類」清單，之後直接用選的
