@@ -1,8 +1,26 @@
 name: 測試
 
+# push 只跑 default branch，其餘分支交給 pull_request。
+#
+# 原本兩個 trigger 都不加條件，於是同 repo 的 PR 分支每 push 一次就同時滿足
+# push 與 pull_request，一個 commit 產生兩套一模一樣的 run、8 個 job。除了白白
+# 燒掉一半額度，實際上還讓其中一個 job 卡在 in_progress 直到 6 小時上限被系統
+# cancel（連續發生過五次）。
+#
+# 代價：沒有開 PR 的分支不會自動跑 CI。這裡的工作一律走 PR，所以可以接受。
 on:
   push:
+    branches: [claude/student-study-planner-13xdjo]
   pull_request:
+
+# 同一個 ref 連續 push 時，舊的那次已經沒有人要看了，讓它讓位。
+#
+# group 同時包含 ref 與 event_name，所以只會取消「同一個 PR／同一個分支、
+# 同一種事件」的前一次執行，不可能誤殺別的 PR 或別的分支。
+# default branch 例外：它的每個 commit 都是已合併的歷史，CI 紀錄要留著。
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}-${{ github.event_name }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/claude/student-study-planner-13xdjo' }}
 
 jobs:
   server:
