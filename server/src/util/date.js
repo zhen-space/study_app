@@ -20,6 +20,16 @@ export const dayOfWeek = ds => parseDay(ds).getUTCDay();
 // 台灣時區的今天
 export const todayTW = () => fmtDay(new Date(Date.now() + 8 * 3600e3));
 
+// 台灣時區的「現在」：{ date, time }。
+//
+// 逾期判定同時需要日期與時分，分開呼叫 todayTW() 與另一個取時間的函式會有
+// 跨午夜取到兩個不同瞬間的風險（23:59:59.9 拿到日期，00:00:00.1 拿到時間，
+// 結果變成「今天 00:00」）。一次算完就沒有這個縫。
+export const nowTW = (at = Date.now()) => {
+  const d = new Date(at + 8 * 3600e3);
+  return { date: fmtDay(d), time: d.toISOString().slice(11, 16) };
+};
+
 // 一個 UTC 時間戳屬於「台灣的哪一天」。
 //
 // study_sessions.started_at / ended_at 存的是 UTC ISO，但整個 App 的「今天」

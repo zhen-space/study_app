@@ -196,7 +196,7 @@ export async function listVersions(userId, limit = 30) {
 // 在計畫裡但這一版沒有 block 的未完成任務 —— 這就是正式的 unplaced（§4.4）
 export async function getUnplaced(userId, versionId) {
   return q.all(
-    `SELECT t.id, t.title, t.plan_id, t.list_id, t.deadline_date
+    `SELECT t.id, t.title, t.plan_id, t.list_id, t.deadline_date, t.deadline_time
        FROM tasks t
        JOIN plans p ON p.id=t.plan_id AND p.user_id=t.user_id
       WHERE t.user_id=? AND t.plan_id IS NOT NULL
@@ -259,7 +259,7 @@ async function getRestorePreviewFrom(db, userId, sourceVersionId, {
     db.all(`SELECT id, task_id, date, start_time, end_time, planned_minutes, task_title_snapshot
               FROM scheduled_blocks WHERE schedule_version_id=? AND user_id=?
              ORDER BY date, COALESCE(start_time,''), id`, [sourceVersionId, userId]),
-    db.all(`SELECT t.id,t.title,t.plan_id,t.deadline_date,t.deleted,t.completed,t.cancelled,
+    db.all(`SELECT t.id,t.title,t.plan_id,t.deadline_date,t.deadline_time,t.deleted,t.completed,t.cancelled,
                    p.status AS plan_status
               FROM tasks t LEFT JOIN plans p ON p.id=t.plan_id AND p.user_id=t.user_id
              WHERE t.user_id=?`, [userId]),
@@ -470,7 +470,7 @@ async function buildManualCandidate(db, userId, activeVersionId, moves, { planni
     db.all(`SELECT id, task_id, date, start_time, end_time, planned_minutes
               FROM scheduled_blocks WHERE schedule_version_id=? AND user_id=?
              ORDER BY date, COALESCE(start_time,''), id`, [activeVersionId, userId]),
-    db.all('SELECT id, title, plan_id, deadline_date, deleted, completed, cancelled FROM tasks WHERE user_id=?', [userId]),
+    db.all('SELECT id, title, plan_id, deadline_date, deadline_time, deleted, completed, cancelled FROM tasks WHERE user_id=?', [userId]),
     db.all('SELECT date,start_time,end_time,recurring,title FROM fixed_events WHERE user_id=?', [userId]),
   ]);
   const tasks = new Map(liveTasks.map(t => [Number(t.id), t]));

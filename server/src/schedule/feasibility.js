@@ -67,10 +67,25 @@ export function classifyPlacement(block, {
     || (block.date === planningDay && block.end_time && block.end_time <= nowHM);
   if (isPast) return { kind: 'conflict', type: 'past', message: say('past') };
   // deadline_date 是硬性截止日，跟「排定在哪一天」是兩件事，永遠不能被排程覆寫。
+  //
+  // deadline_time 把同一條規則延伸到時分，而且是 **generic Task 行為**，
+  // 不是學校作業的第二套排程器：任何 Task 只要填了 deadline_time，
+  // 當天的 timed block 就必須在那個時間以前結束。
+  //   ・candidate < deadline_date          → 允許
+  //   ・candidate = deadline_date          → timed block 的 end_time 必須 <= deadline_time
+  //   ・candidate > deadline_date          → 拒絕
+  // deadline_time 為 NULL 時等於當天結束，所以同一天一律放行（維持原本行為）。
   if (task.deadline_date && block.date > task.deadline_date) {
     return {
       kind: 'conflict', type: 'deadline',
       message: say('deadline'), deadline_date: task.deadline_date,
+    };
+  }
+  if (task.deadline_date && task.deadline_time
+    && block.date === task.deadline_date && block.end_time && block.end_time > task.deadline_time) {
+    return {
+      kind: 'conflict', type: 'deadline',
+      message: say('deadline'), deadline_date: task.deadline_date, deadline_time: task.deadline_time,
     };
   }
   const fixed = events.find(event => fixedEventApplies(event, block.date, dayOfWeek) && timedOverlap(block, event));

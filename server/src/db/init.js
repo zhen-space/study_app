@@ -653,6 +653,31 @@ export async function initSchema() {
   // 完成度各自獨立的教材，而且沒有任何入口能合併回去。
   try { await client.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_material_book_source_row ON material_book_sources(user_id, source_kind, source_row_id)"); } catch {}
   try { await client.execute("CREATE INDEX IF NOT EXISTS idx_material_book_sources_book ON material_book_sources(book_id)"); } catch {}
+  // ---- 學校作業（School Assignment）----
+  //
+  // 全部是 additive ALTER，沿用這個檔案既有的慣例：不重寫任何 production row，
+  // existing row 一律留在欄位預設值。**沒有業務 backfill**：舊任務就是 standard，
+  // 不會有任何一列被自動變成學校作業；教材身分仍然只看 material_content_item_id。
+  //
+  // task_kind 與 Material linkage 是正交的：四種組合（standard/school_assignment
+  // × 有/沒有教材）都合法，所以這裡不做成三選一的 enum。
+  try { await client.execute("ALTER TABLE tasks ADD COLUMN task_kind TEXT DEFAULT 'standard'"); } catch {}
+  try { await client.execute('ALTER TABLE tasks ADD COLUMN school_assignment_type TEXT'); } catch {}
+  // 繳交時間。deadline_date 早就存在（Phase 2A），這裡只補時分。
+  // NULL＝當天結束以前，不是「沒有期限」。
+  try { await client.execute('ALTER TABLE tasks ADD COLUMN deadline_time TEXT'); } catch {}
+  // 提醒。日期規則與時間刻意分開兩組欄位，才能各自調整。
+  try { await client.execute('ALTER TABLE tasks ADD COLUMN reminder_kind TEXT'); } catch {}
+  try { await client.execute('ALTER TABLE tasks ADD COLUMN reminder_days_before INTEGER'); } catch {}
+  try { await client.execute('ALTER TABLE tasks ADD COLUMN reminder_custom_date TEXT'); } catch {}
+  try { await client.execute('ALTER TABLE tasks ADD COLUMN reminder_time_override TEXT'); } catch {}
+  // updated_at 刻意不給 DEFAULT CURRENT_TIMESTAMP：那會讓既有列在讀取時看起來
+  // 像是剛剛被改過。existing row 維持 NULL，從新的寫入開始維護，
+  // 不需要 rewrite 任何一列 production 資料。
+  try { await client.execute('ALTER TABLE tasks ADD COLUMN updated_at TEXT'); } catch {}
+  try { await client.execute("ALTER TABLE users ADD COLUMN school_assignment_default_reminder_time TEXT DEFAULT '18:00'"); } catch {}
+  try { await client.execute('CREATE INDEX IF NOT EXISTS idx_tasks_kind_deadline ON tasks(user_id, task_kind, deadline_date)'); } catch {}
+
   // 一個舊任務最多只能有一筆 mapping。同一個 Task 同時「屬於 A」又「屬於 B」
   // 就不是 authoritative 而是兩個互相矛盾的主張，這條由 schema 擋，不靠應用層自律。
   try { await client.execute('CREATE UNIQUE INDEX IF NOT EXISTS idx_legacy_map_one ON legacy_task_plan_mappings(user_id, legacy_task_id)'); } catch {}
