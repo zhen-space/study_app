@@ -5,6 +5,10 @@ import { calculateScheduleDiff } from '../schedule/diff.js';
 import { todayTW, twDayOf } from '../util/date.js';
 import { transitionTaskOutcome } from '../schedule/persistence.js';
 import { setCompletion } from '../material/service.js';
+import {
+  TASK_KINDS, DEFAULT_TASK_KIND, REMINDER_DAYS_BEFORE,
+  validateSchoolAssignment, validateReminder,
+} from '../school/assignment.js';
 
 const router = Router();
 // 僅供 server-side migration/cutover 呼叫；一般 JWT client 不能靠 body 欄位繞過。
@@ -18,6 +22,28 @@ const asArr = s => { if (Array.isArray(s)) return s; try { const v = JSON.parse(
 const cleanTags = arr => arr.filter(x => typeof x === 'string' && x.trim() && !/^[a-zA-Z]{1,2}$/.test(x.trim()));
 const parseTask = t => ({ ...t, tags: cleanTags(asArr(t.tags)), subtasks: asArr(t.subtasks) });
 const estimate = value => value == null || value === '' ? null : (Number.isInteger(Number(value)) && Number(value) > 0 && Number(value) <= 1440 ? Number(value) : undefined);
+
+// task_kind 只有兩種，而且**跟有沒有綁教材無關**——教材身分一律看
+// material_content_item_id。做成三選一就會逼出「綁教材的學校作業」無處可放。
+function validateTaskKind(body) {
+  const k = body?.task_kind;
+  if (k == null || k === '') return null;
+  return TASK_KINDS.includes(k) ? null : '任務類型不正確';
+}
+
+// 提醒欄位一律成組寫入：換了 kind 卻留著上一種的參數，會產生「看起來設定好、
+// 其實解析不出日期」的列。不需要的欄位直接寫 NULL。
+function reminderFields(body) {
+  const kind = body?.reminder_kind || null;
+  const days = kind === 'days_before' && REMINDER_DAYS_BEFORE.includes(Number(body?.reminder_days_before))
+    ? Number(body.reminder_days_before) : null;
+  return {
+    reminder_kind: kind,
+    reminder_days_before: days,
+    reminder_custom_date: kind === 'custom' ? (body?.reminder_custom_date || null) : null,
+    reminder_time_override: body?.reminder_time_override || null,
+  };
+}
 
 // 任務要掛到某個 Plan 之前的檢查：計畫得是自己的，而且不能是已封存／已完成的
 // （那兩種狀態代表「這件事告一段落了」，再往裡面丟東西沒有意義）。
@@ -117,6 +143,13 @@ router.get('/tasks', async (req, res) => {
       if (nd) { await q.run('UPDATE tasks SET due_date=? WHERE id=?', [nd, t.id]); t.due_date = nd; }
     }
   }
+  // ?task_kind=school_assignment：只是既有清單的 filter，不是另一支端點。
+  // 舊資料的 task_kind 是 NULL（沒有 backfill），語意上就是 standard。
+  const kind = req.query.task_kind;
+  if (kind != null && kind !== '') {
+    if (!TASK_KINDS.includes(kind)) return res.status(400).json({ error: '任務類型不正確' });
+    return res.json(rows.filter(t => (t.task_kind || DEFAULT_TASK_KIND) === kind).map(parseTask));
+  }
   res.json(rows.map(parseTask));
 });
 
@@ -124,6 +157,21 @@ router.post('/tasks', async (req, res) => {
   const { title, list_id, notes, due_date, due_time, priority, tags, subtasks, recurring, miss_policy,
     plan_id, deadline_date, estimated_minutes, material_content_item_id } = req.body;
   if (!title) return res.status(400).json({ error: '請輸入標題' });
+  const kindErr = validateTaskKind(req.body);
+  if (kindErr) return res.status(400).json({ error: kindErr });
+  const taskKind = req.body.task_kind || DEFAULT_TASK_KIND;
+  // 學校作業的期限走 deadline_date/deadline_time，不碰 due_date/due_time——
+  // 後者是排程結果的鏡射。若使用者想安排什麼時候做，要走 Plan + 排程器。
+  if (taskKind === 'school_assignment') {
+    const err = validateSchoolAssignment(req.body);
+    if (err) return res.status(400).json({ error: err });
+    const own = await q.get('SELECT id FROM lists WHERE id=? AND user_id=?', [list_id, req.userId]);
+    // v1 不支援在「分享給我的清單」上建立學校作業：那種清單的任務會掛到清單
+    // 擁有者名下，作業就變成別人的資料，提醒與統計都對不起來。
+    if (!own) return res.status(400).json({ error: '學校作業只能建立在自己的科目上' });
+  } else if (validateReminder(req.body)) {
+    return res.status(400).json({ error: validateReminder(req.body) });
+  }
   const planErr = await checkPlan(plan_id ?? null, req.userId);
   if (planErr) return res.status(400).json({ error: planErr });
   // Task ↔ Material：Task 仍是排程單位，這只是「這個 Task 在做哪一份教材」。
@@ -161,12 +209,18 @@ router.post('/tasks', async (req, res) => {
   if (materialItem && ownerId !== req.userId) {
     return res.status(400).json({ error: '分享清單的任務不能綁定自己的教材項目' });
   }
-  const r = await q.run(`INSERT INTO tasks (user_id,list_id,title,notes,due_date,due_time,priority,tags,subtasks,recurring,miss_policy,plan_id,deadline_date,estimated_minutes,material_content_item_id,material_book_id)
-    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+  const rem = reminderFields(req.body);
+  const r = await q.run(`INSERT INTO tasks (user_id,list_id,title,notes,due_date,due_time,priority,tags,subtasks,recurring,miss_policy,plan_id,deadline_date,estimated_minutes,material_content_item_id,material_book_id,
+    task_kind,school_assignment_type,deadline_time,reminder_kind,reminder_days_before,reminder_custom_date,reminder_time_override,updated_at)
+    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
     [ownerId, list_id || null, title, notes || '', due_date || null, due_time || null,
       priority || 0, JSON.stringify(cleanTags(asArr(tags || []))), JSON.stringify(subtasks || []), recurring || null, miss_policy || 'keep',
       plan_id ?? null, deadline_date || null, estimated,
-      materialItem?.id ?? null, materialItem?.book_id ?? null]);
+      materialItem?.id ?? null, materialItem?.book_id ?? null,
+      taskKind, taskKind === 'school_assignment' ? req.body.school_assignment_type : null,
+      req.body.deadline_time || null,
+      rem.reminder_kind, rem.reminder_days_before, rem.reminder_custom_date, rem.reminder_time_override,
+      new Date().toISOString()]);
   // selection 列記下這次實際產生的 Task，取消選取時才知道要讓誰退出排程。
   if (materialItem && plan_id != null) {
     await q.run(
@@ -288,6 +342,35 @@ router.patch('/tasks/:id', async (req, res) => {
   if ((t.plan_id != null || b.plan_id != null) && (b.due_date !== undefined || b.due_time !== undefined) && !trustedMigration(req)) {
     return res.status(409).json({ error: '計畫任務的排定時間必須透過排程器調整' });
   }
+  // 合併後再驗，才驗得到「原本是學校作業、這次只改一個欄位」的情形。
+  // task_kind 本身可改（一般任務可以轉成學校作業），但轉過去就要滿足全部條件。
+  const kindErr = validateTaskKind(b);
+  if (kindErr) return res.status(400).json({ error: kindErr });
+  const nextKind = b.task_kind || t.task_kind || DEFAULT_TASK_KIND;
+  const remChanged = ['reminder_kind', 'reminder_days_before', 'reminder_custom_date', 'reminder_time_override']
+    .some(k => b[k] !== undefined);
+  const merged = {
+    title: b.title ?? t.title,
+    list_id: b.list_id !== undefined ? b.list_id : t.list_id,
+    school_assignment_type: b.school_assignment_type ?? t.school_assignment_type,
+    deadline_date: b.deadline_date !== undefined ? b.deadline_date : t.deadline_date,
+    deadline_time: b.deadline_time !== undefined ? b.deadline_time : t.deadline_time,
+    recurring: b.recurring !== undefined ? b.recurring : t.recurring,
+    ...(remChanged ? reminderFields(b) : {
+      reminder_kind: t.reminder_kind, reminder_days_before: t.reminder_days_before,
+      reminder_custom_date: t.reminder_custom_date, reminder_time_override: t.reminder_time_override,
+    }),
+  };
+  if (nextKind === 'school_assignment') {
+    const err = validateSchoolAssignment(merged);
+    if (err) return res.status(400).json({ error: err });
+    const own = await q.get('SELECT id FROM lists WHERE id=? AND user_id=?', [merged.list_id, req.userId]);
+    if (!own) return res.status(400).json({ error: '學校作業只能建立在自己的科目上' });
+  } else {
+    const err = validateReminder(merged);
+    if (err) return res.status(400).json({ error: err });
+  }
+  const rem = remChanged ? reminderFields(b) : null;
   const f = {
     list_id: b.list_id !== undefined ? b.list_id : t.list_id,
     title: b.title ?? t.title,
@@ -308,16 +391,27 @@ router.patch('/tasks/:id', async (req, res) => {
     plan_id: b.plan_id !== undefined ? b.plan_id : (t.plan_id ?? null),
     deadline_date: b.deadline_date !== undefined ? (b.deadline_date || null) : (t.deadline_date ?? null),
     estimated_minutes: b.estimated_minutes !== undefined ? estimate(b.estimated_minutes) : (t.estimated_minutes ?? null),
+    task_kind: nextKind,
+    school_assignment_type: nextKind === 'school_assignment' ? merged.school_assignment_type : null,
+    deadline_time: merged.deadline_time || null,
+    reminder_kind: rem ? rem.reminder_kind : (t.reminder_kind ?? null),
+    reminder_days_before: rem ? rem.reminder_days_before : (t.reminder_days_before ?? null),
+    reminder_custom_date: rem ? rem.reminder_custom_date : (t.reminder_custom_date ?? null),
+    reminder_time_override: rem ? rem.reminder_time_override : (t.reminder_time_override ?? null),
   };
   // 任務只能有一種結果；取消不是完成，也不能藉由 generic PATCH 留下雙重狀態。
   if (f.completed) { f.cancelled = 0; f.cancelled_at = null; }
   if (f.cancelled) { f.completed = 0; f.completed_at = null; }
   if (f.estimated_minutes === undefined) return res.status(400).json({ error: '預估時間需介於 1 到 1440 分鐘' });
   await q.run(`UPDATE tasks SET list_id=?,title=?,notes=?,due_date=?,due_time=?,priority=?,tags=?,subtasks=?,
-    recurring=?,miss_policy=?,completed=?,completed_at=?,cancelled=?,cancelled_at=?,order_index=?,deleted=?,plan_id=?,deadline_date=?,estimated_minutes=? WHERE id=?`,
+    recurring=?,miss_policy=?,completed=?,completed_at=?,cancelled=?,cancelled_at=?,order_index=?,deleted=?,plan_id=?,deadline_date=?,estimated_minutes=?,
+    task_kind=?,school_assignment_type=?,deadline_time=?,reminder_kind=?,reminder_days_before=?,reminder_custom_date=?,reminder_time_override=?,updated_at=? WHERE id=?`,
     [f.list_id, f.title, f.notes, f.due_date, f.due_time, f.priority, f.tags, f.subtasks,
       f.recurring, f.miss_policy, f.completed, f.completed_at, f.cancelled, f.cancelled_at, f.order_index, f.deleted,
-      f.plan_id, f.deadline_date, f.estimated_minutes, t.id]);
+      f.plan_id, f.deadline_date, f.estimated_minutes,
+      f.task_kind, f.school_assignment_type, f.deadline_time,
+      f.reminder_kind, f.reminder_days_before, f.reminder_custom_date, f.reminder_time_override,
+      new Date().toISOString(), t.id]);
 
   if (b.completed && !t.completed && t.recurring && t.due_date) {
     let cfg = null;
