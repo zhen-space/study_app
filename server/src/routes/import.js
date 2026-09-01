@@ -6,6 +6,7 @@ import { requireAuth } from '../middleware/auth.js';
 import { q } from '../db/init.js';
 import { buildPreview } from '../timetable/structure.js';
 import { todayTW } from '../util/date.js';
+import { planTocWrite, deleteScope } from '../import/toc-replace.js';
 
 const TIME_RE = /^([01]\d|2[0-3]):[0-5]\d$/;
 
@@ -563,10 +564,19 @@ router.post('/toc', async (req, res) => {
     let publisher = (obj.publisher || '').trim();
 
     let base = 0;
-    if (replace !== false) {
-      // 重新掃描：讀得出書名就只換同一本，讀不出就整科重來（跟舊行為一致）
-      if (book) await q.run('DELETE FROM toc_items WHERE user_id=? AND list_id=? AND (book=? OR book=\'\')', [req.userId, list_id, book]);
-      else await q.run('DELETE FROM toc_items WHERE user_id=? AND list_id=?', [req.userId, list_id]);
+    // replace 必須明確要求。以前的判斷是 `replace !== false`——沒帶這個欄位就等於
+    // 刪除，一個手滑或一支忘了帶參數的呼叫端就會清掉使用者的教材。
+    // 匯入一本新書是**新增**，不是取代；預設一律不刪任何東西。
+    // 要不要刪、刪哪些，全部由 planTocWrite 決定（判斷邏輯與測試見
+    // src/import/toc-replace.js）。這裡只負責照著做。
+    const writePlan = planTocWrite({ replace, book });
+    if (writePlan.mode === 'refuse') {
+      return res.status(409).json({
+        error: '這次沒有讀到書名，無法判斷要重新掃描哪一本。請改用「新增一本」，或指定書名後再重新掃描。',
+        code: writePlan.reason,
+      });
+    }
+    if (writePlan.mode === 'replace') {
       const mx = await q.get('SELECT MAX(order_index) AS m FROM toc_items WHERE user_id=? AND list_id=?', [req.userId, list_id]);
       base = (mx?.m ?? -1) + 1;
     } else {
@@ -590,14 +600,25 @@ router.post('/toc', async (req, res) => {
         publisher = publisher || last?.publisher || '';
       }
     }
-    const items = [];
-    for (let i = 0; i < chapters.length; i++) {
-      const c = chapters[i];
-      const kids = c.children || [];
-      const r = await q.run('INSERT INTO toc_items (user_id, list_id, title, level, sections, order_index, book, publisher) VALUES (?,?,?,?,?,?,?,?)',
-        [req.userId, list_id, c.title, c.level || '章', JSON.stringify(kids), base + i, book, publisher]);
-      items.push({ id: r.lastInsertRowid, list_id, title: c.title, level: c.level || '章', sections: kids, order_index: base + i, book, publisher });
-    }
+    // 刪除與新增必須在同一個交易裡。分開做的話，中途任何一個 INSERT 失敗都會
+    // 留下「舊的已經刪掉、新的沒進來」——使用者的教材就這樣消失了。
+    const items = await q.tx(async tx => {
+      const scope = deleteScope({ replace, book, userId: req.userId, listId: list_id });
+      if (scope) {
+        // 只刪這一本，書名精確比對。不碰 book='' 的列，也不碰同科的其他書。
+        await tx.run('DELETE FROM toc_items WHERE user_id=? AND list_id=? AND book=?',
+          [scope.user_id, scope.list_id, scope.book]);
+      }
+      const out = [];
+      for (let i = 0; i < chapters.length; i++) {
+        const c = chapters[i];
+        const kids = c.children || [];
+        const r = await tx.run('INSERT INTO toc_items (user_id, list_id, title, level, sections, order_index, book, publisher) VALUES (?,?,?,?,?,?,?,?)',
+          [req.userId, list_id, c.title, c.level || '章', JSON.stringify(kids), base + i, book, publisher]);
+        out.push({ id: r.lastInsertRowid, list_id, title: c.title, level: c.level || '章', sections: kids, order_index: base + i, book, publisher });
+      }
+      return out;
+    });
     res.json({ items, book, publisher });
   } catch (err) {
     console.error('toc parse error:', err.message);
