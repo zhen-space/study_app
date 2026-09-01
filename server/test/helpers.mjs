@@ -7,6 +7,17 @@ import { fileURLToPath } from 'node:url';
 
 const serverDir = path.join(path.dirname(fileURLToPath(import.meta.url)), '..');
 
+// package.json 的 test script 帶了 --test-force-exit，原因寫在這裡：
+//
+// 三十幾個測試檔跑在同一個 node --test 程序裡，只要其中任何一個留下沒關掉的
+// handle（spawn 出來的伺服器、libsql client、還沒 settle 的 socket），整個程序
+// 就會在**測試全部跑完並回報成功之後**繼續掛著不結束。CI 上的症狀是某一個
+// TZ 的 job 停在「Run npm test」直到六小時上限被系統砍掉，而同一個 commit 的
+// 其他 TZ job 九十幾秒就通過。逐檔單獨跑則全部正常——因為 handle 不會累積。
+//
+// --test-force-exit 只影響「測試都跑完之後要不要等 event loop 排空」。
+// 測試本身照跑、失敗照樣回報並以非零退出，沒有任何測試被跳過或放寬。
+
 // 伺服器用「台灣時區的今天」當起點，早於今天的日期會被裁掉。
 // 測試一律用相對日期，才不會過幾天就開始壞掉。
 // 日期運算全部走 UTC（T00:00:00Z + setUTCDate），這樣不管跑測試的機器
