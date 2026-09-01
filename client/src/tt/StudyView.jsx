@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import { api } from '../api';
 import { today } from './helpers';
 import { Button, PageHeader, SurfaceCard, EmptyState, BottomSheet } from './ui';
+import PomodoroPanel from './PomodoroPanel';
 
 // 「讀書」＝中央主要動作：現在就開始一段讀書。
 //
@@ -119,6 +120,9 @@ export default function StudyView({ tasks, goPlans }) {
   const candidates = pickStudyTasks(tasks, td, Infinity);
   return <div className="main"><PageHeader title="讀書" subtitle="記下實際讀書時間，之後可比較原定安排與實際進度" />
     <div className="main-body">{error && <SurfaceCard tone="warning">{error}</SurfaceCard>}
+      {/* 番茄鐘只是這一段 StudySession 的計時外觀：相位切換時走的是下面同一組
+          pause / resume，不會另外開一個 session，也不會結束它。 */}
+      {session && <PomodoroPanel session={session} onSessionAction={a => end(a === 'pause' ? 'paused' : 'running')} />}
       {active ? <SurfaceCard tone="accent"><b>正在讀書：{titleOf(session)}</b><div className="ui-meta" style={{ marginTop: 4 }}>開始於 {new Date(session.started_at).toLocaleTimeString('zh-TW', { hour: '2-digit', minute: '2-digit' })}</div><div className="row" style={{ marginTop: 12 }}><Button onClick={() => end('paused')}>暫停</Button><Button variant="primary" style={{ marginLeft: 'auto' }} onClick={() => end('completed')}>完成本次讀書</Button></div></SurfaceCard>
         : paused ? <SurfaceCard tone="accent"><b>讀書已暫停：{titleOf(session)}</b><div className="ui-meta" style={{ marginTop: 4 }}>已累積 {session.actual_minutes || 0} 分鐘</div><div className="row" style={{ marginTop: 12 }}><Button variant="primary" onClick={() => end('running')}>繼續讀書</Button><Button style={{ marginLeft: 'auto' }} onClick={() => end('completed')}>結束本次讀書</Button></div></SurfaceCard>
         // 一項任務都沒有的時候，「選一個尚未完成的任務」底下空空如也——
