@@ -4,6 +4,7 @@ import { checkLocks } from './locks.js';
 import { calculateScheduleDiff } from './diff.js';
 import { classifyPlacement, findSelfCollisions, timedOverlap } from './feasibility.js';
 import { canonicalizeBlockTiming, timingProblem } from './timing.js';
+import { planTaskDisposition, lockReleaseReason } from './plan-cleanup.js';
 
 // 手動調整的說法：使用者是「現在正要放」，不是「想恢復舊安排」。
 const MANUAL_MESSAGES = {
@@ -622,25 +623,36 @@ export async function createScheduleVersion(userId, {
 // Plan lifecycle 不能只改 plans.status：那會讓已停止的 Plan 仍留在 active
 // ScheduleVersion。此處把狀態變更、其他 Plan 的 future blocks carry-forward、
 // Lock feasibility、active pointer 與 due mirror 放進同一個 transaction。
+// cleanupAction：'pause' | 'delete'。有帶就必須同時帶明確的 retainIncompleteTasks
+// （boolean），這一整組動作——lifecycle、未完成 Task、新 ScheduleVersion、失效
+// lock——都在同一個 transaction 裡，任何一步失敗整筆 rollback。
 export async function transitionPlanLifecycle(userId, planId, {
   nextStatus, endReason = null, baseVersionId = undefined,
+  cleanupAction = null, retainIncompleteTasks = undefined,
 }) {
   return serializeWrite(() => withVersionNoRetry(() => q.tx(async tx => {
     const plan = await tx.get('SELECT * FROM plans WHERE id=? AND user_id=?', [planId, userId]);
     if (!plan) throw new ScheduleInputError('找不到這個計畫');
+    // tombstone 之後就沒有任何後續 lifecycle。本輪刻意不提供 restore contract。
+    if (plan.status === 'deleted') throw new ScheduleInputError('這個計畫已經刪除');
     // lifecycle 不是可任意覆寫的欄位。明確限制轉換，避免把「重新開始」
     // 誤用成 paused -> completed 等沒有產品語意的捷徑。
     const allowed = {
-      draft: new Set(['active', 'ended', 'archived']),
-      active: new Set(['paused', 'completed', 'ended', 'archived']),
-      paused: new Set(['active', 'ended', 'archived']),
-      completed: new Set(['active', 'archived']),
-      ended: new Set(['active', 'archived']),
-      archived: new Set([plan.archived_from_status || 'active']),
+      draft: new Set(['active', 'ended', 'archived', 'deleted']),
+      active: new Set(['paused', 'completed', 'ended', 'archived', 'deleted']),
+      paused: new Set(['active', 'ended', 'archived', 'deleted']),
+      completed: new Set(['active', 'archived', 'deleted']),
+      ended: new Set(['active', 'archived', 'deleted']),
+      archived: new Set([plan.archived_from_status || 'active', 'deleted']),
     };
     if (!allowed[plan.status]?.has(nextStatus)) {
       throw new ScheduleInputError('這個計畫目前不能進行此狀態轉換');
     }
+    // 「暫停」「刪除」必須明確表態要不要保留未完成任務；沒有 cleanupAction 的
+    // 轉換（完成／結束／封存／恢復）維持原本語意，一律不動任何 Task。
+    const disposition = cleanupAction
+      ? planTaskDisposition({ action: cleanupAction, retain: retainIncompleteTasks })
+      : null;
     if (nextStatus === 'completed') {
       const unresolved = await tx.all(
         `SELECT id,title,due_date FROM tasks
@@ -660,18 +672,64 @@ export async function transitionPlanLifecycle(userId, planId, {
       ? (plan.status === 'archived' ? plan.archived_from_status : plan.status)
       : null;
     const restoring = plan.status === 'archived' && nextStatus !== 'archived';
+    const deleting = nextStatus === 'deleted';
+    // 刪除是 tombstone：不清掉「這個計畫曾經完成／結束／封存」的時間戳，
+    // 那是歷史。其餘轉換維持原本「離開某個狀態就清掉它的時間戳」的語意。
     await tx.run(
       `UPDATE plans SET status=?, completed_at=?, paused_at=?, ended_at=?, end_reason=?,
-                        archived_at=?, archived_from_status=?, updated_at=?
+                        archived_at=?, archived_from_status=?, deleted_at=?,
+                        lifecycle_retained_tasks=?, updated_at=?
         WHERE id=? AND user_id=?`,
       [nextStatus,
-        nextStatus === 'completed' ? (plan.completed_at || at) : null,
-        nextStatus === 'paused' ? (plan.paused_at || at) : null,
-        nextStatus === 'ended' ? (plan.ended_at || at) : null,
-        nextStatus === 'ended' ? (endReason || null) : null,
-        nextStatus === 'archived' ? (plan.archived_at || at) : null,
-        nextStatus === 'archived' ? archivedFrom : null,
+        deleting ? plan.completed_at : (nextStatus === 'completed' ? (plan.completed_at || at) : null),
+        deleting ? plan.paused_at : (nextStatus === 'paused' ? (plan.paused_at || at) : null),
+        deleting ? plan.ended_at : (nextStatus === 'ended' ? (plan.ended_at || at) : null),
+        deleting ? plan.end_reason : (nextStatus === 'ended' ? (endReason || null) : null),
+        deleting ? plan.archived_at : (nextStatus === 'archived' ? (plan.archived_at || at) : null),
+        deleting ? plan.archived_from_status : (nextStatus === 'archived' ? archivedFrom : null),
+        deleting ? (plan.deleted_at || at) : null,
+        disposition ? (retainIncompleteTasks ? 1 : 0) : plan.lifecycle_retained_tasks ?? null,
         at, plan.id, userId]);
+
+    // ── 未完成 Task 的處理 ───────────────────────────────────────────────
+    // 只碰「未完成且未取消且未刪除」的 Task。completed Task、StudySession、
+    // material_progress、歷史 ScheduleVersion 完全不在這裡出現，也就不會被改到。
+    let affectedTaskIds = [];
+    if (disposition) {
+      const targets = await tx.all(
+        `SELECT id FROM tasks
+          WHERE user_id=? AND plan_id=? AND completed=0
+            AND COALESCE(cancelled,0)=0 AND COALESCE(deleted,0)=0`, [userId, plan.id]);
+      affectedTaskIds = targets.map(t => Number(t.id));
+      if (disposition.softDelete) {
+        // 既有 soft-delete 語意，跟 DELETE /plans/:id/tasks?incomplete=1 同一條路。
+        // 絕不 hard delete：歷史版本的 block 仍指著這些 task。
+        await tx.run(
+          `UPDATE tasks SET deleted=1
+            WHERE user_id=? AND plan_id=? AND completed=0
+              AND COALESCE(cancelled,0)=0 AND COALESCE(deleted,0)=0`, [userId, plan.id]);
+      } else if (disposition.detach) {
+        // 轉成 standalone Task。due_date/due_time 是 ScheduleVersion 的鏡射，
+        // 計畫沒了就必須清掉，否則舊安排會被誤讀成使用者自己訂的期限。
+        // deadline_date（正式截止日）、內容、教材 linkage、提醒一律不碰。
+        await tx.run(
+          `UPDATE tasks SET plan_id=NULL${disposition.clearScheduleMirror ? ', due_date=NULL, due_time=NULL' : ''}
+            WHERE user_id=? AND plan_id=? AND completed=0
+              AND COALESCE(cancelled,0)=0 AND COALESCE(deleted,0)=0`, [userId, plan.id]);
+      }
+      // 失效的 Task lock：主詞已經離開排程（被軟刪、或變成不排程的 standalone、
+      // 或整個 Plan 退出），鎖著它沒有意義。soft release 並留下理由，讓使用者在
+      // 鎖定列表看得到為什麼不見了。day / time lock 不在此列——見 plan-cleanup.js。
+      if (affectedTaskIds.length) {
+        const reason = lockReleaseReason(cleanupAction);
+        for (const taskId of affectedTaskIds) {
+          await tx.run(
+            `UPDATE schedule_locks SET released_at=?, release_reason=?
+              WHERE user_id=? AND type='task' AND task_id=? AND released_at IS NULL`,
+            [at, reason, userId, taskId]);
+        }
+      }
+    }
 
     if (activeId == null) {
       return { plan: await tx.get('SELECT * FROM plans WHERE id=?', [plan.id]), version: null };
@@ -685,14 +743,16 @@ export async function transitionPlanLifecycle(userId, planId, {
         WHERE b.user_id=? AND b.schedule_version_id=? AND b.date>=?
           AND t.plan_id<>? AND COALESCE(t.deleted,0)=0
           AND t.completed=0 AND COALESCE(t.cancelled,0)=0
-          AND p.status NOT IN ('paused','completed','ended','archived')
+          -- 白名單，不是黑名單。原本寫成 NOT IN ('paused',…) 時，任何**新增**的
+          -- lifecycle 狀態（例如 'deleted'）都會被預設當成「仍在排程」而漏進來。
+          AND p.status IN ('draft','active')
         ORDER BY b.date,COALESCE(b.start_time,''),b.id`,
       [userId, activeId, effectiveFrom, planId])).map(canonicalizeBlockTiming);
     validateTimedBlockOverlaps(candidate);
     await assertCandidateLocks(tx, userId, activeId, candidate);
     const version = await createScheduleVersionInTx(tx, userId, {
       source: SOURCE.LIFECYCLE,
-      reason: `計畫「${plan.name}」${nextStatus === 'paused' ? '暫停' : nextStatus === 'ended' ? '結束' : nextStatus === 'completed' ? '完成' : nextStatus === 'archived' ? '封存' : restoring ? '恢復' : '重新開始'}`,
+      reason: `計畫「${plan.name}」${nextStatus === 'paused' ? '暫停' : nextStatus === 'deleted' ? '刪除' : nextStatus === 'ended' ? '結束' : nextStatus === 'completed' ? '完成' : nextStatus === 'archived' ? '封存' : restoring ? '恢復' : '重新開始'}`,
       effectiveFrom,
       parentVersionId: activeId,
       blocks: candidate,

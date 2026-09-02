@@ -4,7 +4,7 @@ import { requireAuth } from '../middleware/auth.js';
 import { normalizeConstraints, constraintContract } from '../schedule/constraints.js';
 import Anthropic from '@anthropic-ai/sdk';
 const router = Router(); router.use(requireAuth);
-async function ownPlan(id, userId) { return q.get('SELECT id FROM plans WHERE id=? AND user_id=?', [id, userId]); }
+async function ownPlan(id, userId) { return q.get("SELECT id FROM plans WHERE id=? AND user_id=? AND status<>'deleted'", [id, userId]); }
 const PROFILE_KEYS = ['timed','limitPerDay','perDay','pace','excludeWeekdays','excludeDates','skipIfBusyHours','subjectOrder'];
 const profile = input => Object.fromEntries(PROFILE_KEYS.filter(k => input?.[k] !== undefined).map(k => [k, input[k]]));
 router.get('/plans/:id/schedule-profile', async (req, res) => {

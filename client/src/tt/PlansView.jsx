@@ -13,7 +13,7 @@ import { Button, IconButton, PageHeader, SurfaceCard, ProgressBar, ListRow, Bott
 // 資料來源在 ./plans.js：正式 Plan（後端 plans 表）＋ 還沒 migrate 的舊資料推導。
 // 兩者並存，舊的標上「舊資料」而且不提供正式計畫才有的管理操作。
 
-const STATUS_LABEL = { draft: '草稿', completed: '已完成', archived: '已封存' };
+const STATUS_LABEL = { draft: '草稿', paused: '已暫停', completed: '已完成', ended: '已結束', archived: '已封存' };
 
 // 科目只用小圓點識別，不整張卡染色
 function Subjects({ subjects }) {
@@ -89,8 +89,15 @@ export default function PlansView({ tasks, lists, apiPlans = [], openPlan, goWiz
 
   const real = plans.filter(p => !p.isLegacy);
   const live = real.filter(p => p.status === 'active' || p.status === 'draft');
+  // 暫停的計畫必須看得見——它是「先不排時間」，不是不見了。放進獨立區塊，
+  // 而不是塞進已完成或已封存，那兩個是不同的意思。
+  const paused = real.filter(p => p.status === 'paused');
   const done = real.filter(p => p.status === 'completed');
   const archived = real.filter(p => p.status === 'archived');
+  // 任何不屬於上面四類的狀態（目前是 ended）仍然要有地方顯示。
+  // 沒有這一段的話，新增一個 lifecycle 狀態就會讓計畫從畫面上安靜消失。
+  const KNOWN = ['active', 'draft', 'paused', 'completed', 'archived'];
+  const other = real.filter(p => !KNOWN.includes(p.status));
   const legacy = plans.filter(p => p.isLegacy);
 
   const closeSheet = () => { setCreating(false); setShowBlank(false); setErr(''); };
@@ -129,6 +136,12 @@ export default function PlansView({ tasks, lists, apiPlans = [], openPlan, goWiz
 
         {/* 次要區塊：預設收合，視覺權重明顯低於進行中 */}
         <div style={{ marginTop: 'var(--section-gap)' }}>
+          {paused.length > 0 && (
+            <>
+              <SectionRow label="已暫停" count={paused.length} open={!!open.paused} onToggle={() => toggle('paused')} />
+              {open.paused && paused.map(p => <PlanCard key={p.key} p={p} onOpen={openPlan} />)}
+            </>
+          )}
           {done.length > 0 && (
             <>
               <SectionRow label="已完成" count={done.length} open={!!open.done} onToggle={() => toggle('done')} />
@@ -139,6 +152,12 @@ export default function PlansView({ tasks, lists, apiPlans = [], openPlan, goWiz
             <>
               <SectionRow label="已封存" count={archived.length} open={!!open.archived} onToggle={() => toggle('archived')} />
               {open.archived && archived.map(p => <PlanCard key={p.key} p={p} onOpen={openPlan} />)}
+            </>
+          )}
+          {other.length > 0 && (
+            <>
+              <SectionRow label="其他" count={other.length} open={!!open.other} onToggle={() => toggle('other')} />
+              {open.other && other.map(p => <PlanCard key={p.key} p={p} onOpen={openPlan} />)}
             </>
           )}
           {legacy.length > 0 && (

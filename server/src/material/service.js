@@ -50,7 +50,8 @@ const mustItem = async (userId, id) => {
 };
 
 const mustPlan = async (userId, id) => {
-  const p = await q.get('SELECT * FROM plans WHERE id=? AND user_id=?', [id, userId]);
+  // 已刪除的計畫是 tombstone：不能再被選教材、掛任務或當成任何入口。
+  const p = await q.get("SELECT * FROM plans WHERE id=? AND user_id=? AND status<>'deleted'", [id, userId]);
   if (!p) throw new MaterialInputError('找不到這個計畫', 404);
   return p;
 };

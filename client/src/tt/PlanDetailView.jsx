@@ -21,7 +21,21 @@ import { Button, IconButton, PageHeader, SurfaceCard, ProgressBar, ListRow, Bott
 // 正式 Plan（有 planId）才有改名／改期限／完成／封存；
 // 舊資料沒有 plan id，這些操作對它沒有意義，一律不顯示。
 
-const STATUS_LABEL = { draft: '草稿', active: '進行中', completed: '已完成', archived: '已封存' };
+const STATUS_LABEL = { draft: '草稿', active: '進行中', paused: '已暫停', completed: '已完成', ended: '已結束', archived: '已封存' };
+
+// 暫停／刪除都必須明確選「未完成的任務怎麼辦」。刻意不給預設值：
+// 猜錯的兩個方向都很痛（以為留著結果被刪、以為清掉結果還在），
+// 所以選項未選之前送出鍵是停用的。文案一律講後果，不講欄位名稱。
+const RETAIN_CHOICES = {
+  pause: [
+    [true, '保留未完成的任務', '任務留在這個計畫裡，只是先不排時間。恢復計畫後可以重新安排。'],
+    [false, '不保留未完成的任務', '未完成的任務會移到垃圾桶。恢復計畫也不會自己回來。'],
+  ],
+  delete: [
+    [true, '保留未完成的任務', '變成一般待辦，原本排好的時間會清掉，你自己訂的截止日會留著。'],
+    [false, '不保留未完成的任務', '未完成的任務會一起移到垃圾桶。'],
+  ],
+};
 
 // 「調整計畫」的入口：先問要調整哪一段，再深連結到排程精靈對應的位置。
 // 一次只調一件事，不用每次都從頭走一遍精靈。
@@ -32,6 +46,27 @@ const ADJUST = [
   ['cond', '排程條件', '題型、順序、每天幾項'],
   ['all', '全部設定', '從頭走一次精靈'],
 ];
+
+// 未完成任務怎麼辦。用 radio 而不是勾選框：兩個選項都是明確的決定，
+// 沒有哪一個是「預設不動作」，所以不能有預設選取。
+function RetainPicker({ kind, value, onChange }) {
+  return (
+    <div role="radiogroup" aria-label="未完成的任務怎麼辦" style={{ marginTop: 'var(--sp-4)' }}>
+      <div className="ui-meta" style={{ marginBottom: 'var(--sp-2)' }}>未完成的任務怎麼辦？</div>
+      {RETAIN_CHOICES[kind].map(([v, title, desc]) => (
+        <label key={String(v)} className="row"
+          style={{ alignItems: 'flex-start', gap: 'var(--sp-2)', marginTop: 'var(--sp-2)', cursor: 'pointer' }}>
+          <input type="radio" name={`retain-${kind}`} aria-label={title}
+            checked={value === v} onChange={() => onChange(v)} style={{ marginTop: 3 }} />
+          <span>
+            <b>{title}</b>
+            <div className="ui-meta">{desc}</div>
+          </span>
+        </label>
+      ))}
+    </div>
+  );
+}
 
 export default function PlanDetailView({ planKey, tasks, lists, apiPlans = [], reload, onBack, goWizard, adjustPlan, goLocks }) {
   const plan = usePlans(tasks, lists, apiPlans).find(p => p.key === planKey);
@@ -48,6 +83,8 @@ export default function PlanDetailView({ planKey, tasks, lists, apiPlans = [], r
   const [unresolved, setUnresolved] = useState(0);
   const [nt, setNt] = useState({ title: '', list_id: '', deadline_date: '', estimated_minutes: '' });
   const [edit, setEdit] = useState(null);     // 編輯計畫資訊的暫存（按儲存才送出）
+  // null＝還沒選。暫停／刪除都必須明確選一個，不給預設值。
+  const [retain, setRetain] = useState(null);
   const [adjustBlock, setAdjustBlock] = useState(null);   // { block, task }
   const [legacyPreview, setLegacyPreview] = useState(null);
   // 排定時間的真相在 ScheduledBlock；要讓使用者自己改，就得知道是哪一格。
@@ -69,10 +106,13 @@ export default function PlanDetailView({ planKey, tasks, lists, apiPlans = [], r
 
   const isReal = !plan.isLegacy && plan.planId != null;
   const raw = apiPlans.find(p => p.id === plan.planId);
-  const showAdjust = isReal && plan.status !== 'archived' && !!adjustPlan;
+  // 暫停的計畫跟封存一樣不接受新任務、也不排程——後端 checkPlan 本來就會擋，
+  // UI 不要留一個按下去必定失敗的入口。
+  const workable = isReal && ['draft', 'active'].includes(plan.status);
+  const showAdjust = workable && !!adjustPlan;
   const pct = plan.total ? Math.round(plan.done / plan.total * 100) : 0;
 
-  const close = () => { setSheet(null); setErr(''); };
+  const close = () => { setSheet(null); setErr(''); setRetain(null); };
 
   // 完成任務走既有的 PATCH /tasks/:id，沒有第二套完成邏輯
   const toggle = t =>
@@ -93,6 +133,19 @@ export default function PlanDetailView({ planKey, tasks, lists, apiPlans = [], r
   });
   const restart = () => run(async () => {
     await api(`/plans/${plan.planId}`, { method: 'PATCH', body: { status: 'active' } }); close();
+  });
+
+  // 暫停／刪除：retain 沒選之前不會送出，後端也會再擋一次（缺 boolean 一律 400）。
+  const pausePlan = () => run(async () => {
+    await api(`/plans/${plan.planId}/pause`, { method: 'POST', body: { retain_incomplete_tasks: retain } });
+    close();
+  });
+  const resumePlan = () => run(async () => {
+    await api(`/plans/${plan.planId}/resume`, { method: 'POST', body: {} }); close();
+  });
+  const deletePlan = () => run(async () => {
+    await api(`/plans/${plan.planId}/delete`, { method: 'POST', body: { retain_incomplete_tasks: retain } });
+    close(); onBack();
   });
 
   // 走既有的 POST /tasks，自動帶上目前的 plan_id——使用者不用再選一次計畫。
@@ -276,8 +329,8 @@ export default function PlanDetailView({ planKey, tasks, lists, apiPlans = [], r
         {plan.total === 0 && (
           <EmptyState
             title="這個計畫還沒有任務"
-            description={isReal && plan.status !== 'archived' ? '加入第一個任務，之後可以讓 AI 幫你安排到每一天。' : ''}
-            action={isReal && plan.status !== 'archived'
+            description={workable ? '加入第一個任務，之後可以讓 AI 幫你安排到每一天。' : ''}
+            action={workable
               ? <Button variant="primary" size="lg" onClick={() => setSheet('add')}>新增第一個任務</Button>
               : null}
           />
@@ -311,7 +364,7 @@ export default function PlanDetailView({ planKey, tasks, lists, apiPlans = [], r
           );
         })}
 
-        {plan.total > 0 && isReal && plan.status !== 'archived' && (
+        {plan.total > 0 && workable && (
           <Button block style={{ marginTop: 'var(--sp-4)' }} onClick={() => setSheet('add')}>
             <Icon name="plus" size={16} /> 新增任務
           </Button>
@@ -344,11 +397,25 @@ export default function PlanDetailView({ planKey, tasks, lists, apiPlans = [], r
               <ListRow title="標記完成" subtitle="整個計畫做完了"
                 role="button" tabIndex={0} style={{ cursor: 'pointer' }} onClick={complete} />
             )}
+            {/* 暫停 ≠ 封存。封存是「收起來不看」，暫停是「這個計畫先不排時間」。
+                兩者的確認畫面與對未完成任務的處理都不一樣，不能互相冒充。 */}
+            {['draft', 'active'].includes(plan.status) && (
+              <ListRow title="暫停計畫" subtitle="先不排時間，之後可以恢復"
+                role="button" tabIndex={0} style={{ cursor: 'pointer' }}
+                onClick={() => { setRetain(null); setSheet('confirmPause'); }} />
+            )}
+            {plan.status === 'paused' && (
+              <ListRow title="繼續計畫" subtitle="回到進行中，重新開始安排時間"
+                role="button" tabIndex={0} style={{ cursor: 'pointer' }} onClick={resumePlan} />
+            )}
             {plan.status !== 'archived'
               ? <ListRow title="封存" subtitle="收起來，不會刪掉任何任務"
                   role="button" tabIndex={0} style={{ cursor: 'pointer' }} onClick={archive} />
               : <ListRow title="恢復計畫" subtitle="放回進行中"
                   role="button" tabIndex={0} style={{ cursor: 'pointer' }} onClick={restore} />}
+            <ListRow title="刪除計畫" subtitle="從清單中移除，無法復原"
+              role="button" tabIndex={0} style={{ cursor: 'pointer', color: 'var(--danger, #c0392b)' }}
+              onClick={() => { setRetain(null); setSheet('confirmDelete'); }} />
           </div>
           {err && <div className="error" style={{ marginTop: 'var(--sp-3)' }}>{err}</div>}
         </BottomSheet>
@@ -390,6 +457,59 @@ export default function PlanDetailView({ planKey, tasks, lists, apiPlans = [], r
       {sheet === 'constraints' && <ConstraintSheet planId={plan.planId} onClose={close} />}
       {sheet === 'explain' && <ExplainSheet onClose={close} />}
       {sheet === 'legacy' && <BottomSheet onClose={close} label="轉成正式計畫"><b>安全轉成正式計畫</b><div className="ui-meta" style={{ marginTop: 8 }}>{legacyPreview?.warning}</div><div className="ui-meta" style={{ marginTop: 8 }}>找到 {legacyPreview?.candidates?.length || 0} 項可人工確認的舊任務。系統不會猜分群，也不會直接搬動資料。</div><div className="row" style={{ marginTop: 16 }}><Button onClick={close}>取消</Button><Button variant="primary" style={{ marginLeft: 'auto' }} onClick={async () => { await api('/plans', { method: 'POST', body: { name: `${plan.name}（正式計畫）`, description: '由舊資料手動轉換；請逐筆確認任務歸屬。', source: 'legacy_migration' } }); await reload(); close(); onBack(); }}>建立正式計畫草稿</Button></div></BottomSheet>}
+
+      {/* ---------- 暫停確認 ---------- */}
+      {sheet === 'confirmPause' && (
+        <BottomSheet onClose={close} label="暫停這個計畫">
+          <b style={{ fontSize: 17 }}>暫停這個計畫？</b>
+          <div className="ui-meta" style={{ marginTop: 'var(--sp-2)' }}>
+            計畫會留著並標示為「已暫停」，但不會再排新的時間，也不會出現在今天要做的事裡。
+            你隨時可以再繼續。
+          </div>
+          <RetainPicker kind="pause" value={retain} onChange={setRetain} />
+          {err && <div className="error" style={{ marginTop: 'var(--sp-3)' }}>{err}</div>}
+          <div className="row" style={{ marginTop: 'var(--sp-5)' }}>
+            <Button onClick={close}>取消</Button>
+            <Button variant="primary" style={{ marginLeft: 'auto' }}
+              disabled={busy || retain === null} onClick={pausePlan}>暫停計畫</Button>
+          </div>
+        </BottomSheet>
+      )}
+
+      {/* ---------- 刪除確認：跟暫停是完全不同的畫面，而且要按兩次 ---------- */}
+      {sheet === 'confirmDelete' && (
+        <BottomSheet onClose={close} label="刪除這個計畫">
+          <b style={{ fontSize: 17, color: 'var(--danger, #c0392b)' }}>刪除這個計畫？</b>
+          <div className="ui-meta" style={{ marginTop: 'var(--sp-2)' }}>
+            計畫會從清單中消失，而且<b>無法復原</b>。
+            已完成的任務、讀書紀錄和過去的排程歷史都會保留下來。
+          </div>
+          <RetainPicker kind="delete" value={retain} onChange={setRetain} />
+          {err && <div className="error" style={{ marginTop: 'var(--sp-3)' }}>{err}</div>}
+          <div className="row" style={{ marginTop: 'var(--sp-5)' }}>
+            <Button onClick={close}>取消</Button>
+            <Button variant="destructive" style={{ marginLeft: 'auto' }}
+              disabled={busy || retain === null} onClick={() => setSheet('confirmDeleteFinal')}>下一步</Button>
+          </div>
+        </BottomSheet>
+      )}
+      {sheet === 'confirmDeleteFinal' && (
+        <BottomSheet onClose={close} label="確定刪除">
+          <b style={{ fontSize: 17, color: 'var(--danger, #c0392b)' }}>真的要刪除「{plan.name}」？</b>
+          <div className="ui-meta" style={{ marginTop: 'var(--sp-2)' }}>
+            這個動作沒有復原按鈕。
+            {retain
+              ? '未完成的任務會變成一般待辦留下來。'
+              : '未完成的任務會一起移到垃圾桶。'}
+          </div>
+          {err && <div className="error" style={{ marginTop: 'var(--sp-3)' }}>{err}</div>}
+          <div className="row" style={{ marginTop: 'var(--sp-5)' }}>
+            <Button onClick={() => setSheet('confirmDelete')}>返回</Button>
+            <Button variant="destructive" style={{ marginLeft: 'auto' }}
+              disabled={busy} onClick={deletePlan}>確定刪除</Button>
+          </div>
+        </BottomSheet>
+      )}
 
       {/* ---------- 完成確認：後端 needs_confirm 語意完全不變 ---------- */}
       {sheet === 'confirmComplete' && (
