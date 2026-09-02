@@ -121,6 +121,147 @@ describe('••• 選單', () => {
   });
 });
 
+// 讓 mock 回一個真實形狀的 409（api.js 會把 body 掛在 err.payload 上）
+const reject = (status, payload) => () => {
+  const e = new Error(payload.error || '發生錯誤');
+  e.status = status; e.payload = payload;
+  return Promise.reject(e);
+};
+
+describe('重新開始', () => {
+  it('走 POST /restart，不再送無效的 PATCH { status }', async () => {
+    withPlan({}, { ...fx.plans[0], status: 'completed' });
+    await openManage('第二次段考準備', '已完成');
+    await click(sheetRow('重新開始'));
+    const posts = sent('POST', '/plans/12/restart');
+    expect(posts.length).toBe(1);
+    // 舊寫法是 PATCH /plans/12 { status:'active' }——那個請求什麼都不會改
+    const patches = calls.filter(([p, o]) => p === '/plans/12' && o?.method === 'PATCH');
+    expect(patches.length).toBe(0);
+    noCrash();
+  });
+
+  it('已結束的計畫也有重新開始的入口', async () => {
+    withPlan({}, { ...fx.plans[0], status: 'ended' });
+    await openManage('第二次段考準備', '其他');
+    expect(within(sheet()).getByText('重新開始')).toBeInTheDocument();
+    await click(sheetRow('重新開始'));
+    expect(sent('POST', '/plans/12/restart').length).toBe(1);
+    noCrash();
+  });
+});
+
+describe('標記完成沒有 force', () => {
+  it('未完成任務時顯示「不能標記為完成」，而且沒有繞過去的按鈕', async () => {
+    withPlan({
+      '/plans/12/complete': reject(409, {
+        error: '仍有未完成任務', code: 'unresolved_tasks',
+        unresolved: [{ id: 1, title: 'A' }, { id: 2, title: 'B' }],
+      }),
+    });
+    await openManage();
+    await click(sheetRow('標記完成'));
+    expect(within(sheet()).getByText(/尚有未完成任務，不能標記為完成/)).toBeInTheDocument();
+    expect(within(sheet()).getByText(/還有 2 項/)).toBeInTheDocument();
+    expect(within(sheet()).queryByRole('button', { name: '仍然完成' })).toBeNull();
+    noCrash();
+  });
+
+  it('完成請求不帶 force，也不等 needs_confirm', async () => {
+    withPlan({
+      '/plans/12/complete': reject(409, { error: 'x', code: 'unresolved_tasks', unresolved: [{ id: 1 }] }),
+    });
+    await openManage();
+    await click(sheetRow('標記完成'));
+    const posts = sent('POST', '/plans/12/complete');
+    expect(posts.length).toBe(1);
+    expect('force' in (posts[0][1].body || {})).toBe(false);
+    noCrash();
+  });
+
+  it('全部有結果時直接完成，不跳任何確認', async () => {
+    withPlan({ '/plans/12/complete': { plan: { ...fx.plans[0], status: 'completed' } } });
+    await openManage();
+    await click(sheetRow('標記完成'));
+    expect(sent('POST', '/plans/12/complete').length).toBe(1);
+    expect(document.querySelector('.sheet-panel')).toBeNull();
+    noCrash();
+  });
+
+  it('draft 與已完成的計畫看不到「標記完成」', async () => {
+    withPlan({}, { ...fx.plans[0], status: 'draft' });
+    await openManage();
+    expect(within(sheet()).queryByText('標記完成')).toBeNull();
+    noCrash();
+  });
+});
+
+describe('結束計畫是不再繼續的出口', () => {
+  it('從「不能標記為完成」可以改走結束計畫，且會送 confirm', async () => {
+    withPlan({
+      '/plans/12/complete': reject(409, { error: 'x', code: 'unresolved_tasks', unresolved: [{ id: 1 }] }),
+      '/plans/12/end': { plan: { ...fx.plans[0], status: 'ended' } },
+    });
+    await openManage();
+    await click(sheetRow('標記完成'));
+    await click(within(sheet()).getByRole('button', { name: '改成結束計畫' }));
+    expect(within(sheet()).getByText(/結束這個計畫？/)).toBeInTheDocument();
+    // 文案被 <b> 切開，所以比對整個面板的文字，而不是單一節點
+    expect(sheet().textContent).toMatch(/不會.{0,4}被算成完成/);
+    await click(within(sheet()).getByRole('button', { name: '結束計畫' }));
+    const posts = sent('POST', '/plans/12/end');
+    expect(posts.length).toBe(1);
+    expect(posts[0][1].body.confirm).toBe(true);
+    // 絕不能改去打 complete
+    expect(sent('POST', '/plans/12/complete').length).toBe(1);
+    noCrash();
+  });
+
+  it('••• 直接提供結束計畫；後端要求確認時先問過再送 confirm', async () => {
+    let calledOnce = false;
+    withPlan({
+      '/plans/12/end': (opts) => {
+        if (!opts?.body?.confirm && !calledOnce) {
+          calledOnce = true;
+          return reject(409, {
+            error: '結束計畫會保留未完成任務，請明確確認',
+            code: 'end_confirmation_required', unresolved: [{ id: 1 }, { id: 2 }, { id: 3 }],
+          })();
+        }
+        return Promise.resolve({ plan: { ...fx.plans[0], status: 'ended' } });
+      },
+    });
+    await openManage();
+    await click(sheetRow('結束計畫'));
+    expect(within(sheet()).getByText(/還有 3 項未完成/)).toBeInTheDocument();
+    await click(within(sheet()).getByRole('button', { name: '結束計畫' }));
+    const posts = sent('POST', '/plans/12/end');
+    expect(posts.length).toBe(2);
+    expect(posts[0][1].body.confirm).toBeUndefined();
+    expect(posts[1][1].body.confirm).toBe(true);
+    noCrash();
+  });
+
+  it('取消就什麼都不做，不會偷偷結束', async () => {
+    withPlan({
+      '/plans/12/end': reject(409, { error: 'x', code: 'end_confirmation_required', unresolved: [{ id: 1 }] }),
+    });
+    await openManage();
+    await click(sheetRow('結束計畫'));
+    await click(within(sheet()).getByRole('button', { name: '取消' }));
+    // 只有那一次探詢，沒有真的送出結束
+    expect(sent('POST', '/plans/12/end').length).toBe(1);
+    noCrash();
+  });
+
+  it('已完成的計畫不提供結束（那是給還沒做完的出口）', async () => {
+    withPlan({}, { ...fx.plans[0], status: 'completed' });
+    await openManage('第二次段考準備', '已完成');
+    expect(within(sheet()).queryByText('結束計畫')).toBeNull();
+    noCrash();
+  });
+});
+
 describe('暫停的計畫仍然看得見', () => {
   it('列在「已暫停」區塊裡，並標示已暫停——不是消失、也不是被當成已封存', async () => {
     withPlan({}, { ...fx.plans[0], status: 'paused' });

@@ -177,6 +177,135 @@ describe('排程資格', () => {
   });
 });
 
+describe('重新開始走正式 lifecycle endpoint', () => {
+  // 前端原本的「重新開始」送的就是這個請求。它回 200，畫面看起來成功了，
+  // 但 status 根本不在 PATCHABLE 裡——計畫其實還停在 completed。
+  test('PATCH { status } 完全無效——status 不在可修改欄位裡', async () => {
+    const plan = (await post('/plans', { name: '重新開始-PATCH', status: 'active' })).body;
+    await post(`/plans/${plan.id}/complete`, {});
+    assert.equal((await get(`/plans/${plan.id}`)).body.plan.status, 'completed');
+
+    const patched = await call(`/plans/${plan.id}`, { method: 'PATCH', body: { status: 'active' } });
+    assert.equal(patched.status, 200, '它不會報錯，這正是問題所在');
+    assert.equal(patched.body.status, 'completed', 'PATCH 不得改到 lifecycle 狀態');
+    assert.equal((await get(`/plans/${plan.id}`)).body.plan.status, 'completed');
+  });
+
+  test('completed → restart 真的回到 active，並清掉 completed_at', async () => {
+    const p = (await post('/plans', { name: '重新開始-completed', status: 'active' })).body;
+    const done = (await post(`/plans/${p.id}/complete`, {})).body;
+    assert.equal(done.plan.status, 'completed');
+    assert.ok(done.plan.completed_at);
+
+    const back = await post(`/plans/${p.id}/restart`, {});
+    assert.equal(back.status, 200);
+    assert.equal(back.body.plan.status, 'active');
+    assert.equal(back.body.plan.completed_at, null);
+    assert.equal((await get(`/plans/${p.id}`)).body.plan.status, 'active', '重讀也必須是 active');
+  });
+
+  test('ended → restart 也回到 active', async () => {
+    const { plan } = await fixture('重新開始-ended');
+    await post(`/plans/${plan.id}/end`, { confirm: true });
+    assert.equal((await get(`/plans/${plan.id}`)).body.plan.status, 'ended');
+    const back = await post(`/plans/${plan.id}/restart`, {});
+    assert.equal(back.status, 200);
+    assert.equal(back.body.plan.status, 'active');
+  });
+
+  test('paused → resume 回到 active', async () => {
+    const { plan } = await fixture('重新開始-paused');
+    await post(`/plans/${plan.id}/pause`, { retain_incomplete_tasks: true });
+    const back = await post(`/plans/${plan.id}/resume`, {});
+    assert.equal(back.body.plan.status, 'active');
+    assert.equal((await get(`/plans/${plan.id}`)).body.plan.status, 'active');
+  });
+});
+
+describe('完成沒有 force', () => {
+  test('還有未完成任務時回 409 unresolved_tasks，並帶出是哪幾項', async () => {
+    const { plan, open } = await fixture('完成-未解決');
+    const r = await post(`/plans/${plan.id}/complete`, {});
+    assert.equal(r.status, 409);
+    assert.equal(r.body.code, 'unresolved_tasks');
+    assert.ok(Array.isArray(r.body.unresolved));
+    assert.deepEqual(r.body.unresolved.map(t => t.id), [open.id]);
+    assert.equal((await get(`/plans/${plan.id}`)).body.plan.status, 'active', '失敗不得留下副作用');
+  });
+
+  test('送 force:true 一樣被擋——後端沒有、也不該有 force 路徑', async () => {
+    const { plan } = await fixture('完成-force');
+    for (const body of [{ force: true }, { force: 'true' }, { confirm: true }]) {
+      const r = await post(`/plans/${plan.id}/complete`, body);
+      assert.equal(r.status, 409, `${JSON.stringify(body)} 不該讓它通過`);
+      assert.equal(r.body.code, 'unresolved_tasks');
+    }
+    assert.equal((await get(`/plans/${plan.id}`)).body.plan.status, 'active');
+  });
+
+  test('所有任務都有結果（完成或取消）之後才能完成', async () => {
+    const { plan, open } = await fixture('完成-全部有結果');
+    const extra = (await post('/tasks', { title: '不做了', plan_id: plan.id })).body;
+    await call(`/tasks/${open.id}`, { method: 'PATCH', body: { completed: true } });
+    assert.equal((await post(`/plans/${plan.id}/complete`, {})).status, 409, '還有一項沒結果');
+    await post(`/tasks/${extra.id}/cancel`, {});
+    const ok = await post(`/plans/${plan.id}/complete`, {});
+    assert.equal(ok.status, 200);
+    assert.equal(ok.body.plan.status, 'completed');
+  });
+
+  test('draft 與 paused 都不能直接標記完成', async () => {
+    const draft = (await post('/plans', { name: '完成-draft', status: 'draft' })).body;
+    assert.equal((await post(`/plans/${draft.id}/complete`, {})).status, 400);
+
+    const { plan } = await fixture('完成-paused');
+    await post(`/plans/${plan.id}/pause`, { retain_incomplete_tasks: true });
+    assert.equal((await post(`/plans/${plan.id}/complete`, {})).status, 400);
+    assert.equal((await get(`/plans/${plan.id}`)).body.plan.status, 'paused');
+  });
+});
+
+describe('結束計畫是不再繼續的出口，不冒充完成', () => {
+  test('有未完成任務時先要求明確確認', async () => {
+    const { plan, open } = await fixture('結束-確認');
+    const r = await post(`/plans/${plan.id}/end`, {});
+    assert.equal(r.status, 409);
+    assert.equal(r.body.code, 'end_confirmation_required');
+    assert.deepEqual(r.body.unresolved.map(t => t.id), [open.id]);
+    assert.equal((await get(`/plans/${plan.id}`)).body.plan.status, 'active');
+  });
+
+  test('確認後狀態是 ended，未完成任務原封保留，完成率不被污染', async () => {
+    const { plan, open, done } = await fixture('結束-完成率');
+    const r = await post(`/plans/${plan.id}/end`, { confirm: true, reason: '改變目標' });
+    assert.equal(r.status, 200);
+    assert.equal(r.body.plan.status, 'ended');
+    assert.equal(r.body.plan.end_reason, '改變目標');
+    assert.equal(r.body.plan.completed_at, null, 'ended 絕不能留下完成時間');
+
+    const detail = await get(`/plans/${plan.id}`);
+    const kept = detail.body.tasks.find(t => t.id === open.id);
+    assert.ok(kept, '未完成任務必須保留');
+    assert.equal(Number(kept.completed), 0, '結束不得把任務標成完成');
+    assert.equal(Number(kept.cancelled ?? 0), 0, '結束也不是取消');
+    assert.equal(Number(kept.deleted ?? 0), 0);
+    assert.equal(detail.body.summary.remaining_tasks, 1);
+
+    // 完成率：兩項任務只有一項完成，不能因為計畫結束就變成 2/2
+    const listed = (await get('/plans')).body.find(p => p.id === plan.id);
+    assert.equal(listed.task_count, 2);
+    assert.equal(listed.completed_task_count, 1);
+    assert.ok(done.id);
+  });
+
+  test('ended 不是 completed：不會出現在 status=completed 的清單裡', async () => {
+    const { plan } = await fixture('結束-不是完成');
+    await post(`/plans/${plan.id}/end`, { confirm: true });
+    assert.equal((await get('/plans?status=completed')).body.some(p => p.id === plan.id), false);
+    assert.ok((await get('/plans?status=ended')).body.some(p => p.id === plan.id));
+  });
+});
+
 describe('跨使用者隔離', () => {
   test('別人的計畫看不到也動不了', async () => {
     const { plan, open } = await fixture('隔離');

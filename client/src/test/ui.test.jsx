@@ -34,7 +34,11 @@ const setApi = (over = {}) => {
   api.mockImplementation((raw, opts) => {
     calls.push([raw, opts]);
     const path = raw.startsWith('/plans?') ? '/plans' : raw;
-    if (path in over) return Promise.resolve(over[path]);
+    // 覆寫可以是值，也可以是函式——要驗錯誤路徑（例如 409）就需要後者。
+    if (path in over) {
+      const v = over[path];
+      return typeof v === 'function' ? Promise.resolve(v(opts)) : Promise.resolve(v);
+    }
     if (path in fx.responses) return Promise.resolve(fx.responses[path]);
     if (path.endsWith('/attachments')) return Promise.resolve([]);
     if (path.startsWith('/plans/') || path.startsWith('/tasks/')) return Promise.resolve({ ok: true });
@@ -248,13 +252,20 @@ describe('UI-R2：Plans 與 Plan Detail', () => {
 
   it('16. 完成計畫的確認不再用 window.confirm', async () => {
     const confirmSpy = vi.spyOn(window, 'confirm');
-    await mountShell({ '/plans/12/complete': { needs_confirm: true, unresolved: [{ id: 1 }] } });
+    await mountShell({
+      '/plans/12/complete': () => {
+        const e = new Error('仍有未完成任務');
+        e.status = 409;
+        e.payload = { error: '仍有未完成任務', code: 'unresolved_tasks', unresolved: [{ id: 1 }] };
+        return Promise.reject(e);
+      },
+    });
     await goPlans();
     await click(cardByName('第二次段考'));
     await click(screen.getByRole('button', { name: '計畫選項' }));
     await click(within(panel()).getByText('標記完成').closest('.ui-row'));
     await flush();
-    expect(screen.getByText('完成這個計畫？')).toBeInTheDocument();
+    expect(screen.getByText('尚有未完成任務，不能標記為完成')).toBeInTheDocument();
     expect(confirmSpy, '★ 不得再用瀏覽器原生 confirm').not.toHaveBeenCalled();
     noCrash();
   });

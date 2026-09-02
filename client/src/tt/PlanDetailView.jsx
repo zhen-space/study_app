@@ -76,7 +76,7 @@ export default function PlanDetailView({ planKey, tasks, lists, apiPlans = [], r
   useEffect(() => {
     listBooks().then(bs => setMatBooks(new Map(bs.map(b => [b.id, b])))).catch(() => {});
   }, []);
-  const [sheet, setSheet] = useState(null);   // manage | edit | add | adjust | confirmComplete
+  const [sheet, setSheet] = useState(null);   // manage | edit | add | adjust | cannotComplete | confirmEnd
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState('');
   const [replan, setReplan] = useState(false);
@@ -131,8 +131,12 @@ export default function PlanDetailView({ planKey, tasks, lists, apiPlans = [], r
   const restore = () => run(async () => {
     await api(`/plans/${plan.planId}/restore`, { method: 'POST', body: {} }); close();
   });
+  // 重新開始走正式 lifecycle endpoint。以前是 PATCH /plans/:id { status:'active' }，
+  // 但 PATCH 的白名單根本不含 status，所以那個請求其實什麼都沒改——畫面看起來
+  // 成功了，計畫還停在 completed。lifecycle 轉換必須走專用端點，才會一併處理
+  // 允許的狀態轉換、新的 ScheduleVersion 與 lock。
   const restart = () => run(async () => {
-    await api(`/plans/${plan.planId}`, { method: 'PATCH', body: { status: 'active' } }); close();
+    await api(`/plans/${plan.planId}/restart`, { method: 'POST', body: {} }); close();
   });
 
   // 暫停／刪除：retain 沒選之前不會送出，後端也會再擋一次（缺 boolean 一律 400）。
@@ -167,16 +171,40 @@ export default function PlanDetailView({ planKey, tasks, lists, apiPlans = [], r
     close();
   });
 
-  // 後端會先回未解決的任務讓使用者確認，force 才真的完成。
-  // 用 BottomSheet 問，不用 window.confirm——backend 語意完全不變。
+  // 完成＝所有任務都已經有結果（做完或取消）。**沒有** force。
+  //
+  // 以前這裡等一個 needs_confirm 的成功回應、然後送 { force: true } 再打一次——
+  // 後端兩者都不存在：未完成時它回 409 unresolved_tasks，而且沒有任何 force 路徑。
+  // 所以那顆「仍然完成」按下去只會失敗。完成率是不能被繞過的東西：使用者若不再
+  // 繼續，正確的出口是「結束計畫」，不是把沒做完的計畫標成完成。
   const complete = () => run(async () => {
-    const r = await api(`/plans/${plan.planId}/complete`, { method: 'POST', body: {} });
-    if (r.needs_confirm) { setUnresolved(r.unresolved.length); setSheet('confirmComplete'); return; }
-    close();
+    try {
+      await api(`/plans/${plan.planId}/complete`, { method: 'POST', body: {} });
+      close();
+    } catch (e) {
+      if (e.status === 409 && e.payload?.code === 'unresolved_tasks') {
+        setUnresolved(e.payload.unresolved?.length ?? 0);
+        setSheet('cannotComplete');
+        return;                     // 這是預期中的結果，不是錯誤訊息
+      }
+      throw e;
+    }
   });
-  const completeForce = () => run(async () => {
-    await api(`/plans/${plan.planId}/complete`, { method: 'POST', body: { force: true } });
-    close();
+
+  // 結束計畫：保留未完成任務，計畫退出排程，但不算完成。
+  // 後端在有未完成任務時會先要求明確確認（409 end_confirmation_required）。
+  const endPlan = (confirm = false) => run(async () => {
+    try {
+      await api(`/plans/${plan.planId}/end`, { method: 'POST', body: confirm ? { confirm: true } : {} });
+      close();
+    } catch (e) {
+      if (!confirm && e.status === 409 && e.payload?.code === 'end_confirmation_required') {
+        setUnresolved(e.payload.unresolved?.length ?? 0);
+        setSheet('confirmEnd');
+        return;
+      }
+      throw e;
+    }
   });
 
   const saveInfo = () => run(async () => {
@@ -391,11 +419,22 @@ export default function PlanDetailView({ planKey, tasks, lists, apiPlans = [], r
               role="button" tabIndex={0} style={{ cursor: 'pointer' }} onClick={() => setSheet('constraints')} />
             <ListRow title="為什麼這樣排" subtitle="看懂這份安排的依據，不會改動任何東西"
               role="button" tabIndex={0} style={{ cursor: 'pointer' }} onClick={() => setSheet('explain')} />
-            {plan.status === 'completed' && <ListRow title="重新開始" subtitle="回到進行中，保留全部任務"
-              role="button" tabIndex={0} style={{ cursor: 'pointer' }} onClick={restart} />}
-            {plan.status !== 'completed' && plan.status !== 'archived' && (
+            {/* 已完成／已結束都可以重新開始，兩者都走正式 lifecycle endpoint。
+                以前只有 completed 有這個入口，ended 的計畫等於沒有回頭路。 */}
+            {['completed', 'ended'].includes(plan.status) && (
+              <ListRow title="重新開始" subtitle="回到進行中，保留全部任務"
+                role="button" tabIndex={0} style={{ cursor: 'pointer' }} onClick={restart} />
+            )}
+            {/* 只有進行中的計畫能標記完成——後端的轉換表就只允許 active → completed。
+                以前 draft／paused／ended 也看得到這個入口，按下去一律失敗。 */}
+            {plan.status === 'active' && (
               <ListRow title="標記完成" subtitle="整個計畫做完了"
                 role="button" tabIndex={0} style={{ cursor: 'pointer' }} onClick={complete} />
+            )}
+            {/* 結束 ≠ 完成。沒做完但不再繼續，就走這裡；完成率不會被污染。 */}
+            {['draft', 'active', 'paused'].includes(plan.status) && (
+              <ListRow title="結束計畫" subtitle="不再繼續了，未完成的任務會保留"
+                role="button" tabIndex={0} style={{ cursor: 'pointer' }} onClick={() => endPlan(false)} />
             )}
             {/* 暫停 ≠ 封存。封存是「收起來不看」，暫停是「這個計畫先不排時間」。
                 兩者的確認畫面與對未完成任務的處理都不一樣，不能互相冒充。 */}
@@ -511,16 +550,39 @@ export default function PlanDetailView({ planKey, tasks, lists, apiPlans = [], r
         </BottomSheet>
       )}
 
-      {/* ---------- 完成確認：後端 needs_confirm 語意完全不變 ---------- */}
-      {sheet === 'confirmComplete' && (
-        <BottomSheet onClose={close} label="完成這個計畫">
-          <b style={{ fontSize: 17 }}>完成這個計畫？</b>
+      {/* ---------- 還有未完成任務：不能標記完成 ----------
+          這裡沒有「仍然完成」。完成代表所有任務都有結果，那是完成率的意義；
+          留一顆繞過去的按鈕就等於讓這個數字失去意義。不再繼續的出口是結束計畫。 */}
+      {sheet === 'cannotComplete' && (
+        <BottomSheet onClose={close} label="還不能標記為完成">
+          <b style={{ fontSize: 17 }}>尚有未完成任務，不能標記為完成</b>
           <div className="ui-meta" style={{ marginTop: 'var(--sp-2)' }}>
-            還有 {unresolved} 項尚未完成。仍要把整個計畫標記為完成嗎？
+            還有 {unresolved} 項沒有結果。請先把它們做完或取消。
+            <br />
+            如果這個計畫不再繼續了，可以改成「結束計畫」——未完成的任務會保留下來，
+            而且不會被算成完成。
           </div>
           <div className="row" style={{ marginTop: 'var(--sp-5)' }}>
+            <Button onClick={close}>知道了</Button>
+            <Button style={{ marginLeft: 'auto' }} disabled={busy}
+              onClick={() => setSheet('confirmEnd')}>改成結束計畫</Button>
+          </div>
+        </BottomSheet>
+      )}
+
+      {/* ---------- 結束計畫的明確確認：走既有 POST /plans/:id/end ---------- */}
+      {sheet === 'confirmEnd' && (
+        <BottomSheet onClose={close} label="結束這個計畫">
+          <b style={{ fontSize: 17 }}>結束這個計畫？</b>
+          <div className="ui-meta" style={{ marginTop: 'var(--sp-2)' }}>
+            {unresolved > 0 && <>還有 {unresolved} 項未完成，它們會被保留下來。<br /></>}
+            計畫會標示為「已結束」並退出排程，<b>不會</b>被算成完成。之後仍可重新開始。
+          </div>
+          {err && <div className="error" style={{ marginTop: 'var(--sp-3)' }}>{err}</div>}
+          <div className="row" style={{ marginTop: 'var(--sp-5)' }}>
             <Button onClick={close}>取消</Button>
-            <Button variant="primary" style={{ marginLeft: 'auto' }} disabled={busy} onClick={completeForce}>仍然完成</Button>
+            <Button variant="primary" style={{ marginLeft: 'auto' }} disabled={busy}
+              onClick={() => endPlan(true)}>結束計畫</Button>
           </div>
         </BottomSheet>
       )}
