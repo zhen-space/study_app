@@ -147,7 +147,7 @@ describe('Plan 生命週期', () => {
 
   test('pause/end/archive 都保留語意；archive restore 回封存前狀態', async () => {
     const { body: p } = await mkPlan({ status: 'active' });
-    const paused = await api(`/plans/${p.id}/pause`, { method: 'POST', body: {} });
+    const paused = await api(`/plans/${p.id}/pause`, { method: 'POST', body: { retain_incomplete_tasks: true } });
     assert.equal(paused.body.plan.status, 'paused');
     assert.ok(paused.body.plan.paused_at);
     const ended = await api(`/plans/${p.id}/end`, { method: 'POST', body: { confirm: true, reason: '改變目標' } });

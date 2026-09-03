@@ -188,31 +188,50 @@ describe('Plan 管理操作（全部走既有 /plans API）', () => {
     noCrash();
   });
 
-  it('標記完成 → POST /plans/:id/complete；有未完成項目會先確認', async () => {
-    withPlan({ '/plans/12/complete': { needs_confirm: true, unresolved: [{ id: 21 }, { id: 22 }] } });
+  it('標記完成 → POST /plans/:id/complete；有未完成項目時明確擋下來', async () => {
+    // 後端在未完成時回 409 unresolved_tasks。以前這裡假設它會回一個
+    // needs_confirm 的成功回應、然後送 { force: true } 再打一次——後端兩者
+    // 都不存在，那條路按下去只會失敗，所以連同「仍然完成」一起移除了。
+    withPlan({
+      '/plans/12/complete': () => {
+        const e = new Error('仍有未完成任務');
+        e.status = 409;
+        e.payload = { error: '仍有未完成任務', code: 'unresolved_tasks', unresolved: [{ id: 21 }, { id: 22 }] };
+        return Promise.reject(e);
+      },
+    });
     await goPlans();
     await openManage('第二次段考準備');
     await click(sheetRow('標記完成'));
 
-    // UI-R2：改用 Bottom Sheet 確認，不再是 window.confirm。後端語意不變
-    expect(screen.getByText('完成這個計畫？')).toBeInTheDocument();
-    expect(screen.getByText(/還有 2 項尚未完成/)).toBeInTheDocument();
-    await click(screen.getByRole('button', { name: '仍然完成' }));
+    expect(screen.getByText('尚有未完成任務，不能標記為完成')).toBeInTheDocument();
+    expect(screen.getByText(/還有 2 項沒有結果/)).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: '仍然完成' })).toBeNull();
 
     const posts = sent('POST', '/plans/12/complete');
-    expect(posts.length).toBe(2);                    // 先問，再帶 force
-    expect(posts[1][1].body).toEqual({ force: true });
+    expect(posts.length).toBe(1);
+    expect('force' in (posts[0][1].body || {})).toBe(false);
     noCrash();
   });
 
-  it('確認視窗按取消，就不會真的完成', async () => {
-    withPlan({ '/plans/12/complete': { needs_confirm: true, unresolved: [{ id: 21 }] } });
+  it('不再繼續時提供「結束計畫」，不冒充完成', async () => {
+    withPlan({
+      '/plans/12/complete': () => {
+        const e = new Error('仍有未完成任務');
+        e.status = 409;
+        e.payload = { error: '仍有未完成任務', code: 'unresolved_tasks', unresolved: [{ id: 21 }] };
+        return Promise.reject(e);
+      },
+      '/plans/12/end': { plan: { ...fx.plans[0], status: 'ended' } },
+    });
     await goPlans();
     await openManage('第二次段考準備');
     await click(sheetRow('標記完成'));
-    await click(screen.getByRole('button', { name: '取消' }));
-    const posts = sent('POST', '/plans/12/complete');
-    expect(posts.length).toBe(1);                    // 只問了，沒有 force
+    await click(screen.getByRole('button', { name: '改成結束計畫' }));
+    await click(screen.getByRole('button', { name: '結束計畫' }));
+
+    expect(sent('POST', '/plans/12/end').length).toBe(1);
+    expect(sent('POST', '/plans/12/complete').length).toBe(1);
     noCrash();
   });
 

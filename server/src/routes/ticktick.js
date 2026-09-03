@@ -26,6 +26,7 @@ async function checkPlan(planId, userId) {
   if (planId == null) return null;
   const p = await q.get('SELECT id, status FROM plans WHERE id=? AND user_id=?', [planId, userId]);
   if (!p) return '找不到這個計畫';
+  if (p.status === 'deleted') return '找不到這個計畫';
   if (['archived', 'completed', 'paused', 'ended'].includes(p.status)) return '目前不接受新增任務的計畫狀態';
   return null;
 }

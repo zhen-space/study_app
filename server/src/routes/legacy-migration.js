@@ -25,7 +25,7 @@ const VERIFICATION_MECHANISM = USER_CONFIRMATION_MECHANISM;
 const myTask = (id, userId) =>
   q.get('SELECT id,title,plan_id,deleted FROM tasks WHERE id=? AND user_id=?', [id, userId]);
 const myPlan = (id, userId) =>
-  q.get('SELECT id,name FROM plans WHERE id=? AND user_id=?', [id, userId]);
+  q.get("SELECT id,name FROM plans WHERE id=? AND user_id=? AND status<>'deleted'", [id, userId]);
 const myMapping = (id, userId) =>
   q.get('SELECT * FROM legacy_task_plan_mappings WHERE id=? AND user_id=?', [id, userId]);
 
@@ -180,7 +180,7 @@ router.patch('/legacy-migration/mappings/:id', async (req, res) => {
 router.get('/legacy-migration/migration-preview', async (req, res) => {
   const [mappings, plans] = await Promise.all([
     q.all('SELECT * FROM legacy_task_plan_mappings WHERE user_id=? ORDER BY id', [req.userId]),
-    q.all('SELECT id FROM plans WHERE user_id=?', [req.userId]),
+    q.all("SELECT id FROM plans WHERE user_id=? AND status<>'deleted'", [req.userId]),
   ]);
   // 需要的任務有兩種：所有 legacy 任務（算 unmapped），以及有 mapping 的任務
   // （其中有些已經不是 legacy 了，要能分進 already_migrated）。

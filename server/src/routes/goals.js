@@ -13,7 +13,7 @@ async function detail(goal, userId) {
     SUM(CASE WHEN t.completed=1 AND COALESCE(t.cancelled,0)=0 THEN 1 ELSE 0 END) completed_task_count,
     SUM(CASE WHEN COALESCE(t.cancelled,0)=1 THEN 1 ELSE 0 END) cancelled_task_count
     FROM plans p LEFT JOIN tasks t ON t.plan_id=p.id AND t.user_id=p.user_id AND COALESCE(t.deleted,0)=0
-    WHERE p.user_id=? AND p.goal_id=? GROUP BY p.id ORDER BY p.target_date,p.id`, [userId, goal.id]);
+    WHERE p.user_id=? AND p.goal_id=? AND p.status<>'deleted' GROUP BY p.id ORDER BY p.target_date,p.id`, [userId, goal.id]);
   const total = plans.reduce((n, p) => n + (p.task_count || 0), 0);
   const completed = plans.reduce((n, p) => n + (p.completed_task_count || 0), 0);
   return { ...goal, plans, progress: { total_tasks: total, completed_tasks: completed, percent: total ? Math.round(completed / total * 100) : 0 } };

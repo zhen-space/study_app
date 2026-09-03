@@ -5,6 +5,7 @@ import { classifyScheduleHealth } from '../schedule/health.js';
 import { todayTW } from '../util/date.js';
 import { findSelfCollisions } from '../schedule/feasibility.js';
 import { transitionPlanLifecycle } from '../schedule/persistence.js';
+import { parseRetainChoice } from '../schedule/plan-cleanup.js';
 
 // Plan＝有目標、範圍、期限與生命週期的工作單位。
 // 契約見 docs/phase2-plan-domain.md，動之前先讀。重點：
@@ -16,11 +17,15 @@ import { transitionPlanLifecycle } from '../schedule/persistence.js';
 const router = Router();
 router.use(requireAuth);
 
+// 可查詢／可指定的狀態。'deleted' 刻意不在裡面：它是 tombstone，一般 UI 完全
+// 看不到，也不能被 ?status= 撈出來，否則「刪除」就只是換個分頁而已。
 const STATUS = ['draft', 'active', 'paused', 'completed', 'ended', 'archived'];
 const SOURCE = ['manual', 'ai', 'legacy_migration', 'import'];
 const now = () => new Date().toISOString();
 
-const mine = (id, userId) => q.get('SELECT * FROM plans WHERE id=? AND user_id=?', [id, userId]);
+// 已刪除的計畫對所有一般 API 一律不存在（404），不是「找得到但標成已刪除」。
+const mine = (id, userId) =>
+  q.get("SELECT * FROM plans WHERE id=? AND user_id=? AND status<>'deleted'", [id, userId]);
 
 // 建立／修改共用的欄位檢查。回傳錯誤訊息字串，沒問題回 null。
 async function validate(body, userId, base = {}) {
@@ -63,7 +68,8 @@ async function withCounts(rows, userId) {
 // GET /api/plans?status=active&includeArchived=1
 router.get('/plans', async (req, res) => {
   const args = [req.userId];
-  let sql = 'SELECT * FROM plans WHERE user_id=?';
+  // tombstone 一律不出現，includeArchived 也撈不出來
+  let sql = "SELECT * FROM plans WHERE user_id=? AND status<>'deleted'";
   if (req.query.status) {
     if (!STATUS.includes(req.query.status)) return res.status(400).json({ error: '計畫狀態不正確' });
     sql += ' AND status=?';
@@ -188,6 +194,8 @@ async function lifecycle(req, res, nextStatus, options = {}) {
       nextStatus,
       endReason: options.endReason,
       baseVersionId: req.body?.base_version_id,
+      cleanupAction: options.cleanupAction ?? null,
+      retainIncompleteTasks: options.retainIncompleteTasks,
     });
     // 保留舊 caller 直接讀 plan 欄位的相容性，同時提供明確的 plan/version shape。
     res.json({ ...out.plan, plan: out.plan, schedule_version: out.version });
@@ -205,9 +213,35 @@ router.post('/plans/:id/complete', async (req, res) => {
   return lifecycle(req, res, 'completed');
 });
 
-router.post('/plans/:id/pause', async (req, res) => lifecycle(req, res, 'paused'));
-router.post('/plans/:id/resume', async (req, res) => lifecycle(req, res, 'active'));
-router.post('/plans/:id/restart', async (req, res) => lifecycle(req, res, 'active'));
+// POST /api/plans/:id/pause  { retain_incomplete_tasks: true|false }
+//
+// 暫停後計畫仍在，只是完全退出排程：不參與新排程、不出現在 Today 的執行推薦、
+// 不能在 Study 開始讀書、不列入 unplaced。之後可以 resume。
+// retain_incomplete_tasks 必填且必須是 boolean——見 plan-cleanup.js。
+router.post('/plans/:id/pause', async (req, res) => {
+  const plan = await mine(req.params.id, req.userId);
+  if (!plan) return res.status(404).json({ error: '找不到這個計畫' });
+  const choice = parseRetainChoice(req.body);
+  if (!choice.ok) return res.status(400).json({ error: choice.message, code: choice.code });
+  return lifecycle(req, res, 'paused', { cleanupAction: 'pause', retainIncompleteTasks: choice.value });
+});
+
+// 恢復：未完成 Task 重新取得排程資格，但不會自動恢復舊 ScheduledBlocks
+// （新版本只是不再把這個 Plan 排除，block 要重新排才會有）。
+// 當初選了不保留的那些 Task 已經是 deleted=1，這裡也不會讓它們復活。
+// resume／restart 也要先確認計畫存在。少了這一步，對已刪除的計畫呼叫會拿到
+// 400「已經刪除」——那等於告訴呼叫端「這個 id 是有東西的」，跟其他 endpoint
+// 一律回 404 的說法也不一致。
+router.post('/plans/:id/resume', async (req, res) => {
+  const plan = await mine(req.params.id, req.userId);
+  if (!plan) return res.status(404).json({ error: '找不到這個計畫' });
+  return lifecycle(req, res, 'active');
+});
+router.post('/plans/:id/restart', async (req, res) => {
+  const plan = await mine(req.params.id, req.userId);
+  if (!plan) return res.status(404).json({ error: '找不到這個計畫' });
+  return lifecycle(req, res, 'active');
+});
 router.post('/plans/:id/end', async (req, res) => {
   const plan = await mine(req.params.id, req.userId);
   if (!plan) return res.status(404).json({ error: '找不到這個計畫' });
@@ -230,6 +264,22 @@ router.post('/plans/:id/restore', async (req, res) => {
   if (!plan) return res.status(404).json({ error: '找不到這個計畫' });
   if (plan.status !== 'archived') return res.status(400).json({ error: '只有封存的計畫可以恢復' });
   return lifecycle(req, res, plan.archived_from_status || 'active');
+});
+
+// POST /api/plans/:id/delete  { retain_incomplete_tasks: true|false }
+//
+// soft-delete／tombstone：Plan 從一般 UI 完全消失，但底層一列都不刪。
+// 硬刪會讓 tasks.plan_id、StudySession 與 immutable 的歷史 ScheduledBlock
+// 全部指向不存在的計畫，而歷史版本事後補不回來。
+//
+// 刪除之後不可恢復。本輪刻意不提供 restore contract——沒有想清楚的復原語意
+// 比沒有復原更危險（要復原成哪個狀態？被拆成 standalone 的 Task 要抓回來嗎？）。
+router.post('/plans/:id/delete', async (req, res) => {
+  const plan = await mine(req.params.id, req.userId);
+  if (!plan) return res.status(404).json({ error: '找不到這個計畫' });
+  const choice = parseRetainChoice(req.body);
+  if (!choice.ok) return res.status(400).json({ error: choice.message, code: choice.code });
+  return lifecycle(req, res, 'deleted', { cleanupAction: 'delete', retainIncompleteTasks: choice.value });
 });
 
 // DELETE /api/plans/:id/tasks?incomplete=1

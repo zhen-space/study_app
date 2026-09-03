@@ -595,6 +595,14 @@ export async function initSchema() {
   try { await client.execute("ALTER TABLE plans ADD COLUMN ended_at TEXT"); } catch {}
   try { await client.execute("ALTER TABLE plans ADD COLUMN end_reason TEXT"); } catch {}
   try { await client.execute("ALTER TABLE plans ADD COLUMN archived_from_status TEXT"); } catch {}
+  // Plan lifecycle cleanup：刪除採 tombstone。硬刪 Plan 會讓 tasks.plan_id、
+  // StudySession 與歷史 ScheduledBlock 的 plan 關聯全部指向不存在的列，而
+  // ScheduleVersion 是 immutable snapshot，事後補不回來。status='deleted' 讓
+  // 所有既有的 `p.status IN ('draft','active')` 資格判斷自動排除它。
+  try { await client.execute("ALTER TABLE plans ADD COLUMN deleted_at TEXT"); } catch {}
+  // 最近一次 pause／delete 時使用者選的保留設定（0/1，NULL＝從未做過這個選擇）。
+  // 恢復計畫時要據此誠實說明「當初沒有保留未完成任務」，不能讓使用者以為會復原。
+  try { await client.execute("ALTER TABLE plans ADD COLUMN lifecycle_retained_tasks INTEGER"); } catch {}
   // Phase 2C-P1：排程持久化。契約見 docs/phase2c-schedule-persistence.md §2
   // effective_from：這一版涵蓋哪一天起（過去不進 snapshot）
   try { await client.execute("ALTER TABLE schedule_versions ADD COLUMN effective_from TEXT"); } catch {}
