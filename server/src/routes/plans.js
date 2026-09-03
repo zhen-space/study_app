@@ -250,20 +250,23 @@ router.post('/plans/:id/end', async (req, res) => {
   return lifecycle(req, res, 'ended', { endReason: req.body?.reason });
 });
 
-// POST /api/plans/:id/archive —— 封存不刪任何 Task
+// 封存功能已從產品移除：暫停／結束／完成／刪除已涵蓋全部明確意圖，封存沒有獨立
+// 語意，只會造成選擇混亂。這支端點保留但一律拒絕，確保沒有任何新的 archived Plan
+// 被建立（含直接打 API）。既有 archived 舊資料維持 read compatibility：仍讀得到，
+// 由前端依 archived_from_status 投影回已完成／已結束；本輪不做資料 migration、不刪
+// schema、不自動改狀態（待 production 唯讀 audit 與另行授權）。
 router.post('/plans/:id/archive', async (req, res) => {
   const plan = await mine(req.params.id, req.userId);
   if (!plan) return res.status(404).json({ error: '找不到這個計畫' });
-  if (plan.status === 'archived') return res.status(400).json({ error: '計畫已封存' });
-  return lifecycle(req, res, 'archived');
+  return res.status(410).json({ error: '封存功能已移除。請改用暫停、結束或刪除。', code: 'archive_removed' });
 });
 
-// POST /api/plans/:id/restore —— 必須回到封存前的 lifecycle，不能一律 active。
+// restore（恢復封存）同樣移除入口：不再有新的 archived Plan，就沒有「恢復封存」。
+// 端點保留但拒絕，避免成為建立／循環 archived 狀態的側門。
 router.post('/plans/:id/restore', async (req, res) => {
   const plan = await mine(req.params.id, req.userId);
   if (!plan) return res.status(404).json({ error: '找不到這個計畫' });
-  if (plan.status !== 'archived') return res.status(400).json({ error: '只有封存的計畫可以恢復' });
-  return lifecycle(req, res, plan.archived_from_status || 'active');
+  return res.status(410).json({ error: '封存功能已移除。', code: 'archive_removed' });
 });
 
 // POST /api/plans/:id/delete

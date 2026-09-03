@@ -102,6 +102,9 @@ export function usePlans(tasks, lists, apiPlans = []) {
       listId: p.primary_list_id,
       name: p.name,
       status: p.status,
+      // 舊 archived 資料保留 read compatibility：分類時依 archived_from_status
+      // 投影回已完成／已結束，不另存新狀態。
+      archived_from_status: p.archived_from_status || null,
       start: p.start_date || undefined,
       end: p.target_date || undefined,
       isLegacy: false,

@@ -51,7 +51,9 @@ export const emptyPlan = {
   created_at: '', updated_at: '', completed_at: null, archived_at: null,
   task_count: 0, completed_task_count: 0,
 };
-export const archivedPlan = { ...emptyPlan, id: 31, name: '封存過的計畫', status: 'archived', archived_at: TODAY };
+// 既有 archived 舊資料（封存功能已移除）。archived_from_status 讓 read projection
+// 能把它歸回原本的分類——這一筆當初是從「已完成」封存的。
+export const archivedPlan = { ...emptyPlan, id: 31, name: '封存過的計畫', status: 'archived', archived_from_status: 'completed', archived_at: TODAY };
 export const completedPlan = { ...emptyPlan, id: 32, name: '做完的計畫', status: 'completed', completed_at: TODAY };
 // 掛在正式 Plan 底下的任務（帶 plan_id，不該被 legacy 推導撿走）。
 // plan_status 比照 GET /tasks 的 join：計畫 12 是 active，所以這些任務都算「在

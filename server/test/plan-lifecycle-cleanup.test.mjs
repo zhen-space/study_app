@@ -371,26 +371,33 @@ describe('Transaction rollback', () => {
   });
 });
 
-describe('沒有 cleanupAction 的轉換維持原語意', () => {
-  test('封存不動任何 Task', async () => {
-    const s = await seed();
-    await sched.transitionPlanLifecycle(s.userId, s.planId, { nextStatus: 'archived' });
-    for (const id of [s.openA, s.openB]) {
-      const t = await task(id);
-      assert.equal(Number(t.deleted ?? 0), 0);
-      assert.equal(Number(t.plan_id), Number(s.planId));
+describe('封存功能已移除；既有 archived 舊資料仍可安全轉出', () => {
+  test('任何進行中狀態都不能再轉成 archived', async () => {
+    // 只需要一筆各狀態的 Plan（不需要 blocks），直接建列避免對 completed/ended
+    // 建 ScheduleVersion 時的資格檢查
+    for (const status of ['draft', 'active', 'paused', 'completed', 'ended']) {
+      const userId = nextUser++;
+      await q.run('INSERT INTO users (id,email,password_hash) VALUES (?,?,?)', [userId, `u${userId}@t`, 'x']);
+      const planId = (await q.run('INSERT INTO plans (user_id,name,status) VALUES (?,?,?)',
+        [userId, `${status} 計畫`, status])).lastInsertRowid;
+      await assert.rejects(
+        () => sched.transitionPlanLifecycle(userId, planId, { nextStatus: 'archived' }),
+        /不能進行此狀態轉換/, `${status} → archived 應被拒絕`);
     }
-    assert.equal((await plan(s.planId)).lifecycle_retained_tasks, null);
   });
 
-  test('刪除已封存的計畫時，封存時間戳不會被清掉', async () => {
+  test('刪除既有 archived 舊資料：所有 Task soft-delete，封存時間戳不被抹掉', async () => {
     const s = await seed();
-    await sched.transitionPlanLifecycle(s.userId, s.planId, { nextStatus: 'archived' });
-    const archivedAt = (await plan(s.planId)).archived_at;
-    assert.ok(archivedAt);
+    // 直接寫入一筆 archived 舊資料（模擬 production 既有資料，不經 transition）
+    await q.run("UPDATE plans SET status='archived', archived_at='2026-01-01T00:00:00Z', archived_from_status='completed' WHERE id=?", [s.planId]);
     await sched.transitionPlanLifecycle(s.userId, s.planId,
-      { nextStatus: 'deleted', cleanupAction: 'delete', retainIncompleteTasks: false });
-    assert.equal((await plan(s.planId)).archived_at, archivedAt, 'tombstone 不得抹掉歷史時間戳');
+      { nextStatus: 'deleted', cleanupAction: 'delete' });
+    const p = await plan(s.planId);
+    assert.equal(p.status, 'deleted');
+    assert.equal(p.archived_at, '2026-01-01T00:00:00Z', 'tombstone 不得抹掉歷史時間戳');
+    for (const id of [s.openA, s.openB, s.done]) {
+      assert.equal(Number((await task(id)).deleted), 1);
+    }
   });
 });
 

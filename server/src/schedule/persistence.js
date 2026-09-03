@@ -637,12 +637,15 @@ export async function transitionPlanLifecycle(userId, planId, {
     if (plan.status === 'deleted') throw new ScheduleInputError('這個計畫已經刪除');
     // lifecycle 不是可任意覆寫的欄位。明確限制轉換，避免把「重新開始」
     // 誤用成 paused -> completed 等沒有產品語意的捷徑。
+    // 'archived' 已從產品移除：任何進行中狀態都不得再轉成 archived（見 archive
+    // route 的說明）。archived 這一列保留，只為了讓既有的 archived 舊資料仍能安全
+    // 轉出（例如刪除），不是新的入口。
     const allowed = {
-      draft: new Set(['active', 'ended', 'archived', 'deleted']),
-      active: new Set(['paused', 'completed', 'ended', 'archived', 'deleted']),
-      paused: new Set(['active', 'ended', 'archived', 'deleted']),
-      completed: new Set(['active', 'archived', 'deleted']),
-      ended: new Set(['active', 'archived', 'deleted']),
+      draft: new Set(['active', 'ended', 'deleted']),
+      active: new Set(['paused', 'completed', 'ended', 'deleted']),
+      paused: new Set(['active', 'ended', 'deleted']),
+      completed: new Set(['active', 'deleted']),
+      ended: new Set(['active', 'deleted']),
       archived: new Set([plan.archived_from_status || 'active', 'deleted']),
     };
     if (!allowed[plan.status]?.has(nextStatus)) {

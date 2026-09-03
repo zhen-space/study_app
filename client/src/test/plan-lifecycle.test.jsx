@@ -90,8 +90,8 @@ describe('••• 選單', () => {
     await openManage();
     expect(within(sheet()).getByText('暫停計畫')).toBeInTheDocument();
     expect(within(sheet()).getByText('刪除計畫')).toBeInTheDocument();
-    // 封存仍然是另一個獨立動作，沒有被拿來冒充
-    expect(within(sheet()).getByText('封存')).toBeInTheDocument();
+    // 封存功能已移除：不再有「封存」入口
+    expect(within(sheet()).queryByText('封存')).toBeNull();
     noCrash();
   });
 
@@ -260,6 +260,58 @@ describe('結束計畫是不再繼續的出口', () => {
     withPlan({}, { ...fx.plans[0], status: 'completed' });
     await openManage('第二次段考準備', '已完成');
     expect(within(sheet()).queryByText('結束計畫')).toBeNull();
+    noCrash();
+  });
+});
+
+describe('封存功能移除：既有 archived 舊資料的 read compatibility', () => {
+  it('archived_from_status=ended 的舊資料投影進「已結束」區塊', async () => {
+    withPlan({ '/plans': [{ ...fx.plans[0], status: 'archived', archived_from_status: 'ended' }] });
+    await goPlans();
+    // 沒有「已封存」區塊
+    const rows = [...main().querySelectorAll('.plan-section-row')].map(x => x.textContent);
+    expect(rows.some(r => r.includes('已封存'))).toBe(false);
+    expect(rows.some(r => r.includes('已結束'))).toBe(true);
+    await expandSection('已結束');
+    expect(cardByName('第二次段考準備')).toBeTruthy();
+    noCrash();
+  });
+
+  it('archived_from_status=completed 投影進「已完成」', async () => {
+    withPlan({ '/plans': [{ ...fx.plans[0], status: 'archived', archived_from_status: 'completed' }] });
+    await goPlans();
+    const rows = [...main().querySelectorAll('.plan-section-row')].map(x => x.textContent);
+    expect(rows.some(r => r.includes('已完成'))).toBe(true);
+    noCrash();
+  });
+
+  it('無法歸類的 archived（archived_from_status=active）落到「其他」，不猜成完成/結束', async () => {
+    withPlan({ '/plans': [{ ...fx.plans[0], status: 'archived', archived_from_status: 'active' }] });
+    await goPlans();
+    const rows = [...main().querySelectorAll('.plan-section-row')].map(x => x.textContent);
+    expect(rows.some(r => r.includes('其他'))).toBe(true);
+    expect(rows.some(r => r.includes('已完成'))).toBe(false);
+    expect(rows.some(r => r.includes('已結束'))).toBe(false);
+    noCrash();
+  });
+
+  it('archived Plan Detail 唯讀、且沒有封存/恢復入口', async () => {
+    const tasks = fx.planTasks.map(t => ({ ...t, plan_status: 'archived' }));
+    withPlan({
+      '/plans': [{ ...fx.plans[0], status: 'archived', archived_from_status: 'completed' }],
+      '/tasks': [...fx.tasks, ...tasks],
+    });
+    await goPlans();
+    await expandSection('已完成');
+    await click(cardByName('第二次段考準備'));
+    // 勾選框停用
+    const boxes = [...main().querySelectorAll('input[type="checkbox"]')];
+    expect(boxes.length).toBeGreaterThan(0);
+    expect(boxes.every(b => b.disabled)).toBe(true);
+    // ••• 裡沒有封存/恢復
+    await click(screen.getByRole('button', { name: '計畫選項' }));
+    expect(within(sheet()).queryByText('封存')).toBeNull();
+    expect(within(sheet()).queryByText('恢復計畫')).toBeNull();
     noCrash();
   });
 });

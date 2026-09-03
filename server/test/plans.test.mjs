@@ -6,6 +6,7 @@
 //   - 刪除任務只作用在該計畫自己身上（跨 Plan 防誤刪 ← 阻斷級要求）
 import { test, describe, before, after } from 'node:test';
 import assert from 'node:assert/strict';
+import { createClient } from '@libsql/client';
 import { startServer, today, day } from './helpers.mjs';
 
 let S, H, base;
@@ -25,6 +26,21 @@ const mkTask = (over = {}) => api('/tasks', { method: 'POST', body: { title: '�
 
 before(async () => { S = await startServer(); H = S.H; base = S.base.replace(/\/api$/, '/api'); });
 after(() => S?.stop());
+
+// 封存功能已移除，沒有 API 能建立 archived Plan。要驗「既有 archived 舊資料的
+// read compatibility」，就直接把一筆 archived 列寫進 DB（模擬 production 既有資料）。
+async function seedArchived({ from = 'completed', name = '封存舊資料' } = {}) {
+  const c = createClient({ url: 'file:' + S.dbFile });
+  try {
+    const u = await c.execute('SELECT id FROM users ORDER BY id LIMIT 1');
+    const userId = u.rows[0][0];
+    const r = await c.execute({
+      sql: 'INSERT INTO plans (user_id,name,status,archived_from_status,archived_at) VALUES (?,?,?,?,?)',
+      args: [userId, name, 'archived', from, new Date().toISOString()],
+    });
+    return Number(r.lastInsertRowid);
+  } finally { c.close(); }
+}
 
 describe('Plan CRUD', () => {
   test('建立後讀得回來，進度從任務現算', async () => {
@@ -111,28 +127,25 @@ describe('Plan 生命週期', () => {
     assert.ok(done.body.plan.completed_at);
   });
 
-  test('archive 不刪任何任務，restore 拉得回來', async () => {
+  test('封存功能已移除：archive 一律 410，不建立任何 archived Plan', async () => {
     const { body: p } = await mkPlan({ status: 'active' });
-    const t = await mkTask({ title: '封存後還要在', plan_id: p.id });
-
     const arch = await api(`/plans/${p.id}/archive`, { method: 'POST', body: {} });
-    assert.equal(arch.body.status, 'archived');
-    assert.ok(arch.body.archived_at);
-
-    // 任務還在，plan_id 也沒被清掉
-    const tasks = await api('/tasks');
-    const still = tasks.body.find(x => x.id === t.body.id);
-    assert.ok(still, '封存不應該刪掉任務');
-    assert.equal(still.plan_id, p.id);
-
-    const rest = await api(`/plans/${p.id}/restore`, { method: 'POST', body: {} });
-    assert.equal(rest.body.status, 'active');
-    assert.equal(rest.body.archived_at, null);          // 離開封存要清掉時間戳
+    assert.equal(arch.status, 410);
+    assert.equal(arch.body.code, 'archive_removed');
+    // 狀態沒有被改成 archived
+    assert.equal((await api(`/plans/${p.id}`)).body.plan.status, 'active');
   });
 
-  test('只有封存的計畫可以 restore', async () => {
+  test('封存功能已移除：restore 一律 410', async () => {
     const { body: p } = await mkPlan({ status: 'active' });
-    assert.equal((await api(`/plans/${p.id}/restore`, { method: 'POST', body: {} })).status, 400);
+    const r = await api(`/plans/${p.id}/restore`, { method: 'POST', body: {} });
+    assert.equal(r.status, 410);
+    assert.equal(r.body.code, 'archive_removed');
+  });
+
+  test('一般使用者無法建立 archived Plan（POST /plans 只收 draft/active）', async () => {
+    const r = await api('/plans', { method: 'POST', body: { name: 'x', status: 'archived' } });
+    assert.equal(r.status, 400);
   });
 
   test('PATCH 不得偽造 lifecycle；重新開始走正式 endpoint', async () => {
@@ -145,7 +158,7 @@ describe('Plan 生命週期', () => {
     assert.equal(back.completed_at, null);
   });
 
-  test('pause/end/archive 都保留語意；archive restore 回封存前狀態', async () => {
+  test('pause/end 都保留語意；不再有 archive 轉換', async () => {
     const { body: p } = await mkPlan({ status: 'active' });
     const paused = await api(`/plans/${p.id}/pause`, { method: 'POST', body: { retain_incomplete_tasks: true } });
     assert.equal(paused.body.plan.status, 'paused');
@@ -153,9 +166,8 @@ describe('Plan 生命週期', () => {
     const ended = await api(`/plans/${p.id}/end`, { method: 'POST', body: { confirm: true, reason: '改變目標' } });
     assert.equal(ended.body.plan.status, 'ended');
     assert.equal(ended.body.plan.end_reason, '改變目標');
-    await api(`/plans/${p.id}/archive`, { method: 'POST', body: {} });
-    const restored = await api(`/plans/${p.id}/restore`, { method: 'POST', body: {} });
-    assert.equal(restored.body.plan.status, 'ended');
+    // archive 已移除
+    assert.equal((await api(`/plans/${p.id}/archive`, { method: 'POST', body: {} })).status, 410);
   });
 
   test('取消 Task 不等於刪除或完成，而且可 reopen', async () => {
@@ -169,13 +181,14 @@ describe('Plan 生命週期', () => {
     assert.equal(reopened.body.cancelled, 0);
   });
 
-  test('封存的計畫預設不出現在清單，includeArchived 才出現', async () => {
-    const { body: p } = await mkPlan({ name: '被封存的' });
-    await api(`/plans/${p.id}/archive`, { method: 'POST', body: {} });
+  test('既有封存舊資料預設不出現在清單，includeArchived 才出現', async () => {
+    const id = await seedArchived({ name: '被封存的' });
     const plain = await api('/plans');
-    assert.equal(plain.body.some(x => x.id === p.id), false);
+    assert.equal(plain.body.some(x => x.id === id), false);
     const all = await api('/plans?includeArchived=1');
-    assert.equal(all.body.some(x => x.id === p.id), true);
+    const got = all.body.find(x => x.id === id);
+    assert.ok(got, 'includeArchived 應讀得到既有 archived 舊資料');
+    assert.equal(got.archived_from_status, 'completed', 'read projection 依據仍帶回');
   });
 });
 
@@ -189,10 +202,9 @@ describe('Task ↔ Plan', () => {
     assert.equal((await mkTask({ title: 'x', plan_id: 999999 })).status, 400);
   });
 
-  test('不能掛到已封存或已完成的計畫', async () => {
-    const { body: openForArchive } = await mkPlan({ status: 'active' });
-    const { body: arch } = await api(`/plans/${openForArchive.id}/archive`, { method: 'POST', body: {} });
-    assert.equal((await mkTask({ title: 'x', plan_id: arch.id })).status, 400);
+  test('不能掛到既有封存或已完成的計畫', async () => {
+    const archId = await seedArchived();
+    assert.equal((await mkTask({ title: 'x', plan_id: archId })).status, 400);
     const { body: openForComplete } = await mkPlan({ status: 'active' });
     const { body: done } = await api(`/plans/${openForComplete.id}/complete`, { method: 'POST', body: {} });
     assert.equal((await mkTask({ title: 'x', plan_id: done.id })).status, 400);
@@ -245,10 +257,9 @@ describe('Task ↔ Plan', () => {
     assert.equal((await api('/tasks/bulk', { method: 'POST', body: { tasks: [{ title: '不行', plan_id: p.id, due_date: day(2) }] } })).status, 409);
   });
 
-  test('bulk 掛到已封存的計畫要被擋下來', async () => {
-    const { body: open } = await mkPlan({ status: 'active' });
-    const { body: p } = await api(`/plans/${open.id}/archive`, { method: 'POST', body: {} });
-    const r = await api('/tasks/bulk', { method: 'POST', body: { tasks: [{ title: 'x', plan_id: p.id }] } });
+  test('bulk 掛到既有封存的計畫要被擋下來', async () => {
+    const archId = await seedArchived();
+    const r = await api('/tasks/bulk', { method: 'POST', body: { tasks: [{ title: 'x', plan_id: archId }] } });
     assert.equal(r.status, 400);
   });
 });

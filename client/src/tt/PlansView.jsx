@@ -7,13 +7,13 @@ import { Button, IconButton, PageHeader, SurfaceCard, ProgressBar, ListRow, Bott
 // 「計畫」＝計畫管理：回答「我要完成什麼計畫」。
 //
 // UI-R2 起改用 Design System v1：Plan 本身是主角，管理功能收進 secondary。
-// 首頁只放「進行中」的卡片；已完成／已封存／舊資料收成一行，點進去才展開——
+// 首頁只放「進行中」的卡片；已暫停／已結束／已完成／舊資料收成一行，點進去才展開——
 // 不然 Plans 首頁很快就變成歷史資料庫。
 //
 // 資料來源在 ./plans.js：正式 Plan（後端 plans 表）＋ 還沒 migrate 的舊資料推導。
 // 兩者並存，舊的標上「舊資料」而且不提供正式計畫才有的管理操作。
 
-const STATUS_LABEL = { draft: '草稿', paused: '已暫停', completed: '已完成', ended: '已結束', archived: '已封存' };
+const STATUS_LABEL = { draft: '草稿', paused: '已暫停', completed: '已完成', ended: '已結束' };
 
 // 科目只用小圓點識別，不整張卡染色
 function Subjects({ subjects }) {
@@ -67,7 +67,7 @@ function PlanCard({ p, onOpen }) {
   );
 }
 
-// 已完成／已封存／舊資料：先收成一行，點了才展開
+// 次要區塊（已暫停／已結束／已完成／舊資料）：先收成一行，點了才展開
 function SectionRow({ label, count, open, onToggle }) {
   return (
     <button className="plan-section-row" aria-expanded={open} onClick={onToggle}>
@@ -88,19 +88,25 @@ export default function PlansView({ tasks, lists, apiPlans = [], openPlan, goWiz
   const [open, setOpen] = useState({});           // 哪幾個次要區塊被展開
 
   const real = plans.filter(p => !p.isLegacy);
-  const live = real.filter(p => p.status === 'active' || p.status === 'draft');
-  // 暫停的計畫必須看得見——它是「先不排時間」，不是不見了。放進獨立區塊，
-  // 而不是塞進已完成或已封存，那兩個是不同的意思。
-  const paused = real.filter(p => p.status === 'paused');
-  // 已結束＝保留進度但不再繼續，是正式的一種結果，必須有自己的區塊，不能塞進
-  // 含糊的「其他」。每個 ended 計畫仍是獨立的一張卡、獨立的 Plan Detail。
-  const ended = real.filter(p => p.status === 'ended');
-  const done = real.filter(p => p.status === 'completed');
-  const archived = real.filter(p => p.status === 'archived');
-  // 任何不屬於上面各類的狀態仍然要有地方顯示。沒有這一段的話，新增一個 lifecycle
-  // 狀態就會讓計畫從畫面上安靜消失。
-  const KNOWN = ['active', 'draft', 'paused', 'ended', 'completed', 'archived'];
-  const other = real.filter(p => !KNOWN.includes(p.status));
+  // 封存功能已移除。一般分類只有四種：進行中／已暫停／已完成／已結束。
+  // 既有 archived 舊資料維持 read compatibility，依 archived_from_status 投影：
+  //   completed → 已完成、ended → 已結束；其他來源不猜，落到「其他」（唯讀可見）。
+  const cat = p => {
+    if (p.status !== 'archived') return p.status;
+    if (p.archived_from_status === 'completed') return 'completed';
+    if (p.archived_from_status === 'ended') return 'ended';
+    return 'other';
+  };
+  const live = real.filter(p => cat(p) === 'active' || cat(p) === 'draft');
+  // 暫停的計畫必須看得見——它是「先不排時間」，不是不見了。
+  const paused = real.filter(p => cat(p) === 'paused');
+  // 已結束＝保留進度但不再繼續，是正式的一種結果，必須有自己的區塊。
+  const ended = real.filter(p => cat(p) === 'ended');
+  const done = real.filter(p => cat(p) === 'completed');
+  // 落到「其他」的只剩：無法歸類的 archived 舊資料，或未來新增又漏接的狀態。
+  // 沒有這一段的話，這些計畫會從畫面上安靜消失。
+  const KNOWN = ['active', 'draft', 'paused', 'ended', 'completed'];
+  const other = real.filter(p => !KNOWN.includes(cat(p)));
   const legacy = plans.filter(p => p.isLegacy);
 
   const closeSheet = () => { setCreating(false); setShowBlank(false); setErr(''); };
@@ -155,12 +161,6 @@ export default function PlansView({ tasks, lists, apiPlans = [], openPlan, goWiz
             <>
               <SectionRow label="已完成" count={done.length} open={!!open.done} onToggle={() => toggle('done')} />
               {open.done && done.map(p => <PlanCard key={p.key} p={p} onOpen={openPlan} />)}
-            </>
-          )}
-          {archived.length > 0 && (
-            <>
-              <SectionRow label="已封存" count={archived.length} open={!!open.archived} onToggle={() => toggle('archived')} />
-              {open.archived && archived.map(p => <PlanCard key={p.key} p={p} onOpen={openPlan} />)}
             </>
           )}
           {other.length > 0 && (
