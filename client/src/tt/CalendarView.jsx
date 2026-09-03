@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { api } from '../api';
-import { today, addDays, localISO } from './helpers';
+import { today, addDays, localISO, onActivePlan } from './helpers';
 import { PALETTE } from './Icons';
 import Icon from './Icons';
 import { fileToPayload } from './vocabImport';
@@ -438,7 +438,9 @@ export default function CalendarView({ tasks, reload }) {
 
   /* ---- 清單視圖（List）：未來 60 天的行程依日期列出（含既定行程） ---- */
   const ListView = () => {
-    const upcoming = tasks.filter(t => t.due_date && t.due_date >= today() && t.due_date <= addDays(today(), 60))
+    // 已結束／暫停等非進行中計畫的任務不算「現在仍待執行的安排」，不在行事曆上
+    // 顯示成未來待辦（歷史仍由 active ScheduleVersion 的 block 呈現）。
+    const upcoming = tasks.filter(t => onActivePlan(t) && t.due_date && t.due_date >= today() && t.due_date <= addDays(today(), 60))
       .sort((a, b) => a.due_date === b.due_date ? (a.due_time || '99').localeCompare(b.due_time || '99') : a.due_date.localeCompare(b.due_date));
     const byDate = {};
     upcoming.forEach(t => (byDate[t.due_date] = byDate[t.due_date] || []).push(t));
@@ -492,7 +494,7 @@ export default function CalendarView({ tasks, reload }) {
         <div className="stat-tiles">
           {[...Array(12)].map((_, i) => {
             const m = String(i + 1).padStart(2, '0');
-            const n = tasks.filter(t => t.due_date?.startsWith(`${y}-${m}`)).length;
+            const n = tasks.filter(t => onActivePlan(t) && t.due_date?.startsWith(`${y}-${m}`)).length;
             return (
               <button key={m} className="tile" style={{ cursor: 'pointer', textAlign: 'center' }}
                 onClick={() => { setAnchor(`${y}-${m}-01`); setView('month'); }}>
@@ -603,7 +605,7 @@ export default function CalendarView({ tasks, reload }) {
               </div>
             )}
             {/* 有時間的任務 */}
-            {tasks.filter(t => t.due_date === d && t.due_time && !scheduledTaskIds.has(Number(t.id))).map(t => {
+            {tasks.filter(t => onActivePlan(t) && t.due_date === d && t.due_time && !scheduledTaskIds.has(Number(t.id))).map(t => {
               const top = yOf(toMin(t.due_time));
               return (
                 <div key={t.id} className={'cal-task' + (t.completed ? ' done' : '')} onClick={ev => { ev.stopPropagation(); toggle(t); }}
@@ -621,7 +623,7 @@ export default function CalendarView({ tasks, reload }) {
   /* ---- 未完成事項：放在日曆下面（往下滑）。只列「今天」＋「過去沒做完」的 ---- */
   const Undone = () => {
     const byTime = (a, b) => (a.due_date || '').localeCompare(b.due_date || '') || (a.due_time || '99').localeCompare(b.due_time || '99') || (a.order_index || 0) - (b.order_index || 0);
-    const undone = t => !t.deleted && !t.completed && t.due_date;
+    const undone = t => !t.deleted && !t.completed && onActivePlan(t) && t.due_date;
     const list = tasks.filter(t => undone(t) && t.due_date === today()).sort(byTime);
     const over = tasks.filter(t => undone(t) && t.due_date < today()).sort(byTime);
     if (!list.length && !over.length) return null;
@@ -674,11 +676,11 @@ export default function CalendarView({ tasks, reload }) {
                   {e.title}
                 </div>
               ))}
-              {tasks.filter(t => t.due_date === c.ds).slice(0, 3).map(t => (
+              {tasks.filter(t => onActivePlan(t) && t.due_date === c.ds).slice(0, 3).map(t => (
                 <div key={t.id} className={'cal-task' + (t.completed ? ' done' : '')} title={t.title}
                   onClick={e => { e.stopPropagation(); toggle(t); }}>{t.title}</div>
               ))}
-              {tasks.filter(t => t.due_date === c.ds).length > 3 && <div className="muted" style={{ fontSize: 10 }}>+{tasks.filter(t => t.due_date === c.ds).length - 3}</div>}
+              {tasks.filter(t => onActivePlan(t) && t.due_date === c.ds).length > 3 && <div className="muted" style={{ fontSize: 10 }}>+{tasks.filter(t => onActivePlan(t) && t.due_date === c.ds).length - 3}</div>}
             </div>
           ))}
         </div>

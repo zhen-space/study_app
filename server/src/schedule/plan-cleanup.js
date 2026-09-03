@@ -1,16 +1,16 @@
-// Plan 暫停／刪除時，未完成 Task 要怎麼處理。
+// Plan 暫停／刪除時，底下的 Task 要怎麼處理。
 //
-// 這裡是純函式：不查 DB、不寫 DB。理由是這四種組合的語意分歧點很細
-// （「刪掉計畫但留著任務」跟「暫停計畫但不留任務」做的事完全不同），
-// 混在 transaction 裡面會變成沒人看得懂、也沒辦法單獨測的一坨 if。
+// 這裡是純函式：不查 DB、不寫 DB。理由是各種語意分歧點很細（「暫停但清掉未完成
+// 任務」跟「刪除整個計畫」做的事完全不同），混在 transaction 裡面會變成沒人看得
+// 懂、也沒辦法單獨測的一坨 if。
 //
 // 硬性契約：
-//   ・retain_incomplete_tasks 一律必須明確給 true / false。沒給、給字串、
-//     給 0/1 都要拒絕——「預設保留」這種善意猜測會讓使用者以為任務還在，
-//     或以為任務已經清掉，兩種誤解都會造成資料上的意外。
-//   ・任何情況都不 hard delete。未完成 Task 只走既有的 soft-delete（deleted=1）。
-//   ・已完成 Task、StudySession、material_progress、歷史 ScheduleVersion
-//     一律不動。這個檔案不產生任何會碰到它們的指令。
+//   ・任何情況都不 hard delete。Task 只走 soft-delete（deleted=1）；StudySession、
+//     material_progress、歷史 ScheduleVersion／ScheduledBlock 一律不動。
+//   ・**暫停**保留「是否保留未完成任務」選擇（retain_incomplete_tasks，必填 boolean）。
+//   ・**刪除**沒有選擇：計畫與其中**所有** Task（含已完成、已取消）一律 soft-delete。
+//     不 detach 成 standalone、不留下任何一般待辦。想保留進度但不再繼續，正確操作
+//     是「結束計畫」，不是刪除。
 
 export const RETAIN_FIELD = 'retain_incomplete_tasks';
 export const RETAIN_REQUIRED_CODE = 'retain_choice_required';
@@ -19,7 +19,7 @@ export const RETAIN_REQUIRED_MESSAGE = '請明確選擇是否保留未完成任�
 // body.retain_incomplete_tasks → { ok, value } 或 { ok:false, code, message }
 //
 // 只接受真正的 boolean。'true' / 1 / 'false' / 0 全部拒絕：這是一個會決定
-// 「任務被留下還是被刪掉」的開關，型別寬鬆一點都不值得。
+// 「任務被留下還是被刪掉」的開關，型別寬鬆一點都不值得。**只有暫停用得到它**。
 export function parseRetainChoice(body) {
   const raw = (body ?? {})[RETAIN_FIELD];
   if (typeof raw !== 'boolean') {
@@ -30,27 +30,28 @@ export function parseRetainChoice(body) {
 
 export const PLAN_CLEANUP_ACTIONS = ['pause', 'delete'];
 
-// 四種組合各自要對「未完成 Task」做什麼。
+// 回傳 { mode, scope }。
+//   mode  ： 'none' | 'soft_delete'   —— 要不要把 scope 內的 Task 標成 deleted=1
+//   scope ： 'incomplete' | 'all'     —— 影響哪些 Task（也決定要釋放哪些 Task lock）
 //
-//   暫停＋保留 → 什麼都不動。Task 還在原 Plan 底下，只是整個 Plan 退出排程。
-//   暫停＋不保留 → soft-delete。恢復 Plan 時不會自己活過來（deleted 仍是 1）。
-//   刪除＋保留 → 轉成 standalone：plan_id=NULL，並清掉 Plan 排程鏡射的
-//                due_date/due_time，否則舊安排會被當成使用者自己訂的期限。
-//   刪除＋不保留 → soft-delete，plan_id 保留（歷史仍看得出它屬於哪個計畫）。
+//   暫停＋保留   → { none, incomplete }        Task 全留，只是整個 Plan 退出排程
+//   暫停＋不保留 → { soft_delete, incomplete } 未完成 Task 軟刪；已完成／已取消保留
+//   刪除         → { soft_delete, all }        所有 Task 一律軟刪（含已完成、已取消）
 //
-// 四種組合都會移除未來 ScheduledBlocks——那不是這裡做的，是呼叫端重建
-// ScheduleVersion 時把整個 Plan 的 block 排除掉的結果。
+// 刪除**沒有 retain 參數**：產品規格已定案為「計畫與其中所有任務都從 App 移除」。
+// 舊的「刪除＋保留 → detach 成 standalone」行為已整個移除，不得復活。
 export function planTaskDisposition({ action, retain }) {
-  if (!PLAN_CLEANUP_ACTIONS.includes(action)) throw new Error(`未知的 Plan cleanup 動作：${action}`);
-  if (typeof retain !== 'boolean') throw new Error('retain 必須是 boolean');
-  if (!retain) return { detach: false, softDelete: true, clearScheduleMirror: false };
-  if (action === 'delete') return { detach: true, softDelete: false, clearScheduleMirror: true };
-  return { detach: false, softDelete: false, clearScheduleMirror: false };
+  if (action === 'delete') return { mode: 'soft_delete', scope: 'all' };
+  if (action === 'pause') {
+    if (typeof retain !== 'boolean') throw new Error('retain 必須是 boolean');
+    return retain ? { mode: 'none', scope: 'incomplete' } : { mode: 'soft_delete', scope: 'incomplete' };
+  }
+  throw new Error(`未知的 Plan cleanup 動作：${action}`);
 }
 
-// 失效 lock 的釋放理由。Task lock 的主詞正在離開排程（被刪、被拆成 standalone、
-// 或整個 Plan 退出），鎖著一個不會再被排的任務沒有意義，所以 soft release
-// 並留下理由，讓使用者在鎖定列表看得到「為什麼不見了」。
+// 失效 lock 的釋放理由。Task lock 的主詞正在離開排程（被軟刪，或整個 Plan 退出），
+// 鎖著一個不會再被排的任務沒有意義，所以 soft release 並留下理由，讓使用者在鎖定
+// 列表看得到「為什麼不見了」。
 //
 // 反過來說 day / time lock **不釋放**：它們限制的是整體排程，不屬於任何 Plan
 // （見 schedule_locks 的 schema 註解）。暫停一個 Plan 如果動到被鎖的那一天，

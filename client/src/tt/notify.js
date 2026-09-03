@@ -63,9 +63,12 @@ export function dueNotifications({ tasks = [], blocks = [], today, now = new Dat
   const out = [];
   const push = (key, kind, title, body) => { if (!sent.has(key)) out.push({ key, kind, title, body }); };
 
+  // 已結束／暫停等非進行中計畫的任務不再提醒——它們已經退出執行面。
+  // plan_id 為 NULL 的一般待辦沒有計畫，一律照舊提醒。
+  const active = t => t.plan_id == null || t.plan_status === 'draft' || t.plan_status === 'active';
   if (prefs.due) {
     for (const t of tasks) {
-      if (t.completed || t.deleted || t.due_date !== today || !t.due_time) continue;
+      if (t.completed || t.deleted || !active(t) || t.due_date !== today || !t.due_time) continue;
       if (HM(t.due_time) === hm) push(`due:${t.id}:${today}`, 'due', '任務提醒', t.title);
     }
   }
@@ -81,7 +84,7 @@ export function dueNotifications({ tasks = [], blocks = [], today, now = new Dat
     }
   }
   if (prefs.overdue) {
-    const n = tasks.filter(t => !t.completed && !t.deleted && t.due_date && t.due_date < today).length;
+    const n = tasks.filter(t => !t.completed && !t.deleted && active(t) && t.due_date && t.due_date < today).length;
     if (n > 0) push(`od:${today}`, 'overdue', '有東西還沒做完', `${n} 項已經逾期，到「任務」看看`);
   }
   return out;

@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { api } from '../api';
-import { today } from './helpers';
+import { today, onActivePlan } from './helpers';
 import { Button, PageHeader, SurfaceCard, EmptyState, BottomSheet } from './ui';
 
 // 「讀書」＝中央主要動作：現在就開始一段讀書。
@@ -17,7 +17,8 @@ const MAX_ROWS = 8;
 export function pickStudyTasks(tasks, td = today(), limit = MAX_ROWS) {
   const rank = t => (!t.due_date ? 2 : t.due_date < td ? 0 : 1);   // 逾期 → 有日期 → 沒日期
   return tasks
-    .filter(t => !t.completed && !t.deleted)
+    // 已結束／暫停等非進行中計畫的任務不是「現在可以開始讀」的候選
+    .filter(t => !t.completed && !t.deleted && onActivePlan(t))
     .sort((a, b) =>
       rank(a) - rank(b)
       || (a.due_date || '9999-99-99').localeCompare(b.due_date || '9999-99-99')

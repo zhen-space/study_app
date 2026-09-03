@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import PetSprite, { MONSTERS } from './PetSprite';
-import { today } from './helpers';
+import { today, onActivePlan } from './helpers';
 
 export default function Companion({ pet, tasks }) {
   const m = MONSTERS[pet?.type];
@@ -46,8 +46,8 @@ export default function Companion({ pet, tasks }) {
   function pickMessage() {
     const v = m.voice;
     const td = today();
-    const remain = (tasks || []).filter(t => !t.completed && t.due_date === td);
-    const overdue = (tasks || []).filter(t => !t.completed && t.due_date && t.due_date < td);
+    const remain = (tasks || []).filter(t => !t.completed && onActivePlan(t) && t.due_date === td);
+    const overdue = (tasks || []).filter(t => !t.completed && onActivePlan(t) && t.due_date && t.due_date < td);
     const pool = [];
     if (overdue.length) pool.push(v.overdue(overdue.length));
     if (remain.length) pool.push(v.remain(remain.length), v.next(remain[0].title));

@@ -266,20 +266,21 @@ router.post('/plans/:id/restore', async (req, res) => {
   return lifecycle(req, res, plan.archived_from_status || 'active');
 });
 
-// POST /api/plans/:id/delete  { retain_incomplete_tasks: true|false }
+// POST /api/plans/:id/delete
 //
-// soft-delete／tombstone：Plan 從一般 UI 完全消失，但底層一列都不刪。
-// 硬刪會讓 tasks.plan_id、StudySession 與 immutable 的歷史 ScheduledBlock
-// 全部指向不存在的計畫，而歷史版本事後補不回來。
+// soft-delete／tombstone：Plan 與其中**所有** Task（含已完成、已取消）一律
+// soft-delete，從一般 UI 完全消失，但底層一列都不刪。硬刪會讓 tasks.plan_id、
+// StudySession 與 immutable 的歷史 ScheduledBlock 全部指向不存在的計畫，而歷史
+// 版本事後補不回來。soft-delete 也不撤銷既有的 material completion。
 //
-// 刪除之後不可恢復。本輪刻意不提供 restore contract——沒有想清楚的復原語意
-// 比沒有復原更危險（要復原成哪個狀態？被拆成 standalone 的 Task 要抓回來嗎？）。
+// 沒有 retain_incomplete_tasks 選擇：產品規格已定案為「整個計畫連同任務都移除」。
+// 想保留任務與目前進度但不再繼續，正確操作是「結束計畫」（POST /end）。
+//
+// 刪除之後不可恢復。本輪刻意不提供 restore contract。
 router.post('/plans/:id/delete', async (req, res) => {
   const plan = await mine(req.params.id, req.userId);
   if (!plan) return res.status(404).json({ error: '找不到這個計畫' });
-  const choice = parseRetainChoice(req.body);
-  if (!choice.ok) return res.status(400).json({ error: choice.message, code: choice.code });
-  return lifecycle(req, res, 'deleted', { cleanupAction: 'delete', retainIncompleteTasks: choice.value });
+  return lifecycle(req, res, 'deleted', { cleanupAction: 'delete' });
 });
 
 // DELETE /api/plans/:id/tasks?incomplete=1

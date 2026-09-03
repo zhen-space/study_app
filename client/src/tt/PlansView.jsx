@@ -92,11 +92,14 @@ export default function PlansView({ tasks, lists, apiPlans = [], openPlan, goWiz
   // 暫停的計畫必須看得見——它是「先不排時間」，不是不見了。放進獨立區塊，
   // 而不是塞進已完成或已封存，那兩個是不同的意思。
   const paused = real.filter(p => p.status === 'paused');
+  // 已結束＝保留進度但不再繼續，是正式的一種結果，必須有自己的區塊，不能塞進
+  // 含糊的「其他」。每個 ended 計畫仍是獨立的一張卡、獨立的 Plan Detail。
+  const ended = real.filter(p => p.status === 'ended');
   const done = real.filter(p => p.status === 'completed');
   const archived = real.filter(p => p.status === 'archived');
-  // 任何不屬於上面四類的狀態（目前是 ended）仍然要有地方顯示。
-  // 沒有這一段的話，新增一個 lifecycle 狀態就會讓計畫從畫面上安靜消失。
-  const KNOWN = ['active', 'draft', 'paused', 'completed', 'archived'];
+  // 任何不屬於上面各類的狀態仍然要有地方顯示。沒有這一段的話，新增一個 lifecycle
+  // 狀態就會讓計畫從畫面上安靜消失。
+  const KNOWN = ['active', 'draft', 'paused', 'ended', 'completed', 'archived'];
   const other = real.filter(p => !KNOWN.includes(p.status));
   const legacy = plans.filter(p => p.isLegacy);
 
@@ -140,6 +143,12 @@ export default function PlansView({ tasks, lists, apiPlans = [], openPlan, goWiz
             <>
               <SectionRow label="已暫停" count={paused.length} open={!!open.paused} onToggle={() => toggle('paused')} />
               {open.paused && paused.map(p => <PlanCard key={p.key} p={p} onOpen={openPlan} />)}
+            </>
+          )}
+          {ended.length > 0 && (
+            <>
+              <SectionRow label="已結束" count={ended.length} open={!!open.ended} onToggle={() => toggle('ended')} />
+              {open.ended && ended.map(p => <PlanCard key={p.key} p={p} onOpen={openPlan} />)}
             </>
           )}
           {done.length > 0 && (

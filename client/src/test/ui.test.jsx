@@ -22,7 +22,7 @@ const iso = n => addDays(today(), n);
 const PLAN = { ...fx.plans[0], id: 12, name: '第二次段考', start_date: iso(-5), target_date: iso(10) };
 const OTHER_PLAN = { ...PLAN, id: 13, name: '暑假數學' };
 const mk = (id, over = {}) => ({
-  id, list_id: 1, plan_id: 12, title: `任務${id}`, due_date: iso(1), due_time: null,
+  id, list_id: 1, plan_id: 12, plan_status: 'active', title: `任務${id}`, due_date: iso(1), due_time: null,
   priority: 0, completed: 0, tags: ['讀書計劃'], subtasks: [], recurring: null,
   deadline_date: null, order_index: id, deleted: 0, ...over,
 });
