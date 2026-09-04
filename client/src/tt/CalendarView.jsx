@@ -124,6 +124,67 @@ export default function CalendarView({ tasks, reload }) {
       if (p) doParse(JSON.parse(p));
     } catch {}
   }, []);
+  /* ---------- 課表匯入 v2 ---------- */
+  // 跟上面的「行事曆照片」是兩條路：那一條處理「寫著具體日期」的行事曆，
+  // 這一條處理「欄是星期、列是節次」的週課表。
+  //
+  // 差別不只是介面：星期課表的星期對應由伺服器的結構層依欄位位置決定，
+  // 模型只負責讀格子。低信心時一定要使用者確認過才准匯入。
+  const [tt, setTt] = useState(null);            // 伺服器回來的辨識結果
+  const [ttOk, setTtOk] = useState(false);       // 使用者已確認星期對應
+  const WDN = ['日', '一', '二', '三', '四', '五', '六'];
+
+  async function importTimetable(e) {
+    const file = e.target.files[0];
+    if (!file) return;
+    e.target.value = '';
+    setAiBusy(true);
+    try {
+      const payload = await fileToPayload(file);
+      const preview = await api('/import/timetable', { method: 'POST', body: payload });
+      if (!preview.items?.length) alert('沒有讀到課程，請拍清楚一點再試一次');
+      else {
+        setTt({ ...preview, items: preview.items.map(x => ({ ...x, checked: true })) });
+        setTtOk(false);
+      }
+    } catch (err) { alert('辨識失敗：' + err.message); }
+    setAiBusy(false);
+  }
+
+  const updTt = (i, patch) =>
+    setTt(t => ({ ...t, items: t.items.map((x, j) => j === i ? { ...x, ...patch } : x) }));
+
+  // 整週往前／往後一天：一次改完，不用逐格改
+  const shiftWeek = delta => setTt(t => ({
+    ...t,
+    items: t.items.map(x => ({ ...x, day_of_week: ((x.day_of_week + delta) % 7 + 7) % 7 })),
+  }));
+
+  async function confirmTimetable() {
+    const picked = tt.items.filter(x => x.checked);
+    if (!picked.length) { alert('沒有勾選任何課程'); return; }
+    for (const x of picked) {
+      if (!String(x.title || '').trim()) { alert('有一堂課沒有名稱，請補上或取消勾選'); return; }
+      if (!/^([01]\d|2[0-3]):[0-5]\d$/.test(x.start_time || '') || !/^([01]\d|2[0-3]):[0-5]\d$/.test(x.end_time || '')) {
+        alert(`「${x.title}」的時間要像 08:10，請補上`); return;
+      }
+    }
+    setAiBusy(true);
+    try {
+      const { imported } = await api('/import/timetable/confirm', {
+        method: 'POST',
+        body: {
+          items: picked.map(({ checked, ...b }) => b),
+          requires_mapping_confirmation: !!tt.requires_mapping_confirmation,
+          mapping_confirmed: ttOk,
+        },
+      });
+      setTt(null); setTtOk(false); loadEvents();
+      alert(`已加入 ${imported} 堂課（每週重複）`);
+    } catch (err) { alert('匯入失敗：' + err.message); }
+    setAiBusy(false);
+  }
+
   const updAi = (i, patch) => setAiList(aiList.map((x, j) => j === i ? { ...x, ...patch } : x));
   const addAiRow = () => setAiList([...(aiList || []), { title: '', date: anchor, start_time: '08:00', end_time: '09:00', location: '', recurring: null, checked: true }]);
   async function confirmImport() {
@@ -720,7 +781,11 @@ export default function CalendarView({ tasks, reload }) {
                 <div onClick={() => openAdd()}><Icon name="pencil" size={15} /> 手動新增行程</div>
                 <div onClick={() => { setAddMenu(false); setAnnivForm({ title: '', date: anchor, kind: 'due', recurring: '', color: '' }); }}>📌 重要日子（期限／考試／紀念日）</div>
                 <label style={{ cursor: 'pointer' }}>
-                  <Icon name="calendar" size={15} /> {aiBusy ? 'AI 解析中…' : '匯入課表照片'}
+                  <Icon name="calendar" size={15} /> {aiBusy ? 'AI 解析中…' : '匯入課表照片（每週固定）'}
+                  <input type="file" accept="image/*,.pdf" style={{ display: 'none' }} onChange={e => { setAddMenu(false); importTimetable(e); }} disabled={aiBusy} />
+                </label>
+                <label style={{ cursor: 'pointer' }}>
+                  <Icon name="calendar" size={15} /> {aiBusy ? 'AI 解析中…' : '匯入行事曆照片（有日期）'}
                   <input type="file" accept="image/*,.pdf,.ics" style={{ display: 'none' }} onChange={e => { setAddMenu(false); importFile(e); }} disabled={aiBusy} />
                 </label>
               </div>
@@ -729,6 +794,52 @@ export default function CalendarView({ tasks, reload }) {
         </div>
       </div>
       <div className="main-body">
+        {tt && (
+          <div className="tile" style={{ margin: '8px 0' }}>
+            <b>課表辨識結果（共 {tt.items.length} 堂）</b>
+            {tt.requires_mapping_confirmation && (
+              <div style={{ margin: '6px 0', padding: '8px 10px', borderRadius: 10, background: 'var(--primary-soft)', color: 'var(--primary)', fontSize: 13 }}>
+                {tt.warnings?.includes('missing_weekday_header')
+                  ? '這張課表上看不到「星期一、星期二…」的標題，所以星期是照欄位順序推的。請先確認下面每一堂課的星期對不對。'
+                  : '星期對應可能不準，請先確認下面每一堂課的星期對不對。'}
+                <div style={{ marginTop: 6 }}>
+                  整週對錯一天的話，用這兩個按鈕一次改完：
+                  <button className="btn sm ghost" style={{ marginLeft: 6 }} onClick={() => shiftWeek(-1)}>整週往前一天</button>
+                  <button className="btn sm ghost" style={{ marginLeft: 6 }} onClick={() => shiftWeek(1)}>整週往後一天</button>
+                </div>
+                <label className="row" style={{ marginTop: 8, gap: 6, cursor: 'pointer' }}>
+                  <input type="checkbox" checked={ttOk} onChange={() => setTtOk(v => !v)} />
+                  <span>我確認上面的星期是對的</span>
+                </label>
+              </div>
+            )}
+            {tt.items.map((c, i) => (
+              <div key={i} className="imp-row">
+                <input type="checkbox" checked={c.checked} onChange={() => updTt(i, { checked: !c.checked })} />
+                <select className="imp-date" value={c.day_of_week} onChange={e => updTt(i, { day_of_week: +e.target.value })}>
+                  {WDN.map((n, d) => <option key={d} value={d}>{`週${n}`}</option>)}
+                </select>
+                <input className="imp-title" value={c.title || ''} placeholder="課程名稱" onChange={e => updTt(i, { title: e.target.value })} />
+                <input className="imp-time" value={c.start_time || ''} placeholder="08:10" onChange={e => updTt(i, { start_time: e.target.value })} />
+                <span className="muted">–</span>
+                <input className="imp-time" value={c.end_time || ''} placeholder="09:00" onChange={e => updTt(i, { end_time: e.target.value })} />
+                <button className="icon-btn" title="刪除" onClick={() => setTt(t => ({ ...t, items: t.items.filter((_, j) => j !== i) }))}><Icon name="x" size={13} /></button>
+              </div>
+            ))}
+            {!tt.can_persist && (
+              <div className="muted" style={{ marginTop: 8 }}>這張課表讀不出可用的結構，請換一張更清楚的照片。</div>
+            )}
+            <div className="row" style={{ marginTop: 10 }}>
+              <button
+                className="btn sm"
+                style={{ marginLeft: 'auto' }}
+                disabled={aiBusy || !tt.can_persist || (tt.requires_mapping_confirmation && !ttOk)}
+                onClick={confirmTimetable}
+              >確認匯入</button>
+              <button className="btn sm ghost" onClick={() => { setTt(null); setTtOk(false); }}>取消</button>
+            </div>
+          </div>
+        )}
         {aiList && (
           <div className="tile" style={{ margin: '8px 0' }}>
             <b>共 {aiList.length} 筆行程，加入前可修改：</b>

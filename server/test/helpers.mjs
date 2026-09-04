@@ -7,6 +7,19 @@ import { fileURLToPath } from 'node:url';
 
 const serverDir = path.join(path.dirname(fileURLToPath(import.meta.url)), '..');
 
+// 這裡開的每一台測試伺服器都必須被關掉，連「啟動失敗」那條路徑也是。
+//
+// 三十幾個測試檔跑在同一個 node --test 程序裡，只要漏掉一台，它和連到它的
+// socket 就會一直是活的 handle，整個程序會在**測試全部跑完並回報成功之後**
+// 繼續掛著不結束。CI 上的症狀是某個 TZ 的 job 停在「Run npm test」直到六小時
+// 上限被系統砍掉，而同一個 commit 的其他 TZ job 九十幾秒就通過；逐檔單獨跑
+// 則全部正常，因為漏掉的行程不會累積。
+//
+// 用 unref 的 watchdog 實際抓過：殘留的是 ChildProcess(killed=false) 加上幾條
+// 連到它的 Socket——也就是「從來沒有人殺過的那一台」。漏的地方是啟動階段的
+// 註冊請求沒有包在 try 裡：伺服器慢啟動時它丟連線錯誤，例外直接穿出 bootOnce，
+// startServer 接住後重試，前一台就沒人管了。
+
 // 伺服器用「台灣時區的今天」當起點，早於今天的日期會被裁掉。
 // 測試一律用相對日期，才不會過幾天就開始壞掉。
 // 日期運算全部走 UTC（T00:00:00Z + setUTCDate），這樣不管跑測試的機器
@@ -54,31 +67,44 @@ async function bootOnce(extraEnv = {}) {
   proc.stderr.on('data', d => { log += d; });
 
   // 起不來時要看得出原因：退出碼與訊號都印出來，
-  // 不然日誌只剩一行「API on :PORT」，根本查不下去
+  // 不然日誌只剩一行「API on :PORT」，根本查不下去。
+  //
+  // bail() 一定要先把行程殺掉再回傳錯誤。以前只刪暫存目錄，於是啟動失敗時
+  // spawn 出來的伺服器就沒有人管——startServer 會重試，前一台卻繼續活著，
+  // 連帶它的 socket 一起把 node --test 的 event loop 撐住，整個測試檔跑完
+  // 也不結束（CI 上就是某個 job 卡在「Run npm test」直到六小時上限）。
   const bail = () => {
+    killServer();
     try { rmSync(dir, { recursive: true, force: true }); } catch {}
     return new Error(`伺服器啟動失敗（exit=${proc.exitCode} signal=${proc.signalCode} port=${port}）：\n${log}`);
   };
 
   const base = `http://127.0.0.1:${port}/api`;
-  for (let i = 0; i < 100; i++) {
-    if (proc.exitCode !== null || proc.signalCode !== null) throw bail();
-    try {
-      const r = await fetch(base + '/auth/login', {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ email: 'x@x', password: 'x' }),
-      });
-      if (r.status) break;                       // 有回應就代表起來了（401 也算）
-    } catch { await new Promise(r => setTimeout(r, 100)); }
-  }
+  // 從這裡開始的任何失敗都必須經過 bail()——尤其是下面那個註冊請求：
+  // 伺服器慢啟動時它會丟連線錯誤，以前這個例外直接穿出去，行程就漏了。
+  try {
+    for (let i = 0; i < 100; i++) {
+      if (proc.exitCode !== null || proc.signalCode !== null) throw bail();
+      try {
+        const r = await fetch(base + '/auth/login', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ email: 'x@x', password: 'x' }),
+        });
+        if (r.status) break;                       // 有回應就代表起來了（401 也算）
+      } catch { await new Promise(r => setTimeout(r, 100)); }
+    }
+  } catch (e) { throw e instanceof Error && /伺服器啟動失敗/.test(e.message) ? e : bail(); }
 
-  const email = `t${Date.now()}@test.local`;
-  const reg = await fetch(base + '/auth/register', {
-    method: 'POST', headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ email, password: '12345678', name: '測試' }),
-  });
-  const { token } = await reg.json().catch(() => ({}));
-  if (!token) { proc.kill('SIGKILL'); throw bail(); }
+  let token;
+  try {
+    const email = `t${Date.now()}@test.local`;
+    const reg = await fetch(base + '/auth/register', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ email, password: '12345678', name: '測試' }),
+    });
+    ({ token } = await reg.json().catch(() => ({})));
+  } catch { throw bail(); }
+  if (!token) throw bail();
   const H = { 'Content-Type': 'application/json', Authorization: 'Bearer ' + token };
 
   // 送一次排程，回傳 { blocks, check, unplaced }
@@ -99,8 +125,15 @@ async function bootOnce(extraEnv = {}) {
     return j;
   };
 
+  // 殺行程並把 stdio 收掉。只 kill 不收 stdio 的話，pipe 仍是活的 handle。
+  function killServer() {
+    try { proc.kill('SIGKILL'); } catch {}
+    try { proc.stdout?.destroy(); } catch {}
+    try { proc.stderr?.destroy(); } catch {}
+    try { proc.unref(); } catch {}
+  }
   const stop = () => {
-    proc.kill('SIGKILL');
+    killServer();
     try { rmSync(dir, { recursive: true, force: true }); } catch {}
   };
 
