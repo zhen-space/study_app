@@ -637,12 +637,15 @@ export async function transitionPlanLifecycle(userId, planId, {
     if (plan.status === 'deleted') throw new ScheduleInputError('這個計畫已經刪除');
     // lifecycle 不是可任意覆寫的欄位。明確限制轉換，避免把「重新開始」
     // 誤用成 paused -> completed 等沒有產品語意的捷徑。
+    // 'archived' 已從產品移除：任何進行中狀態都不得再轉成 archived（見 archive
+    // route 的說明）。archived 這一列保留，只為了讓既有的 archived 舊資料仍能安全
+    // 轉出（例如刪除），不是新的入口。
     const allowed = {
-      draft: new Set(['active', 'ended', 'archived', 'deleted']),
-      active: new Set(['paused', 'completed', 'ended', 'archived', 'deleted']),
-      paused: new Set(['active', 'ended', 'archived', 'deleted']),
-      completed: new Set(['active', 'archived', 'deleted']),
-      ended: new Set(['active', 'archived', 'deleted']),
+      draft: new Set(['active', 'ended', 'deleted']),
+      active: new Set(['paused', 'completed', 'ended', 'deleted']),
+      paused: new Set(['active', 'ended', 'deleted']),
+      completed: new Set(['active', 'deleted']),
+      ended: new Set(['active', 'deleted']),
       archived: new Set([plan.archived_from_status || 'active', 'deleted']),
     };
     if (!allowed[plan.status]?.has(nextStatus)) {
@@ -691,35 +694,32 @@ export async function transitionPlanLifecycle(userId, planId, {
         disposition ? (retainIncompleteTasks ? 1 : 0) : plan.lifecycle_retained_tasks ?? null,
         at, plan.id, userId]);
 
-    // ── 未完成 Task 的處理 ───────────────────────────────────────────────
-    // 只碰「未完成且未取消且未刪除」的 Task。completed Task、StudySession、
-    // material_progress、歷史 ScheduleVersion 完全不在這裡出現，也就不會被改到。
+    // ── Task 的處理 ───────────────────────────────────────────────────────
+    // 一律只做 soft-delete，絕不 hard delete：歷史版本的 block、StudySession、
+    // material_progress 都還指著這些 task。scope 決定影響範圍：
+    //   ・暫停：scope='incomplete' —— 只碰未完成、未取消、未刪除的 Task
+    //   ・刪除：scope='all'        —— 碰所有尚未刪除的 Task（含已完成、已取消）
+    // 不論哪一種，都不改 plan_id（歷史仍看得出它屬於哪個計畫），也不 detach。
     let affectedTaskIds = [];
     if (disposition) {
+      // scope 過濾片段：incomplete 需額外排除已完成／已取消；all 只排除已刪除。
+      const scopeSql = disposition.scope === 'all'
+        ? ''
+        : ' AND completed=0 AND COALESCE(cancelled,0)=0';
       const targets = await tx.all(
         `SELECT id FROM tasks
-          WHERE user_id=? AND plan_id=? AND completed=0
-            AND COALESCE(cancelled,0)=0 AND COALESCE(deleted,0)=0`, [userId, plan.id]);
+          WHERE user_id=? AND plan_id=? AND COALESCE(deleted,0)=0${scopeSql}`, [userId, plan.id]);
       affectedTaskIds = targets.map(t => Number(t.id));
-      if (disposition.softDelete) {
-        // 既有 soft-delete 語意，跟 DELETE /plans/:id/tasks?incomplete=1 同一條路。
-        // 絕不 hard delete：歷史版本的 block 仍指著這些 task。
+      if (disposition.mode === 'soft_delete') {
         await tx.run(
           `UPDATE tasks SET deleted=1
-            WHERE user_id=? AND plan_id=? AND completed=0
-              AND COALESCE(cancelled,0)=0 AND COALESCE(deleted,0)=0`, [userId, plan.id]);
-      } else if (disposition.detach) {
-        // 轉成 standalone Task。due_date/due_time 是 ScheduleVersion 的鏡射，
-        // 計畫沒了就必須清掉，否則舊安排會被誤讀成使用者自己訂的期限。
-        // deadline_date（正式截止日）、內容、教材 linkage、提醒一律不碰。
-        await tx.run(
-          `UPDATE tasks SET plan_id=NULL${disposition.clearScheduleMirror ? ', due_date=NULL, due_time=NULL' : ''}
-            WHERE user_id=? AND plan_id=? AND completed=0
-              AND COALESCE(cancelled,0)=0 AND COALESCE(deleted,0)=0`, [userId, plan.id]);
+            WHERE user_id=? AND plan_id=? AND COALESCE(deleted,0)=0${scopeSql}`, [userId, plan.id]);
       }
-      // 失效的 Task lock：主詞已經離開排程（被軟刪、或變成不排程的 standalone、
-      // 或整個 Plan 退出），鎖著它沒有意義。soft release 並留下理由，讓使用者在
-      // 鎖定列表看得到為什麼不見了。day / time lock 不在此列——見 plan-cleanup.js。
+      // mode==='none'（暫停＋保留）：Task 全留，只是整個 Plan 退出排程。
+      //
+      // 失效的 Task lock：主詞已經離開排程（被軟刪、或整個 Plan 退出），鎖著它
+      // 沒有意義。soft release 並留下理由，讓使用者在鎖定列表看得到為什麼不見了。
+      // day / time lock 不在此列——見 plan-cleanup.js。
       if (affectedTaskIds.length) {
         const reason = lockReleaseReason(cleanupAction);
         for (const taskId of affectedTaskIds) {

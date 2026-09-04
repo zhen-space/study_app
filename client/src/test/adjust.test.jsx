@@ -23,7 +23,7 @@ const iso = n => addDays(today(), n);
 const PLAN = { ...fx.plans[0], id: 12, name: '第二次段考', start_date: iso(-2), target_date: iso(14) };
 // 今天有時間的計畫任務 → 會出現在 Today 的「接下來」
 const TIMED = {
-  id: 21, list_id: 1, plan_id: 12, title: '物理｜段考範圍｜力學複習',
+  id: 21, list_id: 1, plan_id: 12, plan_status: 'active', title: '物理｜段考範圍｜力學複習',
   due_date: iso(0), due_time: '19:00', priority: 0, completed: 0, tags: ['讀書計劃'],
   subtasks: [], recurring: null, deadline_date: null, order_index: 20, deleted: 0,
 };

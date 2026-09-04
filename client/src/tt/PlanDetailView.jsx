@@ -26,14 +26,13 @@ const STATUS_LABEL = { draft: '草稿', active: '進行中', paused: '已暫停'
 // 暫停／刪除都必須明確選「未完成的任務怎麼辦」。刻意不給預設值：
 // 猜錯的兩個方向都很痛（以為留著結果被刪、以為清掉結果還在），
 // 所以選項未選之前送出鍵是停用的。文案一律講後果，不講欄位名稱。
+// 只有「暫停」還需要問未完成任務怎麼辦。
+// 「刪除」已改為整個計畫連同所有任務一起移除，沒有保留選項——想留進度但不再繼續
+// 的正確操作是「結束計畫」。
 const RETAIN_CHOICES = {
   pause: [
     [true, '保留未完成的任務', '任務留在這個計畫裡，只是先不排時間。恢復計畫後可以重新安排。'],
     [false, '不保留未完成的任務', '未完成的任務會移到垃圾桶。恢復計畫也不會自己回來。'],
-  ],
-  delete: [
-    [true, '保留未完成的任務', '變成一般待辦，原本排好的時間會清掉，你自己訂的截止日會留著。'],
-    [false, '不保留未完成的任務', '未完成的任務會一起移到垃圾桶。'],
   ],
 };
 
@@ -110,6 +109,16 @@ export default function PlanDetailView({ planKey, tasks, lists, apiPlans = [], r
   // UI 不要留一個按下去必定失敗的入口。
   const workable = isReal && ['draft', 'active'].includes(plan.status);
   const showAdjust = workable && !!adjustPlan;
+  // 已結束的計畫是歷史／唯讀：可以查看原任務與實際進度，但不提供新增、排程、調整，
+  // 也不能直接勾選未完成任務——要重新動它，得先「重新開始」回到進行中。
+  // 既有 archived 舊資料同樣視為唯讀歷史（封存功能已移除，不再有恢復入口）。
+  const readOnly = plan.status === 'ended' || plan.status === 'archived';
+  // 顯示用的狀態標籤：archived 舊資料依 archived_from_status 投影回已完成／已結束，
+  // 其他來源（active/paused/… 或空）不猜，照實顯示為已封存。
+  const statusLabel = plan.status === 'archived'
+    ? (STATUS_LABEL[plan.archived_from_status] && ['completed', 'ended'].includes(plan.archived_from_status)
+        ? STATUS_LABEL[plan.archived_from_status] : '已封存')
+    : (STATUS_LABEL[plan.status] || plan.status);
   const pct = plan.total ? Math.round(plan.done / plan.total * 100) : 0;
 
   const close = () => { setSheet(null); setErr(''); setRetain(null); };
@@ -125,12 +134,8 @@ export default function PlanDetailView({ planKey, tasks, lists, apiPlans = [], r
     try { await fn(); await reload(); } catch (e) { setErr(e.message); }
     setBusy(false);
   };
-  const archive = () => run(async () => {
-    await api(`/plans/${plan.planId}/archive`, { method: 'POST', body: {} }); close();
-  });
-  const restore = () => run(async () => {
-    await api(`/plans/${plan.planId}/restore`, { method: 'POST', body: {} }); close();
-  });
+  // 封存功能已從產品移除——沒有 archive／restore 動作。既有 archived 舊資料仍
+  // 讀得到（唯讀），依 archived_from_status 投影回已完成／已結束。
   // 重新開始走正式 lifecycle endpoint。以前是 PATCH /plans/:id { status:'active' }，
   // 但 PATCH 的白名單根本不含 status，所以那個請求其實什麼都沒改——畫面看起來
   // 成功了，計畫還停在 completed。lifecycle 轉換必須走專用端點，才會一併處理
@@ -148,7 +153,7 @@ export default function PlanDetailView({ planKey, tasks, lists, apiPlans = [], r
     await api(`/plans/${plan.planId}/resume`, { method: 'POST', body: {} }); close();
   });
   const deletePlan = () => run(async () => {
-    await api(`/plans/${plan.planId}/delete`, { method: 'POST', body: { retain_incomplete_tasks: retain } });
+    await api(`/plans/${plan.planId}/delete`, { method: 'POST', body: {} });
     close(); onBack();
   });
 
@@ -253,10 +258,12 @@ export default function PlanDetailView({ planKey, tasks, lists, apiPlans = [], r
   const Row = t => {
     const late = !t.completed && t.due_date && t.due_date < today();
     // 已完成的不給調整：它已經退出未來排程，日期是歷史紀錄。
-    const block = t.completed ? null : blocksForTask(sched.blocks, t.id)[0];
+    // 已結束計畫整個唯讀：勾選框停用、時間不給調整（只顯示歷史日期）。
+    const block = t.completed || readOnly ? null : blocksForTask(sched.blocks, t.id)[0];
     return (
       <ListRow key={t.id} muted={!!t.completed}
-        leading={<input type="checkbox" aria-label={t.title} checked={!!t.completed} onChange={() => toggle(t)} />}
+        leading={<input type="checkbox" aria-label={t.title} checked={!!t.completed}
+          disabled={readOnly} onChange={() => { if (!readOnly) toggle(t); }} />}
         title={rowTitle(t)}
         trailing={t.due_date
           ? (block
@@ -289,7 +296,7 @@ export default function PlanDetailView({ planKey, tasks, lists, apiPlans = [], r
             </Button>
           )}
           {isReal && plan.status !== 'active' && (
-            <span className="chip" style={{ marginLeft: 'auto' }}>{STATUS_LABEL[plan.status] || plan.status}</span>
+            <span className="chip" style={{ marginLeft: 'auto' }}>{statusLabel}</span>
           )}
         </div>
 
@@ -308,6 +315,23 @@ export default function PlanDetailView({ planKey, tasks, lists, apiPlans = [], r
             {plan.overdue > 0 && <span className="ui-meta" style={{ color: 'var(--danger)' }}>逾期 {plan.overdue} 項</span>}
           </div>
         </div>
+
+        {/* 已結束：清楚標示歷史／唯讀，並給出唯一的回頭路 */}
+        {plan.status === 'ended' && (
+          <SurfaceCard style={{ marginTop: 'var(--sp-5)' }}>
+            <b>這個計畫已結束</b>
+            <div className="ui-meta" style={{ marginTop: 2 }}>
+              以下是結束當時的任務與進度，僅供查看。要繼續做這些任務，請從右上「•••」選「重新開始」。
+            </div>
+          </SurfaceCard>
+        )}
+        {/* 既有 archived 舊資料：唯讀歷史。封存功能已移除，沒有恢復入口。 */}
+        {plan.status === 'archived' && (
+          <SurfaceCard style={{ marginTop: 'var(--sp-5)' }}>
+            <b>這是一份封存的舊紀錄</b>
+            <div className="ui-meta" style={{ marginTop: 2 }}>僅供查看。</div>
+          </SurfaceCard>
+        )}
 
         {/* 需要調整時才出現；跟 Today 用同一套 accent 語意，不是紅色警告 */}
         {health?.needsAdjustment && (
@@ -436,8 +460,7 @@ export default function PlanDetailView({ planKey, tasks, lists, apiPlans = [], r
               <ListRow title="結束計畫" subtitle="不再繼續了，未完成的任務會保留"
                 role="button" tabIndex={0} style={{ cursor: 'pointer' }} onClick={() => endPlan(false)} />
             )}
-            {/* 暫停 ≠ 封存。封存是「收起來不看」，暫停是「這個計畫先不排時間」。
-                兩者的確認畫面與對未完成任務的處理都不一樣，不能互相冒充。 */}
+            {/* 暫停：這個計畫先不排時間，之後可以繼續。封存已從產品移除。 */}
             {['draft', 'active'].includes(plan.status) && (
               <ListRow title="暫停計畫" subtitle="先不排時間，之後可以恢復"
                 role="button" tabIndex={0} style={{ cursor: 'pointer' }}
@@ -447,11 +470,6 @@ export default function PlanDetailView({ planKey, tasks, lists, apiPlans = [], r
               <ListRow title="繼續計畫" subtitle="回到進行中，重新開始安排時間"
                 role="button" tabIndex={0} style={{ cursor: 'pointer' }} onClick={resumePlan} />
             )}
-            {plan.status !== 'archived'
-              ? <ListRow title="封存" subtitle="收起來，不會刪掉任何任務"
-                  role="button" tabIndex={0} style={{ cursor: 'pointer' }} onClick={archive} />
-              : <ListRow title="恢復計畫" subtitle="放回進行中"
-                  role="button" tabIndex={0} style={{ cursor: 'pointer' }} onClick={restore} />}
             <ListRow title="刪除計畫" subtitle="從清單中移除，無法復原"
               role="button" tabIndex={0} style={{ cursor: 'pointer', color: 'var(--danger, #c0392b)' }}
               onClick={() => { setRetain(null); setSheet('confirmDelete'); }} />
@@ -515,20 +533,22 @@ export default function PlanDetailView({ planKey, tasks, lists, apiPlans = [], r
         </BottomSheet>
       )}
 
-      {/* ---------- 刪除確認：跟暫停是完全不同的畫面，而且要按兩次 ---------- */}
+      {/* ---------- 刪除確認：跟暫停是完全不同的畫面，而且要按兩次 ----------
+          刪除沒有「保留任務」選項：整個計畫連同所有任務都會移除。想留進度但不再
+          繼續，正確操作是「結束計畫」，不是刪除。 */}
       {sheet === 'confirmDelete' && (
         <BottomSheet onClose={close} label="刪除這個計畫">
           <b style={{ fontSize: 17, color: 'var(--danger, #c0392b)' }}>刪除這個計畫？</b>
           <div className="ui-meta" style={{ marginTop: 'var(--sp-2)' }}>
-            計畫會從清單中消失，而且<b>無法復原</b>。
-            已完成的任務、讀書紀錄和過去的排程歷史都會保留下來。
+            這個計畫及其中<b>所有任務</b>都會從 App 中移除，<b>無法復原</b>。
+            <br />
+            如果只是不再繼續、但想留住目前的進度，請改用「結束計畫」。
           </div>
-          <RetainPicker kind="delete" value={retain} onChange={setRetain} />
           {err && <div className="error" style={{ marginTop: 'var(--sp-3)' }}>{err}</div>}
           <div className="row" style={{ marginTop: 'var(--sp-5)' }}>
             <Button onClick={close}>取消</Button>
             <Button variant="destructive" style={{ marginLeft: 'auto' }}
-              disabled={busy || retain === null} onClick={() => setSheet('confirmDeleteFinal')}>下一步</Button>
+              disabled={busy} onClick={() => setSheet('confirmDeleteFinal')}>下一步</Button>
           </div>
         </BottomSheet>
       )}
@@ -536,10 +556,7 @@ export default function PlanDetailView({ planKey, tasks, lists, apiPlans = [], r
         <BottomSheet onClose={close} label="確定刪除">
           <b style={{ fontSize: 17, color: 'var(--danger, #c0392b)' }}>真的要刪除「{plan.name}」？</b>
           <div className="ui-meta" style={{ marginTop: 'var(--sp-2)' }}>
-            這個動作沒有復原按鈕。
-            {retain
-              ? '未完成的任務會變成一般待辦留下來。'
-              : '未完成的任務會一起移到垃圾桶。'}
+            這個動作沒有復原按鈕。計畫及其中所有任務都會從 App 中移除。
           </div>
           {err && <div className="error" style={{ marginTop: 'var(--sp-3)' }}>{err}</div>}
           <div className="row" style={{ marginTop: 'var(--sp-5)' }}>

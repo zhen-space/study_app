@@ -77,7 +77,7 @@ const activeBlocks = async (userId) => {
     [userId, st.active_version_id]);
 };
 
-describe('retain 選項必須明確', () => {
+describe('retain 選項：只有暫停用得到', () => {
   test('缺少、字串、數字、null 一律拒絕；只有 boolean 通過', () => {
     for (const body of [{}, null, undefined, { retain_incomplete_tasks: 'true' },
       { retain_incomplete_tasks: 1 }, { retain_incomplete_tasks: 0 },
@@ -90,15 +90,24 @@ describe('retain 選項必須明確', () => {
     assert.deepEqual(parseRetainChoice({ retain_incomplete_tasks: false }), { ok: true, value: false });
   });
 
-  test('四種組合的處置各不相同', () => {
+  test('各動作的處置：暫停看 retain，刪除一律清掉全部', () => {
+    // 暫停＋保留 → 全留；暫停＋不保留 → 未完成軟刪
     assert.deepEqual(planTaskDisposition({ action: 'pause', retain: true }),
-      { detach: false, softDelete: false, clearScheduleMirror: false });
+      { mode: 'none', scope: 'incomplete' });
     assert.deepEqual(planTaskDisposition({ action: 'pause', retain: false }),
-      { detach: false, softDelete: true, clearScheduleMirror: false });
+      { mode: 'soft_delete', scope: 'incomplete' });
+    // 刪除沒有 retain：不管有沒有給，一律 soft-delete 所有 Task
+    assert.deepEqual(planTaskDisposition({ action: 'delete' }),
+      { mode: 'soft_delete', scope: 'all' });
     assert.deepEqual(planTaskDisposition({ action: 'delete', retain: true }),
-      { detach: true, softDelete: false, clearScheduleMirror: true });
+      { mode: 'soft_delete', scope: 'all' }, '刪除忽略 retain');
     assert.deepEqual(planTaskDisposition({ action: 'delete', retain: false }),
-      { detach: false, softDelete: true, clearScheduleMirror: false });
+      { mode: 'soft_delete', scope: 'all' });
+    // 舊的「刪除＋保留 → detach standalone」行為必須完全消失
+    for (const d of [planTaskDisposition({ action: 'delete', retain: true }),
+      planTaskDisposition({ action: 'delete' })]) {
+      assert.equal('detach' in d, false, 'detach 語意必須整個移除');
+    }
     assert.throws(() => planTaskDisposition({ action: 'archive', retain: true }), /未知/);
     assert.throws(() => planTaskDisposition({ action: 'pause', retain: 'true' }), /boolean/);
   });
@@ -182,66 +191,61 @@ describe('暫停但不保留未完成任務', () => {
   });
 });
 
-describe('刪除並保留未完成任務', () => {
-  test('轉成 standalone、清掉排程鏡射、保留截止日與教材連結', async () => {
+describe('刪除計畫：所有任務一律 soft-delete，不 detach', () => {
+  test('未完成、已完成、已取消的 Task 全部 soft-delete，plan_id 保留、絕不 standalone', async () => {
     const s = await seed();
+    // 追加一個已取消的 Task，證明「所有狀態」都被涵蓋
+    const cancelled = (await q.run(
+      `INSERT INTO tasks (user_id,plan_id,title,cancelled,cancelled_at) VALUES (?,?,?,?,?)`,
+      [s.userId, s.planId, '不做了', 1, '2026-01-02T00:00:00Z'])).lastInsertRowid;
+
     await sched.transitionPlanLifecycle(s.userId, s.planId,
-      { nextStatus: 'deleted', cleanupAction: 'delete', retainIncompleteTasks: true });
+      { nextStatus: 'deleted', cleanupAction: 'delete' });
 
     const p = await plan(s.planId);
     assert.equal(p.status, 'deleted');
     assert.ok(p.deleted_at, 'tombstone 必須留下刪除時間');
 
+    // 未完成、已完成、已取消 —— 全部 deleted=1，全部保留 plan_id（絕不 detach）
+    for (const id of [s.openA, s.openB, s.done, cancelled]) {
+      const t = await task(id);
+      assert.equal(Number(t.deleted), 1, `#${id} 必須被 soft-delete`);
+      assert.equal(Number(t.plan_id), Number(s.planId), `#${id} 不得 detach 成 standalone`);
+    }
+    // 未完成 Task 的內容欄位不因刪除而被抹掉（soft-delete 只翻 deleted 旗標）
     const a = await task(s.openA);
-    assert.equal(a.plan_id, null, '未完成 Task 變成 standalone');
-    assert.equal(Number(a.deleted ?? 0), 0);
-    assert.equal(a.due_date, null, 'Plan 排程鏡射必須清掉');
-    assert.equal(a.due_time, null);
-    // 正式截止日與其他欄位不能被順手清掉
     assert.equal(a.deadline_date, '2099-12-31');
-    assert.equal(a.notes, '重點在例題');
-    assert.equal(Number(a.estimated_minutes), 60);
-    assert.equal(Number(a.material_book_id), 7);
     assert.equal(Number(a.material_content_item_id), 9);
-    assert.equal(a.title, '第一章');
 
-    // 已完成 Task 仍掛在（已刪除的）計畫底下 —— 那是歷史，不是活資料
-    const d = await task(s.done);
-    assert.equal(Number(d.plan_id), Number(s.planId));
-    assert.equal(Number(d.completed), 1);
-
+    // 別的計畫的安排完全不受影響
     const now = await activeBlocks(s.userId);
     assert.deepEqual(now.map(b => Number(b.task_id)), [s.otherTask]);
+    // 歷史版本是 immutable snapshot，一列都不能少
+    const old = await q.all('SELECT * FROM scheduled_blocks WHERE schedule_version_id=?', [s.versionId]);
+    assert.equal(old.length, 3, '歷史版本不得被修改');
+  });
+
+  test('刪除不需要、也不接受 retain：帶了也一律刪除全部任務', async () => {
+    const s = await seed();
+    // 就算誤帶 retain=true，也不會有任何 Task 存活成 standalone
+    await sched.transitionPlanLifecycle(s.userId, s.planId,
+      { nextStatus: 'deleted', cleanupAction: 'delete', retainIncompleteTasks: true });
+    for (const id of [s.openA, s.openB, s.done]) {
+      const t = await task(id);
+      assert.equal(Number(t.deleted), 1);
+      assert.notEqual(t.plan_id, null, '任何情況都不得出現 standalone');
+    }
   });
 
   test('刪除是終點：不能再轉成任何狀態', async () => {
     const s = await seed();
     await sched.transitionPlanLifecycle(s.userId, s.planId,
-      { nextStatus: 'deleted', cleanupAction: 'delete', retainIncompleteTasks: true });
+      { nextStatus: 'deleted', cleanupAction: 'delete' });
     for (const nextStatus of ['active', 'paused', 'archived', 'completed', 'ended', 'deleted']) {
       await assert.rejects(
         () => sched.transitionPlanLifecycle(s.userId, s.planId, { nextStatus }),
         /已經刪除/, `不該允許 deleted → ${nextStatus}`);
     }
-  });
-});
-
-describe('刪除且不保留未完成任務', () => {
-  test('未完成 Task soft-delete，已完成／歷史全部保留', async () => {
-    const s = await seed();
-    await sched.transitionPlanLifecycle(s.userId, s.planId,
-      { nextStatus: 'deleted', cleanupAction: 'delete', retainIncompleteTasks: false });
-
-    for (const id of [s.openA, s.openB]) {
-      const t = await task(id);
-      assert.equal(Number(t.deleted), 1);
-      assert.equal(Number(t.plan_id), Number(s.planId));
-    }
-    const d = await task(s.done);
-    assert.equal(Number(d.completed), 1);
-    assert.equal(Number(d.deleted ?? 0), 0);
-    const old = await q.all('SELECT * FROM scheduled_blocks WHERE schedule_version_id=?', [s.versionId]);
-    assert.equal(old.length, 3, '歷史版本不得被修改');
   });
 });
 
@@ -358,35 +362,42 @@ describe('Transaction rollback', () => {
     const t = (await q.run('INSERT INTO tasks (user_id,title,plan_id,due_date) VALUES (?,?,?,?)',
       [userId, '任務', planId, tomorrow()])).lastInsertRowid;
     const out = await sched.transitionPlanLifecycle(userId, planId,
-      { nextStatus: 'deleted', cleanupAction: 'delete', retainIncompleteTasks: true });
+      { nextStatus: 'deleted', cleanupAction: 'delete' });
     assert.equal(out.version, null);
     assert.equal((await plan(planId)).status, 'deleted');
     const after = await task(t);
-    assert.equal(after.plan_id, null);
-    assert.equal(after.due_date, null);
+    assert.equal(Number(after.deleted), 1, '任務被 soft-delete');
+    assert.equal(Number(after.plan_id), Number(planId), '不 detach，plan_id 保留');
   });
 });
 
-describe('沒有 cleanupAction 的轉換維持原語意', () => {
-  test('封存不動任何 Task', async () => {
-    const s = await seed();
-    await sched.transitionPlanLifecycle(s.userId, s.planId, { nextStatus: 'archived' });
-    for (const id of [s.openA, s.openB]) {
-      const t = await task(id);
-      assert.equal(Number(t.deleted ?? 0), 0);
-      assert.equal(Number(t.plan_id), Number(s.planId));
+describe('封存功能已移除；既有 archived 舊資料仍可安全轉出', () => {
+  test('任何進行中狀態都不能再轉成 archived', async () => {
+    // 只需要一筆各狀態的 Plan（不需要 blocks），直接建列避免對 completed/ended
+    // 建 ScheduleVersion 時的資格檢查
+    for (const status of ['draft', 'active', 'paused', 'completed', 'ended']) {
+      const userId = nextUser++;
+      await q.run('INSERT INTO users (id,email,password_hash) VALUES (?,?,?)', [userId, `u${userId}@t`, 'x']);
+      const planId = (await q.run('INSERT INTO plans (user_id,name,status) VALUES (?,?,?)',
+        [userId, `${status} 計畫`, status])).lastInsertRowid;
+      await assert.rejects(
+        () => sched.transitionPlanLifecycle(userId, planId, { nextStatus: 'archived' }),
+        /不能進行此狀態轉換/, `${status} → archived 應被拒絕`);
     }
-    assert.equal((await plan(s.planId)).lifecycle_retained_tasks, null);
   });
 
-  test('刪除已封存的計畫時，封存時間戳不會被清掉', async () => {
+  test('刪除既有 archived 舊資料：所有 Task soft-delete，封存時間戳不被抹掉', async () => {
     const s = await seed();
-    await sched.transitionPlanLifecycle(s.userId, s.planId, { nextStatus: 'archived' });
-    const archivedAt = (await plan(s.planId)).archived_at;
-    assert.ok(archivedAt);
+    // 直接寫入一筆 archived 舊資料（模擬 production 既有資料，不經 transition）
+    await q.run("UPDATE plans SET status='archived', archived_at='2026-01-01T00:00:00Z', archived_from_status='completed' WHERE id=?", [s.planId]);
     await sched.transitionPlanLifecycle(s.userId, s.planId,
-      { nextStatus: 'deleted', cleanupAction: 'delete', retainIncompleteTasks: false });
-    assert.equal((await plan(s.planId)).archived_at, archivedAt, 'tombstone 不得抹掉歷史時間戳');
+      { nextStatus: 'deleted', cleanupAction: 'delete' });
+    const p = await plan(s.planId);
+    assert.equal(p.status, 'deleted');
+    assert.equal(p.archived_at, '2026-01-01T00:00:00Z', 'tombstone 不得抹掉歷史時間戳');
+    for (const id of [s.openA, s.openB, s.done]) {
+      assert.equal(Number((await task(id)).deleted), 1);
+    }
   });
 });
 

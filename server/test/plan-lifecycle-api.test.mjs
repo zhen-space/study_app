@@ -34,20 +34,25 @@ async function fixture(name = '計畫') {
   return { plan, open, done };
 }
 
-describe('retain_incomplete_tasks 必填', () => {
-  for (const action of ['pause', 'delete']) {
-    test(`${action}：沒給、給字串、給數字都是 400`, async () => {
-      const { plan } = await fixture(`必填-${action}`);
-      for (const body of [{}, { retain_incomplete_tasks: 'true' }, { retain_incomplete_tasks: 1 },
-        { retain_incomplete_tasks: null }]) {
-        const r = await post(`/plans/${plan.id}/${action}`, body);
-        assert.equal(r.status, 400, `${JSON.stringify(body)} 應被拒絕`);
-        assert.equal(r.body.code, 'retain_choice_required');
-      }
-      // 被拒絕的請求不得留下任何副作用
-      assert.equal((await get(`/plans/${plan.id}`)).body.plan.status, 'active');
-    });
-  }
+describe('retain_incomplete_tasks：只有暫停必填', () => {
+  test('暫停：沒給、給字串、給數字都是 400', async () => {
+    const { plan } = await fixture('必填-pause');
+    for (const body of [{}, { retain_incomplete_tasks: 'true' }, { retain_incomplete_tasks: 1 },
+      { retain_incomplete_tasks: null }]) {
+      const r = await post(`/plans/${plan.id}/pause`, body);
+      assert.equal(r.status, 400, `${JSON.stringify(body)} 應被拒絕`);
+      assert.equal(r.body.code, 'retain_choice_required');
+    }
+    assert.equal((await get(`/plans/${plan.id}`)).body.plan.status, 'active');
+  });
+
+  test('刪除：不需要 retain，空 body 就能刪；帶了也被忽略', async () => {
+    const a = await fixture('刪除-空body');
+    assert.equal((await post(`/plans/${a.plan.id}/delete`, {})).status, 200);
+    // 誤帶 retain 也不會被當成 400，一樣刪除
+    const b = await fixture('刪除-誤帶retain');
+    assert.equal((await post(`/plans/${b.plan.id}/delete`, { retain_incomplete_tasks: true })).status, 200);
+  });
 });
 
 describe('暫停', () => {
@@ -105,7 +110,7 @@ describe('暫停', () => {
 describe('刪除', () => {
   test('刪除後對一般 API 完全不存在', async () => {
     const { plan } = await fixture('刪除-消失');
-    assert.equal((await post(`/plans/${plan.id}/delete`, { retain_incomplete_tasks: true })).status, 200);
+    assert.equal((await post(`/plans/${plan.id}/delete`, {})).status, 200);
 
     assert.equal((await get(`/plans/${plan.id}`)).status, 404);
     assert.equal((await get(`/plans/${plan.id}/health`)).status, 404);
@@ -120,7 +125,7 @@ describe('刪除', () => {
 
   test('刪除後不能再做任何 lifecycle 動作，也不能掛新任務', async () => {
     const { plan } = await fixture('刪除-終點');
-    await post(`/plans/${plan.id}/delete`, { retain_incomplete_tasks: false });
+    await post(`/plans/${plan.id}/delete`, {});
     for (const action of ['pause', 'resume', 'archive', 'restore', 'complete', 'end']) {
       const r = await post(`/plans/${plan.id}/${action}`, { retain_incomplete_tasks: true });
       assert.equal(r.status, 404, `${action} 應該找不到這個計畫`);
@@ -128,29 +133,105 @@ describe('刪除', () => {
     assert.equal((await post('/tasks', { title: 'x', plan_id: plan.id })).status, 400);
   });
 
-  test('保留未完成任務時，它變成一般待辦並保留內容', async () => {
-    const { plan, open } = await fixture('刪除-保留');
+  test('計畫與其中所有任務（未完成、已完成、已取消）一律 soft-delete，不 detach', async () => {
+    const { plan, open, done } = await fixture('刪除-全刪');
     await call(`/tasks/${open.id}`, { method: 'PATCH', body: { notes: '記得帶講義', deadline_date: day(9) } });
-    await post(`/plans/${plan.id}/delete`, { retain_incomplete_tasks: true });
+    const cancelled = (await post('/tasks', { title: '不做了', plan_id: plan.id })).body;
+    await post(`/tasks/${cancelled.id}/cancel`, {});
 
-    const t = (await get('/tasks')).body.find(x => x.id === open.id);
-    assert.ok(t, '未完成任務必須還在');
-    assert.equal(t.plan_id, null, '轉成 standalone');
-    assert.equal(t.notes, '記得帶講義');
-    assert.equal(t.deadline_date, day(9), '正式截止日必須保留');
-    assert.equal(t.due_date ?? null, null, 'Plan 排程鏡射必須清掉');
+    await post(`/plans/${plan.id}/delete`, {});
+
+    const list = (await get('/tasks')).body;
+    for (const id of [open.id, done.id, cancelled.id]) {
+      const t = list.find(x => x.id === id);
+      assert.ok(t, `#${id} 必須還在資料裡——軟刪除才救得回、歷史版本才看得懂`);
+      assert.equal(Number(t.deleted), 1, `#${id} 必須 soft-delete`);
+      assert.equal(t.plan_id, plan.id, `#${id} 不得 detach 成 standalone`);
+    }
+    // soft-delete 只翻旗標，內容不被抹掉
+    const goneOpen = list.find(x => x.id === open.id);
+    assert.equal(goneOpen.notes, '記得帶講義');
+    assert.equal(goneOpen.deadline_date, day(9));
+    // 不會留下任何一般待辦（plan_id=NULL 的存活任務）
+    const orphans = list.filter(t => [open.id, done.id, cancelled.id].includes(t.id) && t.plan_id == null);
+    assert.equal(orphans.length, 0, '刪除後不得出現 standalone 任務');
   });
 
-  test('不保留時未完成任務走軟刪除（不是 hard delete），已完成任務原封不動', async () => {
-    const { plan, open, done } = await fixture('刪除-不保留');
-    await post(`/plans/${plan.id}/delete`, { retain_incomplete_tasks: false });
-    const list = (await get('/tasks')).body;
-    const gone = list.find(t => t.id === open.id);
-    assert.ok(gone, '必須還在資料裡——軟刪除才救得回、歷史版本才看得懂');
-    assert.equal(Number(gone.deleted), 1);
-    const kept = list.find(t => t.id === done.id);
-    assert.equal(Number(kept.deleted ?? 0), 0);
-    assert.equal(Number(kept.completed), 1);
+  test('刪除任務不撤銷既有 Material completion，StudySession 也保留', async () => {
+    const { plan, open } = await fixture('刪除-material');
+    // 為 open 建一段 StudySession（歷史執行紀錄）
+    const s = (await post('/study-sessions', { task_id: open.id })).body;
+    await call(`/study-sessions/${s.id}`, { method: 'PATCH', body: { status: 'completed' } });
+
+    await post(`/plans/${plan.id}/delete`, {});
+
+    // StudySession 仍在（透過 /study-sessions 查得到），任務列雖 deleted=1 但未 hard delete
+    const sessions = (await get('/study-sessions')).body;
+    assert.ok(sessions.some(x => x.id === s.id), 'StudySession 必須保留');
+  });
+});
+
+describe('已結束計畫：保留進度、退出執行面、可讀但不可執行', () => {
+  test('GET /tasks 帶回 plan_status，讓前端投影面可以據此排除', async () => {
+    const { plan, open } = await fixture('ended-status');
+    await post(`/plans/${plan.id}/end`, { confirm: true });
+    const t = (await get('/tasks')).body.find(x => x.id === open.id);
+    assert.ok(t, '任務仍存在');
+    assert.equal(t.plan_status, 'ended', 'GET /tasks 必須帶 plan_status');
+    assert.equal(Number(t.deleted ?? 0), 0, '結束不刪任務');
+    assert.equal(t.plan_id, plan.id, '仍屬於原計畫');
+  });
+
+  test('一般待辦（plan_id=NULL）的 plan_status 為空，仍算可執行', async () => {
+    const loose = (await post('/tasks', { title: '買參考書' })).body;
+    const t = (await get('/tasks')).body.find(x => x.id === loose.id);
+    assert.equal(t.plan_status ?? null, null);
+  });
+
+  test('結束保留完成率的實際數字，不變成 100%', async () => {
+    const { plan } = await fixture('ended-完成率');
+    await post(`/plans/${plan.id}/end`, { confirm: true });
+    const listed = (await get('/plans?status=ended')).body.find(p => p.id === plan.id);
+    assert.equal(listed.task_count, 2);
+    assert.equal(listed.completed_task_count, 1, '完成率維持 1/2，結束不得灌成全完成');
+  });
+
+  test('ended 計畫的未完成任務不能開始讀書；不列入 unplaced', async () => {
+    const { plan, open } = await fixture('ended-執行面');
+    await post('/schedule/bootstrap', {});
+    await post(`/plans/${plan.id}/end`, { confirm: true });
+
+    const blocked = await post('/study-sessions', { task_id: open.id });
+    assert.equal(blocked.status, 409, 'ended 計畫的任務不能開始讀書');
+
+    const sched = await get('/schedule/active');
+    if (sched.status === 200 && Array.isArray(sched.body.unplaced)) {
+      assert.equal(sched.body.unplaced.map(t => Number(t.id)).includes(Number(open.id)), false);
+    }
+  });
+
+  test('Plan Detail 仍可查看原任務與實際進度', async () => {
+    const { plan, open, done } = await fixture('ended-detail');
+    await post(`/plans/${plan.id}/end`, { confirm: true });
+    const detail = await get(`/plans/${plan.id}`);
+    assert.equal(detail.status, 200);
+    assert.equal(detail.body.plan.status, 'ended');
+    const ids = detail.body.tasks.map(t => t.id);
+    assert.ok(ids.includes(open.id) && ids.includes(done.id), '原任務都看得到');
+    assert.equal(detail.body.summary.completed_tasks, 1);
+    assert.equal(detail.body.summary.remaining_tasks, 1);
+  });
+
+  test('restart 後未完成任務恢復排程資格（但不復活舊 blocks）', async () => {
+    const { plan, open } = await fixture('ended-restart');
+    await post(`/plans/${plan.id}/end`, { confirm: true });
+    assert.equal((await post('/study-sessions', { task_id: open.id })).status, 409);
+
+    const back = await post(`/plans/${plan.id}/restart`, {});
+    assert.equal(back.body.plan.status, 'active');
+    const ok = await post('/study-sessions', { task_id: open.id });
+    assert.equal(ok.status, 201, 'restart 後恢復可執行');
+    await call(`/study-sessions/${ok.body.id}`, { method: 'PATCH', body: { status: 'cancelled' } });
   });
 });
 

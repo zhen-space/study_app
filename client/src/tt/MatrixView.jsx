@@ -1,6 +1,6 @@
 import { useRef, useState } from 'react';
 import { api } from '../api';
-import { today, addDays } from './helpers';
+import { today, addDays, onActivePlan } from './helpers';
 
 export default function MatrixView({ tasks, reload }) {
   // 規則可自訂（記在本機）：緊急＝幾天內到期、重要＝優先級門檻
@@ -9,7 +9,7 @@ export default function MatrixView({ tasks, reload }) {
     catch { return { days: 3, pri: 2 }; }
   });
   const setR = patch => setRule(r => { const n = { ...r, ...patch }; localStorage.setItem('matrixRule', JSON.stringify(n)); return n; });
-  const active = tasks.filter(t => !t.completed);
+  const active = tasks.filter(t => !t.completed && onActivePlan(t));
   const urgent = t => t.due_date && t.due_date <= addDays(today(), rule.days - 1);
   const important = t => t.priority >= rule.pri;
   const quads = [

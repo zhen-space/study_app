@@ -105,9 +105,18 @@ router.delete('/lists/:id', async (req, res) => {
 
 // ---- tasks ----
 router.get('/tasks', async (req, res) => {
-  // 自己的任務＋「分享給我的清單」裡的任務
-  const rows = await q.all(`SELECT * FROM tasks WHERE user_id=?
-    UNION SELECT t.* FROM tasks t JOIN list_shares s ON s.list_id=t.list_id AND s.member_id=?
+  // 自己的任務＋「分享給我的清單」裡的任務。
+  //
+  // 一併帶出 plan_status：前端所有「執行面」投影（Today／未來 7 天／願望清單／
+  // 一般進行中任務／Study 開始候選／Calendar 待辦）都要據此排除「不在進行中計畫」
+  // 底下的任務。ended／paused／completed／archived Plan 的任務仍存在、仍屬於原
+  // 計畫（Plan Detail 看得到），但不該出現在這些執行面上。plan_id 為 NULL 的
+  // 一般待辦沒有計畫，plan_status 為 NULL，一律視為可執行。
+  const rows = await q.all(`SELECT t.*, p.status AS plan_status FROM tasks t
+      LEFT JOIN plans p ON p.id=t.plan_id AND p.user_id=t.user_id WHERE t.user_id=?
+    UNION SELECT t.*, p.status AS plan_status FROM tasks t
+      JOIN list_shares s ON s.list_id=t.list_id AND s.member_id=?
+      LEFT JOIN plans p ON p.id=t.plan_id AND p.user_id=t.user_id
     ORDER BY order_index, id DESC`, [req.userId, req.userId]);
   // miss_policy=drop 的重複任務：過期沒做就自動滾到下一次（不留逾期）
   const todayStr = new Date(Date.now() + 8 * 3600e3).toISOString().slice(0, 10); // 台灣時區

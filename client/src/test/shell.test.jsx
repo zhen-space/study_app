@@ -145,7 +145,7 @@ describe('TodayView', () => {
 
   it('P2-2：Today 從 ScheduledBlock 開始讀書，必須帶 task_id 與 scheduled_block_id', async () => {
     const scheduled = {
-      id: 91, list_id: 1, plan_id: 12, title: '物理｜排定任務', due_date: fx.TODAY, due_time: '19:00',
+      id: 91, list_id: 1, plan_id: 12, plan_status: 'active', title: '物理｜排定任務', due_date: fx.TODAY, due_time: '19:00',
       priority: 0, completed: 0, tags: [], subtasks: [], recurring: null, order_index: 99, deleted: 0,
     };
     setApi({

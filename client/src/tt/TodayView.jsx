@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { api } from '../api';
-import { today } from './helpers';
+import { today, onActivePlan } from './helpers';
 import Tasks from './Tasks';
 import Icon from './Icons';
 import { usePlans, shortTitle } from './plans';
@@ -134,7 +134,7 @@ function NextUp({ tasks, lists, reload, goStudy }) {
   const rows = [
     // 只放「已排定的讀書時段」（屬於某個計畫、而且有時間）與固定行程。
     // 一般的有時間任務留在下面的「今天的待辦」，同一件事不會出現兩次。
-    ...tasks.filter(t => !t.deleted && !t.completed && t.due_date === td && t.due_time && t.plan_id != null)
+    ...tasks.filter(t => !t.deleted && !t.completed && onActivePlan(t) && t.due_date === td && t.due_time && t.plan_id != null)
       .map(t => {
         const l = lists.find(x => String(x.id) === String(t.list_id));
         // 這一格對應到的 block。due_date / due_time 就是鏡射自這個任務的第一個
@@ -199,7 +199,7 @@ function NextUp({ tasks, lists, reload, goStudy }) {
 // 今日狀態：一條進度條就夠，不需要一整張儀表板卡
 function TodayProgress({ tasks, goStudy }) {
   const td = today();
-  const mine = tasks.filter(t => !t.deleted && t.due_date === td);
+  const mine = tasks.filter(t => !t.deleted && onActivePlan(t) && t.due_date === td);
   const done = mine.filter(t => t.completed).length;
   const left = mine.length - done;
 

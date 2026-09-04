@@ -235,24 +235,24 @@ describe('Plan 管理操作（全部走既有 /plans API）', () => {
     noCrash();
   });
 
-  it('封存 → POST /plans/:id/archive，並說明不會刪任務', async () => {
+  it('封存功能已移除：••• 沒有「封存」入口', async () => {
     withPlan();
     await goPlans();
     await openManage('第二次段考準備');
-    expect(screen.getByText(/不會刪掉任何任務/)).toBeInTheDocument();
-    await click(sheetRow('封存'));
-    expect(sent('POST', '/plans/12/archive').length).toBe(1);
+    expect(within(document.querySelector('.sheet-panel')).queryByText('封存')).toBeNull();
     noCrash();
   });
 
-  it('已封存的計畫顯示「恢復」→ POST /plans/:id/restore', async () => {
+  it('既有封存計畫唯讀可讀，且沒有「恢復封存」入口', async () => {
+    // archivedPlan 從「已完成」封存 → 投影進「已完成」區塊
     setApi({ '/plans': [fx.archivedPlan], '/tasks': fx.tasks });
     await goPlans();
-    await click(screen.getByRole('button', { name: /已封存/ }));
+    await click(screen.getByRole('button', { name: /已完成/ }));
     await openManage('封存過的計畫');
-    expect(within(document.querySelector('.sheet-panel')).queryByText('封存')).not.toBeInTheDocument();
-    await click(sheetRow('恢復計畫'));
-    expect(sent('POST', '/plans/31/restore').length).toBe(1);
+    const panel = document.querySelector('.sheet-panel');
+    expect(within(panel).queryByText('封存')).toBeNull();
+    expect(within(panel).queryByText('恢復計畫')).toBeNull();
+    expect(within(panel).queryByText(/恢復/)).toBeNull();
     noCrash();
   });
 
@@ -267,22 +267,21 @@ describe('Plan 管理操作（全部走既有 /plans API）', () => {
 });
 
 describe('狀態分組', () => {
-  it('進行中／已完成分開，已封存預設收起來', async () => {
+  it('進行中直接是卡片；沒有「已封存」區塊，封存舊資料投影進「已完成」', async () => {
     setApi({ '/plans': [fx.plans[0], fx.completedPlan, fx.archivedPlan], '/tasks': [...fx.tasks, ...fx.planTasks] });
     await goPlans();
-    // UI-R2：進行中直接是卡片；已完成／已封存收成一行，點了才展開，
-    // 免得 Plans 首頁變成歷史資料庫
     expect(cardTitles()).toContain('第二次段考準備');
     expect(cardTitles()).not.toContain('做完的計畫');
     expect(cardTitles()).not.toContain('封存過的計畫');
     const rows = [...main().querySelectorAll('.plan-section-row')].map(x => x.textContent);
     expect(rows.some(r => r.includes('已完成'))).toBe(true);
-    expect(rows.some(r => r.includes('已封存'))).toBe(true);
+    // 一般分類不再有「已封存」區塊
+    expect(rows.some(r => r.includes('已封存'))).toBe(false);
 
-    await click(screen.getByRole('button', { name: /已封存/ }));
-    expect(cardTitles()).toContain('封存過的計畫');
+    // archivedPlan（從已完成封存）與真正的 completedPlan 一起收在「已完成」底下
     await click(screen.getByRole('button', { name: /已完成/ }));
     expect(cardTitles()).toContain('做完的計畫');
+    expect(cardTitles()).toContain('封存過的計畫');
     noCrash();
   });
 });
@@ -434,10 +433,10 @@ describe('新增任務到計畫（空白計畫的閉環）', () => {
     noCrash();
   });
 
-  it('已封存的計畫不提供新增任務（後端本來就會擋）', async () => {
+  it('既有封存計畫是唯讀歷史，不提供新增任務', async () => {
     setApi({ '/plans': [fx.archivedPlan], '/tasks': fx.tasks });
     await goPlans();
-    await click(screen.getByRole('button', { name: /已封存/ }));
+    await click(screen.getByRole('button', { name: /已完成/ }));
     await click(cardByName('封存過的計畫'));
     expect(screen.queryByRole('button', { name: /新增任務/ })).not.toBeInTheDocument();
     noCrash();

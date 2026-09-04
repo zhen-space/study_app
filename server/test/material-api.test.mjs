@@ -297,9 +297,10 @@ describe('Plan selection lifecycle（契約 4、6、9）', () => {
   });
 
   test('不參與排程的 Plan 不能調整選取', async () => {
-    const B = await seedBook('封存計畫');
-    const plan = await mkPlan('要封存的計畫');
-    await ok('POST', `/plans/${plan.id}/archive`);
+    const B = await seedBook('暫停計畫');
+    const plan = await mkPlan('要暫停的計畫');
+    // 封存功能已移除；改用暫停做「不參與排程」的代表狀態
+    await ok('POST', `/plans/${plan.id}/pause`, { retain_incomplete_tasks: true });
     const r = await api('POST', `/plans/${plan.id}/material-items`,
       { content_item_ids: [B.reading.id], selected: true });
     assert.equal(r.status, 409);

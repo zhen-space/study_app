@@ -90,8 +90,8 @@ describe('••• 選單', () => {
     await openManage();
     expect(within(sheet()).getByText('暫停計畫')).toBeInTheDocument();
     expect(within(sheet()).getByText('刪除計畫')).toBeInTheDocument();
-    // 封存仍然是另一個獨立動作，沒有被拿來冒充
-    expect(within(sheet()).getByText('封存')).toBeInTheDocument();
+    // 封存功能已移除：不再有「封存」入口
+    expect(within(sheet()).queryByText('封存')).toBeNull();
     noCrash();
   });
 
@@ -141,9 +141,11 @@ describe('重新開始', () => {
     noCrash();
   });
 
-  it('已結束的計畫也有重新開始的入口', async () => {
+  it('已結束的計畫列在「已結束」區塊，並有重新開始的入口', async () => {
     withPlan({}, { ...fx.plans[0], status: 'ended' });
-    await openManage('第二次段考準備', '其他');
+    await goPlans();
+    expect(within(main()).getByText('已結束')).toBeInTheDocument();
+    await openManage('第二次段考準備', '已結束');
     expect(within(sheet()).getByText('重新開始')).toBeInTheDocument();
     await click(sheetRow('重新開始'));
     expect(sent('POST', '/plans/12/restart').length).toBe(1);
@@ -262,6 +264,98 @@ describe('結束計畫是不再繼續的出口', () => {
   });
 });
 
+describe('封存功能移除：既有 archived 舊資料的 read compatibility', () => {
+  it('archived_from_status=ended 的舊資料投影進「已結束」區塊', async () => {
+    withPlan({ '/plans': [{ ...fx.plans[0], status: 'archived', archived_from_status: 'ended' }] });
+    await goPlans();
+    // 沒有「已封存」區塊
+    const rows = [...main().querySelectorAll('.plan-section-row')].map(x => x.textContent);
+    expect(rows.some(r => r.includes('已封存'))).toBe(false);
+    expect(rows.some(r => r.includes('已結束'))).toBe(true);
+    await expandSection('已結束');
+    expect(cardByName('第二次段考準備')).toBeTruthy();
+    noCrash();
+  });
+
+  it('archived_from_status=completed 投影進「已完成」', async () => {
+    withPlan({ '/plans': [{ ...fx.plans[0], status: 'archived', archived_from_status: 'completed' }] });
+    await goPlans();
+    const rows = [...main().querySelectorAll('.plan-section-row')].map(x => x.textContent);
+    expect(rows.some(r => r.includes('已完成'))).toBe(true);
+    noCrash();
+  });
+
+  it('無法歸類的 archived（archived_from_status=active）落到「其他」，不猜成完成/結束', async () => {
+    withPlan({ '/plans': [{ ...fx.plans[0], status: 'archived', archived_from_status: 'active' }] });
+    await goPlans();
+    const rows = [...main().querySelectorAll('.plan-section-row')].map(x => x.textContent);
+    expect(rows.some(r => r.includes('其他'))).toBe(true);
+    expect(rows.some(r => r.includes('已完成'))).toBe(false);
+    expect(rows.some(r => r.includes('已結束'))).toBe(false);
+    noCrash();
+  });
+
+  it('archived Plan Detail 唯讀、且沒有封存/恢復入口', async () => {
+    const tasks = fx.planTasks.map(t => ({ ...t, plan_status: 'archived' }));
+    withPlan({
+      '/plans': [{ ...fx.plans[0], status: 'archived', archived_from_status: 'completed' }],
+      '/tasks': [...fx.tasks, ...tasks],
+    });
+    await goPlans();
+    await expandSection('已完成');
+    await click(cardByName('第二次段考準備'));
+    // 勾選框停用
+    const boxes = [...main().querySelectorAll('input[type="checkbox"]')];
+    expect(boxes.length).toBeGreaterThan(0);
+    expect(boxes.every(b => b.disabled)).toBe(true);
+    // ••• 裡沒有封存/恢復
+    await click(screen.getByRole('button', { name: '計畫選項' }));
+    expect(within(sheet()).queryByText('封存')).toBeNull();
+    expect(within(sheet()).queryByText('恢復計畫')).toBeNull();
+    noCrash();
+  });
+});
+
+describe('已結束計畫的 Plan Detail 是唯讀歷史', () => {
+  // 已結束計畫＋它底下的任務（plan_status 也是 ended，比照 GET /tasks 的 join）
+  const endedTasks = fx.planTasks.map(t => ({ ...t, plan_status: 'ended' }));
+  const withEnded = () => withPlan({
+    '/plans': [{ ...fx.plans[0], status: 'ended' }],
+    '/tasks': [...fx.tasks, ...endedTasks],
+  });
+
+  it('清楚標示已結束，並說明要重新開始才能繼續', async () => {
+    withEnded();
+    await openPlan('第二次段考準備', '已結束');
+    expect(within(main()).getByText(/這個計畫已結束/)).toBeInTheDocument();
+    expect(within(main()).getByText(/重新開始/)).toBeInTheDocument();
+    noCrash();
+  });
+
+  it('未完成任務的勾選框停用——不能在結束狀態直接勾', async () => {
+    withEnded();
+    await openPlan('第二次段考準備', '已結束');
+    const boxes = [...main().querySelectorAll('input[type="checkbox"]')];
+    expect(boxes.length).toBeGreaterThan(0);
+    expect(boxes.every(b => b.disabled), '所有任務勾選框都應停用').toBe(true);
+  });
+
+  it('不提供新增任務／調整計畫的入口', async () => {
+    withEnded();
+    await openPlan('第二次段考準備', '已結束');
+    expect(within(main()).queryByRole('button', { name: '調整計畫' })).toBeNull();
+    expect(within(main()).queryByText(/加入第一個任務/)).toBeNull();
+    noCrash();
+  });
+
+  it('仍看得到任務與實際進度', async () => {
+    withEnded();
+    await openPlan('第二次段考準備', '已結束');
+    // 任務標題仍在畫面上（去掉科目前綴後的短標題）
+    expect(main().textContent).toMatch(/力學複習|電磁複習/);
+  });
+});
+
 describe('暫停的計畫仍然看得見', () => {
   it('列在「已暫停」區塊裡，並標示已暫停——不是消失、也不是被當成已封存', async () => {
     withPlan({}, { ...fx.plans[0], status: 'paused' });
@@ -324,31 +418,35 @@ describe('暫停確認', () => {
   });
 });
 
-describe('刪除確認', () => {
-  it('跟暫停是不同的畫面，而且明說無法復原', async () => {
+describe('刪除確認：整個計畫連同所有任務移除，沒有保留選項', () => {
+  it('跟暫停是不同的畫面，明說會移除所有任務且無法復原，沒有「保留任務」選項', async () => {
     withPlan();
     await openManage();
     await click(sheetRow('刪除計畫'));
     expect(within(sheet()).getByText(/刪除這個計畫？/)).toBeInTheDocument();
+    expect(within(sheet()).getByText(/所有任務/)).toBeInTheDocument();
     expect(within(sheet()).getByText(/無法復原/)).toBeInTheDocument();
+    // 不再有「保留／不保留」的選擇
+    expect(within(sheet()).queryByLabelText(/保留未完成的任務/)).toBeNull();
+    // 指引使用者：想留進度就用結束計畫
+    expect(within(sheet()).getByText(/結束計畫/)).toBeInTheDocument();
     // 暫停畫面的字不該出現在這裡
     expect(within(sheet()).queryByText(/隨時可以再繼續/)).toBeNull();
     noCrash();
   });
 
-  it('沒選保留設定就不能往下一步', async () => {
+  it('沒有保留選項，直接就能往下一步（不需要先選）', async () => {
     withPlan();
     await openManage();
     await click(sheetRow('刪除計畫'));
-    expect(within(sheet()).getByRole('button', { name: '下一步' }).disabled).toBe(true);
+    expect(within(sheet()).getByRole('button', { name: '下一步' }).disabled).toBe(false);
     noCrash();
   });
 
-  it('要按兩次才會真的刪除，而且兩顆都是 destructive 樣式', async () => {
+  it('要按兩次才會真的刪除，兩顆都是 destructive，送出的 body 不帶 retain', async () => {
     withPlan();
     await openManage();
     await click(sheetRow('刪除計畫'));
-    await chooseRetain('保留未完成的任務');
     const next = within(sheet()).getByRole('button', { name: '下一步' });
     expect(next.className).toMatch(/ui-btn--destructive/);
     await click(next);
@@ -359,32 +457,31 @@ describe('刪除確認', () => {
     await click(final);
     const posts = sent('POST', '/plans/12/delete');
     expect(posts.length).toBe(1);
-    expect(posts[0][1].body.retain_incomplete_tasks).toBe(true);
+    expect('retain_incomplete_tasks' in (posts[0][1].body || {})).toBe(false);
     noCrash();
   });
 
-  it('第二層確認會照選擇說明後果，而且可以退回去改', async () => {
+  it('第二層仍是 destructive 警語，而且可以退回去', async () => {
     withPlan();
     await openManage();
     await click(sheetRow('刪除計畫'));
-    await chooseRetain('不保留未完成的任務');
     await click(within(sheet()).getByRole('button', { name: '下一步' }));
-    expect(within(sheet()).getByText(/未完成的任務會一起移到垃圾桶/)).toBeInTheDocument();
+    expect(within(sheet()).getByText(/所有任務都會從 App 中移除/)).toBeInTheDocument();
     await click(within(sheet()).getByRole('button', { name: '返回' }));
     expect(within(sheet()).getByRole('button', { name: '下一步' })).toBeInTheDocument();
     expect(sent('POST', '/plans/12/delete').length).toBe(0);
     noCrash();
   });
 
-  it('刪除不是封存：不會偷偷打 /archive', async () => {
+  it('刪除不是封存、也不是結束：只打 /delete', async () => {
     withPlan();
     await openManage();
     await click(sheetRow('刪除計畫'));
-    await chooseRetain('不保留未完成的任務');
     await click(within(sheet()).getByRole('button', { name: '下一步' }));
     await click(within(sheet()).getByRole('button', { name: '確定刪除' }));
     expect(sent('POST', '/archive').length).toBe(0);
-    expect(sent('POST', '/plans/12/delete')[0][1].body.retain_incomplete_tasks).toBe(false);
+    expect(sent('POST', '/plans/12/end').length).toBe(0);
+    expect(sent('POST', '/plans/12/delete').length).toBe(1);
     noCrash();
   });
 
@@ -392,7 +489,6 @@ describe('刪除確認', () => {
     withPlan();
     await openManage();
     await click(sheetRow('刪除計畫'));
-    await chooseRetain('保留未完成的任務');
     await click(within(sheet()).getByRole('button', { name: '取消' }));
     expect(sent('POST', '/plans/12/delete').length).toBe(0);
     noCrash();
