@@ -1,5 +1,6 @@
 // 測試用的共用工具：開一台乾淨的伺服器（暫存資料庫）、註冊測試帳號、送排程請求
 import { spawn } from 'node:child_process';
+import { after } from 'node:test';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
@@ -15,6 +16,20 @@ import {
 } from './handle-diagnostics.mjs';
 
 const serverDir = path.join(path.dirname(fileURLToPath(import.meta.url)), '..');
+const liveTestServers = new Set();
+
+const closeTestServer = proc => new Promise(resolve => {
+  if (proc.exitCode !== null || proc.signalCode !== null) return resolve();
+  proc.once('close', resolve);
+  proc.kill('SIGKILL');
+});
+
+// Individual tests still stop their own server in finally. This file-level guard
+// closes the rare child whose kill/close race would otherwise keep node --test
+// alive until the CI runner's six-hour ceiling.
+after(async () => {
+  await Promise.all([...liveTestServers].map(closeTestServer));
+});
 
 // 伺服器用「台灣時區的今天」當起點，早於今天的日期會被裁掉。
 // 測試一律用相對日期，才不會過幾天就開始壞掉。
@@ -59,6 +74,8 @@ async function bootOnce(extraEnv = {}, diagnostics = false) {
     },
     stdio: ['ignore', 'pipe', 'pipe'],
   });
+  liveTestServers.add(proc);
+  proc.once('close', () => { liveTestServers.delete(proc); });
   trackChild(instanceId, proc, diagnostics);
   let childClosed = false;
   proc.once('close', () => { childClosed = true; });
@@ -114,19 +131,10 @@ async function bootOnce(extraEnv = {}, diagnostics = false) {
 
   let stopPromise;
   const stop = () => {
-    if (!diagnostics) {
-      proc.kill('SIGKILL');
-      try { rmSync(dir, { recursive: true, force: true }); } catch {}
-      return;
-    }
     if (stopPromise) return stopPromise;
     logStopStarted(instanceId, proc, diagnostics);
     stopPromise = (async () => {
-      await new Promise(resolve => {
-        if (childClosed) return resolve();
-        proc.once('close', resolve);
-        if (proc.exitCode === null && proc.signalCode === null) proc.kill('SIGKILL');
-      });
+      if (!childClosed) await closeTestServer(proc);
       try { rmSync(dir, { recursive: true, force: true }); } catch {}
       logStopCompleted(instanceId, proc, diagnostics);
     })();
