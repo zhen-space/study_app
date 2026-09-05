@@ -30,12 +30,15 @@ jobs:
     # 以前踩過「本機時區解析 + UTC 輸出差一天」的坑，這裡就是在守這件事。
     name: 後端測試（TZ=${{ matrix.tz }}）
     runs-on: ubuntu-latest
+    # recurring hang 要留下診斷證據，但不能再佔用 runner 六小時。
+    timeout-minutes: 15
     strategy:
       fail-fast: false          # 一個時區壞掉，另一個也要跑完才知道是不是時區問題
       matrix:
         tz: [UTC, Asia/Taipei, America/New_York]
     env:
       TZ: ${{ matrix.tz }}
+      CI_HANDLE_DIAGNOSTICS: '1'
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4

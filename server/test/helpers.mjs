@@ -1,11 +1,35 @@
 // 測試用的共用工具：開一台乾淨的伺服器（暫存資料庫）、註冊測試帳號、送排程請求
 import { spawn } from 'node:child_process';
+import { after } from 'node:test';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import {
+  allocateServerId,
+  diagnosticFetch,
+  logStopCompleted,
+  logStopStarted,
+  trackChild,
+  trackDbClient,
+  untrackDbClient,
+} from './handle-diagnostics.mjs';
 
 const serverDir = path.join(path.dirname(fileURLToPath(import.meta.url)), '..');
+const liveTestServers = new Set();
+
+const closeTestServer = proc => new Promise(resolve => {
+  if (proc.exitCode !== null || proc.signalCode !== null) return resolve();
+  proc.once('close', resolve);
+  proc.kill('SIGKILL');
+});
+
+// Individual tests still stop their own server in finally. This file-level guard
+// closes the rare child whose kill/close race would otherwise keep node --test
+// alive until the CI runner's six-hour ceiling.
+after(async () => {
+  await Promise.all([...liveTestServers].map(closeTestServer));
+});
 
 // 伺服器用「台灣時區的今天」當起點，早於今天的日期會被裁掉。
 // 測試一律用相對日期，才不會過幾天就開始壞掉。
@@ -23,15 +47,16 @@ export const day = n => {
 // 隨機埠偶爾會撞在一起，撞到就整組 hook 掛掉。重試比擴大埠範圍可靠。
 // env：讓需要特定環境變數的測試（例如 Google Calendar 的 client id、加密金鑰）
 // 自己開一台帶著那些設定的伺服器，而不是污染全域 process.env。
-export async function startServer({ env = {} } = {}) {
+export async function startServer({ env = {}, diagnostics = false } = {}) {
   let lastErr;
   for (let attempt = 1; attempt <= 3; attempt++) {
-    try { return await bootOnce(env); } catch (e) { lastErr = e; }
+    try { return await bootOnce(env, diagnostics); } catch (e) { lastErr = e; }
   }
   throw lastErr;
 }
 
-async function bootOnce(extraEnv = {}) {
+async function bootOnce(extraEnv = {}, diagnostics = false) {
+  const instanceId = allocateServerId();
   const dir = mkdtempSync(path.join(tmpdir(), 'studyapp-test-'));
   const port = 3400 + Math.floor(Math.random() * 500);
   const proc = spawn(process.execPath, ['src/index.js'], {
@@ -49,6 +74,11 @@ async function bootOnce(extraEnv = {}) {
     },
     stdio: ['ignore', 'pipe', 'pipe'],
   });
+  liveTestServers.add(proc);
+  proc.once('close', () => { liveTestServers.delete(proc); });
+  trackChild(instanceId, proc, diagnostics);
+  let childClosed = false;
+  proc.once('close', () => { childClosed = true; });
   let log = '';
   proc.stdout.on('data', d => { log += d; });
   proc.stderr.on('data', d => { log += d; });
@@ -64,7 +94,7 @@ async function bootOnce(extraEnv = {}) {
   for (let i = 0; i < 100; i++) {
     if (proc.exitCode !== null || proc.signalCode !== null) throw bail();
     try {
-      const r = await fetch(base + '/auth/login', {
+      const r = await diagnosticFetch(base + '/auth/login', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ email: 'x@x', password: 'x' }),
       });
@@ -73,7 +103,7 @@ async function bootOnce(extraEnv = {}) {
   }
 
   const email = `t${Date.now()}@test.local`;
-  const reg = await fetch(base + '/auth/register', {
+  const reg = await diagnosticFetch(base + '/auth/register', {
     method: 'POST', headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ email, password: '12345678', name: '測試' }),
   });
@@ -83,7 +113,7 @@ async function bootOnce(extraEnv = {}) {
 
   // 送一次排程，回傳 { blocks, check, unplaced }
   const plan = async (items, opts = {}) => {
-    const r = await fetch(base + '/schedule/preview', {
+    const r = await diagnosticFetch(base + '/schedule/preview', {
       method: 'POST', headers: H,
       body: JSON.stringify({
         items,
@@ -99,9 +129,16 @@ async function bootOnce(extraEnv = {}) {
     return j;
   };
 
+  let stopPromise;
   const stop = () => {
-    proc.kill('SIGKILL');
-    try { rmSync(dir, { recursive: true, force: true }); } catch {}
+    if (stopPromise) return stopPromise;
+    logStopStarted(instanceId, proc, diagnostics);
+    stopPromise = (async () => {
+      if (!childClosed) await closeTestServer(proc);
+      try { rmSync(dir, { recursive: true, force: true }); } catch {}
+      logStopCompleted(instanceId, proc, diagnostics);
+    })();
+    return stopPromise;
   };
 
   // 直接讀這台伺服器的 SQLite 檔。用途是驗「資料庫裡到底存了什麼」——
@@ -114,7 +151,11 @@ async function bootOnce(extraEnv = {}) {
   const withDb = async (fn) => {
     const { createClient } = await import('@libsql/client');
     const c = createClient({ url: 'file:' + dbFile });
-    try { return await fn(c); } finally { try { c.close(); } catch {} }
+    const clientId = trackDbClient(diagnostics);
+    try { return await fn(c); } finally {
+      try { c.close(); } catch {}
+      untrackDbClient(clientId);
+    }
   };
   const rawConnection = async (userId) => withDb(async c => {
     const r = await c.execute({ sql: 'SELECT * FROM google_calendar_connections WHERE user_id=?', args: [userId] });
@@ -145,7 +186,7 @@ async function bootOnce(extraEnv = {}) {
   // 第二個帳號，用來驗使用者之間的隔離
   const secondUser = async () => {
     const email2 = `u2${Date.now()}@test.local`;
-    const r = await fetch(base + '/auth/register', {
+    const r = await diagnosticFetch(base + '/auth/register', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ email: email2, password: '12345678', name: '測試2' }),
     });
