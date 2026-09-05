@@ -8,10 +8,11 @@
 //
 // 沒有連結 Google 的使用者，行為必須跟這個功能不存在時**完全一樣**。
 
-import { test } from 'node:test';
+import { after, test } from 'node:test';
 import assert from 'node:assert/strict';
 import { randomBytes } from 'node:crypto';
 import { startServer, day, sec } from './helpers.mjs';
+import { diagnosticFetch, logActiveResources } from './handle-diagnostics.mjs';
 
 const KEY = randomBytes(32).toString('base64');
 const GOOGLE_ENV = {
@@ -20,14 +21,22 @@ const GOOGLE_ENV = {
   GOOGLE_REDIRECT_URI: 'https://study-app.test/api/integrations/google-calendar/callback',
   TOKEN_ENCRYPTION_KEY: KEY,
 };
+const startGoogleServer = (options = {}) => startServer({ ...options, diagnostics: true });
 
 const json = async r => ({ status: r.status, body: await r.json().catch(() => null) });
-const get = (base, H, p) => fetch(base + p, { headers: H }).then(json);
-const post = (base, H, p, b) => fetch(base + p, { method: 'POST', headers: H, body: JSON.stringify(b || {}) }).then(json);
-const del = (base, H, p) => fetch(base + p, { method: 'DELETE', headers: H }).then(json);
+const get = (base, H, p) => diagnosticFetch(base + p, { headers: H }).then(json);
+const post = (base, H, p, b) => diagnosticFetch(base + p, { method: 'POST', headers: H, body: JSON.stringify(b || {}) }).then(json);
+const del = (base, H, p) => diagnosticFetch(base + p, { method: 'DELETE', headers: H }).then(json);
+
+after(async () => {
+  // 讓已收到 close 的 ChildProcessWrap 有一個 event-loop turn 完成釋放，
+  // teardown snapshot 才不會把正常的短暫清理誤判為殘留。
+  await new Promise(resolve => setImmediate(resolve));
+  logActiveResources('google-calendar-api.test.mjs teardown');
+});
 
 test('未連結時 status 是 read_only_busy，而且不含任何 token 欄位', async () => {
-  const { base, H, stop } = await startServer();
+  const { base, H, stop } = await startGoogleServer();
   try {
     const r = await get(base, H, '/integrations/google-calendar/status');
     assert.equal(r.status, 200);
@@ -37,13 +46,13 @@ test('未連結時 status 是 read_only_busy，而且不含任何 token 欄位',
     for (const bad of ['access_token', 'refresh_token', 'encrypted', 'client_secret', 'token']) {
       assert.ok(!keys.includes(bad), `status 不該有 ${bad}`);
     }
-  } finally { stop(); }
+  } finally { await stop(); }
 });
 
 test('連結端點需要登入；沒設定 Google 環境變數時回 503', async () => {
-  const { base, H, stop } = await startServer();
+  const { base, H, stop } = await startGoogleServer();
   try {
-    const anon = await fetch(base + '/integrations/google-calendar/connect', {
+    const anon = await diagnosticFetch(base + '/integrations/google-calendar/connect', {
       method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}',
     });
     assert.equal(anon.status, 401, '沒登入不能拿到授權網址');
@@ -52,31 +61,31 @@ test('連結端點需要登入；沒設定 Google 環境變數時回 503', async
     const r = await post(base, H, '/integrations/google-calendar/connect');
     assert.equal(r.status, 503);
     assert.equal(r.body.code, 'NOT_CONFIGURED');
-  } finally { stop(); }
+  } finally { await stop(); }
 });
 
 test('callback 拒絕無效 state，而且不會因此建立任何連結', async () => {
-  const { base, H, stop } = await startServer({ env: GOOGLE_ENV });
+  const { base, H, stop } = await startGoogleServer({ env: GOOGLE_ENV });
   try {
-    const r = await fetch(`${base}/integrations/google-calendar/callback?code=abc&state=forged`, { redirect: 'manual' });
+    const r = await diagnosticFetch(`${base}/integrations/google-calendar/callback?code=abc&state=forged`, { redirect: 'manual' });
     assert.ok([301, 302, 303, 307, 308].includes(r.status), '應該導回 App');
     assert.ok(r.headers.get('location').includes('google=failed'));
 
     const st = await get(base, H, '/integrations/google-calendar/status');
     assert.equal(st.body.connected, false, '驗證失敗不能留下連結');
-  } finally { stop(); }
+  } finally { await stop(); }
 });
 
 test('callback 不接受沒有 code 的請求', async () => {
-  const { base, stop } = await startServer({ env: GOOGLE_ENV });
+  const { base, stop } = await startGoogleServer({ env: GOOGLE_ENV });
   try {
-    const r = await fetch(`${base}/integrations/google-calendar/callback`, { redirect: 'manual' });
+    const r = await diagnosticFetch(`${base}/integrations/google-calendar/callback`, { redirect: 'manual' });
     assert.ok(r.headers.get('location').includes('google=failed'));
-  } finally { stop(); }
+  } finally { await stop(); }
 });
 
 test('資料庫裡存的是密文，看不到 token 明文；A 讀不到也中斷不了 B', async () => {
-  const { base, H, stop, connectGoogle, rawConnection, secondUser } = await startServer({ env: GOOGLE_ENV });
+  const { base, H, stop, connectGoogle, rawConnection, secondUser } = await startGoogleServer({ env: GOOGLE_ENV });
   try {
     await connectGoogle(1, { refresh_token: 'PLAINTEXT-REFRESH-XYZ', access_token: 'PLAINTEXT-ACCESS-XYZ', expires_in: 3600 });
 
@@ -100,13 +109,13 @@ test('資料庫裡存的是密文，看不到 token 明文；A 讀不到也中�
     // B 呼叫中斷連結也不能刪到 A 的
     await del(base, other.H, '/integrations/google-calendar');
     assert.ok(await rawConnection(1), 'B 的中斷連結刪掉了 A 的憑證');
-  } finally { stop(); }
+  } finally { await stop(); }
 });
 
 test('中斷連結一定會刪掉本地憑證，remote revoke 失敗也一樣', async () => {
   // 測試環境連不到 accounts.google.com，revoke 必定失敗——這正是要驗的情境：
   // 網路壞掉不能變成「使用者想中斷卻中斷不了」。
-  const { base, H, stop, connectGoogle, rawConnection } = await startServer({ env: GOOGLE_ENV });
+  const { base, H, stop, connectGoogle, rawConnection } = await startGoogleServer({ env: GOOGLE_ENV });
   try {
     await connectGoogle(1, { refresh_token: 'r-1', access_token: 'a-1', expires_in: 3600 });
     assert.ok(await rawConnection(1));
@@ -118,11 +127,11 @@ test('中斷連結一定會刪掉本地憑證，remote revoke 失敗也一樣', 
 
     const st = await get(base, H, '/integrations/google-calendar/status');
     assert.equal(st.body.connected, false);
-  } finally { stop(); }
+  } finally { await stop(); }
 });
 
 test('中斷連結不刪任何 Plan / Task / 行程', async () => {
-  const { base, H, stop, connectGoogle } = await startServer({ env: GOOGLE_ENV });
+  const { base, H, stop, connectGoogle } = await startGoogleServer({ env: GOOGLE_ENV });
   try {
     await post(base, H, '/lists', { name: '數學' });
     await post(base, H, '/tasks', { title: '不該被刪的任務', due_date: day(1) });
@@ -135,27 +144,27 @@ test('中斷連結不刪任何 Plan / Task / 行程', async () => {
     const events = await get(base, H, '/events');
     assert.equal(tasks.body.filter(t => t.title === '不該被刪的任務').length, 1);
     assert.equal(events.body.filter(e => e.title === '補習').length, 1);
-  } finally { stop(); }
+  } finally { await stop(); }
 });
 
 /* ---------------- 排程整合 ---------------- */
 
 test('沒連結 Google 時，排程行為跟這個功能不存在完全一樣', async () => {
-  const { base, H, plan, stop } = await startServer();
+  const { base, H, plan, stop } = await startGoogleServer();
   try {
     const r = await plan([sec(1, '單元一'), sec(1, '單元二')]);
     assert.ok(r.blocks.length >= 2, '既有排程必須照常運作');
     const st = await get(base, H, '/integrations/google-calendar/status');
     assert.equal(st.body.connected, false);
-  } finally { stop(); }
+  } finally { await stop(); }
 });
 
 test('連結了但讀不到 Google 時，preview fail closed（503），不給假的安全排程', async () => {
   // 測試環境連不到 googleapis.com，FreeBusy 必定失敗
-  const { base, H, stop, connectGoogle } = await startServer({ env: GOOGLE_ENV });
+  const { base, H, stop, connectGoogle } = await startGoogleServer({ env: GOOGLE_ENV });
   try {
     await connectGoogle(1, { refresh_token: 'r', access_token: 'a', expires_in: 3600 });
-    const r = await fetch(base + '/schedule/preview', {
+    const r = await diagnosticFetch(base + '/schedule/preview', {
       method: 'POST', headers: H,
       body: JSON.stringify({
         items: [sec(1, '單元一')], startDate: day(0), endDate: day(7),
@@ -167,18 +176,18 @@ test('連結了但讀不到 Google 時，preview fail closed（503），不給�
     assert.equal(body.code, 'GOOGLE_CALENDAR_UNAVAILABLE');
     assert.ok(body.error.includes('Google Calendar'));
     assert.ok(!JSON.stringify(body).includes('blocks'), '不能夾帶一份沒考慮外部行程的安排');
-  } finally { stop(); }
+  } finally { await stop(); }
 });
 
 test('Google 整合不寫 fixed_events、不建 StudySession、不動 Material / Plan selection', async () => {
-  const { base, H, stop, connectGoogle, tableNames } = await startServer({ env: GOOGLE_ENV });
+  const { base, H, stop, connectGoogle, tableNames } = await startGoogleServer({ env: GOOGLE_ENV });
   try {
     const before = {
       events: (await get(base, H, '/events')).body,
       sessions: (await get(base, H, '/study-sessions')).body,
     };
     await connectGoogle(1, { refresh_token: 'r', access_token: 'a', expires_in: 3600 });
-    await fetch(base + '/schedule/preview', {
+    await diagnosticFetch(base + '/schedule/preview', {
       method: 'POST', headers: H,
       body: JSON.stringify({ items: [sec(1, '單元一')], startDate: day(0), endDate: day(7), timed: true }),
     }).catch(() => {});
@@ -196,5 +205,5 @@ test('Google 整合不寫 fixed_events、不建 StudySession、不動 Material /
       assert.ok(!names.includes(forbidden), `不該存在 ${forbidden}`);
     }
     assert.ok(names.includes('google_calendar_connections'), '只該有這一張新表');
-  } finally { stop(); }
+  } finally { await stop(); }
 });
