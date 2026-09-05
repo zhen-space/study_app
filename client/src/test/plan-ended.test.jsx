@@ -4,12 +4,16 @@
 // 任務仍然帶著 plan_id 與 due_date，若投影面不看 plan_status，就會繼續出現在
 // Today／未來 7 天／願望清單／一般進行中任務／Study 候選／Calendar 上。
 import { describe, it, expect } from 'vitest';
-import { matchView, onActivePlan } from '../tt/helpers';
+import { matchView, onActivePlan, today, addDays } from '../tt/helpers';
 import { pickStudyTasks } from '../tt/StudyView';
 import { dueNotifications } from '../tt/notify';
 
-// 同一個計畫底下、狀態不同的兩個任務：一個在進行中計畫，一個在已結束計畫
-const td = '2026-09-03';
+// 同一個計畫底下、狀態不同的兩個任務：一個在進行中計畫，一個在已結束計畫。
+//
+// td 必須是「測試執行當天」，不能寫死：matchView 的 'today' 視圖比對的是它內部
+// 現算的 today()，而不是這裡傳進去的參數。寫死某一天的話，只有那一天測試會過，
+// 隔天 default-branch CI 就會失敗。改用既有的 today() 讓 fixture 相對於執行日產生。
+const td = today();
 const active = { id: 1, plan_id: 5, plan_status: 'active', title: '力學', due_date: td, completed: 0, deleted: 0, list_id: 1, tags: [], subtasks: [] };
 const ended = { id: 2, plan_id: 9, plan_status: 'ended', title: '電磁', due_date: td, completed: 0, deleted: 0, list_id: 1, tags: [], subtasks: [] };
 const loose = { id: 3, plan_id: null, plan_status: null, title: '買參考書', due_date: td, completed: 0, deleted: 0, list_id: null, tags: [], subtasks: [] };
@@ -67,8 +71,9 @@ describe('Study 開始候選', () => {
 
 describe('提醒', () => {
   it('已結束計畫的任務不再提醒（到期與逾期都不算）', () => {
-    const overdueEnded = { ...ended, due_date: '2026-09-01' };
-    const overdueActive = { ...active, due_date: '2026-09-01' };
+    // 逾期＝執行日的兩天前，同樣不寫死日期
+    const overdueEnded = { ...ended, due_date: addDays(td, -2) };
+    const overdueActive = { ...active, due_date: addDays(td, -2) };
     const out = dueNotifications({
       tasks: [overdueEnded, overdueActive], today: td, now: new Date(`${td}T09:00:00`),
     });
