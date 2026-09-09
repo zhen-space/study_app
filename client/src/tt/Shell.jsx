@@ -20,6 +20,7 @@ import RoutinesView from './RoutinesView';
 import GoalsView from './GoalsView';
 import MaterialLibraryView from './MaterialLibraryView';
 import SettingsView from './SettingsView';
+import SchoolAssignmentView from './SchoolAssignmentView';
 import Companion from './Companion';
 import Icon, { LIST_ICONS, LIST_COLORS } from './Icons';
 import { dueNotifications, notify } from './notify';
@@ -28,7 +29,7 @@ export default function Shell({ onLogout }) {
   // 資訊架構：今天（執行）｜計畫（計畫管理）｜讀書（主要動作）｜任務（任務管理）｜行事曆（時間管理）
   // 其餘既有功能（習慣、寵物、統計、矩陣、單字、備忘錄、精靈）移到側邊「更多」，功能都還在。
   // 「任務」這一格要涵蓋所有任務類視圖（清單、標籤、篩選、搜尋…）
-  const TASK_VIEWS = ['tasks', 'week', 'inbox', 'all', 'completed', 'trash', 'list', 'tag', 'filter', 'search'];
+  const TASK_VIEWS = ['tasks', 'week', 'inbox', 'all', 'completed', 'trash', 'list', 'tag', 'filter', 'search', 'school'];
   const [view, setViewRaw] = useState({ type: 'today' });
   const [side, setSide] = useState(false);
   const setView = v => { setViewRaw(v); setSide(false); };
@@ -205,6 +206,10 @@ export default function Shell({ onLogout }) {
             <span className="count">{!['completed', 'trash'].includes(type) ? count({ type }) : ''}</span>
           </div>
         ))}
+        <div key="school" className={'side-item' + (view.type === 'school' ? ' active' : '')} onClick={() => setView({ type: 'school' })}>
+          <Icon name="book" size={18} style={{ opacity: .8 }} />學校作業
+          <span className="count">{tasks.filter(t => t.task_kind === 'school_assignment' && !t.completed && !t.cancelled && !t.deleted).length || ''}</span>
+        </div>
         <div className="side-sec">清單 <button className="icon-btn" onClick={addList}>＋</button></div>
         {lists.map(l => (
           <div key={l.id}>
@@ -279,7 +284,7 @@ export default function Shell({ onLogout }) {
             adjustPlan={(planId, section) => setView({ type: 'wizard', mode: 'edit', planId, section, from: view.key })}
             goLocks={() => setView({ type: 'locks' })} />
         : view.type === 'study' || view.type === 'pomo' ? <StudyView tasks={tasks.filter(t => !t.deleted)} goPlans={() => setView({ type: 'plans' })} />
-        : view.type === 'calendar' ? <CalendarView tasks={tasks.filter(t => !t.deleted)} reload={reload} />
+        : view.type === 'calendar' ? <CalendarView tasks={tasks.filter(t => !t.deleted)} reload={reload} lists={lists} />
         : view.type === 'schedule-history' ? <ScheduleHistoryView onRestored={() => reload('tasks')} />
         : view.type === 'locks' ? <LocksView tasks={tasks} />
         : view.type === 'routines' ? <RoutinesView />
@@ -300,6 +305,7 @@ export default function Shell({ onLogout }) {
             onDone={() => setView({ type: 'plan', key: view.from || `plan:${view.planId}` })} />
         : view.type === 'vocab' ? <VocabView />
         : view.type === 'memo' ? <MemoView />
+        : view.type === 'school' ? <SchoolAssignmentView tasks={tasks.filter(t => !t.deleted)} lists={lists} reload={reload} />
         : <Tasks view={view} tasks={tasks} lists={lists} filters={filters} habits={habits} reload={reload} title={titleOf()}
             goVocab={() => setView({ type: 'vocab' })} goMemo={() => setView({ type: 'memo' })} />}
 

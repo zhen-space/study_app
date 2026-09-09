@@ -9,6 +9,7 @@ import ReplanSheet from './ReplanSheet';
 import { Button, SurfaceCard, ProgressBar } from './ui';
 import { useActiveSchedule, blocksForTask } from './scheduleAdjust';
 import AdjustBlockSheet from './AdjustBlockSheet';
+import { SchoolAssignmentToday } from './SchoolAssignmentView';
 
 // 「今天」＝執行頁：回答「我現在該做什麼」。
 //
@@ -242,6 +243,7 @@ export default function TodayView({ tasks, lists, filters, habits, apiPlans = []
           <AdjustBanner tasks={tasks} lists={lists} apiPlans={apiPlans} reload={reload} goWizardEdit={goWizardEdit} />
         </div>
         <NextUp tasks={tasks} lists={lists} reload={reload} goStudy={goStudy} />
+        <SchoolAssignmentToday tasks={tasks} lists={lists} reload={reload} />
       </>}
     />
   );

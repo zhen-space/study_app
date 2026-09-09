@@ -6,6 +6,8 @@ import Icon from './Icons';
 import { fileToPayload } from './vocabImport';
 import { useActiveSchedule } from './scheduleAdjust';
 import AdjustBlockSheet from './AdjustBlockSheet';
+import SchoolAssignmentForm from './SchoolAssignmentForm';
+import { isSchoolAssignment, TYPE_LABEL, deadlineLabelText, formatDeadline } from './schoolAssignment';
 
 const WD = ['一', '二', '三', '四', '五', '六', '日'];
 const HOURS = Array.from({ length: 18 }, (_, i) => i + 6); // 06:00–23:00
@@ -52,7 +54,12 @@ function ColorPicker({ value, onPick }) {
   );
 }
 
-export default function CalendarView({ tasks, reload }) {
+export default function CalendarView({ tasks, reload, lists = [] }) {
+  // 學校作業的「繳交期限」＝學校什麼時候要，不是「什麼時候做」。這裡只做投影顯示，
+  // 絕不為它建 ScheduledBlock 或 fixed_event mirror；點一下開作業本身編輯。
+  const [saEdit, setSaEdit] = useState(null);
+  const saDeadlinesOn = ds => tasks.filter(t =>
+    isSchoolAssignment(t) && !t.completed && !t.cancelled && !t.deleted && t.deadline_date === ds);
   // 測試／尚未進入 2C 的帳號可能回空；Calendar 仍需能正常顯示既有行程。
   const rawSchedule = useActiveSchedule();
   const schedule = { ...(rawSchedule || {}), blocks: rawSchedule?.blocks || [], version: rawSchedule?.version || null, reload: rawSchedule?.reload || (async () => {}) };
@@ -615,6 +622,17 @@ export default function CalendarView({ tasks, reload }) {
                   style={{ position: 'absolute', top: ROW / 2, left: 0, right: 0, height: ROW / 2, borderTop: '1px dashed rgba(120,120,128,.18)', cursor: 'pointer' }} />
               </div>
             ))}
+            {/* 學校作業繳交期限：釘在欄位最上方的全天標記（不是時段行程、不建 block） */}
+            {saDeadlinesOn(d).length > 0 && (
+              <div style={{ position: 'absolute', top: 0, left: 2, right: 2, zIndex: 4, display: 'flex', flexDirection: 'column', gap: 2 }}>
+                {saDeadlinesOn(d).map(t => (
+                  <div key={'sa' + t.id} className="cal-deadline" title={`${deadlineLabelText(t)}：${t.title} ${formatDeadline(t)}`}
+                    onClick={ev => { ev.stopPropagation(); setSaEdit(t); }}>
+                    <span className="cal-deadline-tag">{t.school_assignment_type === 'exam' ? '考' : '繳'}</span>{t.title}
+                  </div>
+                ))}
+              </div>
+            )}
             {locks.filter(l => l.type === 'day' && l.date === d).map(l => <div key={`ld${l.id}`} title="整天已鎖定" style={{ position: 'absolute', inset: 0, zIndex: 2, pointerEvents: 'none', background: 'repeating-linear-gradient(135deg, rgba(245,158,11,.12) 0 6px, transparent 6px 12px)', border: '1px solid rgba(245,158,11,.5)' }}><span style={{ position: 'sticky', top: 2, fontSize: 10, color: 'var(--warning)' }}>🔒 整天鎖定</span></div>)}
             {locks.filter(l => l.type === 'time' && l.date === d).map(l => <div key={`lt${l.id}`} title={`時段鎖定 ${l.start_time}–${l.end_time}`} style={{ position: 'absolute', top: yOf(toMin(l.start_time)), height: Math.max(4, yOf(toMin(l.end_time)) - yOf(toMin(l.start_time))), left: 0, right: 0, zIndex: 2, pointerEvents: 'none', background: 'rgba(245,158,11,.16)', borderTop: '1px dashed var(--warning)', borderBottom: '1px dashed var(--warning)' }} />)}
             {/* 既定行程：白底黑字，可點擊編輯、可拖曳到別天，高度＝時長 */}
@@ -735,6 +753,12 @@ export default function CalendarView({ tasks, reload }) {
                   style={e.color ? { background: e.color, color: textOn(e.color) } : { background: 'var(--surface-2)', color: 'var(--text)', border: '1px solid var(--border)' }}
                   onClick={ev => { ev.stopPropagation(); setEditEv({ ...e }); }}>
                   {e.title}
+                </div>
+              ))}
+              {saDeadlinesOn(c.ds).slice(0, 2).map(t => (
+                <div key={'sa' + t.id} className="cal-deadline" title={`${deadlineLabelText(t)}：${t.title}`}
+                  onClick={e => { e.stopPropagation(); setSaEdit(t); }}>
+                  <span className="cal-deadline-tag">{t.school_assignment_type === 'exam' ? '考' : '繳'}</span>{t.title}
                 </div>
               ))}
               {tasks.filter(t => onActivePlan(t) && t.due_date === c.ds).slice(0, 3).map(t => (
@@ -905,6 +929,7 @@ export default function CalendarView({ tasks, reload }) {
 
       {/* 編輯行程：同樣是 Apple 日曆式版面 */}
       {adjustBlock && adjustBlock.task && <AdjustBlockSheet block={adjustBlock.block} task={adjustBlock.task} versionId={schedule.version?.id} reload={async () => { await reload(); await schedule.reload(); }} onClose={() => setAdjustBlock(null)} />}
+      {saEdit && <SchoolAssignmentForm lists={lists} task={saEdit} onClose={() => setSaEdit(null)} onSaved={() => reload()} />}
       {editEv && (
         <div className="cal-modal-back" onClick={() => setEditEv(null)}>
           <div className="ev-sheet" onClick={e => e.stopPropagation()}>

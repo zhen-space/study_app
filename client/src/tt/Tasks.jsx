@@ -3,6 +3,7 @@ import { api } from '../api';
 import { matchView, groupTasks, defaultSort, PRI, today, addDays } from './helpers';
 import VocabCard from './VocabCard';
 import MemoCard from './MemoCard';
+import SchoolAssignmentForm from './SchoolAssignmentForm';
 
 const WDC = '日一二三四五六';
 
@@ -385,6 +386,7 @@ export default function Tasks({ view, tasks, lists, filters, habits = [], reload
   const [selId, setSelId] = useState(null);
   const [quick, setQuick] = useState('');
   const [showAdd, setShowAdd] = useState(false);
+  const [saForm, setSaForm] = useState(false);   // 從「新增任務」流程也能清楚選到「學校作業」
   // 排序方式記起來：下次開啟還是同一個（default | time | priority | title）
   const [sortBy, setSortBy] = useState(() => {
     try { return localStorage.getItem('taskSort') || 'default'; } catch { return 'default'; }
@@ -570,9 +572,15 @@ export default function Tasks({ view, tasks, lists, filters, habits = [], reload
           )}
         </div>
         {!['completed', 'trash', 'search'].includes(view.type) && (
-          <form className="quick-add" onSubmit={quickAdd}>
-            <input placeholder="＋ 新增任務，按 Enter 儲存" value={quick} onChange={e => setQuick(e.target.value)} />
-          </form>
+          <div className="row" style={{ gap: 'var(--sp-2)', alignItems: 'center' }}>
+            <form className="quick-add" style={{ flex: 1 }} onSubmit={quickAdd}>
+              <input placeholder="＋ 新增任務，按 Enter 儲存" value={quick} onChange={e => setQuick(e.target.value)} />
+            </form>
+            <button type="button" className="btn sm ghost" onClick={() => setSaForm(true)}>＋ 學校作業</button>
+          </div>
+        )}
+        {saForm && (
+          <SchoolAssignmentForm lists={lists} onClose={() => setSaForm(false)} onSaved={() => reload('tasks')} />
         )}
         <div className="main-body">
           {topSlot}

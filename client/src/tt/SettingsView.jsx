@@ -113,6 +113,30 @@ export default function SettingsView() {
           </SurfaceCard>
         </section>
 
+        {/* ---------- 學校作業 ---------- */}
+        {s && (
+          <section className="ui-section">
+            <div className="ui-section-title">學校作業</div>
+            <SurfaceCard>
+              <div className="row" style={{ alignItems: 'center' }}>
+                <div className="ui-row-main" style={{ flex: 1 }}>
+                  <div className="ui-row-title">作業預設提醒時間</div>
+                  <div className="ui-row-sub">沒有另外指定時間的作業，就用這個時間提醒。</div>
+                </div>
+                <input type="time" aria-label="作業預設提醒時間"
+                  value={s.school_assignment_default_reminder_time || '18:00'}
+                  onChange={e => setS(v => ({ ...v, school_assignment_default_reminder_time: e.target.value }))} />
+              </div>
+              <div className="row" style={{ marginTop: 'var(--sp-3)' }}>
+                <Button variant="primary" size="sm" style={{ marginLeft: 'auto' }} disabled={busy}
+                  onClick={() => save({ school_assignment_default_reminder_time: s.school_assignment_default_reminder_time || '18:00' })}>
+                  {busy ? '儲存中…' : '儲存'}
+                </Button>
+              </div>
+            </SurfaceCard>
+          </section>
+        )}
+
         {/* ---------- 作息 ---------- */}
         <section className="ui-section">
           <div className="ui-section-title">平常作息</div>
