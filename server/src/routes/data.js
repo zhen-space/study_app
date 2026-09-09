@@ -1,6 +1,7 @@
 import { Router } from 'express';
 import { q } from '../db/init.js';
 import { requireAuth } from '../middleware/auth.js';
+import { DEFAULT_REMINDER_TIME, isTime } from '../school/assignment.js';
 
 const router = Router();
 router.use(requireAuth);
@@ -10,12 +11,25 @@ const cleanTags = arr => (Array.isArray(arr) ? arr : []).filter(x => typeof x ==
 
 // ---- settings (sleep/meals) ----
 router.get('/settings', async (req, res) => {
-  const u = await q.get('SELECT sleep_start, sleep_end, meal_windows, custom_tags FROM users WHERE id=?', [req.userId]);
+  const u = await q.get(`SELECT sleep_start, sleep_end, meal_windows, custom_tags,
+    school_assignment_default_reminder_time FROM users WHERE id=?`, [req.userId]);
   let ct = []; try { ct = JSON.parse(u.custom_tags || '[]'); } catch {}
-  res.json({ ...u, meal_windows: JSON.parse(u.meal_windows), custom_tags: cleanTags(ct) });
+  res.json({
+    ...u,
+    meal_windows: JSON.parse(u.meal_windows),
+    custom_tags: cleanTags(ct),
+    // 舊帳號可能還沒有這個欄位值，讀取時補上預設，前端不必自己記得。
+    school_assignment_default_reminder_time: u.school_assignment_default_reminder_time || DEFAULT_REMINDER_TIME,
+  });
 });
 router.put('/settings', async (req, res) => {
-  const { sleep_start, sleep_end, meal_windows, custom_tags } = req.body;
+  const { sleep_start, sleep_end, meal_windows, custom_tags,
+    school_assignment_default_reminder_time: reminderTime } = req.body;
+  if (reminderTime !== undefined) {
+    if (!isTime(reminderTime)) return res.status(400).json({ error: '提醒時間格式不正確' });
+    await q.run('UPDATE users SET school_assignment_default_reminder_time=? WHERE id=?', [reminderTime, req.userId]);
+    if (sleep_start === undefined && custom_tags === undefined) return res.json({ ok: true });
+  }
   if (custom_tags !== undefined) {
     await q.run('UPDATE users SET custom_tags=? WHERE id=?', [JSON.stringify(cleanTags(custom_tags)), req.userId]);
     if (sleep_start === undefined) return res.json({ ok: true }); // 只更新標籤

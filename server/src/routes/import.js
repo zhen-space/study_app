@@ -4,6 +4,11 @@ import * as XLSX from 'xlsx';
 import mammoth from 'mammoth';
 import { requireAuth } from '../middleware/auth.js';
 import { q } from '../db/init.js';
+import { buildPreview } from '../timetable/structure.js';
+import { todayTW } from '../util/date.js';
+import { planTocWrite, deleteScope } from '../import/toc-replace.js';
+
+const TIME_RE = /^([01]\d|2[0-3]):[0-5]\d$/;
 
 const router = Router();
 router.use(requireAuth);
@@ -203,6 +208,117 @@ router.post('/parse', async (req, res) => {
     console.error('import parse error:', err.message);
     res.status(500).json({ error: aiError(err) });
   }
+});
+
+// ---- 課表匯入 v2 ----------------------------------------------------------
+//
+// 舊的 /parse 直接讓模型輸出「事件」，星期幾完全由模型決定，於是實機出現星期一
+// 整欄消失、整週水平位移一天。這一版把分工改掉：模型只讀格子，**星期對應由
+// src/timetable/structure.js 依欄位幾何確定性決定**，而且匯入前一定要人看過。
+
+const GRID_SCHEMA = {
+  type: 'object',
+  properties: {
+    header_row: { type: ['integer', 'null'], description: '標題列的 row 索引；沒有標題列就給 null' },
+    cells: {
+      type: 'array',
+      description: '表格裡每一個有內容的格子。row/col 從 0 開始，照實際版面位置給，不要重排。',
+      items: {
+        type: 'object',
+        properties: {
+          row: { type: 'integer' },
+          col: { type: 'integer' },
+          text: { type: 'string', description: '格子裡的文字，照原文抄；空格子不要輸出' },
+          row_span: { type: ['integer', 'null'], description: '這一格向下跨幾列（合併儲存格）；沒有合併就給 1 或 null' },
+        },
+        required: ['row', 'col', 'text', 'row_span'], additionalProperties: false,
+      },
+    },
+  },
+  required: ['header_row', 'cells'], additionalProperties: false,
+};
+
+// POST /api/import/timetable  { filename, mime, data }
+// 只回 preview，永遠不寫入。
+router.post('/timetable', async (req, res) => {
+  if (!process.env.ANTHROPIC_API_KEY) {
+    return res.status(503).json({ error: '伺服器尚未設定 AI 金鑰（ANTHROPIC_API_KEY）' });
+  }
+  const { filename = '', mime = '', data } = req.body;
+  if (!data) return res.status(400).json({ error: '沒有收到檔案' });
+  let contentBlock;
+  try { contentBlock = await toContentBlock(filename, mime, data); }
+  catch (e) { return res.status(400).json({ error: e.message }); }
+
+  try {
+    const response = await createSmart(new Anthropic(), {
+      model: 'claude-opus-4-8',
+      max_tokens: 16000,
+      // 刻意只要求「讀格子」。星期幾、時間軸、欄界一律不問模型——
+      // 那些由程式依位置決定，模型說了不算。
+      system: `你是表格讀取器。把這張課表的每一個有內容的格子讀出來，附上它在版面上的列與欄索引。
+
+規則：
+- row 由上往下、col 由左往右，都從 0 開始，照實際版面位置給，不要重新排序或補洞。
+- 最左邊那一欄如果是時間或節次，也要照樣輸出（它就是 col 0），不要略過。
+- 標題列（寫星期幾的那一列）如果存在，輸出它的 row 索引到 header_row；沒有就給 null。
+- 合併儲存格：只輸出最上面那一格，row_span 填它向下跨幾列。
+- 空格子不要輸出。
+- 文字照原文抄，不要翻譯、改寫或補字。看不清楚的格子寧可略過。
+- 不要判斷哪一欄是星期幾，也不要輸出星期幾。那不是你的工作。`,
+      output_config: { format: { type: 'json_schema', schema: GRID_SCHEMA } },
+      messages: [{ role: 'user', content: [contentBlock, { type: 'text', text: '請讀出這張課表的所有格子。' }] }],
+    });
+    if (response.stop_reason === 'refusal') {
+      return res.status(400).json({ error: 'AI 無法處理這份檔案，請換一份試試' });
+    }
+    const grid = parseStructuredObj(response);
+    res.json(buildPreview({ header_row: grid.header_row ?? 0, cells: grid.cells || [] }));
+  } catch (err) {
+    console.error('timetable parse error:', err.message);
+    res.status(500).json({ error: aiError(err) });
+  }
+});
+
+// POST /api/import/timetable/confirm
+// { items:[{day_of_week,title,start_time,end_time,location?}], mapping_confirmed?:true }
+//
+// 這是唯一會寫入的一支，而且只寫既有的 fixed_events——沒有新的匯入結果表。
+// 低信心的辨識結果一定要使用者明確確認過才准寫，不可以先寫進去再叫人去改。
+router.post('/timetable/confirm', async (req, res) => {
+  const body = req.body || {};
+  const items = Array.isArray(body.items) ? body.items : [];
+  if (!items.length) return res.status(400).json({ error: '沒有要匯入的課程' });
+  if (body.requires_mapping_confirmation && body.mapping_confirmed !== true) {
+    return res.status(409).json({
+      error: '星期對應尚未確認，請先在預覽畫面確認或整週調整後再匯入',
+      code: 'mapping_confirmation_required',
+    });
+  }
+  const clean = [];
+  for (const it of items) {
+    const dow = Number(it.day_of_week);
+    if (!Number.isInteger(dow) || dow < 0 || dow > 6) return res.status(400).json({ error: '星期不正確' });
+    if (!String(it.title || '').trim()) return res.status(400).json({ error: '課程名稱不可空白' });
+    if (!TIME_RE.test(it.start_time || '') || !TIME_RE.test(it.end_time || '')) {
+      return res.status(400).json({ error: '課程時間不完整，請在預覽畫面補上' });
+    }
+    if (it.end_time <= it.start_time) return res.status(400).json({ error: '結束時間必須晚於開始時間' });
+    clean.push({ dow, title: String(it.title).trim(), start: it.start_time, end: it.end_time, location: String(it.location || '') });
+  }
+  // 每週重複的課掛在「下一次該星期」那一天；沿用既有 fixed_events 的 recurring='weekly'
+  const today = todayTW();
+  const base = new Date(today + 'T00:00:00Z');
+  const dateFor = dow => {
+    const d = new Date(base);
+    d.setUTCDate(d.getUTCDate() + ((dow - base.getUTCDay() + 7) % 7));
+    return d.toISOString().slice(0, 10);
+  };
+  await q.batch(clean.map(c => [
+    'INSERT INTO fixed_events (user_id,title,date,start_time,end_time,recurring,location) VALUES (?,?,?,?,?,?,?)',
+    [req.userId, c.title, dateFor(c.dow), c.start, c.end, 'weekly', c.location],
+  ]));
+  res.json({ imported: clean.length });
 });
 
 // 三層固定結構（structured outputs 不支援遞迴）：章 → 節 → 小節/主題
@@ -448,10 +564,19 @@ router.post('/toc', async (req, res) => {
     let publisher = (obj.publisher || '').trim();
 
     let base = 0;
-    if (replace !== false) {
-      // 重新掃描：讀得出書名就只換同一本，讀不出就整科重來（跟舊行為一致）
-      if (book) await q.run('DELETE FROM toc_items WHERE user_id=? AND list_id=? AND (book=? OR book=\'\')', [req.userId, list_id, book]);
-      else await q.run('DELETE FROM toc_items WHERE user_id=? AND list_id=?', [req.userId, list_id]);
+    // replace 必須明確要求。以前的判斷是 `replace !== false`——沒帶這個欄位就等於
+    // 刪除，一個手滑或一支忘了帶參數的呼叫端就會清掉使用者的教材。
+    // 匯入一本新書是**新增**，不是取代；預設一律不刪任何東西。
+    // 要不要刪、刪哪些，全部由 planTocWrite 決定（判斷邏輯與測試見
+    // src/import/toc-replace.js）。這裡只負責照著做。
+    const writePlan = planTocWrite({ replace, book });
+    if (writePlan.mode === 'refuse') {
+      return res.status(409).json({
+        error: '這次沒有讀到書名，無法判斷要重新掃描哪一本。請改用「新增一本」，或指定書名後再重新掃描。',
+        code: writePlan.reason,
+      });
+    }
+    if (writePlan.mode === 'replace') {
       const mx = await q.get('SELECT MAX(order_index) AS m FROM toc_items WHERE user_id=? AND list_id=?', [req.userId, list_id]);
       base = (mx?.m ?? -1) + 1;
     } else {
@@ -475,14 +600,25 @@ router.post('/toc', async (req, res) => {
         publisher = publisher || last?.publisher || '';
       }
     }
-    const items = [];
-    for (let i = 0; i < chapters.length; i++) {
-      const c = chapters[i];
-      const kids = c.children || [];
-      const r = await q.run('INSERT INTO toc_items (user_id, list_id, title, level, sections, order_index, book, publisher) VALUES (?,?,?,?,?,?,?,?)',
-        [req.userId, list_id, c.title, c.level || '章', JSON.stringify(kids), base + i, book, publisher]);
-      items.push({ id: r.lastInsertRowid, list_id, title: c.title, level: c.level || '章', sections: kids, order_index: base + i, book, publisher });
-    }
+    // 刪除與新增必須在同一個交易裡。分開做的話，中途任何一個 INSERT 失敗都會
+    // 留下「舊的已經刪掉、新的沒進來」——使用者的教材就這樣消失了。
+    const items = await q.tx(async tx => {
+      const scope = deleteScope({ replace, book, userId: req.userId, listId: list_id });
+      if (scope) {
+        // 只刪這一本，書名精確比對。不碰 book='' 的列，也不碰同科的其他書。
+        await tx.run('DELETE FROM toc_items WHERE user_id=? AND list_id=? AND book=?',
+          [scope.user_id, scope.list_id, scope.book]);
+      }
+      const out = [];
+      for (let i = 0; i < chapters.length; i++) {
+        const c = chapters[i];
+        const kids = c.children || [];
+        const r = await tx.run('INSERT INTO toc_items (user_id, list_id, title, level, sections, order_index, book, publisher) VALUES (?,?,?,?,?,?,?,?)',
+          [req.userId, list_id, c.title, c.level || '章', JSON.stringify(kids), base + i, book, publisher]);
+        out.push({ id: r.lastInsertRowid, list_id, title: c.title, level: c.level || '章', sections: kids, order_index: base + i, book, publisher });
+      }
+      return out;
+    });
     res.json({ items, book, publisher });
   } catch (err) {
     console.error('toc parse error:', err.message);

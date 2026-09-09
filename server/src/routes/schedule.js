@@ -7,6 +7,7 @@ import { feasibilityGap } from '../schedule/feasibility-gap.js';
 import { explainSchedule, explainSentences } from '../schedule/explain.js';
 import { normalizeConstraints } from '../schedule/constraints.js';
 import { loadGoogleBusy, GoogleCalendarError } from '../integrations/google-calendar.js';
+import { validateIntervals, normalizeIntervals, mergeBusyIntervals, busyByDay, combineDayMaps } from '../schedule/busy.js';
 
 const router = Router();
 router.use(requireAuth);
@@ -297,12 +298,28 @@ router.post('/preview', async (req, res) => {
     throw e;
   }
 
+  // 裝置行事曆（iPhone/iPad 的 EventKit 等）：由 client 隨這次請求帶進來，
+  // 算完就丟。**不落地**——沒有 apple_calendar_events、沒有 busy cache，
+  // 行事曆上刪掉的事件下一次自然就不見了，不需要任何失效機制。
+  //
+  // 與 Google 的忙碌時段用區間聯集合併，所以同一段時間被兩個來源各報一次
+  // 不會變成兩倍忙碌（同一個 Google 帳號同時出現在 Google API 與 iPhone 行事曆
+  // 正是最常見的情況）。
+  const rawExternal = req.body.external_busy;
+  let deviceBusy = null;
+  if (rawExternal != null) {
+    const err = validateIntervals(rawExternal);
+    if (err) return res.status(400).json({ error: err, code: 'INVALID_EXTERNAL_BUSY' });
+    deviceBusy = busyByDay(mergeBusyIntervals(normalizeIntervals(rawExternal)), minD, maxD);
+  }
+  const externalBusyByDay = combineDayMaps(googleBusy, deviceBusy);
+
   const days = [];
   for (let ds = minD; ds <= maxD; ds = addDays(ds, 1)) {
     if (ds < today) continue;
     if (excludeDates.includes(ds)) continue;                      // 指定不排的日期
     if (excludeWeekdays.includes(dayOfWeek(ds))) continue;        // 不排的星期
-    const gBusy = googleBusy?.get(ds) || null;
+    const gBusy = externalBusyByDay.get(ds) || null;
     if (skipIfBusyHours > 0 && busyMinutesForDay(ds, events, gBusy) >= skipIfBusyHours * 60) continue; // 既定行程太滿
     const override = availabilityOverrideByDate.get(ds);
     const availability = override || (hasAvailabilityRoutine ? (availabilityByDate.get(ds) || []) : null);
