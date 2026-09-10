@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { api } from '../api';
 import { Button, PageHeader, SurfaceCard, EmptyState } from './ui';
+import { onActivePlan } from './helpers';
 import SchoolAssignmentForm from './SchoolAssignmentForm';
 import {
   TYPE_LABEL, isSchoolAssignment, isOverdue, groupSchoolAssignments,
@@ -84,7 +85,9 @@ function Group({ title, tone, items, ...row }) {
 export function SchoolAssignmentToday({ tasks, lists, reload }) {
   const [form, setForm] = useState(null); // null=關閉；{}=新增；task=編輯
   const now = nowTW();
-  const groups = groupSchoolAssignments(tasks, now);
+  // 執行面過濾：掛在 paused／completed／ended／deleted 計畫的作業要退出 Today
+  // （與 App 其餘執行面同一條 onActivePlan 規則）。standalone（plan_id=NULL）不受影響。
+  const groups = groupSchoolAssignments(tasks.filter(onActivePlan), now);
   const listOf = t => lists.find(l => l.id === t.list_id);
   const defaultTime = undefined;
   const has = groups.due_today.length || groups.upcoming.length || groups.overdue.length;
@@ -129,7 +132,9 @@ export default function SchoolAssignmentView({ tasks, lists, reload }) {
   const all = tasks.filter(t => isSchoolAssignment(t) && !t.deleted);
   const listOf = t => lists.find(l => l.id === t.list_id);
 
-  const active = all.filter(t => !t.completed && !t.cancelled);
+  // 期限導向的分組（逾期／今天／即將／之後）是執行語意：掛在非進行中計畫的作業
+  // 不應宣稱這些狀態，退出（改由該計畫的 Plan Detail 管理）。已完成／已取消歷史照留。
+  const active = all.filter(t => !t.completed && !t.cancelled && onActivePlan(t));
   const overdue = active.filter(t => isOverdue(t, now));
   const dueToday = active.filter(t => !isOverdue(t, now) && t.deadline_date === now.date);
   const upcoming = active.filter(t => !isOverdue(t, now) && t.deadline_date > now.date

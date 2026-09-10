@@ -59,7 +59,7 @@ export default function CalendarView({ tasks, reload, lists = [] }) {
   // 絕不為它建 ScheduledBlock 或 fixed_event mirror；點一下開作業本身編輯。
   const [saEdit, setSaEdit] = useState(null);
   const saDeadlinesOn = ds => tasks.filter(t =>
-    isSchoolAssignment(t) && !t.completed && !t.cancelled && !t.deleted && t.deadline_date === ds);
+    isSchoolAssignment(t) && onActivePlan(t) && !t.completed && !t.cancelled && !t.deleted && t.deadline_date === ds);
   // 測試／尚未進入 2C 的帳號可能回空；Calendar 仍需能正常顯示既有行程。
   const rawSchedule = useActiveSchedule();
   const schedule = { ...(rawSchedule || {}), blocks: rawSchedule?.blocks || [], version: rawSchedule?.version || null, reload: rawSchedule?.reload || (async () => {}) };

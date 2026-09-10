@@ -17,7 +17,7 @@ import { pickStudyTasks } from '../tt/StudyView';
 vi.mock('../api', () => ({ api: vi.fn() }));
 const { api } = await import('../api');
 const SchoolAssignmentForm = (await import('../tt/SchoolAssignmentForm')).default;
-const { SARow } = await import('../tt/SchoolAssignmentView');
+const { SARow, SchoolAssignmentToday } = await import('../tt/SchoolAssignmentView');
 const CalendarView = (await import('../tt/CalendarView')).default;
 
 const sa = (o = {}) => ({
@@ -257,5 +257,21 @@ describe('Calendar 顯示學校作業繳交期限', () => {
     // 純顯示：render 過程不會 POST 出任何 block / task
     const posts = api.mock.calls.filter(c => c[1]?.method === 'POST');
     expect(posts).toHaveLength(0);
+  });
+});
+
+/* ==================== 執行面：非進行中計畫的作業退出 Today ==================== */
+describe('Today 只收進行中計畫（含 standalone）的作業', () => {
+  beforeEach(() => { api.mockReset(); api.mockResolvedValue({}); });
+
+  it('掛在 ended 計畫的逾期作業不出現在 Today；standalone 逾期作業出現', () => {
+    const past = '2020-01-01'; // 永遠逾期，與執行日無關
+    const standalone = sa({ id: 1, title: '單機作業', plan_id: null, plan_status: null, deadline_date: past });
+    const onEnded = sa({ id: 2, title: '結束計畫作業', plan_id: 9, plan_status: 'ended', deadline_date: past });
+    const onPaused = sa({ id: 3, title: '暫停計畫作業', plan_id: 8, plan_status: 'paused', deadline_date: past });
+    render(<SchoolAssignmentToday tasks={[standalone, onEnded, onPaused]} lists={[{ id: 1, name: '數學' }]} reload={vi.fn()} />);
+    expect(screen.getByText('單機作業')).toBeInTheDocument();
+    expect(screen.queryByText('結束計畫作業')).not.toBeInTheDocument();
+    expect(screen.queryByText('暫停計畫作業')).not.toBeInTheDocument();
   });
 });
