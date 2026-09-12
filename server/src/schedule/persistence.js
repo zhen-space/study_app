@@ -347,11 +347,38 @@ async function getRestorePreviewFrom(db, userId, sourceVersionId, {
     return true;
   });
 
+  // §13 current-world overlay：舊版是「套在現在世界上的 placement template」。
+  // source version 不知道、但目前 active schedule 有 placement 的 live Task，
+  // restore 後必須**沿用現在的 placement**（而不是變 unplaced）。每一筆仍要通過
+  // 現在的 deadline／past／fixed_event／collision 驗證；不合法就不 carry（維持
+  // unplaced 或記為衝突），絕不 silent apply。Lock：current placement 本來就與
+  // current lock 並存，且 apply 時 assertCandidateLocks 會在 transaction 內再驗一次。
+  {
+    const covered = new Set(lockedRestorable.map(b => Number(b.task_id)));
+    for (const raw of activeLiveBlocks) {
+      if (covered.has(Number(raw.task_id))) continue;
+      const block = canonicalizeBlockTiming(raw);
+      const verdict = classifyPlacement(block, { task: tasks.get(Number(block.task_id)), events, planningDay, nowHM, dayOfWeek });
+      if (verdict) {
+        if (verdict.kind !== 'skip') {
+          const { kind, ...rest } = verdict;
+          conflicts.push({ task_id: block.task_id, block_id: raw.id ?? null, ...rest, block, carried_current: true });
+        }
+        continue;   // 不合法 → 不 carry（保持 unplaced；skip 表示該 Task 已退出排程）
+      }
+      if (lockedRestorable.some(x => timedOverlap(x, block))) {
+        conflicts.push({ task_id: block.task_id, type: 'schedule_collision', message: '與目前安排時段重疊，無法沿用', block, carried_current: true });
+        continue;
+      }
+      lockedRestorable.push({ task_id: block.task_id, date: block.date, start_time: block.start_time, end_time: block.end_time, planned_minutes: block.planned_minutes });
+      covered.add(Number(block.task_id));
+    }
+  }
+
   const scheduledIds = new Set(lockedRestorable.map(b => Number(b.task_id)));
   const conflictIds = new Set(conflicts.map(c => Number(c.task_id)));
-  // Restore 不 overlay active：template 中沒有的新任務，以及無法恢復的有效任務，
-  // 都會是新版本的 unplaced。已完成／取消／刪除，或非 draft/active 計畫，
-  // 都已退出 future schedule，不列入。
+  // template 中沒有、且目前 active schedule 也沒有 placement 的 live Task → unplaced。
+  // 已完成／取消／刪除，或非 draft/active 計畫，都已退出 future schedule，不列入。
   const unplacedTaskIds = liveTasks.filter(t => t.plan_id != null && !t.deleted && !t.completed && !t.cancelled
     && ['draft', 'active'].includes(t.plan_status) && !scheduledIds.has(Number(t.id)))
     .map(t => Number(t.id));
