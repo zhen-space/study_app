@@ -8,6 +8,8 @@ import { explainSchedule, explainSentences } from '../schedule/explain.js';
 import { normalizeConstraints } from '../schedule/constraints.js';
 import { loadGoogleBusy, GoogleCalendarError } from '../integrations/google-calendar.js';
 import { validateIntervals, normalizeIntervals, mergeBusyIntervals, busyByDay, combineDayMaps } from '../schedule/busy.js';
+import { freezeWindow, parseRollingPolicy, normalizeOverride, partitionFreeze, deadlineViolation } from '../schedule/rolling.js';
+import { calculateScheduleDiff } from '../schedule/diff.js';
 
 const router = Router();
 router.use(requireAuth);
@@ -84,9 +86,14 @@ export function busyMinutesForDay(dateStr, events, externalBusy = null) {
   return m;
 }
 
-router.post('/preview', async (req, res) => {
-  const { items, excludeWeekdays = [], excludeDates = [], skipIfBusyHours = 0, timed = true, perDay = 3, pace = 'even' } = req.body;
-  if (!items?.length) return res.status(400).json({ error: '參數不完整' });
+// 排程預覽的核心：從 route handler 抽出成可重用函式，讓「滾動段考排程」能用
+// **完全相同**的 placement 演算法，而不是另做第二套 scheduler。行為與原本一致：
+// 回傳 { status, body }，route 只是薄包裝。previewOpts.freezePins 讓呼叫端（rolling）
+// 傳入「必須凍結、不得移動」的既有 block，處理方式與 Lock pin 完全相同。
+export async function runPreview(userId, body, previewOpts = {}) {
+  const { items, excludeWeekdays = [], excludeDates = [], skipIfBusyHours = 0, timed = true, perDay = 3, pace = 'even' } = body;
+  const freezePins = Array.isArray(previewOpts.freezePins) ? previewOpts.freezePins : [];
+  if (!items?.length) return { status: 400, body: { error: '參數不完整' } };
   // 已取消／完成／刪除的正式 Task 已退出未來排程。preview 與 apply 使用同一
   // eligibility，不讓 UI 看見一份其實永遠無法套用的候選安排。
   const referencedTaskIds = [...new Set(items.map(item => Number(item.task_id))
@@ -96,19 +103,23 @@ router.post('/preview', async (req, res) => {
     const rows = await q.all(
       `SELECT t.id,t.plan_id,t.deleted,t.completed,t.cancelled,p.status AS plan_status
          FROM tasks t LEFT JOIN plans p ON p.id=t.plan_id AND p.user_id=t.user_id
-        WHERE t.user_id=? AND t.id IN (${placeholders})`, [req.userId, ...referencedTaskIds]);
+        WHERE t.user_id=? AND t.id IN (${placeholders})`, [userId, ...referencedTaskIds]);
     // preview 不能替 apply 預演一份 write gate 必定拒絕的 candidate。沒有查到的
     // task、一般待辦、非 draft/active 計畫，以及已結束 Task 都一律退出。
+    // virtualPlanTaskIds（rolling §9 pending attachment）：plan_id 還是 NULL 的
+    // trigger task，preview 時當作「虛擬掛在本計畫」放行——零 DB mutation，
+    // 真正 attach 要等 apply 的 transaction。已刪除／完成／取消仍不放行。
+    const virtual = new Set((previewOpts.virtualPlanTaskIds || []).map(Number));
     const found = new Set(rows.map(t => Number(t.id)));
-    const ineligible = new Set(referencedTaskIds.filter(id => !found.has(id)));
-    for (const t of rows) if (t.plan_id == null || t.deleted || t.completed || t.cancelled
-      || !['draft', 'active'].includes(t.plan_status)) ineligible.add(Number(t.id));
+    const ineligible = new Set(referencedTaskIds.filter(id => !found.has(id) && !virtual.has(id)));
+    for (const t of rows) if (!virtual.has(Number(t.id)) && (t.plan_id == null || t.deleted || t.completed || t.cancelled
+      || !['draft', 'active'].includes(t.plan_status))) ineligible.add(Number(t.id));
     for (let i = items.length - 1; i >= 0; i--) if (ineligible.has(Number(items[i].task_id))) items.splice(i, 1);
   }
-  if (!items.length) return res.status(400).json({ error: '沒有可排程的未完成任務' });
+  if (!items.length) return { status: 400, body: { error: '沒有可排程的未完成任務' } };
   const requestedItems = items.map(item => ({ ...item }));
   const today = todayTW(); // 台灣時區的今天
-  const gStart = req.body.startDate || today, gEnd = req.body.endDate || today;
+  const gStart = body.startDate || today, gEnd = body.endDate || today;
   for (const it of items) { it.start = it.start || gStart; it.end = it.end || gEnd; }
   // 純題目（單元練習／歷屆試題）一天只排一份。項目可能來自不同路徑，
   // 其中「使用者自己標純題目」那條不會帶 onePerDay 旗標 → 規則就會失效。
@@ -123,8 +134,8 @@ router.post('/preview', async (req, res) => {
   // C：已確認的 Plan constraint 是使用者意圖的正式來源。request 明確帶的值
   // 可以暫時覆寫（例如 Wizard 調整中預覽），但未支援欄位永遠不進演算法。
   let confirmedConstraints = {};
-  if (req.body.plan_id != null) {
-    const row = await q.get('SELECT intent_json FROM plan_constraints WHERE plan_id=? AND user_id=?', [req.body.plan_id, req.userId]);
+  if (body.plan_id != null) {
+    const row = await q.get('SELECT intent_json FROM plan_constraints WHERE plan_id=? AND user_id=?', [body.plan_id, userId]);
     try { confirmedConstraints = row ? JSON.parse(row.intent_json || '{}') : {}; } catch {}
   }
   for (const d of confirmedConstraints.exclude_dates || []) if (!excludeDates.includes(d)) excludeDates.push(d);
@@ -160,7 +171,7 @@ router.post('/preview', async (req, res) => {
   // 名次是「相對」的：沒被列到的科目排在列到的後面，彼此維持原本的順序。
   // 不合法的內容（不是陣列）當作沒指定，不報錯——排序偏好不該擋住排程。
   const subjectRank = new Map();
-  const requestedSubjectOrder = Array.isArray(req.body.subject_order) ? req.body.subject_order : confirmedConstraints.subject_order;
+  const requestedSubjectOrder = Array.isArray(body.subject_order) ? body.subject_order : confirmedConstraints.subject_order;
   if (Array.isArray(requestedSubjectOrder)) {
     requestedSubjectOrder.forEach((sid, i) => {
       const key = String(sid);
@@ -171,15 +182,15 @@ router.post('/preview', async (req, res) => {
   const minD = items.reduce((a, i) => i.start < a ? i.start : a, items[0].start);
   const maxD = items.reduce((a, i) => i.end > a ? i.end : a, items[0].end);
 
-  const u = await q.get('SELECT sleep_start, sleep_end, meal_windows FROM users WHERE id=?', [req.userId]);
+  const u = await q.get('SELECT sleep_start, sleep_end, meal_windows FROM users WHERE id=?', [userId]);
   const settings = { ...u, meal_windows: JSON.parse(u.meal_windows) };
-  if (req.body.sleep_start) settings.sleep_start = req.body.sleep_start;
-  if (req.body.sleep_end) settings.sleep_end = req.body.sleep_end;
-  const events = await q.all('SELECT * FROM fixed_events WHERE user_id=?', [req.userId]);
+  if (body.sleep_start) settings.sleep_start = body.sleep_start;
+  if (body.sleep_end) settings.sleep_end = body.sleep_end;
+  const events = await q.all('SELECT * FROM fixed_events WHERE user_id=?', [userId]);
   // Master Plan B：新 routine 與舊 fixed_events 並存。舊資料不搬、不刪；
   // scheduler 直接讀結構化 routine，class/fixed_event/sleep/meal 都視為 busy。
-  const routines = await q.all('SELECT * FROM availability_routines WHERE user_id=? AND enabled=1', [req.userId]);
-  const exceptions = await q.all('SELECT * FROM routine_exceptions WHERE user_id=?', [req.userId]);
+  const routines = await q.all('SELECT * FROM availability_routines WHERE user_id=? AND enabled=1', [userId]);
+  const exceptions = await q.all('SELECT * FROM routine_exceptions WHERE user_id=?', [userId]);
   const availabilityByDate = new Map();
   const availabilityOverrideByDate = new Map();
   const hasAvailabilityRoutine = routines.some(r => r.type === 'availability');
@@ -223,16 +234,16 @@ router.post('/preview', async (req, res) => {
   // apply 仍會在 transaction 用 pure validator 再驗一次，不能只信 preview。
   const lockRows = await q.all(`SELECT l.*, t.deleted, t.completed, t.cancelled FROM schedule_locks l
     LEFT JOIN tasks t ON t.id=l.task_id AND t.user_id=l.user_id
-    WHERE l.user_id=? AND l.released_at IS NULL`, [req.userId]);
+    WHERE l.user_id=? AND l.released_at IS NULL`, [userId]);
   const nowHM = new Intl.DateTimeFormat('en-GB', { timeZone:'Asia/Taipei', hour:'2-digit', minute:'2-digit', hourCycle:'h23' }).format(new Date());
   const effectiveLocks = lockRows.filter(l => l.type === 'task' ? !l.deleted && !l.completed && !l.cancelled : l.type === 'day' ? l.date >= today : l.date > today || (l.date === today && l.end_time > nowHM));
   const dayLocked = new Set(effectiveLocks.filter(l=>l.type==='day').map(l=>l.date));
   for (const d of dayLocked) if (!excludeDates.includes(d)) excludeDates.push(d);
   for (const l of effectiveLocks.filter(l=>l.type==='time')) events.push({ date:l.date,start_time:l.start_time,end_time:l.end_time,recurring:null,_lock:true });
-  const activeForLocks = await sched.getActiveSchedule(req.userId);
-  const activeTasks = await q.all('SELECT id,plan_id,deleted,completed,cancelled FROM tasks WHERE user_id=?', [req.userId]);
+  const activeForLocks = await sched.getActiveSchedule(userId);
+  const activeTasks = await q.all('SELECT id,plan_id,deleted,completed,cancelled FROM tasks WHERE user_id=?', [userId]);
   const activeTaskById = new Map(activeTasks.map(t => [Number(t.id), t]));
-  const currentPlanId = Number(req.body.plan_id);
+  const currentPlanId = Number(body.plan_id);
   const isCurrentLivePlanBlock = b => {
     const task = activeTaskById.get(Number(b.task_id));
     return Number.isInteger(currentPlanId) && task && Number(task.plan_id) === currentPlanId
@@ -252,6 +263,9 @@ router.post('/preview', async (req, res) => {
       pinnedById.set(Number(block.id), block);
     }
   }
+  // Freeze Horizon（rolling）：呼叫端傳入的 today/tomorrow 既有 block 與 Lock pin
+  // 走同一條路——exact placement 凍結、佔住時段、對應 Task 退出重排 items。
+  for (const b of freezePins) if (b && b.id != null && !pinnedById.has(Number(b.id))) pinnedById.set(Number(b.id), b);
   const pinned = [...pinnedById.values()];
   const pinnedIds = new Set(pinned.map(b=>Number(b.task_id)));
   // 所有 pinned timed block 都佔住 free slot；否則 preview 雖把 block 帶回結果，
@@ -259,15 +273,15 @@ router.post('/preview', async (req, res) => {
   if (timed) events.push(...pinned.filter(b => b.start_time && b.end_time)
     .map(b => ({ date:b.date, start_time:b.start_time, end_time:b.end_time, recurring:null, _pinned_lock:true })));
   for (let i=items.length-1;i>=0;i--) if (pinnedIds.has(Number(items[i].task_id))) items.splice(i,1);
-  if (!items.length && pinned.length) return res.json({ blocks: pinned.map(b => ({ ...b, _pinned:true })), check:{ tight:[], warnings:[], subjects:[], dailyMin:0, dailyMax:0 }, unplaced:false });
+  if (!items.length && pinned.length) return { status: 200, body: { blocks: pinned.map(b => ({ ...b, _pinned:true })), check:{ tight:[], warnings:[], subjects:[], dailyMin:0, dailyMax:0 }, unplaced:false } };
   // 全域排程：其他 Plan 已經生效的「有明確起迄時間」block 必須佔住時段。
   // 本次正在重排的 Plan 可釋出自己的舊 block，讓演算法重新安插；建立新 Plan
   // 沒有 plan_id 時則不排除任何既有 block。untimed block 不代表特定時段，不能
   // 在這裡把整天封死。
   if (timed) {
-    const activeVersionId = await sched.getActiveVersionId(req.userId);
+    const activeVersionId = await sched.getActiveVersionId(userId);
     if (activeVersionId != null) {
-      const currentPlanId = req.body.plan_id ?? null;
+      const currentPlanId = body.plan_id ?? null;
       const scheduledBusy = await q.all(
         `SELECT b.date, b.start_time, b.end_time
            FROM scheduled_blocks b
@@ -278,7 +292,7 @@ router.post('/preview', async (req, res) => {
             AND p.status IN ('draft','active')
             AND b.date>=? AND b.start_time IS NOT NULL AND b.end_time IS NOT NULL
             AND (? IS NULL OR t.plan_id<>?)`,
-        [activeVersionId, req.userId, today, currentPlanId, currentPlanId]);
+        [activeVersionId, userId, today, currentPlanId, currentPlanId]);
       events.push(...scheduledBusy.map(b => ({ ...b, recurring: null, _scheduled: true })));
     }
   }
@@ -290,10 +304,10 @@ router.post('/preview', async (req, res) => {
   // 寧可這次排不出來，也不給一份假的安全排程。
   let googleBusy = null;
   try {
-    googleBusy = await loadGoogleBusy(req.userId, minD, maxD);
+    googleBusy = await loadGoogleBusy(userId, minD, maxD);
   } catch (e) {
     if (e instanceof GoogleCalendarError) {
-      return res.status(503).json({ error: '暫時無法讀取 Google Calendar', code: 'GOOGLE_CALENDAR_UNAVAILABLE' });
+      return { status: 503, body: { error: '暫時無法讀取 Google Calendar', code: 'GOOGLE_CALENDAR_UNAVAILABLE' } };
     }
     throw e;
   }
@@ -305,11 +319,11 @@ router.post('/preview', async (req, res) => {
   // 與 Google 的忙碌時段用區間聯集合併，所以同一段時間被兩個來源各報一次
   // 不會變成兩倍忙碌（同一個 Google 帳號同時出現在 Google API 與 iPhone 行事曆
   // 正是最常見的情況）。
-  const rawExternal = req.body.external_busy;
+  const rawExternal = body.external_busy;
   let deviceBusy = null;
   if (rawExternal != null) {
     const err = validateIntervals(rawExternal);
-    if (err) return res.status(400).json({ error: err, code: 'INVALID_EXTERNAL_BUSY' });
+    if (err) return { status: 400, body: { error: err, code: 'INVALID_EXTERNAL_BUSY' } };
     deviceBusy = busyByDay(mergeBusyIntervals(normalizeIntervals(rawExternal)), minD, maxD);
   }
   const externalBusyByDay = combineDayMaps(googleBusy, deviceBusy);
@@ -329,7 +343,7 @@ router.post('/preview', async (req, res) => {
     }
     days.push({ date: ds, slots, slotIdx: 0 });
   }
-  if (!days.length) return res.status(400).json({ error: '沒有可排的日期' });
+  if (!days.length) return { status: 400, body: { error: '沒有可排的日期' } };
   days.forEach(d => { d.pos = d.slots[0]?.[0] ?? null; });
 
   // 已確認的單次最長讀書時間是 scheduler 的正式 input，不是讓 AI 直接挑日期。
@@ -428,14 +442,14 @@ router.post('/preview', async (req, res) => {
     if (w._strictOnePerDay && blocks.some(b => b.date === day.date && b.subject_id === w.subject_id)) return false;
     if (!timed) {
       if (!day.slots.length) return false;
-      blocks.push({ subject_id: w.subject_id, title: w.title, date: day.date, _bk: w._bk, _ws: w.start, _we: w.end, _fin: !!w.final, _one: !!w.onePerDay });
+      blocks.push({ task_id: w.task_id ?? null, subject_id: w.subject_id, title: w.title, date: day.date, _bk: w._bk, _ws: w.start, _we: w.end, _fin: !!w.final, _one: !!w.onePerDay });
       day.count++; day.load++; day.subs.add(w.subject_id);
       return true;
     }
     while (day.slotIdx < day.slots.length) {
       const end = day.slots[day.slotIdx][1];
       if (day.pos + w.chunk <= end) {
-        blocks.push({ subject_id: w.subject_id, title: w.title, date: day.date, _we: w.end, start_time: toHM(day.pos), end_time: toHM(day.pos + w.chunk) });
+        blocks.push({ task_id: w.task_id ?? null, subject_id: w.subject_id, title: w.title, date: day.date, _we: w.end, start_time: toHM(day.pos), end_time: toHM(day.pos + w.chunk) });
         day.pos += w.chunk + BREAK; day.load += w.chunk; day.count++; day.subs.add(w.subject_id);
         if (day.pos >= end) { day.slotIdx++; day.pos = day.slots[day.slotIdx]?.[0] ?? null; }
         return true;
@@ -1148,10 +1162,202 @@ router.post('/preview', async (req, res) => {
   blocks.push(...pinned.map(b => ({ task_id:b.task_id, title:b.task_title_snapshot, subject_id:null, date:b.date, start_time:b.start_time, end_time:b.end_time, planned_minutes:b.planned_minutes, _pinned:true })));
   blocks.forEach(b => { b.deadline = b._we || null; delete b._bk; delete b._ws; delete b._we; delete b._one; });
   blocks.sort((a, b) => a.date === b.date ? (a.start_time || '').localeCompare(b.start_time || '') : a.date.localeCompare(b.date));
-  res.json({
+  return { status: 200, body: {
     blocks, check, feasibility, unplaced: failed.length > 0,
     message: failed.length ? `空檔不足，排不進去：${[...new Set(failed)].slice(0, 5).join('、')}${failed.length > 5 ? '…' : ''}（請延長日期或減少內容）` : undefined,
+  } };
+}
+
+// POST /api/schedule/preview —— 薄包裝，行為與抽出前完全相同。
+router.post('/preview', async (req, res) => {
+  try {
+    const r = await runPreview(req.userId, req.body);
+    res.status(r.status).json(r.body);
+  } catch (e) {
+    res.status(e.status || 500).json({ error: e.message });
+  }
+});
+
+/* ============================================================
+   段考滾動排程（Rolling Exam Schedule v1）
+   同一套 engine：freeze 今天／明天（既有 pin 機制），tail 從後天用 runPreview
+   重排。不是第二套 scheduler、不是新 Plan type／schema／lifecycle。
+   ============================================================ */
+
+// 目前 active 版本裡、屬於 draft/active 計畫的未完成 block，含 plan_id 與 Task metadata。
+async function loadActivePlanBlocks(userId) {
+  const versionId = await sched.getActiveVersionId(userId);
+  if (versionId == null) return { versionId: null, blocks: [] };
+  const blocks = await q.all(
+    `SELECT b.id,b.task_id,b.date,b.start_time,b.end_time,b.planned_minutes,
+            t.plan_id,t.list_id,t.title,t.estimated_minutes,t.deadline_date,t.deadline_time
+       FROM scheduled_blocks b
+       JOIN tasks t ON t.id=b.task_id AND t.user_id=b.user_id
+       JOIN plans p ON p.id=t.plan_id AND p.user_id=t.user_id
+      WHERE b.schedule_version_id=? AND b.user_id=?
+        AND COALESCE(t.deleted,0)=0 AND t.completed=0 AND COALESCE(t.cancelled,0)=0
+        AND p.status IN ('draft','active')`, [versionId, userId]);
+  return { versionId, blocks };
+}
+
+export async function runRollingPreview(userId, body) {
+  const planId = Number(body.plan_id);
+  if (!Number.isInteger(planId)) return { status: 400, body: { error: '缺少有效的計畫 id' } };
+  const plan = await q.get('SELECT id,status FROM plans WHERE id=? AND user_id=?', [planId, userId]);
+  if (!plan) return { status: 404, body: { error: '找不到這個計畫' } };
+  // §16：只有 draft/active 計畫能滾動重排；paused/ended/completed/deleted 一律拒絕。
+  if (!['draft', 'active'].includes(plan.status)) {
+    return { status: 409, body: { error: '目前未執行的計畫不能滾動重排', code: 'PLAN_NOT_ROLLING_ELIGIBLE', plan_status: plan.status } };
+  }
+
+  // §2 rolling policy：horizon 預設吃 plan_constraints；body.freeze.horizon_days 可覆寫。
+  const con = await q.get('SELECT intent_json FROM plan_constraints WHERE plan_id=? AND user_id=?', [planId, userId]);
+  const policy = parseRollingPolicy(con?.intent_json);
+  const horizon = Number.isInteger(Number(body.freeze?.horizon_days)) ? Number(body.freeze.horizon_days) : policy.freeze_horizon_days;
+  const win = freezeWindow(todayTW(), horizon);
+  const override = normalizeOverride(body.freeze);
+
+  const { versionId: baseVersionId, blocks: activeBlocks } = await loadActivePlanBlocks(userId);
+  const { frozen, movable } = partitionFreeze(activeBlocks, planId, win, override);
+
+  // tail 的來源＝CURRENT DB WORLD 的 current-plan 未完成 Task（不信前端傳的 Task list，§5）。
+  const planTasks = await q.all(
+    `SELECT id,list_id,title,estimated_minutes,deadline_date,deadline_time
+       FROM tasks WHERE user_id=? AND plan_id=? AND COALESCE(deleted,0)=0 AND completed=0 AND COALESCE(cancelled,0)=0`,
+    [userId, planId]);
+  const frozenMinByTask = new Map();
+  for (const b of frozen) frozenMinByTask.set(Number(b.task_id), (frozenMinByTask.get(Number(b.task_id)) || 0) + (Number(b.planned_minutes) || 0));
+
+  const FAR = addDays(win.rolling_start, 180);
+  const items = [];
+  for (const t of planTasks) {
+    const est = Number(t.estimated_minutes) || 0;
+    const frozenMin = frozenMinByTask.get(Number(t.id)) || 0;
+    // 已凍結部分不再重排；沒有 estimate 又完全沒被凍結的，給一個保守的 60 分鐘 tail。
+    const remaining = est > 0 ? Math.max(0, est - frozenMin) : (frozenMin > 0 ? 0 : 60);
+    if (remaining <= 0) continue;
+    items.push({ task_id: Number(t.id), subject_id: t.list_id ?? Number(t.id), title: t.title,
+      minutes: remaining, start: win.rolling_start, end: t.deadline_date || FAR });
+  }
+
+  // §9 trigger task：可能是 pending plan_id=NULL 的新作業（virtual membership，零 DB mutation）。
+  let triggerTask = null;
+  const triggerId = Number(body.trigger_task_id);
+  const virtualPlanTaskIds = [];
+  if (Number.isInteger(triggerId)) {
+    triggerTask = await q.get('SELECT id,plan_id,list_id,title,estimated_minutes,deadline_date,deadline_time,deleted,completed,cancelled FROM tasks WHERE id=? AND user_id=?', [triggerId, userId]);
+    if (triggerTask && !triggerTask.deleted && !triggerTask.completed && !triggerTask.cancelled
+      && triggerTask.plan_id == null) {
+      virtualPlanTaskIds.push(triggerId);
+      const est = Number(triggerTask.estimated_minutes) || 60;
+      items.push({ task_id: triggerId, subject_id: triggerTask.list_id ?? triggerId, title: triggerTask.title,
+        minutes: est, start: win.rolling_start, end: triggerTask.deadline_date || FAR });
+    }
+  }
+
+  const freezePins = frozen.map(b => ({ id: b.id, task_id: b.task_id, date: b.date, start_time: b.start_time, end_time: b.end_time, planned_minutes: b.planned_minutes, task_title_snapshot: b.title }));
+
+  if (!items.length) {
+    // 沒有要重排的 tail：candidate 就是凍結的既有安排本身（可能是全部凍結完了）。
+    const candidate0 = freezePins.map(b => ({ task_id: Number(b.task_id), date: b.date, start_time: b.start_time || null, end_time: b.end_time || null, planned_minutes: b.planned_minutes ?? null }));
+    return { status: 200, body: { window: win, base_version_id: baseVersionId, frozen: freezePins,
+      movable: movable.map(b => ({ id: b.id, task_id: b.task_id, date: b.date, start_time: b.start_time, end_time: b.end_time })),
+      blocks: candidate0, attach_task_ids: [], diff: calculateScheduleDiff(activeBlocks.map(b => ({ task_id: Number(b.task_id), date: b.date, start_time: b.start_time, end_time: b.end_time, planned_minutes: b.planned_minutes })), candidate0, { comparisonFrom: win.today, includeUnchanged: true }), unplaced: false, infeasible: null } };
+  }
+
+  const pre = await runPreview(userId, {
+    items, plan_id: planId, startDate: win.rolling_start, endDate: FAR, timed: true,
+    external_busy: body.external_busy,
+  }, { freezePins, virtualPlanTaskIds });
+  if (pre.status !== 200) return pre;
+
+  let candidate = (pre.body.blocks || []).filter(b => b.task_id != null).map(b => ({
+    task_id: Number(b.task_id), date: b.date, start_time: b.start_time || null, end_time: b.end_time || null,
+    planned_minutes: b.planned_minutes ?? null,
+  }));
+
+  // §7/§11：placement 演算法在範圍太短時會退讓把 block 排到 deadline 之後。
+  // preview 絕不能把「排到 deadline 後」當成成功——用此刻 Task 的 deadline 逐一驗，
+  // 任何違反都代表 strict freeze 下排不進 → 標記 infeasible，並把違反的 block 從
+  // 回傳的 candidate 拿掉（不呈現、也不可 apply；apply 端 enforceDeadlines 會再擋）。
+  const deadlineById = new Map();
+  for (const t of planTasks) deadlineById.set(Number(t.id), { deadline_date: t.deadline_date, deadline_time: t.deadline_time });
+  if (triggerTask) deadlineById.set(Number(triggerTask.id), { deadline_date: triggerTask.deadline_date, deadline_time: triggerTask.deadline_time });
+  const frozenIdSet = new Set(frozen.map(b => Number(b.task_id)));
+  const deadlineViolations = [];
+  candidate = candidate.filter(b => {
+    if (frozenIdSet.has(Number(b.task_id))) return true;   // 凍結的既有安排不在此重判
+    const v = deadlineViolation(b, deadlineById.get(Number(b.task_id)));
+    if (v) { deadlineViolations.push(v); return false; }
+    return true;
   });
+
+  // §6 diff vs 目前 active。frozen 今天／明天必須全部在 unchanged。
+  const before = activeBlocks.map(b => ({ task_id: Number(b.task_id), date: b.date, start_time: b.start_time, end_time: b.end_time, planned_minutes: b.planned_minutes }));
+  const diff = calculateScheduleDiff(before, candidate, { comparisonFrom: win.today, includeUnchanged: true });
+  const frozenTaskIds = new Set(frozen.map(b => Number(b.task_id)));
+  const frozenBroken = diff.items.some(it => frozenTaskIds.has(Number(it.task_id)) && (it.type === 'moved' || it.type === 'removed'));
+
+  // §7 INFEASIBLE_WITH_FREEZE：strict freeze 下 trigger 排不進（unplaced 分鐘）→ 結構化回傳，
+  // 不 silent break freeze、不排到 deadline 後、不假裝成功。
+  let infeasible = null;
+  const liveTrigger = triggerTask && !triggerTask.deleted && !triggerTask.completed && !triggerTask.cancelled ? triggerTask : null;
+  const placedTrigger = liveTrigger ? candidate.some(b => Number(b.task_id) === Number(liveTrigger.id)) : true;
+  if (pre.body.unplaced || frozenBroken || deadlineViolations.length || (liveTrigger && !placedTrigger)) {
+    infeasible = {
+      code: 'INFEASIBLE_WITH_FREEZE',
+      freeze_start: win.freeze_start, freeze_through: win.freeze_through, rolling_start: win.rolling_start,
+      trigger_task_id: liveTrigger ? Number(liveTrigger.id) : (Number.isInteger(triggerId) ? triggerId : null),
+      deadline_date: liveTrigger?.deadline_date || null,
+      deadline_time: liveTrigger?.deadline_time || null,
+      required_minutes: liveTrigger ? (Number(liveTrigger.estimated_minutes) || 60) : null,
+      reason: frozenBroken ? 'freeze_conflict' : (deadlineViolations.length ? 'deadline_before_rolling_start' : 'insufficient_time_under_freeze'),
+      deadline_violations: deadlineViolations,
+      options: ['KEEP_CURRENT', 'RELAX_FREEZE', 'SELECT_MOVABLE_BLOCKS'],
+    };
+  }
+
+  return { status: 200, body: {
+    window: win,
+    base_version_id: baseVersionId,
+    frozen: freezePins,
+    movable: movable.map(b => ({ id: b.id, task_id: b.task_id, date: b.date, start_time: b.start_time, end_time: b.end_time })),
+    blocks: candidate,
+    attach_task_ids: virtualPlanTaskIds,
+    diff,
+    unplaced: !!pre.body.unplaced,
+    infeasible,
+  } };
+}
+
+router.post('/rolling/preview', async (req, res) => {
+  try {
+    const r = await runRollingPreview(req.userId, req.body || {});
+    res.status(r.status).json(r.body);
+  } catch (e) { res.status(e.status || 500).json({ error: e.message, code: e.code, conflicts: e.conflicts }); }
+});
+
+// Rolling apply：走既有 applySchedule 的 transaction，只多開幾道 defence-in-depth
+// （stale / freeze / deadline / pending-attach）。§5「不能相信前端傳完整 Task list」——
+// 這裡只信前端傳回的 candidate blocks 位置，其餘（attach、freeze、deadline、carry-forward）
+// 全部在 transaction 內用此刻的 DB 世界重驗。
+router.post('/rolling/apply', async (req, res) => {
+  try {
+    const b = req.body || {};
+    res.json(await sched.applySchedule(req.userId, {
+      planId: b.plan_id,
+      source: sched.SOURCE.AI_REPLAN,
+      reason: b.reason || '段考滾動重排',
+      effectiveFrom: b.freeze_start || todayTW(),
+      blocks: b.blocks || [],
+      expectedBaseVersionId: b.base_version_id ?? null,
+      attachTaskIds: b.attach_task_ids || [],
+      freezeBlocks: b.freeze_blocks || null,
+      enforceDeadlines: true,
+    }));
+  } catch (e) {
+    res.status(e.status || 500).json({ error: e.message, code: e.code, violations: e.violations, conflicts: e.conflicts, active_version_id: e.active_version_id });
+  }
 });
 
 /* ============================================================

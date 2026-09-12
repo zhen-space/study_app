@@ -5,6 +5,7 @@ import { calculateScheduleDiff } from './diff.js';
 import { classifyPlacement, findSelfCollisions, timedOverlap } from './feasibility.js';
 import { canonicalizeBlockTiming, timingProblem } from './timing.js';
 import { planTaskDisposition, lockReleaseReason } from './plan-cleanup.js';
+import { samePlacement, deadlineViolation } from './rolling.js';
 
 // 手動調整的說法：使用者是「現在正要放」，不是「想恢復舊安排」。
 const MANUAL_MESSAGES = {
@@ -81,6 +82,18 @@ export class ScheduleVersionNotFoundError extends Error {
 
 export class ScheduleLockConflictError extends Error {
   constructor(conflicts) { super('因鎖定無法重排，請先解鎖後再試'); this.name = 'ScheduleLockConflictError'; this.status = 409; this.conflicts = conflicts; }
+}
+
+// Rolling（段考滾動排程）的 apply 期 defence-in-depth。preview 是 UX 防線，
+// apply 仍在 transaction 內用「此刻的 DB 世界」再驗一次，不能只信前端送回的 candidate。
+export class ScheduleStalePreviewError extends Error {
+  constructor(activeVersionId) { super('排程在你預覽之後已被其他變更取代，請重新預覽'); this.name = 'ScheduleStalePreviewError'; this.status = 409; this.code = 'STALE_SCHEDULE_PREVIEW'; this.active_version_id = activeVersionId ?? null; }
+}
+export class ScheduleFreezeViolationError extends Error {
+  constructor(violations) { super('今天／明天的既定安排必須維持不變'); this.name = 'ScheduleFreezeViolationError'; this.status = 409; this.code = 'FREEZE_VIOLATION'; this.violations = violations; }
+}
+export class ScheduleDeadlineViolationError extends Error {
+  constructor(violations) { super('有安排超過任務的硬性截止時間'); this.name = 'ScheduleDeadlineViolationError'; this.status = 409; this.code = 'DEADLINE_VIOLATION'; this.violations = violations; }
 }
 
 // complete 的條件必須和 Plan status 寫入、ScheduleVersion 建立在同一筆交易中。
@@ -334,11 +347,38 @@ async function getRestorePreviewFrom(db, userId, sourceVersionId, {
     return true;
   });
 
+  // §13 current-world overlay：舊版是「套在現在世界上的 placement template」。
+  // source version 不知道、但目前 active schedule 有 placement 的 live Task，
+  // restore 後必須**沿用現在的 placement**（而不是變 unplaced）。每一筆仍要通過
+  // 現在的 deadline／past／fixed_event／collision 驗證；不合法就不 carry（維持
+  // unplaced 或記為衝突），絕不 silent apply。Lock：current placement 本來就與
+  // current lock 並存，且 apply 時 assertCandidateLocks 會在 transaction 內再驗一次。
+  {
+    const covered = new Set(lockedRestorable.map(b => Number(b.task_id)));
+    for (const raw of activeLiveBlocks) {
+      if (covered.has(Number(raw.task_id))) continue;
+      const block = canonicalizeBlockTiming(raw);
+      const verdict = classifyPlacement(block, { task: tasks.get(Number(block.task_id)), events, planningDay, nowHM, dayOfWeek });
+      if (verdict) {
+        if (verdict.kind !== 'skip') {
+          const { kind, ...rest } = verdict;
+          conflicts.push({ task_id: block.task_id, block_id: raw.id ?? null, ...rest, block, carried_current: true });
+        }
+        continue;   // 不合法 → 不 carry（保持 unplaced；skip 表示該 Task 已退出排程）
+      }
+      if (lockedRestorable.some(x => timedOverlap(x, block))) {
+        conflicts.push({ task_id: block.task_id, type: 'schedule_collision', message: '與目前安排時段重疊，無法沿用', block, carried_current: true });
+        continue;
+      }
+      lockedRestorable.push({ task_id: block.task_id, date: block.date, start_time: block.start_time, end_time: block.end_time, planned_minutes: block.planned_minutes });
+      covered.add(Number(block.task_id));
+    }
+  }
+
   const scheduledIds = new Set(lockedRestorable.map(b => Number(b.task_id)));
   const conflictIds = new Set(conflicts.map(c => Number(c.task_id)));
-  // Restore 不 overlay active：template 中沒有的新任務，以及無法恢復的有效任務，
-  // 都會是新版本的 unplaced。已完成／取消／刪除，或非 draft/active 計畫，
-  // 都已退出 future schedule，不列入。
+  // template 中沒有、且目前 active schedule 也沒有 placement 的 live Task → unplaced。
+  // 已完成／取消／刪除，或非 draft/active 計畫，都已退出 future schedule，不列入。
   const unplacedTaskIds = liveTasks.filter(t => t.plan_id != null && !t.deleted && !t.completed && !t.cancelled
     && ['draft', 'active'].includes(t.plan_status) && !scheduledIds.has(Number(t.id)))
     .map(t => Number(t.id));
@@ -903,6 +943,12 @@ async function createScheduleVersionInTx(tx, userId, {
 export async function applySchedule(userId, {
   planId, source, reason = '', effectiveFrom = null,
   taskUpdates = [], taskCreates = [], taskDeleteIds = [], blocks = [],
+  // ---- Rolling（段考滾動排程）的可選 defence-in-depth。全部預設關閉，
+  //      既有 caller（Wizard／Replan）完全不受影響。 ----
+  expectedBaseVersionId = undefined,   // §12 stale preview 防護：!== undefined 才檢查
+  attachTaskIds = [],                   // §9 pending attachment：把 plan_id=NULL 的 Task 原子掛進本計畫
+  freezeBlocks = null,                  // §3 freeze：這些既有 placement 必須原封不動出現在 candidate
+  enforceDeadlines = false,             // §11 apply 期硬截止再驗一次
 }) {
   if (!Number.isInteger(Number(planId))) throw new ScheduleInputError('缺少有效的計畫 id');
   if (![SOURCE.INITIAL, SOURCE.AI_REPLAN, SOURCE.MANUAL].includes(source)) {
@@ -912,6 +958,26 @@ export async function applySchedule(userId, {
     const plan = await tx.get('SELECT id,status FROM plans WHERE id=? AND user_id=?', [planId, userId]);
     if (!plan) throw new ScheduleInputError('找不到這個計畫');
     if (!['draft', 'active'].includes(plan.status)) throw new ScheduleInputError('目前未執行的計畫不能重新排程');
+
+    // §12 STALE_SCHEDULE_PREVIEW：preview 帶的 base_version_id 必須等於此刻的 active，
+    // 否則 preview 已過時，禁止 silent rebase。undefined = 非 rolling caller，不檢查。
+    if (expectedBaseVersionId !== undefined) {
+      const st = await tx.get('SELECT active_version_id FROM user_schedule_state WHERE user_id=?', [userId]);
+      if (Number(st?.active_version_id ?? -1) !== Number(expectedBaseVersionId ?? -1)) {
+        throw new ScheduleStalePreviewError(st?.active_version_id ?? null);
+      }
+    }
+
+    // §9 pending attachment：把 plan_id=NULL 的既有 Task 原子掛進本計畫（在同一筆
+    // transaction 內，任何後續步驟失敗都會一起 rollback，不留半掛 Task）。
+    for (const rawId of attachTaskIds) {
+      const tid = Number(rawId);
+      const t = await tx.get('SELECT id,plan_id,deleted,completed,cancelled FROM tasks WHERE id=? AND user_id=?', [tid, userId]);
+      if (!t) throw new ScheduleInputError(`找不到要掛入的任務：${rawId}`);
+      if (t.deleted || t.completed || t.cancelled) throw new ScheduleInputError(`已結束的任務不能掛入計畫：${rawId}`);
+      if (t.plan_id != null && Number(t.plan_id) !== Number(planId)) throw new ScheduleInputError(`任務已屬於其他計畫：${rawId}`);
+      if (t.plan_id == null) await tx.run('UPDATE tasks SET plan_id=? WHERE id=? AND user_id=?', [planId, tid, userId]);
+    }
 
     const assertLivePlanTask = async taskId => {
       const task = await tx.get(
@@ -1007,6 +1073,37 @@ export async function applySchedule(userId, {
     // 這一步仍在 transaction 內，失敗時前面的 Task 異動會一併 rollback。
     validateTimedBlockOverlaps(candidateBlocks);
     await assertCandidateLocks(tx, userId, active?.active_version_id ?? null, candidateBlocks);
+
+    // §3 freeze defence-in-depth：每一個被凍結的既有 placement，必須逐欄相同地
+    // 出現在 candidate 裡。少了、被搬了、被換日了，都代表 optimizer（或前端）
+    // 動到不該動的今天／明天安排——整筆拒絕。
+    if (Array.isArray(freezeBlocks) && freezeBlocks.length) {
+      const violations = [];
+      for (const fb of freezeBlocks) {
+        if (!candidateBlocks.some(cb => samePlacement(cb, fb))) {
+          violations.push({ task_id: Number(fb.task_id), date: fb.date, start_time: fb.start_time || null, end_time: fb.end_time || null });
+        }
+      }
+      if (violations.length) throw new ScheduleFreezeViolationError(violations);
+    }
+
+    // §11 hard deadline defence-in-depth：用「此刻的 Task」再驗每一個 candidate block，
+    // 不信前端傳的 item.end。超過 deadline_date／deadline_time 一律拒絕。
+    if (enforceDeadlines) {
+      const ids = [...new Set(candidateBlocks.map(b => Number(b.task_id)))];
+      if (ids.length) {
+        const rows = await tx.all(
+          `SELECT id, deadline_date, deadline_time FROM tasks WHERE user_id=? AND id IN (${ids.map(() => '?').join(',')})`,
+          [userId, ...ids]);
+        const byId = new Map(rows.map(t => [Number(t.id), t]));
+        const violations = [];
+        for (const b of candidateBlocks) {
+          const v = deadlineViolation(b, byId.get(Number(b.task_id)));
+          if (v) violations.push(v);
+        }
+        if (violations.length) throw new ScheduleDeadlineViolationError(violations);
+      }
+    }
     const version = await createScheduleVersionInTx(tx, userId, {
       source, reason, effectiveFrom: effFrom, parentVersionId: active?.active_version_id ?? null,
       blocks: candidateBlocks,

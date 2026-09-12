@@ -671,7 +671,7 @@ describe('Phase 1：Plan／Task lifecycle 與 user-level ScheduleVersion', () =>
 });
 
 describe('P3 Restore：版本是 template，套用永遠建立新版本', () => {
-  test('full restore 建立新版本、保留舊版 immutable，且不在 template 的新 Task 變 unplaced', async () => {
+  test('full restore：舊版當 current-world template；template 沒有但現在有 placement 的新 Task 沿用現在的 placement（§13）', async () => {
     const userId = 6;
     await q.run('INSERT INTO users (id,email,password_hash) VALUES (?,?,?)', [userId, 'restore-full@test', 'x']);
     const plan = await q.run('INSERT INTO plans (user_id,name,status) VALUES (?,?,?)', [userId, '恢復計畫', 'active']);
@@ -690,16 +690,19 @@ describe('P3 Restore：版本是 template，套用永遠建立新版本', () => 
     const preview = await sched.getRestorePreview(userId, original.version_id);
     assert.equal(preview.status, 'full');
     assert.equal(preview.base_version_id, current.version_id);
-    assert.deepEqual(preview.unplaced_task_ids, [later.lastInsertRowid]);
+    // §13：later 不在 template，但目前 active 有 placement → 不再 unplaced，改沿用現在的位置。
+    assert.deepEqual(preview.unplaced_task_ids, []);
     const restored = await sched.applyRestore(userId, original.version_id, { baseVersionId: preview.base_version_id });
     assert.equal(restored.applied, true);
     const restoredVersion = await sched.getVersionWithBlocks(userId, restored.version.version_id);
     assert.equal(restoredVersion.version.source, 'restore');
     assert.equal(restoredVersion.version.parent_version_id, current.version_id);
     assert.equal(restoredVersion.version.restored_from_version_id, original.version_id);
-    assert.deepEqual(restoredVersion.blocks.map(b => [b.task_id, b.date]), [[task.lastInsertRowid, '2099-02-01']]);
-    assert.equal((await q.get('SELECT due_date FROM tasks WHERE id=?', [later.lastInsertRowid])).due_date, null,
-      '★ template 內不存在的 live Plan Task 必須正式變 unplaced');
+    // task 走 template（2099-02-01）；later 沿用現在的 placement（2099-02-03）。
+    assert.deepEqual(restoredVersion.blocks.map(b => [b.task_id, b.date]),
+      [[task.lastInsertRowid, '2099-02-01'], [later.lastInsertRowid, '2099-02-03']]);
+    assert.equal((await q.get('SELECT due_date FROM tasks WHERE id=?', [later.lastInsertRowid])).due_date, '2099-02-03',
+      '★ template 沒有但現在有 placement 的新 Task 必須沿用現在的位置，而不是變 unplaced');
     assert.equal((await sched.getBlocks(userId, original.version_id))[0].date, '2099-02-01', '★ template 不可被修改');
   });
 
