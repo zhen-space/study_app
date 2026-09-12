@@ -1110,3 +1110,12 @@ select { -webkit-appearance: none; appearance: none; padding-right: 26px;
 /* 日曆上的繳交期限標記 */
 .cal-deadline { background: var(--warning-soft); color: var(--warning); border: 1px solid rgba(176,113,11,.35); border-radius: 6px; padding: 1px 5px; margin-top: 2px; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; cursor: pointer; font-weight: 600; font-size: 11px; display: flex; align-items: center; gap: 3px; }
 .cal-deadline-tag { background: var(--warning); color: #fff; border-radius: 3px; padding: 0 3px; font-size: 9px; flex-shrink: 0; }
+
+/* ==================== 段考滾動重排（Rolling Exam Schedule） ==================== */
+.rolling h3 { font-size: 17px; }
+.rolling-sec { margin-top: var(--sp-3); }
+.rolling-sec--frozen .ui-section-title { color: var(--muted); }
+.rolling-sec--added .ui-section-title { color: var(--primary); }
+.rolling-sec--moved .ui-section-title { color: var(--warning); }
+.rolling-infeasible { margin-top: var(--sp-2); }
+.rolling-movable .ui-row { gap: var(--sp-2); align-items: center; }

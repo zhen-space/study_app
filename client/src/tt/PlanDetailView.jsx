@@ -10,6 +10,7 @@ import AdjustBlockSheet from './AdjustBlockSheet';
 import ReplanSheet from './ReplanSheet';
 import ConstraintSheet from './ConstraintSheet';
 import ExplainSheet from './ExplainSheet';
+import RollingExamSchedule from './RollingExamSchedule';
 import { Button, IconButton, PageHeader, SurfaceCard, ProgressBar, ListRow, BottomSheet, EmptyState } from './ui';
 
 // 單一計畫的內容。
@@ -76,6 +77,7 @@ export default function PlanDetailView({ planKey, tasks, lists, apiPlans = [], r
     listBooks().then(bs => setMatBooks(new Map(bs.map(b => [b.id, b])))).catch(() => {});
   }, []);
   const [sheet, setSheet] = useState(null);   // manage | edit | add | adjust | cannotComplete | confirmEnd
+  const [showRolling, setShowRolling] = useState(false);   // 段考滾動重排
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState('');
   const [replan, setReplan] = useState(false);
@@ -299,6 +301,18 @@ export default function PlanDetailView({ planKey, tasks, lists, apiPlans = [], r
             <span className="chip" style={{ marginLeft: 'auto' }}>{statusLabel}</span>
           )}
         </div>
+        {workable && (
+          <div className="row" style={{ marginTop: 'var(--sp-2)' }}>
+            <Button size="sm" variant="secondary" onClick={() => setShowRolling(true)}>
+              <Icon name="calendar" size={14} /> 段考滾動重排
+            </Button>
+            <span className="ui-meta" style={{ marginLeft: 'var(--sp-2)' }}>把新作業／小考排進來，今天／明天不變動</span>
+          </div>
+        )}
+        {showRolling && (
+          <RollingExamSchedule planId={plan.planId} onClose={() => setShowRolling(false)}
+            onApplied={async () => { await reload(); }} />
+        )}
 
         {/* 首屏：進度就是主角，不做成儀表板 */}
         <div style={{ marginTop: 'var(--sp-5)' }}>
