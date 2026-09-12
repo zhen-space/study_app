@@ -1071,3 +1071,42 @@ select { -webkit-appearance: none; appearance: none; padding-right: 26px;
   margin-left: auto; min-height: 36px; padding: 0 var(--sp-2);
   background: none; border: 0; color: var(--accent); font-size: 13px; font-weight: 600;
 }
+
+/* ==================== 學校作業（School Assignment） ==================== */
+/* 期限用琥珀色，和一般任務（藍）、行程（白底）、讀書 block（實心藍）視覺上分得開。 */
+.sa-form { display: flex; flex-direction: column; gap: var(--sp-3); }
+.sa-form h3 { font-size: 17px; }
+.sa-field { display: flex; flex-direction: column; gap: var(--sp-1); }
+.sa-field > span:first-child { font-size: 13px; color: var(--muted); font-weight: 500; }
+.sa-field input, .sa-field select, .sa-field textarea { width: 100%; box-sizing: border-box; }
+.sa-field .row input[type="date"], .sa-field .row input[type="time"] { width: auto; flex: 1; min-width: 0; }
+
+.sa-row { display: flex; align-items: flex-start; gap: var(--sp-2); padding: var(--sp-2) 0; border-bottom: 1px solid var(--border); }
+.sa-row:last-child { border-bottom: none; }
+.sa-row--done { opacity: .55; }
+.sa-row--done .sa-row-name { text-decoration: line-through; }
+.sa-row-check { display: flex; align-items: center; padding-top: 2px; }
+.sa-row-check input { width: 20px; height: 20px; }
+.sa-row-main { flex: 1; min-width: 0; background: none; border: none; text-align: left; padding: 0; cursor: pointer; color: inherit; font: inherit; }
+.sa-row-title { display: flex; align-items: center; gap: var(--sp-2); flex-wrap: wrap; }
+.sa-row-name { font-weight: 600; word-break: break-word; }
+.sa-row-sub { display: flex; align-items: center; gap: var(--sp-2); flex-wrap: wrap; margin-top: 2px; font-size: 12px; color: var(--muted); }
+.sa-subject { background: var(--surface-2); border: 1px solid var(--border); border-radius: var(--radius-pill); padding: 0 8px; }
+.sa-deadline { color: var(--warning); font-weight: 500; }
+.sa-deadline--over { color: var(--red); }
+.sa-type { font-size: 11px; font-weight: 700; border-radius: var(--radius-pill); padding: 1px 8px; background: var(--primary-soft); color: var(--primary); flex-shrink: 0; }
+.sa-type--exam { background: rgba(176,113,11,.14); color: var(--warning); }
+.sa-type--report { background: rgba(88,86,214,.14); color: #5856d6; }
+.sa-type--other { background: var(--surface-2); color: var(--muted); border: 1px solid var(--border); }
+.sa-row-actions { position: relative; }
+.sa-menu { position: absolute; right: 0; top: 100%; z-index: 41; background: var(--surface-2); border: 1px solid var(--border); border-radius: var(--radius-sm); box-shadow: 0 8px 24px rgba(0,0,0,.16); min-width: 120px; overflow: hidden; }
+.sa-menu button { display: block; width: 100%; text-align: left; padding: 10px 14px; background: none; border: none; color: var(--text); font: inherit; cursor: pointer; }
+.sa-menu button:hover { background: var(--primary-soft); }
+.sa-menu-danger { color: var(--red) !important; }
+.sa-group-label { font-size: 12px; font-weight: 600; color: var(--muted); margin-bottom: var(--sp-1); }
+.sa-title-danger { color: var(--red); }
+.sa-toggle { background: none; border: none; cursor: pointer; font: inherit; color: var(--muted); padding: 0; }
+
+/* 日曆上的繳交期限標記 */
+.cal-deadline { background: var(--warning-soft); color: var(--warning); border: 1px solid rgba(176,113,11,.35); border-radius: 6px; padding: 1px 5px; margin-top: 2px; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; cursor: pointer; font-weight: 600; font-size: 11px; display: flex; align-items: center; gap: 3px; }
+.cal-deadline-tag { background: var(--warning); color: #fff; border-radius: 3px; padding: 0 3px; font-size: 9px; flex-shrink: 0; }

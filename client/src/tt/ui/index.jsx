@@ -131,7 +131,7 @@ export function SegmentedControl({ value, onChange, options, block = false, aria
   return (
     <div className={'ui-seg' + (block ? ' ui-seg--block' : '')} role="tablist" aria-label={ariaLabel}>
       {options.map(o => (
-        <button key={o.value} role="tab" aria-selected={value === o.value}
+        <button key={o.value} type="button" role="tab" aria-selected={value === o.value}
           className={value === o.value ? 'on' : ''} onClick={() => onChange(o.value)}>
           {o.label}
         </button>
