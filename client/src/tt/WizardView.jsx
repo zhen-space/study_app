@@ -6,6 +6,7 @@ import { buildSchedulePreviewRequest, persistConfirmedConditions } from './sched
 import { today, addDays } from './helpers';
 import { parseICS } from './ics';
 import { fileToPayload } from './vocabImport';
+import TimetableImporter, { payloadToImageUrl } from './TimetableImporter';
 import FeasibilityGap from './FeasibilityGap';
 import MaterialSelector from './MaterialSelector';
 import { listBooks, getPlanSelection, selectItems, materialSchedulingItems, createSubject } from './material';
@@ -93,8 +94,9 @@ export default function WizardView({
   const [err, setErr] = useState('');
   const [saving, setSaving] = useState(false);
   const [importMsg, setImportMsg] = useState('');
-  const [aiPreview, setAiPreview] = useState(null);   // 統整後的匯入預覽群組
+  const [aiPreview, setAiPreview] = useState(null);   // 統整後的匯入預覽群組（.ics 等有日期的來源）
   const [aiBusy, setAiBusy] = useState(false);
+  const [ttReq, setTtReq] = useState(null);           // 課表照片 v2：{ payload, imageUrl }
 
   const loadEv = () => api('/events').then(setEvents);
   useEffect(() => {
@@ -189,37 +191,18 @@ export default function WizardView({
 
   /* ---------- 檔案 ---------- */
 
+  // 課表照片走 v2 結構層 pipeline（/import/timetable）——星期對應由後端依絕對欄位位置
+  // 決定，星期一漏辨識時後面欄位不左移。**不再走會讓模型自己決定星期的 /import/parse。**
   async function importAI(e) {
     const file = e.target.files[0];
     if (!file) return;
-    if (file.size > 15 * 1024 * 1024) { setImportMsg('檔案太大（上限 15MB）'); return; }
+    if (file.size > 15 * 1024 * 1024) { setImportMsg('檔案太大（上限 15MB）'); e.target.value = ''; return; }
     setAiBusy(true);
-    setImportMsg('🤖 AI 解讀中，約需 30 秒～1 分鐘…');
+    setImportMsg('');
     try {
-      const { events: parsed } = await api('/import/parse', {
-        method: 'POST',
-        body: await fileToPayload(file),                              // 同上：轉正＋縮圖
-      });
-      if (!parsed.length) { setImportMsg('AI 沒有在檔案中找到行程'); }
-      else {
-        // 統整同名同時段
-        const map = {};
-        parsed.forEach(ev => {
-          const k = `${ev.title}|${ev.start_time}|${ev.end_time}|${ev.recurring || ''}`;
-          (map[k] = map[k] || { ...ev, all: [], checked: true }).all.push(ev);
-        });
-        setAiPreview(Object.values(map).map(g => {
-          const ds = g.all.map(x => x.date).sort();
-          g.dates = ds;
-          g.past = !g.recurring && ds[ds.length - 1] < today();
-          g.when = g.recurring ? `每週${WD[new Date(ds[0] + 'T00:00:00').getDay()]}` :
-            ds.map(d => `${+d.slice(5, 7)}/${+d.slice(8)}`).join('、');
-          if (g.past) g.checked = false;
-          return g;
-        }));
-        setImportMsg('');
-      }
-    } catch (err2) { setImportMsg(err2.message); }
+      const payload = await fileToPayload(file);                      // 轉正＋縮圖
+      setTtReq({ payload, imageUrl: payloadToImageUrl(payload) });
+    } catch (err2) { setImportMsg('讀取檔案失敗：' + (err2.message || '')); }
     setAiBusy(false);
     e.target.value = '';
   }
@@ -566,6 +549,15 @@ export default function WizardView({
               <label className="btn sm" style={{ opacity: aiBusy ? .6 : 1 }}>🤖 AI 匯入課表<input type="file" disabled={aiBusy} accept=".pdf,.docx,.xlsx,.xls,.csv,.txt,image/*" style={{ display: 'none' }} onChange={importAI} /></label>
             </div>
             {importMsg && <div className="muted" style={{ marginTop: 6 }}>{importMsg}</div>}
+
+            {ttReq && (
+              <TimetableImporter
+                payload={ttReq.payload}
+                imageUrl={ttReq.imageUrl}
+                onClose={() => setTtReq(null)}
+                onImported={imported => { setTtReq(null); loadEv(); if (imported) setImportMsg(`已加入 ${imported} 堂課（每週重複）`); }}
+              />
+            )}
 
             {aiPreview && (
               <div style={{ marginTop: 10, border: '1px solid var(--border)', borderRadius: 10, padding: 10 }}>
