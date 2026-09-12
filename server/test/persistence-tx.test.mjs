@@ -397,13 +397,13 @@ describe('P2 Wizard／Replan 套用交易', () => {
     const a1 = await sched.applySchedule(userId, {
       planId: pa.lastInsertRowid, source: sched.SOURCE.INITIAL,
       taskCreates: [{ client_key: 'a', title: 'A 任務' }],
-      blocks: [{ client_key: 'a', date: '2026-09-10', start_time: '18:00', end_time: '19:00' }],
+      blocks: [{ client_key: 'a', date: rel(7), start_time: '18:00', end_time: '19:00' }],
     });
     const aTask = a1.created[0].id;
     const b1 = await sched.applySchedule(userId, {
       planId: pb.lastInsertRowid, source: sched.SOURCE.INITIAL,
       taskCreates: [{ client_key: 'b', title: 'B 任務' }],
-      blocks: [{ client_key: 'b', date: '2026-09-11', start_time: '19:00', end_time: '20:00' }],
+      blocks: [{ client_key: 'b', date: rel(8), start_time: '19:00', end_time: '20:00' }],
     });
     const bTask = b1.created[0].id;
     const before = await sched.getVersionWithBlocks(userId, b1.version_id);
@@ -411,15 +411,15 @@ describe('P2 Wizard／Replan 套用交易', () => {
     const replan = await sched.applySchedule(userId, {
       planId: pa.lastInsertRowid, source: sched.SOURCE.AI_REPLAN,
       taskUpdates: [{ task_id: aTask, notes: '新版安排' }],
-      blocks: [{ task_id: aTask, date: '2026-09-12', start_time: '20:00', end_time: '21:00' }],
+      blocks: [{ task_id: aTask, date: rel(9), start_time: '20:00', end_time: '21:00' }],
     });
     const now = await sched.getVersionWithBlocks(userId, replan.version_id);
     assert.equal(now.version.parent_version_id, b1.version_id);
     assert.deepEqual(now.blocks.map(b => [b.task_id, b.date, b.start_time]), [
-      [bTask, '2026-09-11', '19:00'],
-      [aTask, '2026-09-12', '20:00'],
+      [bTask, rel(8), '19:00'],
+      [aTask, rel(9), '20:00'],
     ]);
-    assert.equal((await q.get('SELECT due_date FROM tasks WHERE id=?', [bTask])).due_date, '2026-09-11',
+    assert.equal((await q.get('SELECT due_date FROM tasks WHERE id=?', [bTask])).due_date, rel(8),
       '★ Plan B 不能因為重排 A 被 mirror 清成 unplaced');
     assert.deepEqual((await sched.getVersionWithBlocks(userId, b1.version_id)).blocks, before.blocks,
       '★ 舊版必須 immutable');
@@ -430,11 +430,11 @@ describe('P2 Wizard／Replan 套用交易', () => {
     await assert.rejects(() => sched.applySchedule(userId, {
       planId: pa.lastInsertRowid, source: sched.SOURCE.AI_REPLAN,
       taskCreates: [{ client_key: 'collision', title: '撞時段任務' }],
-      blocks: [{ client_key: 'collision', date: '2026-09-11', start_time: '19:00', end_time: '20:00' }],
+      blocks: [{ client_key: 'collision', date: rel(8), start_time: '19:00', end_time: '20:00' }],
     }), /時段重疊/);
     assert.deepEqual(await countsFor(userId), beforeCollision,
       '★ 撞時段時 Task、version、active 都必須 rollback');
-    assert.equal((await q.get('SELECT due_date FROM tasks WHERE id=?', [bTask])).due_date, '2026-09-11',
+    assert.equal((await q.get('SELECT due_date FROM tasks WHERE id=?', [bTask])).due_date, rel(8),
       '★ rollback 後其他 Plan 的 mirror 不得改變');
   });
 
@@ -445,11 +445,11 @@ describe('P2 Wizard／Replan 套用交易', () => {
     const b = await q.run('INSERT INTO plans (user_id,name,status) VALUES (?,?,?)', [userId, '未計時 B', 'active']);
     await sched.applySchedule(userId, {
       planId: a.lastInsertRowid, source: sched.SOURCE.INITIAL,
-      taskCreates: [{ client_key: 'a', title: 'A' }], blocks: [{ client_key: 'a', date: '2026-09-20' }],
+      taskCreates: [{ client_key: 'a', title: 'A' }], blocks: [{ client_key: 'a', date: rel(7) }],
     });
     const r = await sched.applySchedule(userId, {
       planId: b.lastInsertRowid, source: sched.SOURCE.INITIAL,
-      taskCreates: [{ client_key: 'b', title: 'B' }], blocks: [{ client_key: 'b', date: '2026-09-20' }],
+      taskCreates: [{ client_key: 'b', title: 'B' }], blocks: [{ client_key: 'b', date: rel(7) }],
     });
     assert.equal(r.block_count, 2);
   });
