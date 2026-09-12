@@ -7,7 +7,7 @@ import assert from 'node:assert/strict';
 import {
   parseWeekday, looksLikeTimeLabel, detectTimeAxis, courseColumns,
   mapWeekdays, shiftMapping, buildItems, buildPreview, validateStructure,
-  FIRST_SCHOOL_DAY, CONFIDENCE_THRESHOLD,
+  detectDroppedColumn, FIRST_SCHOOL_DAY, CONFIDENCE_THRESHOLD,
 } from '../src/timetable/structure.js';
 
 // 造一張表：cols 是每一欄的標題（null = 沒有標題），rows 是每一列每一欄的文字
@@ -277,4 +277,54 @@ test('整週 +1 位移的候選，可用 -1 修正回來', () => {
   assert.equal(fixed[1], 1);
   const items = buildItems(g, fixed);
   assert.ok(items.every(i => i.day_of_week >= 1 && i.day_of_week <= 5));
+});
+
+/* ---------- 整欄漏辨識偵測（P0：星期一整欄被吞）---------- */
+
+test('視覺層自報欄數 > 實際認出的欄數 → 標記可疑缺欄', () => {
+  const g = monFri(); // 5 課程欄 + 1 時間軸 = 實際 6 欄
+  assert.deepEqual(detectDroppedColumn(g, mapWeekdays(g), 7), ['reported_more_columns']);
+  // 自報與實際相符則不標
+  assert.deepEqual(detectDroppedColumn(g, mapWeekdays(g), 6), []);
+  // 沒有自報（null）也不會誤標這一項
+  assert.deepEqual(detectDroppedColumn(g, mapWeekdays(g), null), []);
+});
+
+test('標題可信但整週不是從星期一開始 → 標記缺前導欄', () => {
+  const g = monFri(['', '星期二', '星期三', '星期四', '星期五', '星期六']);
+  assert.ok(detectDroppedColumn(g, mapWeekdays(g), null).includes('week_does_not_start_monday'));
+});
+
+test('課程欄少於五天 → 標記可疑缺欄', () => {
+  const g = grid(['', '星期二', '星期三', '星期四', '星期五'],
+    TIMES.map((t, i) => [t, `英${i}`, `數${i}`, `理${i}`, `史${i}`]));
+  assert.ok(detectDroppedColumn(g, mapWeekdays(g), null).includes('fewer_than_five_columns'));
+});
+
+test('完整五天且欄數相符 → 不標記缺欄（不得誤報）', () => {
+  const g = monFri();
+  assert.deepEqual(detectDroppedColumn(g, mapWeekdays(g), 6), []);
+});
+
+test('P0：星期一整欄被吞（只剩星期二～五）→ 強制 review，且星期二仍是星期二', () => {
+  // 視覺層漏掉星期一整欄：只吐出時間軸 + 星期二～五四欄，標題也是星期二起。
+  const g = grid(['', '星期二', '星期三', '星期四', '星期五'],
+    TIMES.map((t, i) => [t, `英${i}`, `數${i}`, `理${i}`, `史${i}`]));
+  const p = buildPreview(g, { reportedColumnCount: 6 }); // 模型看到 6 欄，實際只吐 5 欄
+  assert.equal(p.possible_dropped_column, true);
+  assert.ok(p.warnings.includes('possible_dropped_column'));
+  assert.ok(p.dropped_column_reasons.includes('reported_more_columns'));
+  assert.ok(p.dropped_column_reasons.includes('week_does_not_start_monday'));
+  assert.equal(p.requires_mapping_confirmation, true, '疑似缺欄一律強制確認，不得 silently commit');
+  // 關鍵契約：不整週左移——第一個課程欄仍是星期二，不會被硬塞成星期一。
+  const firstCol = p.course_columns[0];
+  assert.equal(p.weekday_mapping[firstCol], 2, '星期二仍必須是星期二');
+});
+
+test('高信心完整課表：buildPreview 帶了缺欄欄位但為 false，仍可直接匯入', () => {
+  const p = buildPreview(monFri(), { reportedColumnCount: 6 });
+  assert.equal(p.possible_dropped_column, false);
+  assert.deepEqual(p.dropped_column_reasons, []);
+  assert.equal(p.requires_mapping_confirmation, false);
+  assert.equal(p.can_persist, true);
 });

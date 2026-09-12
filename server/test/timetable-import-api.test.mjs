@@ -110,3 +110,13 @@ test('辨識端點的 prompt 不讓模型決定星期幾', () => {
   assert.ok(block.includes('不要判斷哪一欄是星期幾'), 'prompt 必須明講模型不判斷星期');
   assert.ok(block.includes('buildPreview'), '星期對應必須交給結構層');
 });
+
+test('辨識端點請模型自報欄數，並把它當提示傳給結構層做缺欄偵測', () => {
+  const src = readFileSync(path.join(serverDir, 'src/routes/import.js'), 'utf8');
+  // schema 有 column_count（讓模型回報版面總欄數）
+  assert.ok(src.includes('column_count'), 'GRID_SCHEMA 需含 column_count');
+  const i = src.indexOf("router.post('/timetable'");
+  const block = src.slice(i, src.indexOf("router.post('/timetable/confirm'"));
+  // 把自報欄數當「提示」傳進 buildPreview（權威仍是幾何判斷）
+  assert.ok(block.includes('reportedColumnCount'), '需把 column_count 當提示傳給 buildPreview');
+});
