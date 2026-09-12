@@ -149,9 +149,13 @@ export default function CalendarView({ tasks, reload, lists = [] }) {
     try {
       const payload = await fileToPayload(file);
       const preview = await api('/import/timetable', { method: 'POST', body: payload });
+      // 原圖留在記憶體（只有圖片格式；不寫進會被持久化的地方，避免塞爆 localStorage）：
+      // 預覽時並排顯示，讓使用者肉眼比對「有沒有整欄被漏掉（尤其星期一）」。
+      const imageDataUrl = (payload.mime || '').startsWith('image/')
+        ? `data:${payload.mime};base64,${payload.data}` : null;
       if (!preview.items?.length) alert('沒有讀到課程，請拍清楚一點再試一次');
       else {
-        setTt({ ...preview, items: preview.items.map(x => ({ ...x, checked: true })) });
+        setTt({ ...preview, imageDataUrl, items: preview.items.map(x => ({ ...x, checked: true })) });
         setTtOk(false);
       }
     } catch (err) { alert('辨識失敗：' + err.message); }
@@ -160,6 +164,13 @@ export default function CalendarView({ tasks, reload, lists = [] }) {
 
   const updTt = (i, patch) =>
     setTt(t => ({ ...t, items: t.items.map((x, j) => j === i ? { ...x, ...patch } : x) }));
+
+  // 補上漏掉的課：辨識可能整欄漏掉（例如星期一），這裡加一列空白課讓使用者手動補回。
+  // 預設落在星期一，因為那是最常被漏掉的一天；時間留空由使用者填。
+  const addTtRow = () => setTt(t => ({
+    ...t,
+    items: [...t.items, { day_of_week: 1, title: '', start_time: '', end_time: '', checked: true }],
+  }));
 
   // 整週往前／往後一天：一次改完，不用逐格改
   const shiftWeek = delta => setTt(t => ({
@@ -821,11 +832,23 @@ export default function CalendarView({ tasks, reload, lists = [] }) {
         {tt && (
           <div className="tile" style={{ margin: '8px 0' }}>
             <b>課表辨識結果（共 {tt.items.length} 堂）</b>
+            {tt.imageDataUrl && (
+              <div style={{ margin: '6px 0' }}>
+                <div className="muted" style={{ marginBottom: 4, fontSize: 12 }}>原始課表照片（請對照下面辨識結果，特別看有沒有整欄漏掉，例如星期一）：</div>
+                <img
+                  src={tt.imageDataUrl}
+                  alt="原始課表"
+                  style={{ maxWidth: '100%', maxHeight: 320, borderRadius: 10, border: '1px solid var(--line, #ddd)', display: 'block' }}
+                />
+              </div>
+            )}
             {tt.requires_mapping_confirmation && (
               <div style={{ margin: '6px 0', padding: '8px 10px', borderRadius: 10, background: 'var(--primary-soft)', color: 'var(--primary)', fontSize: 13 }}>
-                {tt.warnings?.includes('missing_weekday_header')
-                  ? '這張課表上看不到「星期一、星期二…」的標題，所以星期是照欄位順序推的。請先確認下面每一堂課的星期對不對。'
-                  : '星期對應可能不準，請先確認下面每一堂課的星期對不對。'}
+                {tt.warnings?.includes('possible_dropped_column')
+                  ? '這張課表可能有一整欄沒被讀到（最常見是星期一整欄漏掉）。請對照上方原圖，若少了一天，用下面的「＋新增一堂課」把漏掉的課補回來，並確認每一堂課的星期。'
+                  : tt.warnings?.includes('missing_weekday_header')
+                    ? '這張課表上看不到「星期一、星期二…」的標題，所以星期是照欄位順序推的。請先確認下面每一堂課的星期對不對。'
+                    : '星期對應可能不準，請先確認下面每一堂課的星期對不對。'}
                 <div style={{ marginTop: 6 }}>
                   整週對錯一天的話，用這兩個按鈕一次改完：
                   <button className="btn sm ghost" style={{ marginLeft: 6 }} onClick={() => shiftWeek(-1)}>整週往前一天</button>
@@ -833,7 +856,7 @@ export default function CalendarView({ tasks, reload, lists = [] }) {
                 </div>
                 <label className="row" style={{ marginTop: 8, gap: 6, cursor: 'pointer' }}>
                   <input type="checkbox" checked={ttOk} onChange={() => setTtOk(v => !v)} />
-                  <span>我確認上面的星期是對的</span>
+                  <span>我確認上面的星期是對的（含補回漏掉的課）</span>
                 </label>
               </div>
             )}
@@ -850,6 +873,9 @@ export default function CalendarView({ tasks, reload, lists = [] }) {
                 <button className="icon-btn" title="刪除" onClick={() => setTt(t => ({ ...t, items: t.items.filter((_, j) => j !== i) }))}><Icon name="x" size={13} /></button>
               </div>
             ))}
+            <button className="btn sm ghost" style={{ marginTop: 6 }} onClick={addTtRow}>
+              <Icon name="plus" size={13} /> 新增一堂課
+            </button>
             {!tt.can_persist && (
               <div className="muted" style={{ marginTop: 8 }}>這張課表讀不出可用的結構，請換一張更清楚的照片。</div>
             )}

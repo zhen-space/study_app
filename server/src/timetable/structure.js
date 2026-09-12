@@ -274,16 +274,57 @@ export function validateStructure(grid, mapped, items) {
   return { ok: errors.length === 0, errors, warnings: mapped.warnings || [] };
 }
 
+/* ---------- 整欄漏辨識偵測 ---------- */
+
+// 實機最痛的 P0：視覺層可能把「星期一」整欄吃掉（那一欄一個格子都沒吐），
+// 於是課表看起來像從星期二開始。星期對應本身是對的（就它看到的那幾欄而言），
+// 但少了一整天——這是漏辨識，不是對應錯，必須讓使用者「看得到、補得回」。
+//
+// 這裡只做**確定性**的可疑訊號偵測，不臆測補欄（補哪一天由使用者決定）。
+// 任一訊號成立就回報 reason；上層據此升 warning、強制 review。
+//
+// reportedColumnCount＝視覺層自報的「版面總欄數（含最左時間/節次欄）」，只當**提示**，
+// 不當權威、不覆蓋幾何判斷。
+export function detectDroppedColumn(grid, mapped, reportedColumnCount) {
+  const total = columnIndices(grid).length;
+  const cols = courseColumns(grid);
+  const reasons = [];
+  // 1) 視覺層自報的欄數比我們實際認出的欄數多 → 有欄被整欄吞掉。
+  if (Number.isInteger(reportedColumnCount) && reportedColumnCount > total) {
+    reasons.push('reported_more_columns');
+  }
+  // 2) 標題可信、但整週不是從星期一開始（第一個課程欄的星期 > 星期一）
+  //    → 前導欄（很可能就是星期一）被吞掉了。
+  const first = cols[0];
+  if (mapped.source === 'header' && first != null &&
+      mapped.mapping[first] != null && mapped.mapping[first] !== FIRST_SCHOOL_DAY) {
+    reasons.push('week_does_not_start_monday');
+  }
+  // 3) 課程欄少於一般學校週最短的五天 → 極可能缺欄，寧可請使用者確認/補課。
+  if (cols.length > 0 && cols.length < 5) {
+    reasons.push('fewer_than_five_columns');
+  }
+  return reasons;
+}
+
 /* ---------- preview ---------- */
 
 // 匯入前一定要給人看的那一份。can_persist=false 時前端不得送出匯入。
 //
-// requires_mapping_confirmation 為 true 代表「星期對應是猜的」，
-// 使用者必須明確確認（或整週位移修正）之後才准寫入。
-export function buildPreview(grid) {
+// requires_mapping_confirmation 為 true 代表「星期對應是猜的、或疑似缺欄」，
+// 使用者必須明確確認（或整週位移修正／補課）之後才准寫入。
+//
+// opts.reportedColumnCount＝視覺層自報的版面總欄數（提示用，見 detectDroppedColumn）。
+export function buildPreview(grid, opts = {}) {
   const mapped = mapWeekdays(grid);
   const items = buildItems(grid, mapped.mapping);
   const validation = validateStructure(grid, mapped, items);
+  const droppedReasons = detectDroppedColumn(grid, mapped, opts.reportedColumnCount);
+  const possibleDropped = droppedReasons.length > 0;
+  const warnings = [...validation.warnings];
+  if (possibleDropped && !warnings.includes('possible_dropped_column')) {
+    warnings.push('possible_dropped_column');
+  }
   const lowConfidence = mapped.confidence < CONFIDENCE_THRESHOLD;
   return {
     mode: 'preview_only',
@@ -291,10 +332,13 @@ export function buildPreview(grid) {
     weekday_mapping: mapped.mapping,
     mapping_source: mapped.source,
     mapping_confidence: mapped.confidence,
-    requires_mapping_confirmation: lowConfidence || validation.warnings.length > 0,
+    // 疑似缺欄一律強制 review：漏掉星期一絕不能 silently commit。
+    requires_mapping_confirmation: lowConfidence || warnings.length > 0,
     can_persist: validation.ok,
     errors: validation.errors,
-    warnings: validation.warnings,
+    warnings,
+    possible_dropped_column: possibleDropped,
+    dropped_column_reasons: droppedReasons,
     time_axis_column: detectTimeAxis(grid),
     course_columns: courseColumns(grid),
     items,

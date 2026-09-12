@@ -137,4 +137,55 @@ describe('課表匯入 v2 串接', () => {
     await waitFor(() => expect(pathsCalled()).toContain('/import/parse'));
     expect(pathsCalled()).not.toContain('/import/timetable');
   });
+
+  // B：預覽顯示原始課表圖片，讓使用者肉眼比對抓漏欄
+  it('預覽顯示原始課表照片，方便對照抓有沒有漏欄', async () => {
+    render(<CalendarView tasks={[]} reload={async () => {}} />);
+    await uploadTimetable();
+    const img = await screen.findByAltText('原始課表');
+    expect(img.getAttribute('src')).toMatch(/^data:image\/png;base64,/);
+  });
+
+  // A（前端呈現）：疑似整欄漏掉時，顯示補課導向的提示
+  it('疑似整欄漏掉時，顯示「可能有一整欄沒被讀到」並引導補課', async () => {
+    mockApi({
+      ...PREVIEW,
+      warnings: ['possible_dropped_column', 'week_does_not_start_monday'],
+      possible_dropped_column: true,
+      dropped_column_reasons: ['week_does_not_start_monday'],
+      weekday_mapping: { 1: 2, 2: 3 },
+      items: [
+        { day_of_week: 2, title: '英文', start_time: '08:10', end_time: '09:00' },
+        { day_of_week: 3, title: '數學', start_time: '09:10', end_time: '10:00' },
+      ],
+    });
+    render(<CalendarView tasks={[]} reload={async () => {}} />);
+    await uploadTimetable();
+    expect(await screen.findByText(/可能有一整欄沒被讀到/)).toBeTruthy();
+  });
+
+  // C：可以新增一堂課，把漏掉的補回來，並隨其他課一起匯入
+  it('可以新增一堂課補回漏掉的，並一起送出匯入', async () => {
+    render(<CalendarView tasks={[]} reload={async () => {}} />);
+    await uploadTimetable();
+    await screen.findByRole('button', { name: '確認匯入' });
+    // 原本兩堂 → 新增一堂變三堂
+    const before = screen.getAllByRole('combobox').length;
+    fireEvent.click(screen.getByRole('button', { name: /新增一堂課/ }));
+    const after = screen.getAllByRole('combobox').length;
+    expect(after).toBe(before + 1);
+    // 補上新那一列的名稱與時間（最後一列）
+    const titles = screen.getAllByPlaceholderText('課程名稱');
+    fireEvent.change(titles[titles.length - 1], { target: { value: '國文' } });
+    const starts = screen.getAllByPlaceholderText('08:10');
+    fireEvent.change(starts[starts.length - 1], { target: { value: '10:10' } });
+    const ends = screen.getAllByPlaceholderText('09:00');
+    fireEvent.change(ends[ends.length - 1], { target: { value: '11:00' } });
+    fireEvent.click(screen.getByLabelText(/我確認上面的星期是對的/));
+    fireEvent.click(screen.getByRole('button', { name: '確認匯入' }));
+    await waitFor(() => expect(pathsCalled()).toContain('/import/timetable/confirm'));
+    const [, opts] = calls().find(([p]) => p === '/import/timetable/confirm');
+    expect(opts.body.items.length).toBe(3);
+    expect(opts.body.items.some(x => x.title === '國文' && x.start_time === '10:10')).toBe(true);
+  });
 });

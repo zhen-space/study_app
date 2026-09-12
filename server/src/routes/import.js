@@ -220,6 +220,7 @@ const GRID_SCHEMA = {
   type: 'object',
   properties: {
     header_row: { type: ['integer', 'null'], description: '標題列的 row 索引；沒有標題列就給 null' },
+    column_count: { type: ['integer', 'null'], description: '整張課表在版面上總共有幾個直欄（含最左的時間/節次欄）。照你「看到的實際欄數」給，即使某一欄看起來空白或字很淡也要算進去；看不出來就給 null。' },
     cells: {
       type: 'array',
       description: '表格裡每一個有內容的格子。row/col 從 0 開始，照實際版面位置給，不要重排。',
@@ -235,7 +236,7 @@ const GRID_SCHEMA = {
       },
     },
   },
-  required: ['header_row', 'cells'], additionalProperties: false,
+  required: ['header_row', 'column_count', 'cells'], additionalProperties: false,
 };
 
 // POST /api/import/timetable  { filename, mime, data }
@@ -261,6 +262,7 @@ router.post('/timetable', async (req, res) => {
 規則：
 - row 由上往下、col 由左往右，都從 0 開始，照實際版面位置給，不要重新排序或補洞。
 - 最左邊那一欄如果是時間或節次，也要照樣輸出（它就是 col 0），不要略過。
+- column_count：先數這張表版面上「總共有幾個直欄」（含最左時間/節次欄），填進去。即使某一欄整欄空白、或字很淡幾乎看不到，只要版面上有那一格，就要算進欄數——星期一那欄最常因為字淡被漏數，特別留意。
 - 標題列（寫星期幾的那一列）如果存在，輸出它的 row 索引到 header_row；沒有就給 null。
 - 合併儲存格：只輸出最上面那一格，row_span 填它向下跨幾列。
 - 空格子不要輸出。
@@ -273,7 +275,10 @@ router.post('/timetable', async (req, res) => {
       return res.status(400).json({ error: 'AI 無法處理這份檔案，請換一份試試' });
     }
     const grid = parseStructuredObj(response);
-    res.json(buildPreview({ header_row: grid.header_row ?? 0, cells: grid.cells || [] }));
+    res.json(buildPreview(
+      { header_row: grid.header_row ?? 0, cells: grid.cells || [] },
+      { reportedColumnCount: Number.isInteger(grid.column_count) ? grid.column_count : null },
+    ));
   } catch (err) {
     console.error('timetable parse error:', err.message);
     res.status(500).json({ error: aiError(err) });
