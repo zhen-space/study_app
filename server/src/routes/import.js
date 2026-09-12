@@ -220,6 +220,13 @@ const GRID_SCHEMA = {
   type: 'object',
   properties: {
     header_row: { type: ['integer', 'null'], description: '標題列的 row 索引；沒有標題列就給 null' },
+    // 幾何訊號：整張表由左到右總共有幾個直欄（含最左邊時間軸欄、以及任何空白的星期欄）。
+    // 這一個數字是 v2 判斷「有沒有整欄被漏掉／某一欄是空堂」的關鍵——星期對應由程式依
+    // 絕對欄位位置決定，欄數對不上就會標記不確定、要求使用者確認，而不是把欄位往左遞補。
+    column_count: {
+      type: ['integer', 'null'],
+      description: '整張表從左到右的直欄總數（含最左邊時間/節次欄，以及任何空白但版面上存在的星期欄）；數不出來給 null',
+    },
     cells: {
       type: 'array',
       description: '表格裡每一個有內容的格子。row/col 從 0 開始，照實際版面位置給，不要重排。',
@@ -227,7 +234,7 @@ const GRID_SCHEMA = {
         type: 'object',
         properties: {
           row: { type: 'integer' },
-          col: { type: 'integer' },
+          col: { type: 'integer', description: '這一格的絕對直欄索引（含空白欄一起數），不可因為左邊某欄空白就往左遞補' },
           text: { type: 'string', description: '格子裡的文字，照原文抄；空格子不要輸出' },
           row_span: { type: ['integer', 'null'], description: '這一格向下跨幾列（合併儲存格）；沒有合併就給 1 或 null' },
         },
@@ -235,7 +242,7 @@ const GRID_SCHEMA = {
       },
     },
   },
-  required: ['header_row', 'cells'], additionalProperties: false,
+  required: ['header_row', 'column_count', 'cells'], additionalProperties: false,
 };
 
 // POST /api/import/timetable  { filename, mime, data }
@@ -261,11 +268,13 @@ router.post('/timetable', async (req, res) => {
 規則：
 - row 由上往下、col 由左往右，都從 0 開始，照實際版面位置給，不要重新排序或補洞。
 - 最左邊那一欄如果是時間或節次，也要照樣輸出（它就是 col 0），不要略過。
+- 【最重要｜絕對欄位不可遞補】col 是「絕對直欄位置」。如果某一個星期欄整欄空白、或看不清楚、或那天沒有課，**仍然要保留它的欄位位置**：你可以不輸出那一欄的格子，但右邊欄位的 col 索引必須照實際版面繼續，**絕對不可以因為左邊有空白欄就把後面的欄整個往左移一格**。例如星期一那一欄是空的，星期二的課仍然要放在它原本的 col，不可以遞補成星期一的 col。
+- column_count：數出整張表從左到右總共有幾個直欄（含最左邊時間/節次欄，以及任何空白但版面上看得到框線的星期欄）。這個數字要能對應到實際欄位位置，數不出來才給 null。
 - 標題列（寫星期幾的那一列）如果存在，輸出它的 row 索引到 header_row；沒有就給 null。
 - 合併儲存格：只輸出最上面那一格，row_span 填它向下跨幾列。
 - 空格子不要輸出。
 - 文字照原文抄，不要翻譯、改寫或補字。看不清楚的格子寧可略過。
-- 不要判斷哪一欄是星期幾，也不要輸出星期幾。那不是你的工作。`,
+- 不要判斷哪一欄是星期幾，也不要輸出星期幾。那不是你的工作——星期對應由後端依欄位位置決定。`,
       output_config: { format: { type: 'json_schema', schema: GRID_SCHEMA } },
       messages: [{ role: 'user', content: [contentBlock, { type: 'text', text: '請讀出這張課表的所有格子。' }] }],
     });
@@ -273,7 +282,11 @@ router.post('/timetable', async (req, res) => {
       return res.status(400).json({ error: 'AI 無法處理這份檔案，請換一份試試' });
     }
     const grid = parseStructuredObj(response);
-    res.json(buildPreview({ header_row: grid.header_row ?? 0, cells: grid.cells || [] }));
+    res.json(buildPreview({
+      header_row: grid.header_row ?? 0,
+      column_count: grid.column_count ?? null,
+      cells: grid.cells || [],
+    }));
   } catch (err) {
     console.error('timetable parse error:', err.message);
     res.status(500).json({ error: aiError(err) });

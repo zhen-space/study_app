@@ -265,6 +265,9 @@ select { -webkit-appearance: none; appearance: none; padding-right: 26px;
 .imp-date { width: 46px; color: var(--muted); font-size: 13px; text-align: center; flex-shrink: 0; }
 .imp-title { flex: 1; min-width: 0; font-weight: 600; }
 .imp-time { width: 50px; text-align: center; color: var(--muted); font-size: 13px; flex-shrink: 0; }
+/* 課表匯入 v2：低信心／缺欄的那一筆，用左邊色條與淡底標出來，讓人一眼看到要確認哪幾筆 */
+.imp-row.tt-uncertain { background: color-mix(in srgb, var(--warning, #f59f00) 10%, transparent); box-shadow: inset 3px 0 0 var(--warning, #f59f00); }
+.tt-import .tt-flag { flex-shrink: 0; font-size: 13px; }
 
 .cal-ev { background: #fff; color: #111; border: 1px solid var(--border); border-radius: 6px; padding: 2px 5px; margin-top: 2px; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; font-weight: 500; cursor: pointer; }
 .cal-ev-dot { width: 10px; height: 10px; border-radius: 3px; background: #c7c7cc; flex-shrink: 0; }
