@@ -1,13 +1,15 @@
 import { useEffect, useState, useCallback } from 'react';
 import { api } from '../api';
 import { BottomSheet, Button } from './ui';
+import { fetchExternalBusy } from './calendarBusy';
+import { today } from './helpers';
 import { sectionize, INFEASIBLE_OPTIONS, buildFreezePayload, applyPayload, canConfirm } from './rollingSchedule';
 
 // 段考滾動重排的預覽→（override）→再預覽→確認→套用流程。
 //
 // 硬性：任何 override 都必須「回到 preview 產生新 candidate、使用者再 confirm」，
 // 不能直接 apply；前端不直接建立 ScheduledBlock，一律走 /rolling/apply。
-export default function RollingExamSchedule({ planId, triggerTaskId = null, onClose, onApplied }) {
+export default function RollingExamSchedule({ planId, triggerTaskId = null, scheduleEnd = null, onClose, onApplied }) {
   const [preview, setPreview] = useState(null);
   const [loading, setLoading] = useState(false);
   const [applying, setApplying] = useState(false);
@@ -21,12 +23,18 @@ export default function RollingExamSchedule({ planId, triggerTaskId = null, onCl
       const body = { plan_id: planId };
       if (triggerTaskId != null) body.trigger_task_id = triggerTaskId;
       if (freeze) body.freeze = freeze;
+      // 裝置行事曆（Apple/EventKit）：原生層＋已授權＋有選行事曆才帶進來；web/PWA no-op。
+      // 範圍＝今天到這個計畫的目標日（涵蓋 rolling 後天起實際會排的 tail）；沒有目標日就略過。
+      if (scheduleEnd) {
+        const { external_busy } = await fetchExternalBusy({ startDate: today(), endDate: scheduleEnd });
+        if (external_busy) body.external_busy = external_busy;
+      }
       const p = await api('/schedule/rolling/preview', { method: 'POST', body });
       setPreview({ ...p, plan_id: planId });
     } catch (e) {
       setError(e.message || '預覽失敗'); setPreview(null);
     } finally { setLoading(false); }
-  }, [planId, triggerTaskId]);
+  }, [planId, triggerTaskId, scheduleEnd]);
 
   useEffect(() => { doPreview(null); }, [doPreview]);
 

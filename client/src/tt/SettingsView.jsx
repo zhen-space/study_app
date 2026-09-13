@@ -4,6 +4,7 @@ import { Button, PageHeader, SurfaceCard, SegmentedControl, ListRow } from './ui
 import { THEMES, getTheme, setTheme } from './theme';
 import { getNotifyPrefs, setNotifyPrefs, permissionState, requestPermission, NOTIFY_KINDS } from './notify';
 import GoogleCalendarCard from './GoogleCalendarCard';
+import AppleCalendarCard from './AppleCalendarCard';
 
 // 「設定」。在這頁出現以前，作息時間只能在排程精靈第 2 步裡改——想調睡覺時間
 // 得先開一個計畫走到第二步。這裡只收跟「App 怎麼運作」有關的設定，
@@ -177,6 +178,7 @@ export default function SettingsView() {
         <section className="ui-section">
           <div className="ui-section-title">連結</div>
           <GoogleCalendarCard />
+          <div style={{ marginTop: 10 }}><AppleCalendarCard /></div>
         </section>
 
         {/* ---------- 這台裝置 ---------- */}
