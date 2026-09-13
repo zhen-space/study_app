@@ -311,6 +311,9 @@ export default function PlanDetailView({ planKey, tasks, lists, apiPlans = [], r
         )}
         {showRolling && (
           <RollingExamSchedule planId={plan.planId} onClose={() => setShowRolling(false)}
+            scheduleEnd={raw?.target_date
+              || plan.items.reduce((m, t) => (t.deadline_date && t.deadline_date > m ? t.deadline_date : m), '')
+              || null}
             onApplied={async () => { await reload(); }} />
         )}
 

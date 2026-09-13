@@ -5,6 +5,7 @@ import { today, addDays } from './helpers';
 import { shortTitle } from './plans';
 import { applyWizardSchedule } from './wizardApply';
 import { buildSchedulePreviewRequest, planScheduleConditions, CONDITION_LABEL } from './schedulePreview';
+import { fetchExternalBusy } from './calendarBusy';
 import { BottomSheet, Button, SurfaceCard } from './ui';
 import FeasibilityGap from './FeasibilityGap';
 
@@ -43,9 +44,7 @@ export default function ReplanSheet({ plan, health, raw, lists = [], reload, onC
     const target = raw?.target_date;
     const end = target && target >= start ? target : addDays(start, Math.max(6, pending.length - 1));
     try {
-      const pv = await api('/schedule/preview', {
-        method: 'POST',
-        body: {
+      const body = {
           ...buildSchedulePreviewRequest({
           items: pending.map(t => ({
             task_id: t.id,
@@ -62,8 +61,12 @@ export default function ReplanSheet({ plan, health, raw, lists = [], reload, onC
           // 這次就是重排此 Plan：後端 preview 會釋出它自己的舊 block，
           // 但仍把其他 Plan 的 active block 視為 busy interval。
           plan_id: plan.planId,
-        },
-      });
+      };
+      // 裝置行事曆（Apple/EventKit）：原生層＋已授權＋有選行事曆才帶進來；web/PWA no-op、
+      // 讀不到就優雅降級。範圍用這次重排的 start/end。
+      const { external_busy } = await fetchExternalBusy({ startDate: start, endDate: end });
+      if (external_busy) body.external_busy = external_busy;
+      const pv = await api('/schedule/preview', { method: 'POST', body });
       pv.blocks = [...pv.blocks].sort((a, b) => a.date.localeCompare(b.date));
       setPreview(pv);
       setStage('preview');
