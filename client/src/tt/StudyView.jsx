@@ -132,7 +132,37 @@ export default function StudyView({ tasks, goPlans }) {
             title="還沒有可以讀的任務"
             description="先建立一個讀書計畫，AI 會把教材內容排成每天的任務；也可以到「任務」自己加一項。"
             action={goPlans && <Button variant="primary" size="lg" onClick={goPlans}>建立讀書計畫</Button>} />
-        : <SurfaceCard><b>開始一段讀書</b><div className="ui-meta" style={{ marginTop: 4 }}>照時間先後列出最該做的幾項。</div>{pick.map(t => <div className="ui-row" key={t.id}><div className="ui-row-main"><div className="ui-row-title">{t.title}</div><div className="ui-row-sub" style={t.due_date && t.due_date < td ? { color: 'var(--danger)' } : undefined}>{dueLabel(t, td)}</div></div><Button size="sm" variant="primary" onClick={() => start(t)}>開始</Button></div>)}</SurfaceCard>}
+        // 無 session：只給「一個主要推薦」（最該先讀的那一項），其餘收成一行、點開才展開。
+        // §D：不再一整排逾期 task ＋ 開始互相搶焦點；主要動作只有一個。
+        : (() => {
+          const [top, ...rest] = pick;
+          const overdueTone = t => t.due_date && t.due_date < td ? { color: 'var(--danger)' } : undefined;
+          return (
+            <section className="ui-section">
+              <div className="ui-section-title">開始一段讀書</div>
+              <SurfaceCard tone="accent">
+                <div className="ui-meta">最該先讀</div>
+                <div style={{ fontSize: 18, fontWeight: 650, marginTop: 2 }}>{top.title}</div>
+                <div className="ui-meta" style={overdueTone(top)}>{dueLabel(top, td)}</div>
+                <Button variant="primary" size="lg" block style={{ marginTop: 'var(--sp-4)' }} onClick={() => start(top)}>開始</Button>
+              </SurfaceCard>
+              {rest.length > 0 && (
+                <details className="study-more" style={{ marginTop: 'var(--sp-3)' }}>
+                  <summary className="ui-meta" style={{ cursor: 'pointer', padding: 'var(--sp-2) 0' }}>其他可以開始（{rest.length}）</summary>
+                  {rest.map(t => (
+                    <div className="ui-row" key={t.id}>
+                      <div className="ui-row-main">
+                        <div className="ui-row-title">{t.title}</div>
+                        <div className="ui-row-sub" style={overdueTone(t)}>{dueLabel(t, td)}</div>
+                      </div>
+                      <Button size="sm" onClick={() => start(t)}>開始</Button>
+                    </div>
+                  ))}
+                </details>
+              )}
+            </section>
+          );
+        })()}
       {/* 補登不受「正在讀」影響：它記的是已經讀完的事，任何時候都補得了。
           沒有任何任務時就沒得補，那時的出口是上面的空狀態。 */}
       {candidates.length > 0 && (
