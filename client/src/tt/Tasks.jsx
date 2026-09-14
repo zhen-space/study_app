@@ -220,14 +220,24 @@ function TaskRow({ t, lists, sel, onSel, onToggle, onDragStart, onDropOn, onSwip
         onTouchStart={start} onTouchMove={move} onTouchEnd={end} onTouchCancel={end}
         style={{ transform: dx ? `translateX(${dx}px)` : undefined, transition: dx ? 'none' : 'transform .18s', position: 'relative', background: 'var(--card)' }}>
         <input type="checkbox" checked={!!t.completed} onClick={e => e.stopPropagation()} onChange={() => onToggle(t)} />
-        {t.priority > 0 && <span className={PRI[t.priority][1]}>⚑</span>}
-        <span className="title">{t.title}</span>
-        {t.subtasks.length > 0 && <span className="chip">{t.subtasks.filter(s => s.done).length}/{t.subtasks.length}</span>}
-        {/* chip--tag：手機上要收起來。每一筆排進來的讀書任務都掛著同一個
-            「讀書計劃」標籤，那一格寬度換不到任何資訊，卻把長標題擠成好幾行。 */}
-        {t.tags.map(tag => <span key={tag} className="chip chip--tag">#{tag}</span>)}
-        {t.due_date && <span className="muted trow-due" style={overdue ? { color: 'var(--red)' } : {}}>{relativeDay(t.due_date, today())}{t.due_time ? ' ' + t.due_time : ''}</span>}
-        {list && <span className="dot" style={{ background: list.color }} title={list.name} />}
+        {/* §E：兩層資訊。第一層＝標題（主角）；第二層＝科目名＋日期（次要）。
+            過去只有一顆神秘色點代表科目，要記得色碼才知道是哪一科；改成直接寫科目名。 */}
+        <div className="trow-main">
+          <div className="trow-line1">
+            {t.priority > 0 && <span className={PRI[t.priority][1]}>⚑</span>}
+            <span className="title">{t.title}</span>
+            {t.subtasks.length > 0 && <span className="chip">{t.subtasks.filter(s => s.done).length}/{t.subtasks.length}</span>}
+            {/* chip--tag：手機上要收起來。每一筆排進來的讀書任務都掛著同一個
+                「讀書計劃」標籤，那一格寬度換不到任何資訊，卻把長標題擠成好幾行。 */}
+            {t.tags.map(tag => <span key={tag} className="chip chip--tag">#{tag}</span>)}
+          </div>
+          {(list || t.due_date) && (
+            <div className="trow-line2">
+              {list && <span className="trow-subject"><span className="trow-swatch" style={{ background: list.color }} />{list.name}</span>}
+              {t.due_date && <span className="trow-due" style={overdue ? { color: 'var(--red)' } : undefined}>{relativeDay(t.due_date, today())}{t.due_time ? ' ' + t.due_time : ''}</span>}
+            </div>
+          )}
+        </div>
       </div>
     </div>
   );
@@ -331,6 +341,11 @@ export function Detail({ task, lists, onSave, onDelete, onClose }) {
 export default function Tasks({ view, tasks, lists, filters, habits = [], reload, title, subtitle = '', listLabel = '', goVocab, goMemo, topSlot = null }) {
   const [selId, setSelId] = useState(null);
   const [quick, setQuick] = useState('');
+  // §E 第一層 filters（只在「任務」總表出現）：全部／今天／逾期／未排程。記在 localStorage。
+  const [taskFilter, setTaskFilter] = useState(() => {
+    try { return localStorage.getItem('taskFilter') || 'all'; } catch { return 'all'; }
+  });
+  const pickFilter = v => { setTaskFilter(v); try { localStorage.setItem('taskFilter', v); } catch {} };
   // 排序方式記起來：下次開啟還是同一個（default | time | priority | title）
   const [sortBy, setSortBy] = useState(() => {
     try { return localStorage.getItem('taskSort') || 'default'; } catch { return 'default'; }
@@ -390,7 +405,18 @@ export default function Tasks({ view, tasks, lists, filters, habits = [], reload
     setOver({});
   }, [tasks]);
   const tv = Object.keys(over).length ? tasks.map(t => over[t.id] ? { ...t, ...over[t.id] } : t) : tasks;
-  const shown = tv.filter(t => matchView(t, view, { filters }) && !hidden.has(t.id));
+  const shownAll = tv.filter(t => matchView(t, view, { filters }) && !hidden.has(t.id));
+  // 第一層 filters 只用在「任務」總表（tasks/all）；其餘視圖語意已由 view 決定，不套。
+  const showChips = ['tasks', 'all'].includes(view.type);
+  const tdF = today();
+  const chipFn = {
+    all: () => true,
+    today: t => t.due_date === tdF,
+    overdue: t => t.due_date && t.due_date < tdF && !t.completed,
+    unscheduled: t => !t.due_date,
+  };
+  const shown = showChips ? shownAll.filter(chipFn[taskFilter] || chipFn.all) : shownAll;
+  const chipCount = k => shownAll.filter(chipFn[k]).length;
   const sel = tv.find(t => t.id === selId);
 
   async function restore(t) {
@@ -515,6 +541,19 @@ export default function Tasks({ view, tasks, lists, filters, habits = [], reload
             <button className="btn sm ghost" style={{ marginLeft: 'auto' }} onClick={emptyTrash}>清空垃圾桶</button>
           )}
         </div>
+        {showChips && (
+          <div className="task-filter" role="tablist" aria-label="任務篩選">
+            {[['all', '全部'], ['today', '今天'], ['overdue', '逾期'], ['unscheduled', '未排程']].map(([k, label]) => {
+              const n = k === 'all' ? 0 : chipCount(k);
+              return (
+                <button key={k} role="tab" aria-selected={taskFilter === k}
+                  className={'chip filter-chip' + (taskFilter === k ? ' on' : '')} onClick={() => pickFilter(k)}>
+                  {label}{n > 0 ? <span className="filter-chip-n">{n}</span> : ''}
+                </button>
+              );
+            })}
+          </div>
+        )}
         {!['completed', 'trash', 'search'].includes(view.type) && (
           <div className="row" style={{ gap: 'var(--sp-2)', alignItems: 'center' }}>
             <form className="quick-add" style={{ flex: 1 }} onSubmit={quickAdd}>
