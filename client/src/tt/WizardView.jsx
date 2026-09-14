@@ -539,10 +539,11 @@ export default function WizardView({
           </div>
         )}
 
-        {/* ============ 步驟 2 之二：可用時間 ============
-            時間資料就是既有的行事曆與作息設定，精靈不另外做一套日曆——
-            要改行程請到行事曆，這裡只顯示現況與匯入工具。 */}
-        {step === 1 && settings && (
+        {/* ============ 步驟 2 之二：可用時間（僅「安排到實際時間」模式） ============
+            §L：Daily Progress 模式（只安排每天做什麼）不牽涉時段，就不顯示 time-slot
+            約束（可用時間／固定行程／課表／作息／Google busy）；只有 Time 模式才顯示。
+            時間資料就是既有的行事曆與作息設定，精靈不另外做一套日曆。 */}
+        {step === 1 && settings && timed && (
           <details className="tile" id="wz-sec-time" open={initialSection === 'time'} style={{ marginBottom: 10 }}>
             <summary style={{ cursor: 'pointer', fontWeight: 700 }}>可用時間</summary>
             <p>排程會自動避開<b>既定行程</b>{timed ? '與睡覺、吃飯時間' : ''}。</p>

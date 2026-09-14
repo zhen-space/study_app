@@ -691,15 +691,21 @@ export default function CalendarView({ tasks, reload, lists = [], addIntent = nu
     const list = tasks.filter(t => undone(t) && t.due_date === today()).sort(byTime);
     const over = tasks.filter(t => undone(t) && t.due_date < today()).sort(byTime);
     if (!list.length && !over.length) return null;
-    const row = (t, late) => (
-      <div key={t.id} className="trow">
-        <input type="checkbox" checked={false} onChange={() => toggle(t)} />
-        <span className="title">{t.title}</span>
-        <span className="muted" style={late ? { color: 'var(--red)' } : {}}>
-          {late ? `逾期 ${+t.due_date.slice(5, 7)}/${+t.due_date.slice(8)}` : `${+t.due_date.slice(5, 7)}/${+t.due_date.slice(8)}${t.due_time ? ' ' + t.due_time.slice(0, 5) : ''}`}
-        </span>
-      </div>
-    );
+    const row = (t, late) => {
+      // §M：計畫任務的 due_date 是每日進度，過期是「未完成進度」（warning）不是「逾期」（danger）。
+      const missedProgress = late && t.plan_id != null;
+      const overdue = late && t.plan_id == null;
+      const dstr = `${+t.due_date.slice(5, 7)}/${+t.due_date.slice(8)}`;
+      return (
+        <div key={t.id} className="trow">
+          <input type="checkbox" checked={false} onChange={() => toggle(t)} />
+          <span className="title">{t.title}</span>
+          <span className="muted" style={overdue ? { color: 'var(--red)' } : missedProgress ? { color: 'var(--warning, #b7791f)' } : {}}>
+            {late ? `${missedProgress ? '未完成進度' : '逾期'} ${dstr}` : `${dstr}${t.due_time ? ' ' + t.due_time.slice(0, 5) : ''}`}
+          </span>
+        </div>
+      );
+    };
     return (
       <div className="tgroup" style={{ marginTop: 14 }}>
         <div className="glabel">未完成事項（{over.length + list.length}）</div>
