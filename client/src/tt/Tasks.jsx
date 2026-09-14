@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { api } from '../api';
 import { matchView, groupTasks, defaultSort, PRI, today, addDays } from './helpers';
+import { relativeDay } from './dateSemantics';
 import VocabCard from './VocabCard';
 import MemoCard from './MemoCard';
 import SchoolAssignmentForm from './SchoolAssignmentForm';
@@ -226,7 +227,7 @@ function TaskRow({ t, lists, sel, onSel, onToggle, onDragStart, onDropOn, onSwip
         {/* chip--tag：手機上要收起來。每一筆排進來的讀書任務都掛著同一個
             「讀書計劃」標籤，那一格寬度換不到任何資訊，卻把長標題擠成好幾行。 */}
         {t.tags.map(tag => <span key={tag} className="chip chip--tag">#{tag}</span>)}
-        {t.due_date && <span className="muted trow-due" style={overdue ? { color: 'var(--red)' } : {}}>{t.due_date.slice(5)}{t.due_time ? ' ' + t.due_time : ''}</span>}
+        {t.due_date && <span className="muted trow-due" style={overdue ? { color: 'var(--red)' } : {}}>{relativeDay(t.due_date, today())}{t.due_time ? ' ' + t.due_time : ''}</span>}
         {list && <span className="dot" style={{ background: list.color }} title={list.name} />}
       </div>
     </div>
