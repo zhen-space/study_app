@@ -178,7 +178,7 @@ export default function Shell({ onLogout }) {
   // 學習／工具／個人化／App 四類分組（先分類、仍全部保留；把 wizard/history/lock/
   // fixed-time 從第一層移除需先有 §J 集中時間設定頁與 §N context 入口，屬耦合改動，暫緩）。
   const pageGroups = [
-    ['學習', [['wizard', 'wizard', '排程精靈'], ['schedule-history', 'calendar', '排程紀錄'], ['locks', 'calendar', '排程鎖定'], ['routines', 'calendar', '我的固定時間'], ['material', 'book', '教材庫'], ['goals', 'wizard', '目標']]],
+    ['學習', [['wizard', 'wizard', '排程精靈'], ['schedule-history', 'calendar', '排程紀錄'], ['locks', 'calendar', '排程鎖定'], ['routines', 'calendar', '時間設定'], ['material', 'book', '教材庫'], ['goals', 'wizard', '目標']]],
     ['工具', [['vocab', 'book', '單字本'], ['memo', 'note', '備忘錄'], ['matrix', 'matrix', '矩陣'], ['habits', 'habit', '習慣']]],
     ['個人化', [['pet', 'paw', '寵物'], ['stats', 'stats', '統計']]],
     ['App', [['settings', 'settings', '設定']]],
@@ -301,7 +301,8 @@ export default function Shell({ onLogout }) {
             goLocks={() => setView({ type: 'locks' })} />
         : view.type === 'study' || view.type === 'pomo' ? <StudyView tasks={tasks.filter(t => !t.deleted)} goPlans={() => setView({ type: 'plans' })} />
         : view.type === 'calendar' ? <CalendarView tasks={tasks.filter(t => !t.deleted)} reload={reload} lists={lists}
-            addIntent={calAddIntent} onAddIntentHandled={() => setCalAddIntent(null)} />
+            addIntent={calAddIntent} onAddIntentHandled={() => setCalAddIntent(null)}
+            onTimeSettings={() => setView({ type: 'routines' })} />
         : view.type === 'schedule-history' ? <ScheduleHistoryView onRestored={() => reload('tasks')} />
         : view.type === 'locks' ? <LocksView tasks={tasks} />
         : view.type === 'routines' ? <RoutinesView />

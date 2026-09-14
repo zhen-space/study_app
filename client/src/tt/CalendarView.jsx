@@ -55,7 +55,7 @@ function ColorPicker({ value, onPick }) {
   );
 }
 
-export default function CalendarView({ tasks, reload, lists = [], addIntent = null, onAddIntentHandled }) {
+export default function CalendarView({ tasks, reload, lists = [], addIntent = null, onAddIntentHandled, onTimeSettings }) {
   // 學校作業的「繳交期限」＝學校什麼時候要，不是「什麼時候做」。這裡只做投影顯示，
   // 絕不為它建 ScheduledBlock 或 fixed_event mirror；點一下開作業本身編輯。
   const [saEdit, setSaEdit] = useState(null);
@@ -780,7 +780,7 @@ export default function CalendarView({ tasks, reload, lists = [], addIntent = nu
           <b style={{ fontSize: 14, whiteSpace: 'nowrap' }}>{view === 'month' ? `${+anchor.slice(0, 4)}年${+anchor.slice(5, 7)}月` : view === 'week' ? `${+monday.slice(5, 7)}/${+monday.slice(8)} 起` : `${+anchor.slice(5, 7)}/${+anchor.slice(8)}`}</b>
           <button className="icon-btn" onClick={() => view === 'month' ? navMonth(1) : shift(1)}>▶</button>
         </span>}
-        {/* 動作群組（今天／匯入）綁在一起：窄螢幕整組換到第二行、靠右，避免「匯入」被切掉。 */}
+        {/* 動作群組（今天／匯入／時間設定）綁在一起：窄螢幕整組換到第二行、靠右。 */}
         <div className="cal-actions">
         <button className="btn sm ghost" onClick={() => setAnchor(today())}>今天</button>
         <div style={{ position: 'relative' }}>
@@ -802,6 +802,8 @@ export default function CalendarView({ tasks, reload, lists = [], addIntent = nu
             </>
           )}
         </div>
+        {/* §J：行事曆右上直達「時間設定」（課表／固定行程／作息／可讀書時間／例外日集中一頁）。 */}
+        {onTimeSettings && <button className="btn sm ghost" onClick={onTimeSettings}>時間設定</button>}
         </div>
       </div>
       <div className="main-body">

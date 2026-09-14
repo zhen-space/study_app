@@ -28,7 +28,9 @@ export default function RoutinesView() {
     try { setError(''); await api('/routine-exceptions', { method: 'POST', body: exception }); setException({ date: '', kind: 'unavailable', title: '', start_time: '', end_time: '' }); load(); }
     catch (e) { setError(e.message); }
   };
-  return <div className="main"><PageHeader title="我的固定時間" subtitle="課表、作息與例外日會套用到所有計畫" />
+  // §J：全 App 的時間設定集中在這一頁（課表／固定行程／作息／可讀書時間／例外日），
+  // 從行事曆右上「時間設定」或側欄進來；設定不再散在各處。
+  return <div className="main"><PageHeader title="時間設定" subtitle="課表、固定行程、作息、可讀書時間與例外日；會套用到所有計畫" />
     <div className="main-body">
       {error && <SurfaceCard tone="warning">{error}</SurfaceCard>}
       <SurfaceCard large><div className="ui-section-title">新增固定時間</div>
