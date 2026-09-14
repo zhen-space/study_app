@@ -13,6 +13,10 @@ export default function Companion({ pet, tasks }) {
 
   const size = m?.walk.size || 64;
   const moveDur = m?.walk.moveDur || 3;
+  // Shell-level 安全區（Phase 1 O）：角色的活動範圍 = 內容安全區 − 底部導航 − 右下 Global Add。
+  // 右側保留一欄給 Global Add FAB，角色不會走到 ＋ 底下；容器底部抬到底部導航之上，
+  // 角色與說話泡泡都不會被 Bottom Nav 切掉。
+  const FAB_RESERVE = 76;
 
   // 走動節奏依個性：皮皮竄來竄去、藍牙慢吞吞
   useEffect(() => {
@@ -21,7 +25,7 @@ export default function Companion({ pet, tasks }) {
     const [gMin, gMax] = m.walk.gap;
     function wander() {
       if (!alive) return;
-      const max = Math.min(window.innerWidth, 500) - size - 12;
+      const max = Math.max(40, Math.min(window.innerWidth, 500) - size - 12 - FAB_RESERVE);
       const nx = 8 + Math.random() * max;
       setDir(nx > xRef.current ? 1 : -1);
       xRef.current = nx;
@@ -67,7 +71,8 @@ export default function Companion({ pet, tasks }) {
 
   return (
     <div style={{
-      position: 'fixed', bottom: 'calc(64px + env(safe-area-inset-bottom))', left: 0, right: 0,
+      position: 'fixed', bottom: 'calc(92px + env(safe-area-inset-bottom))',
+      left: 0, right: `calc(${FAB_RESERVE}px + env(safe-area-inset-right))`,
       height: size, pointerEvents: 'none', zIndex: 14,
     }}>
       <div onClick={poke} style={{

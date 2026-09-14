@@ -84,9 +84,9 @@ describe('Today 三分組', () => {
 
 /* ==================== 純函式：顯示 ==================== */
 describe('期限顯示', () => {
-  it('考試講「考試時間」，其餘講「繳交期限」', () => {
-    expect(deadlineLabelText(sa({ school_assignment_type: 'exam' }))).toBe('考試時間');
-    expect(deadlineLabelText(sa({ school_assignment_type: 'homework' }))).toBe('繳交期限');
+  it('Deadline 文案全 App 統一叫「截止」，不因 type=exam 改字（Phase 1 M）', () => {
+    expect(deadlineLabelText(sa({ school_assignment_type: 'exam' }))).toBe('截止');
+    expect(deadlineLabelText(sa({ school_assignment_type: 'homework' }))).toBe('截止');
   });
   it('deadline_time 為 null 時只顯示日期，不顯示假的 23:59', () => {
     const s = formatDeadline(sa({ deadline_date: '2026-09-10', deadline_time: null }));
@@ -147,7 +147,7 @@ describe('新增／編輯表單', () => {
 
   async function fillMinimum() {
     fireEvent.change(screen.getByPlaceholderText(/第 3 章習題/), { target: { value: '第 1 章' } });
-    fireEvent.change(screen.getByLabelText(/繳交期限日期/), { target: { value: '2026-09-20' } });
+    fireEvent.change(screen.getByLabelText(/截止日期/), { target: { value: '2026-09-20' } });
   }
 
   it('四種類型都能建立，且送出 task_kind=school_assignment', async () => {
@@ -155,10 +155,9 @@ describe('新增／編輯表單', () => {
       api.mockReset(); api.mockResolvedValue({});
       const { unmount } = render(<SchoolAssignmentForm lists={lists} onClose={() => {}} onSaved={() => {}} />);
       await fillMinimum();
-      // 類型是 SegmentedControl 按鈕；考試會把日期 label 改成「考試時間日期」，先點類型再填日期
+      // 類型是 SegmentedControl 按鈕；日期 label 全型別統一為「截止日期」
       fireEvent.click(screen.getByRole('tab', { name: label }));
-      const dateLabel = type === 'exam' ? /考試時間日期/ : /繳交期限日期/;
-      fireEvent.change(screen.getByLabelText(dateLabel), { target: { value: '2026-09-20' } });
+      fireEvent.change(screen.getByLabelText(/截止日期/), { target: { value: '2026-09-20' } });
       fireEvent.click(screen.getByRole('button', { name: '新增作業' }));
       await waitFor(() => expect(api).toHaveBeenCalled());
       const [, opts] = api.mock.calls.find(c => c[0] === '/tasks');
@@ -249,7 +248,7 @@ describe('Calendar 顯示學校作業繳交期限', () => {
     render(<CalendarView tasks={[saTask]} reload={vi.fn()} lists={[{ id: 1, name: '物理' }]} />);
     // 切到日視圖（anchor 預設是今天）
     fireEvent.change(screen.getByRole('combobox'), { target: { value: 'day' } });
-    const chip = await screen.findByTitle(/繳交期限：物理報告/);
+    const chip = await screen.findByTitle(/截止：物理報告/);
     expect(chip).toHaveClass('cal-deadline');           // 是期限標記，不是一般任務 chip（cal-task）
     expect(chip).not.toHaveClass('cal-task');
     // 學校作業本身沒有 due_date：deadline 不會變成排程時間軸上的 block

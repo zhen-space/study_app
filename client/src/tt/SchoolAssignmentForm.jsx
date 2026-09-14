@@ -36,10 +36,10 @@ export default function SchoolAssignmentForm({ lists = [], task = null, defaultR
   async function submit(e) {
     e.preventDefault();
     setErr('');
-    if (!f.title.trim()) return setErr('請輸入作業名稱');
+    if (!f.title.trim()) return setErr('請輸入標題');
     if (!f.list_id) return setErr('請選擇科目');
-    if (!f.deadline_date) return setErr(`請填寫${deadlineLabelText(f)}的日期`);
-    if (f.deadline_time && !isTime(f.deadline_time)) return setErr('繳交時間格式不正確');
+    if (!f.deadline_date) return setErr(`請填寫${deadlineLabelText(f)}日期`);
+    if (f.deadline_time && !isTime(f.deadline_time)) return setErr('截止時間格式不正確');
     if (needsCustomDate && !f.reminder_custom_date) return setErr('請選擇自訂提醒日期');
     const rem = reminderSelectionToFields(f.reminder_sel, {
       customDate: f.reminder_custom_date, timeOverride: f.reminder_time_override,
@@ -85,7 +85,7 @@ export default function SchoolAssignmentForm({ lists = [], task = null, defaultR
         </label>
 
         <label className="sa-field">
-          <span>名稱</span>
+          <span>標題</span>
           <input type="text" autoFocus value={f.title} placeholder="例如：第 3 章習題"
             onChange={e => up({ title: e.target.value })} />
         </label>
@@ -98,14 +98,14 @@ export default function SchoolAssignmentForm({ lists = [], task = null, defaultR
         </div>
 
         <label className="sa-field">
-          <span>{deadlineLabel}</span>
+          <span>{deadlineLabel}日期</span>
           <div className="row" style={{ gap: 'var(--sp-2)' }}>
             <input type="date" aria-label={`${deadlineLabel}日期`} value={f.deadline_date}
               onChange={e => up({ deadline_date: e.target.value })} />
-            <input type="time" aria-label={`${deadlineLabel}時間（可留空）`} value={f.deadline_time}
+            <input type="time" aria-label={`${deadlineLabel}時間（選填）`} value={f.deadline_time}
               onChange={e => up({ deadline_time: e.target.value })} />
           </div>
-          <span className="ui-meta">不填時間＝當天結束以前都可以。</span>
+          <span className="ui-meta">不填時間＝當天結束以前都可以（不會顯示假的 23:59）。</span>
         </label>
 
         <label className="sa-field">
