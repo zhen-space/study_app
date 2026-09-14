@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import { api } from '../api';
 import { today, onActivePlan } from './helpers';
+import { zhDateShort } from './dateSemantics';
 import { Button, PageHeader, SurfaceCard, EmptyState, BottomSheet } from './ui';
 import PomodoroPanel from './PomodoroPanel';
 
@@ -31,9 +32,10 @@ export function pickStudyTasks(tasks, td = today(), limit = MAX_ROWS) {
 const dueLabel = (t, td) => {
   if (!t.due_date) return '尚未安排';
   const hm = t.due_time ? ' ' + t.due_time.slice(0, 5) : '';
-  if (t.due_date < td) return `逾期 ${t.due_date.slice(5)}${hm}`;
+  // §M：日期格式統一走 zhDateShort（9/14），不再裸顯 09-14。
+  if (t.due_date < td) return `逾期 ${zhDateShort(t.due_date)}${hm}`;
   if (t.due_date === td) return `今天${hm}`;
-  return t.due_date.slice(5) + hm;
+  return zhDateShort(t.due_date) + hm;
 };
 
 // 補登：真的讀了，只是當下沒開計時器。它是正式的讀書紀錄，分鐘數會進統計；
