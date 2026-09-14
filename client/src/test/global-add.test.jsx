@@ -79,7 +79,11 @@ describe('Global Add', () => {
     // 操作／表單頁：沒有 ＋
     await click(within(bottomNav()).getByLabelText('開始讀書'));           // Study
     expect(screen.queryByRole('button', { name: '新增' })).toBeNull();
-    await click(within(side).getByText('排程精靈'));                        // Wizard
+    // Wizard（§K：排程精靈已移出側欄，改由 計畫 → 建立計畫 → AI 幫我安排 進入）
+    await click(within(bottomNav()).getByText('計畫').closest('button'));
+    await click(screen.getByRole('button', { name: '新增' }));
+    await click(screen.getByRole('button', { name: '新增計畫' }));
+    await click(await screen.findByRole('button', { name: /AI 幫我安排/ }));
     expect(screen.queryByRole('button', { name: '新增' })).toBeNull();
     await click(within(side).getByText('設定'));                          // Settings
     expect(screen.queryByRole('button', { name: '新增' })).toBeNull();

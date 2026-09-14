@@ -389,7 +389,7 @@ export function Detail({ task, lists, onSave, onDelete, onClose }) {
 
 // AddSheet／saForm 已移除：新增一律走 Shell 的 Global Add（§A）；列表內只保留 inline quick-add。
 
-export default function Tasks({ view, tasks, lists, filters, habits = [], reload, title, subtitle = '', listLabel = '', goVocab, goMemo, topSlot = null }) {
+export default function Tasks({ view, tasks, lists, filters, habits = [], reload, title, subtitle = '', listLabel = '', goVocab, goMemo, topSlot = null, onNav }) {
   const [selId, setSelId] = useState(null);
   const [quick, setQuick] = useState('');
   // §E 第一層 filters（只在「任務」總表出現）：全部／今天／逾期／未排程。記在 localStorage。
@@ -397,6 +397,8 @@ export default function Tasks({ view, tasks, lists, filters, habits = [], reload
     try { return localStorage.getItem('taskFilter') || 'all'; } catch { return 'all'; }
   });
   const pickFilter = v => { setTaskFilter(v); try { localStorage.setItem('taskFilter', v); } catch {} };
+  // §K：科目過濾（''＝全部科目）。custom lists 從側欄移到這裡。
+  const [subjFilter, setSubjFilter] = useState('');
   // 排序方式記起來：下次開啟還是同一個（default | time | priority | title）
   const [sortBy, setSortBy] = useState(() => {
     try { return localStorage.getItem('taskSort') || 'default'; } catch { return 'default'; }
@@ -460,14 +462,18 @@ export default function Tasks({ view, tasks, lists, filters, habits = [], reload
   // 第一層 filters 只用在「任務」總表（tasks/all）；其餘視圖語意已由 view 決定，不套。
   const showChips = ['tasks', 'all'].includes(view.type);
   const tdF = today();
+  const weekEnd = addDays(tdF, 6);
   const chipFn = {
     all: () => true,
     today: t => t.due_date === tdF,
+    week: t => t.due_date && t.due_date >= tdF && t.due_date <= weekEnd,
     overdue: t => t.due_date && t.due_date < tdF && !t.completed,
     unscheduled: t => !t.due_date,
   };
-  const shown = showChips ? shownAll.filter(chipFn[taskFilter] || chipFn.all) : shownAll;
-  const chipCount = k => shownAll.filter(chipFn[k]).length;
+  // §K：科目（清單）過濾移進「任務」頁（取代側欄的 per-subject 清單）
+  const subjFiltered = showChips && subjFilter ? shownAll.filter(t => String(t.list_id) === subjFilter) : shownAll;
+  const shown = showChips ? subjFiltered.filter(chipFn[taskFilter] || chipFn.all) : shownAll;
+  const chipCount = k => (subjFilter ? shownAll.filter(t => String(t.list_id) === subjFilter) : shownAll).filter(chipFn[k]).length;
   const sel = tv.find(t => t.id === selId);
 
   async function restore(t) {
@@ -579,7 +585,7 @@ export default function Tasks({ view, tasks, lists, filters, habits = [], reload
           </div>
           {!listLabel && <span className="muted">{shown.length} 項</span>}
           {!listLabel && !['trash', 'completed'].includes(view.type) && shown.length > 1 && (
-            <select value={sortBy} onChange={e => pickSort(e.target.value)} style={{ marginLeft: 'auto', fontSize: 13 }}>
+            <select aria-label="排序方式" value={sortBy} onChange={e => pickSort(e.target.value)} style={{ marginLeft: 'auto', fontSize: 13 }}>
               <option value="default">預設排序</option>
               <option value="time">依時間</option>
               <option value="subject">依科目</option>
@@ -592,17 +598,35 @@ export default function Tasks({ view, tasks, lists, filters, habits = [], reload
             <button className="btn sm ghost" style={{ marginLeft: 'auto' }} onClick={emptyTrash}>清空垃圾桶</button>
           )}
         </div>
+        {/* §K：舊 Todo IA（學校作業／已完成／垃圾桶）從側欄移進「任務」頁的視圖切換列 */}
+        {onNav && ['tasks', 'all', 'completed', 'trash'].includes(view.type) && (
+          <div className="task-viewtabs" role="tablist" aria-label="任務視圖">
+            {[['tasks', '任務', ['tasks', 'all']], ['school', '學校作業', ['school']], ['completed', '已完成', ['completed']], ['trash', '垃圾桶', ['trash']]].map(([type, label, actives]) => (
+              <button key={type} role="tab" aria-selected={actives.includes(view.type)}
+                className={'seg-tab' + (actives.includes(view.type) ? ' on' : '')} onClick={() => onNav({ type })}>{label}</button>
+            ))}
+          </div>
+        )}
         {showChips && (
-          <div className="task-filter" role="tablist" aria-label="任務篩選">
-            {[['all', '全部'], ['today', '今天'], ['overdue', '逾期'], ['unscheduled', '未排程']].map(([k, label]) => {
-              const n = k === 'all' ? 0 : chipCount(k);
-              return (
-                <button key={k} role="tab" aria-selected={taskFilter === k}
-                  className={'chip filter-chip' + (taskFilter === k ? ' on' : '')} onClick={() => pickFilter(k)}>
-                  {label}{n > 0 ? <span className="filter-chip-n">{n}</span> : ''}
-                </button>
-              );
-            })}
+          <div className="row" style={{ gap: 'var(--sp-2)', alignItems: 'center', flexWrap: 'wrap' }}>
+            <div className="task-filter" role="tablist" aria-label="任務篩選">
+              {[['all', '全部'], ['today', '今天'], ['week', '本週'], ['overdue', '逾期'], ['unscheduled', '未排程']].map(([k, label]) => {
+                const n = k === 'all' ? 0 : chipCount(k);
+                return (
+                  <button key={k} role="tab" aria-selected={taskFilter === k}
+                    className={'chip filter-chip' + (taskFilter === k ? ' on' : '')} onClick={() => pickFilter(k)}>
+                    {label}{n > 0 ? <span className="filter-chip-n">{n}</span> : ''}
+                  </button>
+                );
+              })}
+            </div>
+            {lists.length > 0 && (
+              <select aria-label="依科目篩選" value={subjFilter} onChange={e => setSubjFilter(e.target.value)}
+                style={{ marginLeft: 'auto', fontSize: 13 }}>
+                <option value="">全部科目</option>
+                {lists.map(l => <option key={l.id} value={String(l.id)}>{l.name}</option>)}
+              </select>
+            )}
           </div>
         )}
         {!['completed', 'trash', 'search'].includes(view.type) && (

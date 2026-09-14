@@ -162,6 +162,8 @@ select { -webkit-appearance: none; appearance: none; padding-right: 26px;
 .side-item:hover { background: var(--fill); }
 .side-item.active { background: var(--primary-soft); color: var(--primary); font-weight: 600; }
 .side-item .count { margin-left: auto; color: var(--muted); font-size: 13px; }
+/* §K：主導航只在桌機側欄；手機抽屜不放第二套主導航（底部導航負責） */
+.side-primary { display: block; }
 .side-sec { margin-top: 16px; padding: 0 12px 4px; font-size: 12px; font-weight: 600; text-transform: uppercase; letter-spacing: .03em; color: var(--muted); display: flex; justify-content: space-between; align-items: center; }
 .dot { width: 10px; height: 10px; border-radius: 50%; flex-shrink: 0; }
 
@@ -198,6 +200,10 @@ select { -webkit-appearance: none; appearance: none; padding-right: 26px;
 .filter-chip.on { background: var(--primary); color: #fff; border-color: var(--primary); }
 .filter-chip-n { font-size: 11px; opacity: .8; }
 .filter-chip.on .filter-chip-n { opacity: .95; }
+/* §K 任務視圖切換列（學校作業／已完成／垃圾桶等，取代側欄舊 Todo IA） */
+.task-viewtabs { display: flex; gap: 2px; flex-wrap: wrap; padding: var(--sp-1) 0; border-bottom: 1px solid var(--separator, var(--border)); margin-bottom: var(--sp-2); }
+.seg-tab { cursor: pointer; background: none; border: none; padding: 6px 10px; font-size: 14px; color: var(--text-2); border-radius: var(--radius-sm, 8px); }
+.seg-tab.on { color: var(--primary); font-weight: 650; background: var(--primary-soft); }
 .trow.done .title { color: var(--text-3); }
 .trow .title { transition: color var(--motion-fast) var(--ease); }
 .chip { font-size: 12px; padding: 3px 9px; border-radius: var(--radius-pill); background: var(--fill); color: var(--text-2); }
@@ -333,6 +339,7 @@ select { -webkit-appearance: none; appearance: none; padding-right: 26px;
   body { font-size: 16px; }
   input, select, textarea { font-size: 16px; } /* 避免 iOS 聚焦時自動放大 */
   .menu-btn { display: block; font-size: 24px; padding: 8px 12px; }
+  .side-primary { display: none; }
   .sidebar { position: fixed; left: 0; top: 0; bottom: 0; z-index: 20; transform: translateX(-100%); transition: transform .25s cubic-bezier(.32,.72,0,1); }
   .sidebar.open { transform: none; box-shadow: 0 0 40px rgba(0,0,0,.3); }
   .backdrop { position: fixed; inset: 0; background: rgba(0,0,0,.35); z-index: 15; backdrop-filter: blur(2px); }

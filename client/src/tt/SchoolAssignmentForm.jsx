@@ -84,7 +84,7 @@ export default function SchoolAssignmentForm({ lists = [], task = null, defaultR
             <option value="">請選擇科目</option>
             {ownLists.map(l => <option key={l.id} value={l.id}>{l.name}</option>)}
           </select>
-          {ownLists.length === 0 && <span className="ui-meta">還沒有科目。請先在側邊「清單」新增一個科目。</span>}
+          {ownLists.length === 0 && <span className="ui-meta">還沒有科目。請先到「設定 → 科目」新增一個科目。</span>}
         </label>
 
         <label className="sa-field">

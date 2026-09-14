@@ -124,8 +124,8 @@ describe('任務頁：照科目分堆看得出各科逾期幾項', () => {
     await draw(
       <Tasks view={{ type: 'tasks' }} tasks={subjTasks} lists={fx.lists}
         filters={[]} habits={[]} reload={() => {}} title="所有任務" />);
-    // 切到「照科目分堆」
-    fireEvent.change(screen.getByRole('combobox'), { target: { value: 'subjectGroup' } });
+    // 切到「照科目分堆」（§K 起「任務」頁多了科目篩選 select，排序 select 用 aria-label 指定）
+    fireEvent.change(screen.getByRole('combobox', { name: '排序方式' }), { target: { value: 'subjectGroup' } });
 
     const phys = screen.getByText('物理', { selector: '.glabel' }).closest('.glabel');
     expect(within(phys).getByText('3 項')).toBeTruthy();
