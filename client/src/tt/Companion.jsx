@@ -74,12 +74,15 @@ export default function Companion({ pet, tasks }) {
   // 若掛在角色內層，位移中的 translateX 動畫會讓泡泡短暫偏出畫面。角色左緣視窗座標即為 x。
   const BUBBLE_W = 220;
   const vw = typeof window !== 'undefined' ? window.innerWidth : 375;
-  const bubbleLeft = Math.max(8, Math.min(x + size / 2 - BUBBLE_W / 2, vw - 8 - BUBBLE_W));
+  // 桌機（≥769px）有常駐側欄（寬 230px）：角色只在內容區活動，不壓在側欄導覽上。
+  const originLeft = vw >= 769 ? 230 : 0;
+  // 泡泡 left 相對容器（容器左緣＝originLeft）；夾成視窗座標 [8, vw−8−寬度] 都在畫面內。
+  const bubbleLeft = Math.max(8 - originLeft, Math.min(x + size / 2 - BUBBLE_W / 2, vw - 8 - BUBBLE_W - originLeft));
 
   return (
     <div style={{
       position: 'fixed', bottom: 'calc(92px + env(safe-area-inset-bottom))',
-      left: 0, right: `calc(${FAB_RESERVE}px + env(safe-area-inset-right))`,
+      left: originLeft, right: `calc(${FAB_RESERVE}px + env(safe-area-inset-right))`,
       height: size, pointerEvents: 'none', zIndex: 14,
     }}>
       {msg && (
