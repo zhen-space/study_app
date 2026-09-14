@@ -217,6 +217,9 @@ select { -webkit-appearance: none; appearance: none; padding-right: 26px;
 .detail input.title { font-size: 20px; font-weight: 700; background: none; padding: 4px 0; width: 100%; letter-spacing: -.01em; }
 .detail input.title:focus { box-shadow: none; }
 .detail textarea { min-height: 90px; resize: vertical; width: 100%; }
+/* §F 明細分區小標 */
+.detail-sec-t { font-size: 12px; font-weight: 700; letter-spacing: .02em; color: var(--text-3, var(--muted)); text-transform: none; margin-top: 4px; padding-top: 12px; border-top: 1px solid var(--separator, var(--border)); }
+.detail .detail-sec-t:first-of-type { border-top: none; padding-top: 0; }
 .drow { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 .drow label { font-size: 13px; color: var(--muted); width: 56px; flex-shrink: 0; }
 .subtask { display: flex; align-items: center; gap: 10px; padding: 4px 0; }

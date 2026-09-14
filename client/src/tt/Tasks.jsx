@@ -243,10 +243,15 @@ function TaskRow({ t, lists, sel, onSel, onToggle, onDragStart, onDropOn, onSwip
   );
 }
 
+// §F 任務明細：分成「任務資訊／安排／實際讀書／其他」四區，不再是一長條扁平表單。
+// 刪除收進右上「•••」（不再一顆紅按鈕擺在最下面誤觸）；標籤改 chips（非開發者式逗號字串）；
+// 多出一個「實際讀書」摘要（讀了多久），把 generic 的「日期」歸到「安排」語意底下。
 export function Detail({ task, lists, onSave, onDelete, onClose }) {
   const [t, setT] = useState(task);
   const up = patch => { const nt = { ...t, ...patch }; setT(nt); onSave(nt); };
   const [newSub, setNewSub] = useState('');
+  const [newTag, setNewTag] = useState('');
+  const [menu, setMenu] = useState(false);
 
   // 附件
   const [atts, setAtts] = useState([]);
@@ -254,6 +259,13 @@ export function Detail({ task, lists, onSave, onDelete, onClose }) {
   // 一定要包成 { }：箭頭函式直接回傳 Promise 的話，React 會把那個 Promise 當成
   // 清理函式，關掉任務時就會 destroy() → 「l is not a function」整頁掛掉
   useEffect(() => { loadAtts(); }, [task.id]);
+  // 實際讀書：這個任務累計讀了多久（只算 completed 的 StudySession；來源是 GET /study-sessions）
+  const [sessions, setSessions] = useState([]);
+  useEffect(() => {
+    api('/study-sessions').then(rows => setSessions((rows || []).filter(s => Number(s.task_id) === Number(task.id) && s.status === 'completed'))).catch(() => {});
+  }, [task.id]);
+  const studyMin = sessions.reduce((a, s) => a + (s.actual_minutes || 0), 0);
+
   async function addAtt(e) {
     const file = e.target.files[0];
     if (!file) return;
@@ -275,21 +287,34 @@ export function Detail({ task, lists, onSave, onDelete, onClose }) {
     aEl.href = url; aEl.download = full.name; aEl.click();
     setTimeout(() => URL.revokeObjectURL(url), 5000);
   }
+  const addTag = raw => { const v = raw.trim(); if (!v || t.tags.includes(v)) return; up({ tags: [...t.tags, v] }); };
 
   return (
     <div className="detail">
       <div className="drow" style={{ justifyContent: 'space-between' }}>
+        <button className="btn sm" onClick={onClose} title="完成編輯">✓ 完成</button>
+        <div style={{ position: 'relative' }}>
+          <button className="icon-btn" aria-label="更多" onClick={() => setMenu(m => !m)}>⋯</button>
+          {menu && (
+            <>
+              <div style={{ position: 'fixed', inset: 0, zIndex: 40 }} onClick={() => setMenu(false)} />
+              <div className="sa-menu" role="menu">
+                <button role="menuitem" className="sa-menu-danger" onClick={() => { setMenu(false); onDelete(t); }}>刪除任務</button>
+              </div>
+            </>
+          )}
+        </div>
+      </div>
+      <input className="title" value={t.title} onChange={e => up({ title: e.target.value })} />
+
+      {/* ── 任務資訊 ── */}
+      <div className="detail-sec-t">任務資訊</div>
+      <div className="drow">
+        <label>科目</label>
         <select value={t.list_id || ''} onChange={e => up({ list_id: e.target.value ? +e.target.value : null })}>
           <option value="">願望清單</option>
           {lists.map(l => <option key={l.id} value={l.id}>{l.name}</option>)}
         </select>
-        <button className="btn sm" onClick={onClose} title="完成編輯">✓ 完成</button>
-      </div>
-      <input className="title" value={t.title} onChange={e => up({ title: e.target.value })} />
-      <div className="drow">
-        <label>日期</label>
-        <input type="date" value={t.due_date || ''} onChange={e => up({ due_date: e.target.value || null })} />
-        <input type="time" value={t.due_time || ''} onChange={e => up({ due_time: e.target.value || null })} />
       </div>
       <div className="drow">
         <label>優先級</label>
@@ -297,14 +322,18 @@ export function Detail({ task, lists, onSave, onDelete, onClose }) {
           {[0, 1, 2, 3].map(p => <option key={p} value={p}>{PRI[p][0]}</option>)}
         </select>
       </div>
-      {RECURRING_UI && (
-        <RepeatPicker value={t.recurring} dueDate={t.due_date} missPolicy={t.miss_policy}
-          onChange={(recurring, miss_policy) => up({ recurring, miss_policy })} />
-      )}
-      <div className="drow">
+      <div className="drow" style={{ alignItems: 'flex-start' }}>
         <label>標籤</label>
-        <input placeholder="用逗號分隔" value={t.tags.join(',')}
-          onChange={e => up({ tags: e.target.value.split(/[,，]/).map(s => s.trim()).filter(Boolean) })} style={{ flex: 1 }} />
+        <div style={{ flex: 1, display: 'flex', flexWrap: 'wrap', gap: 6, alignItems: 'center' }}>
+          {t.tags.map(tag => (
+            <span key={tag} className="chip chip--tag" style={{ display: 'inline-flex', gap: 4, alignItems: 'center' }}>#{tag}
+              <button className="icon-btn" style={{ padding: 0, lineHeight: 1 }} aria-label={`移除標籤 ${tag}`}
+                onClick={() => up({ tags: t.tags.filter(x => x !== tag) })}>✕</button>
+            </span>
+          ))}
+          <input placeholder="＋標籤" value={newTag} onChange={e => setNewTag(e.target.value)}
+            onKeyDown={e => { if (e.key === 'Enter') { e.preventDefault(); addTag(newTag); setNewTag(''); } }} style={{ width: 92 }} />
+        </div>
       </div>
       <div>
         <label className="muted">子任務</label>
@@ -319,6 +348,29 @@ export function Detail({ task, lists, onSave, onDelete, onClose }) {
           <input placeholder="＋新增子任務" value={newSub} onChange={e => setNewSub(e.target.value)} style={{ width: '100%', marginTop: 4 }} />
         </form>
       </div>
+
+      {/* ── 安排 ── */}
+      <div className="detail-sec-t">安排</div>
+      <div className="drow">
+        <label>日期</label>
+        <input type="date" value={t.due_date || ''} onChange={e => up({ due_date: e.target.value || null })} />
+      </div>
+      <div className="drow">
+        <label>時間</label>
+        <input type="time" value={t.due_time || ''} onChange={e => up({ due_time: e.target.value || null })} />
+      </div>
+      {RECURRING_UI && (
+        <RepeatPicker value={t.recurring} dueDate={t.due_date} missPolicy={t.miss_policy}
+          onChange={(recurring, miss_policy) => up({ recurring, miss_policy })} />
+      )}
+      {t.plan_id != null && <div className="ui-meta" style={{ marginTop: 6 }}>此任務屬於讀書計畫，時段由排程管理；要改安排請到「計畫」裡調整。</div>}
+
+      {/* ── 實際讀書 ── */}
+      <div className="detail-sec-t">實際讀書</div>
+      <div className="ui-meta">{studyMin > 0 ? `累計讀了 ${studyMin} 分鐘（${sessions.length} 次）` : '還沒有讀書紀錄'}</div>
+
+      {/* ── 其他 ── */}
+      <div className="detail-sec-t">其他</div>
       <textarea placeholder="備註..." value={t.notes} onChange={e => up({ notes: e.target.value })} />
       <div>
         <label className="muted">📎 附件</label>
@@ -331,7 +383,6 @@ export function Detail({ task, lists, onSave, onDelete, onClose }) {
         ))}
         <input type="file" onChange={addAtt} style={{ marginTop: 4, width: '100%' }} />
       </div>
-      <button className="btn sm" style={{ background: 'var(--red)', alignSelf: 'flex-start' }} onClick={() => onDelete(t)}>刪除任務</button>
     </div>
   );
 }
