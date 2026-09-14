@@ -95,10 +95,7 @@ export function SchoolAssignmentToday({ tasks, lists, reload }) {
 
   return (
     <section className="ui-section sa-today">
-      <div className="row" style={{ alignItems: 'center', marginBottom: 'var(--sp-2)' }}>
-        <div className="ui-section-title" style={{ marginBottom: 0 }}>學校作業</div>
-        <Button size="sm" style={{ marginLeft: 'auto' }} onClick={() => setForm({})}>＋ 新增作業</Button>
-      </div>
+      <div className="ui-section-title" style={{ marginBottom: 'var(--sp-2)' }}>學校作業</div>
       {groups.overdue.length > 0 && (
         <SurfaceCard tone="warning" style={{ marginBottom: 'var(--sp-2)' }}>
           <div className="sa-group-label sa-title-danger">已逾期（{groups.overdue.length}）</div>
@@ -145,8 +142,7 @@ export default function SchoolAssignmentView({ tasks, lists, reload }) {
 
   return (
     <div className="main">
-      <PageHeader title="學校作業" subtitle="繳交期限與提醒，沿用任務系統"
-        actions={<Button variant="primary" size="sm" onClick={() => setForm({})}>＋ 新增作業</Button>} />
+      <PageHeader title="學校作業" subtitle="截止與提醒，沿用任務系統" />
       <div className="main-body">
         {all.length === 0 ? (
           <EmptyState title="還沒有學校作業"

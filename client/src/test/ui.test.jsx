@@ -220,7 +220,8 @@ describe('UI-R2：Plans 與 Plan Detail', () => {
   it('13. 建立計畫走 BottomSheet，AI 是主要動作', async () => {
     await mountShell();
     await goPlans();
-    await click(screen.getByRole('button', { name: '建立計畫' }));
+    await click(screen.getByRole('button', { name: '新增' }));
+    await click(screen.getByRole('button', { name: '新增計畫' }));
     const dlg = screen.getByRole('dialog');
     const ai = within(dlg).getByRole('button', { name: /AI 幫我安排/ });
     expect(ai.className).toContain('ui-btn--primary');

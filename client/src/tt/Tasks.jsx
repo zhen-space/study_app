@@ -4,7 +4,6 @@ import { matchView, groupTasks, defaultSort, PRI, today, addDays } from './helpe
 import { relativeDay } from './dateSemantics';
 import VocabCard from './VocabCard';
 import MemoCard from './MemoCard';
-import SchoolAssignmentForm from './SchoolAssignmentForm';
 
 const WDC = '日一二三四五六';
 
@@ -327,67 +326,11 @@ export function Detail({ task, lists, onSave, onDelete, onClose }) {
   );
 }
 
-function AddSheet({ view, lists, onDone, onClose }) {
-  const td = today();
-  const tm = addDays(today(), 1);
-  const [f, setF] = useState({
-    title: '',
-    due_date: view.type === 'today' ? td : '',
-    priority: 0,
-    list_id: view.type === 'list' ? view.id : '',
-    recurring: null,
-    miss_policy: 'keep',
-  });
-  const [showRepeat, setShowRepeat] = useState(false);
-  async function submit(e) {
-    e.preventDefault();
-    if (!f.title.trim()) return;
-    const body = { title: f.title.trim(), priority: f.priority };
-    if (f.due_date) body.due_date = f.due_date;
-    if (f.list_id) body.list_id = +f.list_id;
-    if (f.recurring) { body.recurring = f.recurring; body.miss_policy = f.miss_policy; }
-    if (view.type === 'tag') body.tags = [view.tag];
-    await api('/tasks', { method: 'POST', body });
-    onDone();
-  }
-  return (
-    <div className="sheet-back" onClick={onClose}>
-      <form className="sheet" onClick={e => e.stopPropagation()} onSubmit={submit}>
-        <input type="text" autoFocus placeholder="準備做什麼？" value={f.title} onChange={e => setF({ ...f, title: e.target.value })} />
-        <div className="opts">
-          <button type="button" className={'tag-pill' + (f.due_date === td ? ' on' : '')} onClick={() => setF({ ...f, due_date: f.due_date === td ? '' : td })}>今天</button>
-          <button type="button" className={'tag-pill' + (f.due_date === tm ? ' on' : '')} onClick={() => setF({ ...f, due_date: f.due_date === tm ? '' : tm })}>明天</button>
-          <input type="date" value={f.due_date} onChange={e => setF({ ...f, due_date: e.target.value })} style={{ padding: '2px 6px' }} />
-          <select value={f.priority} onChange={e => setF({ ...f, priority: +e.target.value })}>
-            {[0, 1, 2, 3].map(p => <option key={p} value={p}>⚑ {PRI[p][0]}</option>)}
-          </select>
-          <select value={f.list_id} onChange={e => setF({ ...f, list_id: e.target.value })}>
-            <option value="">願望清單</option>
-            {lists.map(l => <option key={l.id} value={l.id}>{l.name}</option>)}
-          </select>
-          {RECURRING_UI && (
-            <button type="button" className={'tag-pill' + (f.recurring ? ' on' : '')} onClick={() => setShowRepeat(s => !s)}>
-              🔁 {f.recurring ? repeatLabel(f.recurring, f.due_date) : '重複'}
-            </button>
-          )}
-        </div>
-        {RECURRING_UI && showRepeat && (
-          <div style={{ marginTop: 8 }}>
-            <RepeatPicker value={f.recurring} dueDate={f.due_date} missPolicy={f.miss_policy}
-              onChange={(r, mp) => setF({ ...f, recurring: r, miss_policy: mp || f.miss_policy })} />
-          </div>
-        )}
-        <button className="btn">新增任務</button>
-      </form>
-    </div>
-  );
-}
+// AddSheet／saForm 已移除：新增一律走 Shell 的 Global Add（§A）；列表內只保留 inline quick-add。
 
 export default function Tasks({ view, tasks, lists, filters, habits = [], reload, title, subtitle = '', listLabel = '', goVocab, goMemo, topSlot = null }) {
   const [selId, setSelId] = useState(null);
   const [quick, setQuick] = useState('');
-  const [showAdd, setShowAdd] = useState(false);
-  const [saForm, setSaForm] = useState(false);   // 從「新增任務」流程也能清楚選到「學校作業」
   // 排序方式記起來：下次開啟還是同一個（default | time | priority | title）
   const [sortBy, setSortBy] = useState(() => {
     try { return localStorage.getItem('taskSort') || 'default'; } catch { return 'default'; }
@@ -577,11 +520,7 @@ export default function Tasks({ view, tasks, lists, filters, habits = [], reload
             <form className="quick-add" style={{ flex: 1 }} onSubmit={quickAdd}>
               <input placeholder="＋ 新增任務，按 Enter 儲存" value={quick} onChange={e => setQuick(e.target.value)} />
             </form>
-            <button type="button" className="btn sm ghost" onClick={() => setSaForm(true)}>＋ 學校作業</button>
           </div>
-        )}
-        {saForm && (
-          <SchoolAssignmentForm lists={lists} onClose={() => setSaForm(false)} onSaved={() => reload('tasks')} />
         )}
         <div className="main-body">
           {topSlot}
@@ -669,9 +608,7 @@ export default function Tasks({ view, tasks, lists, filters, habits = [], reload
 
           {view.type === 'today' && <VocabCard goVocab={goVocab} />}
         </div>
-        {view.type !== 'completed' && <button className="fab" onClick={() => setShowAdd(true)}>＋</button>}
       </div>
-      {showAdd && <AddSheet view={view} lists={lists} onDone={() => { setShowAdd(false); reload(); }} onClose={() => setShowAdd(false)} />}
       {sel && <Detail key={sel.id} task={sel} lists={lists} onSave={save} onDelete={del} onClose={closeDetail} />}
       {toast && (
         <div className="toast">

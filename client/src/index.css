@@ -301,7 +301,17 @@ select { -webkit-appearance: none; appearance: none; padding-right: 26px;
 .hcell { width: 14px; height: 14px; border-radius: 4px; background: var(--fill); }
 
 /* mobile */
-.menu-btn, .bottom-nav, .fab { display: none; }
+.menu-btn, .bottom-nav { display: none; }
+/* Global Add FAB（§A）：桌機也顯示（右下固定），手機版由下方 media query 抬到底部導航之上 */
+.fab { display: grid; place-items: center; position: fixed; right: 24px; bottom: 24px; z-index: 18;
+  width: 56px; height: 56px; border-radius: 50%; background: var(--primary); color: #fff; border: none;
+  cursor: pointer; box-shadow: 0 6px 20px rgba(0,134,204,.4); transition: transform .1s; }
+.fab:active { transform: scale(.92); }
+/* Global Add 第一層選單 */
+.ga-list { display: flex; flex-direction: column; gap: 2px; }
+.ga-item { display: flex; align-items: center; gap: 12px; width: 100%; padding: 14px 12px;
+  background: transparent; border: none; border-radius: 12px; font-size: 16px; color: var(--text); cursor: pointer; text-align: left; }
+.ga-item:hover, .ga-item:active { background: var(--fill); }
 @media (max-width: 768px) {
   body { font-size: 16px; }
   input, select, textarea { font-size: 16px; } /* 避免 iOS 聚焦時自動放大 */

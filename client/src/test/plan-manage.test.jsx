@@ -73,6 +73,11 @@ async function goPlans(ready = '買參考書') {
   if (ready) await screen.findByText(ready);
   await click(within(bottomNav()).getByText('計畫').closest('button'));
 }
+// §A：建立計畫改由 Global Add（右下 ＋ → 計畫）開兩條路 sheet
+async function openCreate() {
+  await click(screen.getByRole('button', { name: '新增' }));
+  await click(screen.getByRole('button', { name: '新增計畫' }));
+}
 // 打開某個正式計畫的明細，並打開右上「•••」的計畫選項
 async function openManage(planName) {
   await click(cardByName(planName));
@@ -86,7 +91,7 @@ const sent = (method, pathPart) =>
 describe('建立計畫', () => {
   it('「建立計畫」提供 AI 安排與空白計畫兩條路', async () => {
     await goPlans();
-    await click(screen.getByRole('button', { name: '建立計畫' }));
+    await openCreate();
     expect(screen.getByRole('button', { name: /AI 幫我安排/ })).toBeInTheDocument();
     expect(screen.getByText('建立空白計畫')).toBeInTheDocument();
     noCrash();
@@ -94,7 +99,7 @@ describe('建立計畫', () => {
 
   it('AI 安排接到既有排程精靈', async () => {
     await goPlans();
-    await click(screen.getByRole('button', { name: '建立計畫' }));
+    await openCreate();
     await click(screen.getByRole('button', { name: /AI 幫我安排/ }));
     expect(screen.getByText('排程精靈')).toBeInTheDocument();
     noCrash();
@@ -110,7 +115,7 @@ describe('建立計畫', () => {
       '/tasks': [...fx.tasks, ...fx.planTasks],
     });
     await goPlans();
-    await click(screen.getByRole('button', { name: '建立計畫' }));
+    await openCreate();
     await click(screen.getByText('建立空白計畫').closest('.ui-row'));
     await type(screen.getByPlaceholderText(/第二次段考準備/), '暑假數學講義');
     await click(screen.getByRole('button', { name: '建立' }));

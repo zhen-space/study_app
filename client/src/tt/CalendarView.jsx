@@ -55,7 +55,7 @@ function ColorPicker({ value, onPick }) {
   );
 }
 
-export default function CalendarView({ tasks, reload, lists = [] }) {
+export default function CalendarView({ tasks, reload, lists = [], addIntent = null, onAddIntentHandled }) {
   // 學校作業的「繳交期限」＝學校什麼時候要，不是「什麼時候做」。這裡只做投影顯示，
   // 絕不為它建 ScheduledBlock 或 fixed_event mirror；點一下開作業本身編輯。
   const [saEdit, setSaEdit] = useState(null);
@@ -438,6 +438,14 @@ export default function CalendarView({ tasks, reload, lists = [] }) {
     const s = startMin == null ? 8 * 60 : startMin;
     setAddForm({ title: '', date, start_time: hm(s), end_time: hm(Math.min(s + durH * 60, 24 * 60 - 5)), location: '', color: '', recurring: '', allDay: false });
   }
+  // Global Add（§A）導過來時，直接開對應表單：行程 → 新增行程；重要日子 → 重要日子表單。
+  useEffect(() => {
+    if (!addIntent) return;
+    if (addIntent === 'event') openAdd(anchor, null);
+    else if (addIntent === 'anniversary') setAnnivForm({ title: '', date: anchor, kind: 'due', recurring: '', color: '' });
+    onAddIntentHandled?.();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [addIntent]);
   async function submitAdd() {
     if (!addForm.title.trim()) { alert('請輸入行程名稱'); return; }
     const { allDay, ...f } = addForm;
@@ -759,13 +767,12 @@ export default function CalendarView({ tasks, reload, lists = [] }) {
         </>}
         <button className="btn sm ghost" onClick={() => setAnchor(today())}>今天</button>
         <div style={{ position: 'relative' }}>
-          <button className="icon-btn" title="新增" onClick={() => setAddMenu(m => !m)}><Icon name="plus" size={18} /></button>
+          {/* §A2：移除右上＋（新增行程／重要日子改走 Global Add）。這裡只留「匯入」照片入口。 */}
+          <button className="btn sm ghost" title="匯入課表／行事曆照片" onClick={() => setAddMenu(m => !m)}>匯入</button>
           {addMenu && (
             <>
               <div style={{ position: 'fixed', inset: 0, zIndex: 20 }} onClick={() => setAddMenu(false)} />
               <div className="add-menu">
-                <div onClick={() => openAdd()}><Icon name="pencil" size={15} /> 手動新增行程</div>
-                <div onClick={() => { setAddMenu(false); setAnnivForm({ title: '', date: anchor, kind: 'due', recurring: '', color: '' }); }}>📌 重要日子（期限／考試／紀念日）</div>
                 <label style={{ cursor: 'pointer' }}>
                   <Icon name="calendar" size={15} /> {aiBusy ? 'AI 解析中…' : '匯入課表照片（每週固定）'}
                   <input type="file" accept="image/*,.pdf" style={{ display: 'none' }} onChange={e => { setAddMenu(false); importTimetable(e); }} disabled={aiBusy} />

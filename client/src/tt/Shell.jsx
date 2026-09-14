@@ -22,6 +22,7 @@ import MaterialLibraryView from './MaterialLibraryView';
 import SettingsView from './SettingsView';
 import SchoolAssignmentView from './SchoolAssignmentView';
 import Companion from './Companion';
+import GlobalAdd from './GlobalAdd';
 import Icon, { LIST_ICONS, LIST_COLORS } from './Icons';
 import { dueNotifications, notify } from './notify';
 
@@ -98,7 +99,10 @@ export default function Shell({ onLogout }) {
 
   // 自訂標籤（存在帳號設定）＋任務上實際出現的標籤；防髒資料：tags 一定要是陣列
   const [customTags, setCustomTags] = useState([]);
-  useEffect(() => { api('/settings').then(s => setCustomTags(s.custom_tags || [])).catch(() => {}); }, []);
+  const [saReminderTime, setSaReminderTime] = useState('18:00');
+  const [calAddIntent, setCalAddIntent] = useState(null);   // Global Add → 行事曆（'event'|'anniversary'）
+  const [planCreateIntent, setPlanCreateIntent] = useState(false); // Global Add → 計畫（開建立計畫兩條路 sheet）
+  useEffect(() => { api('/settings').then(s => { setCustomTags(s.custom_tags || []); if (s.school_assignment_default_reminder_time) setSaReminderTime(s.school_assignment_default_reminder_time); }).catch(() => {}); }, []);
   const tags = useMemo(() => [...new Set([
     ...customTags,
     ...tasks.flatMap(t => Array.isArray(t.tags) ? t.tags : []),
@@ -277,14 +281,16 @@ export default function Shell({ onLogout }) {
             goStudy={() => setView({ type: 'study' })} goVocab={() => setView({ type: 'vocab' })} goMemo={() => setView({ type: 'memo' })}
             goWizardEdit={(planId, section) => setView({ type: 'wizard', mode: 'edit', planId, section, from: `plan:${planId}` })} />
         : view.type === 'plans' ? <PlansView tasks={tasks} lists={lists} apiPlans={apiPlans} reload={reload}
-            openPlan={k => setView({ type: 'plan', key: k })} goWizard={() => setView({ type: 'wizard' })} />
+            openPlan={k => setView({ type: 'plan', key: k })} goWizard={() => setView({ type: 'wizard' })}
+            createIntent={planCreateIntent} onCreateIntentHandled={() => setPlanCreateIntent(false)} />
         : view.type === 'plan' ? <PlanDetailView planKey={view.key} tasks={tasks} lists={lists} apiPlans={apiPlans} reload={reload}
             onBack={() => setView({ type: 'plans' })} goWizard={() => setView({ type: 'wizard' })}
             // 「調整計畫」＝Edit Mode：帶著這個計畫進精靈，不會建立新計畫
             adjustPlan={(planId, section) => setView({ type: 'wizard', mode: 'edit', planId, section, from: view.key })}
             goLocks={() => setView({ type: 'locks' })} />
         : view.type === 'study' || view.type === 'pomo' ? <StudyView tasks={tasks.filter(t => !t.deleted)} goPlans={() => setView({ type: 'plans' })} />
-        : view.type === 'calendar' ? <CalendarView tasks={tasks.filter(t => !t.deleted)} reload={reload} lists={lists} />
+        : view.type === 'calendar' ? <CalendarView tasks={tasks.filter(t => !t.deleted)} reload={reload} lists={lists}
+            addIntent={calAddIntent} onAddIntentHandled={() => setCalAddIntent(null)} />
         : view.type === 'schedule-history' ? <ScheduleHistoryView onRestored={() => reload('tasks')} />
         : view.type === 'locks' ? <LocksView tasks={tasks} />
         : view.type === 'routines' ? <RoutinesView />
@@ -310,6 +316,14 @@ export default function Shell({ onLogout }) {
             goVocab={() => setView({ type: 'vocab' })} goMemo={() => setView({ type: 'memo' })} />}
 
       {view.type !== 'pet' && petData && <Companion pet={petData.pet} tasks={tasks} />}
+
+      {/* Global Add（§A）：Today / 計畫 / 任務 / 行事曆 共用同一顆右下 ＋。
+          Study / Wizard / Plan 明細 / 設定等操作或表單狀態不顯示。 */}
+      {(['today', 'plans', 'calendar'].includes(view.type) || TASK_VIEWS.includes(view.type)) && (
+        <GlobalAdd lists={lists} reload={reload} defaultReminderTime={saReminderTime}
+          onPlan={() => { setPlanCreateIntent(true); setViewRaw({ type: 'plans' }); }}
+          onCalendarAdd={kind => { setCalAddIntent(kind); setViewRaw({ type: 'calendar' }); }} />
+      )}
 
       {/* 手機底部導航：今天｜計畫｜〔讀書〕｜任務｜行事曆。
           「讀書」是中央主要動作，不是一般分頁——凸起的圓形按鈕、永遠是強調色。 */}

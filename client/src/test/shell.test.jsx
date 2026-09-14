@@ -172,7 +172,8 @@ describe('PlansView / PlanDetailView', () => {
     const titles = [...main().querySelectorAll('.plan-card b')].map(b => b.textContent);
     expect(titles).toContain('物理');
     expect(titles).toContain('地科');
-    expect(screen.getByRole('button', { name: '建立計畫' })).toBeInTheDocument();
+    // §A2：Plans 右上＋已移除，建立計畫改由 Global Add（右下 ＋）
+    expect(screen.getByRole('button', { name: '新增' })).toBeInTheDocument();
     noCrash();
   });
 
