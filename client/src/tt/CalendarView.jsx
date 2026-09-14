@@ -69,7 +69,8 @@ export default function CalendarView({ tasks, reload, lists = [], addIntent = nu
   const scheduledTaskIds = new Set(schedule.blocks.map(b => Number(b.task_id)));
   // 檢視方式記起來（跟任務排序一樣）：選了 3日／1日，下次開還是同一個
   const [view, setViewRaw] = useState(() => {
-    try { return localStorage.getItem('calView') || 'week'; } catch { return 'week'; }
+    // §H：預設「日」視圖（單日聚焦執行），週視圖為次要選項；使用者選過的仍記在 localStorage。
+    try { return localStorage.getItem('calView') || 'day'; } catch { return 'day'; }
   }); // list | year | month | week | 3day | day
   const setView = v => { setViewRaw(v); try { localStorage.setItem('calView', v); } catch {} };
   const [anchor, setAnchor] = useState(today());
@@ -88,6 +89,20 @@ export default function CalendarView({ tasks, reload, lists = [], addIntent = nu
     try { localStorage.setItem('evCache', JSON.stringify(list)); } catch {}
   }).catch(() => {});
   useEffect(() => { loadEvents(); api('/schedule/locks').then(setLocks).catch(() => {}); setAnchor(today()); }, []); // 每次打開都回到今天那一週
+
+  // §H：時間軸視圖自動捲到「現在」——打開就看到此刻附近的安排，不用從早上 6 點手動往下滑。
+  // 只在含今天的時段視圖生效；non-today 或清單/月/年視圖找不到 now-line 就不動。
+  const rootRef = useRef(null);
+  useEffect(() => {
+    if (!['day', '3day', 'week'].includes(view)) return;
+    const id = requestAnimationFrame(() => {
+      const el = rootRef.current?.querySelector('.cal-now-line');
+      if (el?.scrollIntoView) el.scrollIntoView({ block: 'center' });
+    });
+    return () => cancelAnimationFrame(id);
+    // anchor 變（換天/週）也重新定位；nowMin 每分鐘變不需要一直捲，故不列入相依。
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [view, anchor]);
 
   // 直接在日曆匯入課表/行程（AI 解析 → 編輯 → 加入）
   const [aiBusy, setAiBusy] = useState(false);
@@ -574,7 +589,7 @@ export default function CalendarView({ tasks, reload, lists = [], addIntent = nu
           ))}
           {days.includes(today()) && nowMin >= H0 * 60 && nowMin <= 24 * 60 && (
             <>
-              <div style={{ position: 'absolute', top: yOf(nowMin), left: 0, right: 0, height: 2, background: NOW_LINE, zIndex: 1 }} />
+              <div className="cal-now-line" style={{ position: 'absolute', top: yOf(nowMin), left: 0, right: 0, height: 2, background: NOW_LINE, zIndex: 1 }} />
               <div style={{ position: 'absolute', top: yOf(nowMin) - 7, right: 4, fontSize: 10, fontWeight: 700, color: NOW_LINE, background: 'var(--bg)', padding: '0 2px', zIndex: 2 }}>{hm(nowMin)}</div>
             </>
           )}
@@ -749,7 +764,7 @@ export default function CalendarView({ tasks, reload, lists = [], addIntent = nu
   };
 
   return (
-    <div className="main">
+    <div className="main" ref={rootRef}>
       <div className="main-head cal-head">
         <h2>日曆</h2>
         <select value={view} onChange={e => setView(e.target.value)} className="cal-view-sel">

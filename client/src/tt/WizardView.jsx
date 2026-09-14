@@ -499,7 +499,8 @@ export default function WizardView({
   return (
     <div className="main">
       <div className="main-head">
-        <h2>{isEdit ? `調整「${planTitle || '這個計畫'}」` : '🪄 排程精靈'}</h2>
+        {/* §L：對學生講「建立計畫／調整計畫」，不用內部代號「排程精靈」。 */}
+        <h2>{isEdit ? `調整「${planTitle || '這個計畫'}」` : '建立計畫'}</h2>
       </div>
       <div className="main-body">
         {isEdit && (

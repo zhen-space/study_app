@@ -97,11 +97,11 @@ describe('建立計畫', () => {
     noCrash();
   });
 
-  it('AI 安排接到既有排程精靈', async () => {
+  it('AI 安排接到既有排程流程（§L：標題為「建立計畫」）', async () => {
     await goPlans();
     await openCreate();
     await click(screen.getByRole('button', { name: /AI 幫我安排/ }));
-    expect(screen.getByText('排程精靈')).toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: '建立計畫' })).toBeInTheDocument();
     noCrash();
   });
 
