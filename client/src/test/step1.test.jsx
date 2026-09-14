@@ -274,6 +274,19 @@ describe('第一次要用某本教材時就地確認內容', () => {
     noCrash();
   });
 
+  it('§P5：把一節的內容一鍵套用到本章其他節', async () => {
+    await openCheck();
+    // 只在 1-1 正弦 勾「範例」
+    await click(screen.getByRole('checkbox', { name: '1-1 正弦：範例' }));
+    await flush();
+    expect(screen.getByRole('checkbox', { name: '主題一 和角：範例' }).getAttribute('aria-checked')).toBe('false');
+    // 套用到本章其他節 → 同章其他節也變成有「範例」
+    await click(screen.getByRole('button', { name: '套用到本章其他節' }));
+    await flush();
+    expect(screen.getByRole('checkbox', { name: '主題一 和角：範例' }).getAttribute('aria-checked')).toBe('true');
+    noCrash();
+  });
+
   it('來源在確認途中變動：用自然語言請他再看一次，而且不自動重送', async () => {
     let posts = 0;
     setApi({
