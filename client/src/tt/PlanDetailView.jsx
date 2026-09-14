@@ -3,7 +3,7 @@ import { api } from '../api';
 import Icon from './Icons';
 import { today } from './helpers';
 import { usePlans, bookOf, shortTitle, md, byLesson } from './plans';
-import { listBooks } from './material';
+import { listBooks, selectItems } from './material';
 import { usePlanScheduleHealth } from './planHealth';
 import { useActiveSchedule, blocksForTask } from './scheduleAdjust';
 import AdjustBlockSheet from './AdjustBlockSheet';
@@ -144,6 +144,23 @@ export default function PlanDetailView({ planKey, tasks, lists, apiPlans = [], r
   // 允許的狀態轉換、新的 ScheduleVersion 與 lock。
   const restart = () => run(async () => {
     await api(`/plans/${plan.planId}/restart`, { method: 'POST', body: {} }); close();
+  });
+
+  // §C：以此（已結束／完成）計畫建立一個新計畫，並複製「未完成」的教材內容。
+  // 不 reopen／不 mutate 舊計畫：讀舊計畫未完成任務的 material_content_item_id →
+  // 建新計畫 → 用既有 bulk selectItems 寫進新計畫的選取 → 進精靈（在新計畫上）設定時間並套用。
+  // 全程用既有 API 組合，非 backend clone 端點。
+  const createFromThisPlan = () => run(async () => {
+    const itemIds = [...new Set((tasks || [])
+      .filter(t => Number(t.plan_id) === Number(plan.planId) && !t.completed && !t.deleted && t.material_content_item_id != null)
+      .map(t => t.material_content_item_id))];
+    const np = await api('/plans', { method: 'POST', body: { name: `${plan.name}（新一輪）`, status: 'draft', source: 'manual' } });
+    if (itemIds.length) await selectItems(np.id, itemIds, true).catch(() => {});
+    close();
+    await reload();
+    // 進精靈設定時間並套用（有複製到選取就用 edit 模式讀回選取；否則走一般建立）
+    if (itemIds.length && adjustPlan) adjustPlan(np.id, '');
+    else goWizard?.();
   });
 
   // 暫停／刪除：retain 沒選之前不會送出，後端也會再擋一次（缺 boolean 一律 400）。
@@ -471,9 +488,9 @@ export default function PlanDetailView({ planKey, tasks, lists, apiPlans = [], r
                 （例如下一次段考）。這裡走既有建立計畫流程，用新的內容重新安排；
                 不是複製任務（真正 clone 需 backend plan-clone 端點，未做假造）。 */}
             {['completed', 'ended'].includes(plan.status) && goWizard && (
-              <ListRow title="以此計畫再建一個新計畫" subtitle="用新的內容重新建立，不動這個已結束的計畫"
+              <ListRow title="以此計畫再建一個新計畫" subtitle="複製未完成的內容到新計畫，不動這個已結束的計畫"
                 trailing={<Icon name="chevron" size={16} />} role="button" tabIndex={0} style={{ cursor: 'pointer' }}
-                onClick={() => { close(); goWizard(); }} />
+                onClick={createFromThisPlan} />
             )}
             {/* 只有進行中的計畫能標記完成——後端的轉換表就只允許 active → completed。
                 以前 draft／paused／ended 也看得到這個入口，按下去一律失敗。 */}
