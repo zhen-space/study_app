@@ -466,6 +466,14 @@ export default function PlanDetailView({ planKey, tasks, lists, apiPlans = [], r
               <ListRow title="重新開始" subtitle="回到進行中，保留全部任務"
                 role="button" tabIndex={0} style={{ cursor: 'pointer' }} onClick={restart} />
             )}
+            {/* §C：結束／完成的計畫，除了「重新開始」原計畫，也能直接開一個新計畫
+                （例如下一次段考）。這裡走既有建立計畫流程，用新的內容重新安排；
+                不是複製任務（真正 clone 需 backend plan-clone 端點，未做假造）。 */}
+            {['completed', 'ended'].includes(plan.status) && goWizard && (
+              <ListRow title="以此計畫再建一個新計畫" subtitle="用新的內容重新建立，不動這個已結束的計畫"
+                trailing={<Icon name="chevron" size={16} />} role="button" tabIndex={0} style={{ cursor: 'pointer' }}
+                onClick={() => { close(); goWizard(); }} />
+            )}
             {/* 只有進行中的計畫能標記完成——後端的轉換表就只允許 active → completed。
                 以前 draft／paused／ended 也看得到這個入口，按下去一律失敗。 */}
             {plan.status === 'active' && (
