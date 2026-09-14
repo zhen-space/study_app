@@ -760,11 +760,13 @@ export default function CalendarView({ tasks, reload, lists = [], addIntent = nu
           <option value="3day">3日</option>
           <option value="day">日</option>
         </select>
-        {view !== 'list' && view !== 'year' && <>
+        {view !== 'list' && view !== 'year' && <span className="cal-nav">
           <button className="icon-btn" onClick={() => view === 'month' ? navMonth(-1) : shift(-1)}>◀</button>
           <b style={{ fontSize: 14, whiteSpace: 'nowrap' }}>{view === 'month' ? `${+anchor.slice(0, 4)}年${+anchor.slice(5, 7)}月` : view === 'week' ? `${+monday.slice(5, 7)}/${+monday.slice(8)} 起` : `${+anchor.slice(5, 7)}/${+anchor.slice(8)}`}</b>
           <button className="icon-btn" onClick={() => view === 'month' ? navMonth(1) : shift(1)}>▶</button>
-        </>}
+        </span>}
+        {/* 動作群組（今天／匯入）綁在一起：窄螢幕整組換到第二行、靠右，避免「匯入」被切掉。 */}
+        <div className="cal-actions">
         <button className="btn sm ghost" onClick={() => setAnchor(today())}>今天</button>
         <div style={{ position: 'relative' }}>
           {/* §A2：移除右上＋（新增行程／重要日子改走 Global Add）。這裡只留「匯入」照片入口。 */}
@@ -784,6 +786,7 @@ export default function CalendarView({ tasks, reload, lists = [], addIntent = nu
               </div>
             </>
           )}
+        </div>
         </div>
       </div>
       <div className="main-body">

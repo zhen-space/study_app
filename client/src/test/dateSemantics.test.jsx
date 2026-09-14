@@ -18,6 +18,14 @@ describe('中文日期格式', () => {
     expect(relativeDay('2026-09-13', TODAY)).toBe('昨天');
     expect(relativeDay('2026-09-20', TODAY)).toBe('9/20');
   });
+  it('月底／年底邊界：明天／昨天跨月跨年正確', () => {
+    expect(relativeDay('2026-09-01', '2026-08-31')).toBe('明天');   // 跨月
+    expect(relativeDay('2026-08-31', '2026-09-01')).toBe('昨天');
+    expect(relativeDay('2027-01-01', '2026-12-31')).toBe('明天');   // 跨年
+    expect(relativeDay('2026-12-31', '2027-01-01')).toBe('昨天');
+    expect(zhDateShort('2026-12-31')).toBe('12/31');
+    expect(zhDate('2026-08-31')).toBe('8 月 31 日');
+  });
 });
 
 describe('Deadline 語意（截止／逾期）', () => {

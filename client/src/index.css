@@ -220,10 +220,12 @@ select { -webkit-appearance: none; appearance: none; padding-right: 26px;
 .cal-task { background: var(--primary-soft); color: var(--primary); border-radius: 6px; padding: 2px 5px; margin-top: 2px; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; cursor: pointer; font-weight: 500; }
 .cal-task.done { opacity: .5; text-decoration: line-through; }
 /* 日曆頂列：緊湊、不換行、視圖選單縮小 */
-.cal-head { flex-wrap: nowrap; gap: 6px; justify-content: space-between; } /* 同一行、平均分佈到最右邊 */
+.cal-head { flex-wrap: wrap; gap: 6px; row-gap: 8px; } /* 放得下就一行；窄螢幕動作群組換到第二行、靠右，避免「匯入」被切掉 */
 .cal-head h2 { font-size: 22px; flex-shrink: 0; }
 .cal-head .btn.sm { padding: 5px 9px; white-space: nowrap; flex-shrink: 0; }
 .cal-head .icon-btn { flex-shrink: 0; }
+.cal-head .cal-nav { display: flex; align-items: center; gap: 6px; flex-shrink: 0; }
+.cal-head .cal-actions { display: flex; align-items: center; gap: 6px; flex-shrink: 0; margin-left: auto; } /* 推到最右；換行時整組一起下去仍靠右 */
 .cal-view-sel { padding: 6px 26px 6px 10px; font-size: 14px; width: auto; }
 .add-menu { position: absolute; right: 0; top: 40px; z-index: 30; background: var(--card); border-radius: 12px;
   box-shadow: var(--shadow); padding: 6px; min-width: 168px; }

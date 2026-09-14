@@ -65,9 +65,32 @@ describe('Global Add', () => {
     expect(await screen.findByRole('heading', { name: '新增學校作業' })).toBeInTheDocument();
   });
 
-  it('Study（讀書）等操作頁不顯示 Global Add', async () => {
+  it('只在 Today／計畫／任務／行事曆顯示；Study／Wizard／Plan 明細／設定不顯示', async () => {
     await mountShell();
-    await click(within(bottomNav()).getByLabelText('開始讀書'));
+    const side = document.querySelector('.sidebar');
+    // 四個瀏覽頁：有 ＋
+    expect(fab()).toBeInTheDocument();                                   // Today
+    await click(within(bottomNav()).getByText('計畫').closest('button'));
+    expect(screen.getByRole('button', { name: '新增' })).toBeInTheDocument();
+    await click(within(bottomNav()).getByText('任務').closest('button'));
+    expect(screen.getByRole('button', { name: '新增' })).toBeInTheDocument();
+    await click(within(bottomNav()).getByText('行事曆').closest('button'));
+    expect(screen.getByRole('button', { name: '新增' })).toBeInTheDocument();
+    // 操作／表單頁：沒有 ＋
+    await click(within(bottomNav()).getByLabelText('開始讀書'));           // Study
     expect(screen.queryByRole('button', { name: '新增' })).toBeNull();
+    await click(within(side).getByText('排程精靈'));                        // Wizard
+    expect(screen.queryByRole('button', { name: '新增' })).toBeNull();
+    await click(within(side).getByText('設定'));                          // Settings
+    expect(screen.queryByRole('button', { name: '新增' })).toBeNull();
+  });
+
+  it('Global Add 不含 開始讀書／匯入課表／Google Calendar', async () => {
+    await mountShell();
+    await click(fab());
+    const dlg = screen.getByRole('dialog');
+    expect(within(dlg).queryByText(/開始讀書/)).toBeNull();
+    expect(within(dlg).queryByText(/匯入課表/)).toBeNull();
+    expect(within(dlg).queryByText(/Google/)).toBeNull();
   });
 });
