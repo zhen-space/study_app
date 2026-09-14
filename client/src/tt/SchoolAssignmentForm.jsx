@@ -71,7 +71,10 @@ export default function SchoolAssignmentForm({ lists = [], task = null, defaultR
 
   return (
     <BottomSheet onClose={onClose} label={editing ? '編輯學校作業' : '新增學校作業'}>
-      <form onSubmit={submit} className="sa-form">
+      {/* §G2：鍵盤導覽與送出分離——在文字/日期/時間/數字欄位按 Enter 只是換行/移動，
+          不會意外送出整張表單；只有明確按「新增作業／儲存」才送出（textarea/select 不受影響）。 */}
+      <form onSubmit={submit} className="sa-form"
+        onKeyDown={e => { if (e.key === 'Enter' && e.target.tagName === 'INPUT') e.preventDefault(); }}>
         <h3 style={{ margin: '0 0 var(--sp-3)' }}>{editing ? '編輯學校作業' : '新增學校作業'}</h3>
         {err && <div className="ui-card ui-card--warning" role="alert" style={{ marginBottom: 'var(--sp-3)' }}>{err}</div>}
 

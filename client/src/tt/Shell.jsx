@@ -174,8 +174,15 @@ export default function Shell({ onLogout }) {
   }
   // 主導航（桌面側邊欄也照同一套 IA）
   const mainNav = [['today', 'today', '今天'], ['plans', 'wizard', '計畫'], ['study', 'pomo', '讀書'], ['tasks', 'all', '任務'], ['calendar', 'calendar', '行事曆']];
-  // 不屬於五大主導航的既有功能：一個都沒刪，收在「更多」
-  const pages = [['wizard', 'wizard', '排程精靈'], ['schedule-history', 'calendar', '排程紀錄'], ['locks', 'calendar', '排程鎖定'], ['routines', 'calendar', '我的固定時間'], ['material', 'book', '教材庫'], ['goals', 'wizard', '目標'], ['vocab', 'book', '單字本'], ['memo', 'note', '備忘錄'], ['matrix', 'matrix', '矩陣'], ['habits', 'habit', '習慣'], ['pet', 'paw', '寵物'], ['stats', 'stats', '統計'], ['settings', 'settings', '設定']];
+  // 不屬於五大主導航的既有功能：一個都沒刪。§K：由一長串「更多」改成
+  // 學習／工具／個人化／App 四類分組（先分類、仍全部保留；把 wizard/history/lock/
+  // fixed-time 從第一層移除需先有 §J 集中時間設定頁與 §N context 入口，屬耦合改動，暫緩）。
+  const pageGroups = [
+    ['學習', [['wizard', 'wizard', '排程精靈'], ['schedule-history', 'calendar', '排程紀錄'], ['locks', 'calendar', '排程鎖定'], ['routines', 'calendar', '我的固定時間'], ['material', 'book', '教材庫'], ['goals', 'wizard', '目標']]],
+    ['工具', [['vocab', 'book', '單字本'], ['memo', 'note', '備忘錄'], ['matrix', 'matrix', '矩陣'], ['habits', 'habit', '習慣']]],
+    ['個人化', [['pet', 'paw', '寵物'], ['stats', 'stats', '統計']]],
+    ['App', [['settings', 'settings', '設定']]],
+  ];
 
   const is = v => JSON.stringify(view) === JSON.stringify(v);
   const titleOf = () => {
@@ -266,10 +273,14 @@ export default function Shell({ onLogout }) {
             </span>
           ))}
         </div>
-        <div className="side-sec">更多</div>
-        {pages.map(([type, icon, label]) => (
-          <div key={type} className={'side-item' + (view.type === type ? ' active' : '')} onClick={() => setView({ type })}>
-            <Icon name={icon} size={18} style={{ opacity: .8 }} />{label}
+        {pageGroups.map(([sec, items]) => (
+          <div key={sec}>
+            <div className="side-sec">{sec}</div>
+            {items.map(([type, icon, label]) => (
+              <div key={type} className={'side-item' + (view.type === type ? ' active' : '')} onClick={() => setView({ type })}>
+                <Icon name={icon} size={18} style={{ opacity: .8 }} />{label}
+              </div>
+            ))}
           </div>
         ))}
         <div style={{ flex: 1 }} />
