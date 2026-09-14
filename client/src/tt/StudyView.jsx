@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 import { api } from '../api';
 import { today, onActivePlan } from './helpers';
-import { zhDateShort } from './dateSemantics';
+import { zhDateShort, dailyProgressLabel, deadlineLabel } from './dateSemantics';
 import { Button, PageHeader, SurfaceCard, EmptyState, BottomSheet } from './ui';
 import PomodoroPanel from './PomodoroPanel';
 
@@ -29,14 +29,17 @@ export function pickStudyTasks(tasks, td = today(), limit = MAX_ROWS) {
     .slice(0, limit);
 }
 
-const dueLabel = (t, td) => {
-  if (!t.due_date) return '尚未安排';
-  const hm = t.due_time ? ' ' + t.due_time.slice(0, 5) : '';
-  // §M：日期格式統一走 zhDateShort（9/14），不再裸顯 09-14。
-  if (t.due_date < td) return `逾期 ${zhDateShort(t.due_date)}${hm}`;
-  if (t.due_date === td) return `今天${hm}`;
-  return zhDateShort(t.due_date) + hm;
+// §M：due_date 的語意依來源不同——
+//   計畫任務（plan_id）＝AI 排的「每日進度」：過了原定日叫「未完成進度」，絕不叫「逾期」。
+//   非計畫任務＝使用者自訂的截止：過了才叫「逾期」。
+// tone 供上色：'missed'（未完成進度，非緊急）、'overdue'（逾期，danger）、其餘中性。
+const dueInfo = (t, td) => {
+  if (!t.due_date) return { text: '尚未安排', tone: 'normal' };
+  if (t.plan_id != null) return dailyProgressLabel(t.due_date, td);
+  const d = deadlineLabel(t.due_date, t.due_time, td);
+  return { text: d.text, tone: d.tone };
 };
+const dueLabel = (t, td) => dueInfo(t, td).text;
 
 // 補登：真的讀了，只是當下沒開計時器。它是正式的讀書紀錄，分鐘數會進統計；
 // 但它不是「正在讀」，所以不會有計時器的中間狀態，也不會把教材標成完成。
@@ -138,7 +141,13 @@ export default function StudyView({ tasks, goPlans }) {
         // §D：不再一整排逾期 task ＋ 開始互相搶焦點；主要動作只有一個。
         : (() => {
           const [top, ...rest] = pick;
-          const overdueTone = t => t.due_date && t.due_date < td ? { color: 'var(--danger)' } : undefined;
+          // §M：逾期（deadline）才紅；未完成進度（plan daily progress）用 warning，不是 danger。
+          const overdueTone = t => {
+            const tone = dueInfo(t, td).tone;
+            if (tone === 'overdue') return { color: 'var(--danger)' };
+            if (tone === 'missed') return { color: 'var(--warning, #b7791f)' };
+            return undefined;
+          };
           return (
             <section className="ui-section">
               <div className="ui-section-title">開始一段讀書</div>

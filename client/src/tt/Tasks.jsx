@@ -187,7 +187,11 @@ function RepeatPicker({ value, dueDate, missPolicy, onChange }) {
 
 function TaskRow({ t, lists, sel, onSel, onToggle, onDragStart, onDropOn, onSwipeDelete }) {
   const list = lists.find(l => l.id === t.list_id);
-  const overdue = t.due_date && t.due_date < today() && !t.completed;
+  const pastDue = t.due_date && t.due_date < today() && !t.completed;
+  // §M：計畫任務的 due_date 是 AI 排的每日進度——過了原定日是「未完成進度」（warning），
+  // 不是「逾期」（danger）。逾期紅只留給非計畫任務的使用者截止。
+  const overdue = pastDue && t.plan_id == null;
+  const missedProgress = pastDue && t.plan_id != null;
   // 右滑刪除：滑超過 90px 放開就刪（可用底部的「復原」救回）
   const sw = useRef(null);
   const [dx, setDx] = useState(0);
@@ -234,7 +238,7 @@ function TaskRow({ t, lists, sel, onSel, onToggle, onDragStart, onDropOn, onSwip
           {(list || t.due_date) && (
             <div className="trow-line2">
               {list && <span className="trow-subject"><span className="trow-swatch" style={{ background: list.color }} />{list.name}</span>}
-              {t.due_date && <span className="trow-due" style={overdue ? { color: 'var(--red)' } : undefined}>{relativeDay(t.due_date, today())}{t.due_time ? ' ' + t.due_time : ''}</span>}
+              {t.due_date && <span className="trow-due" style={overdue ? { color: 'var(--red)' } : missedProgress ? { color: 'var(--warning, #b7791f)' } : undefined} title={missedProgress ? '未完成進度（原定日期已過）' : undefined}>{relativeDay(t.due_date, today())}{t.due_time ? ' ' + t.due_time : ''}</span>}
             </div>
           )}
         </div>

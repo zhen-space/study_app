@@ -329,7 +329,8 @@ export default function PlanDetailView({ planKey, tasks, lists, apiPlans = [], r
           <div className="row" style={{ marginTop: 'var(--sp-2)' }}>
             {plan.end && <span className="ui-meta">目標 {md(plan.end)}</span>}
             {plan.subjects.length > 1 && <span className="ui-meta">{plan.subjects.length} 個科目</span>}
-            {plan.overdue > 0 && <span className="ui-meta" style={{ color: 'var(--danger)' }}>逾期 {plan.overdue} 項</span>}
+            {/* §M：計畫任務是 AI 排的每日進度，過了原定日是「未完成進度」，不是「逾期」（deadline） */}
+            {plan.overdue > 0 && <span className="ui-meta" style={{ color: 'var(--warning, #b7791f)' }}>未完成進度 {plan.overdue} 項</span>}
           </div>
         </div>
 
