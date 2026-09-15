@@ -55,7 +55,7 @@ function ColorPicker({ value, onPick }) {
   );
 }
 
-export default function CalendarView({ tasks, reload, lists = [] }) {
+export default function CalendarView({ tasks, reload, lists = [], addIntent = null, onAddIntentHandled, onTimeSettings }) {
   // 學校作業的「繳交期限」＝學校什麼時候要，不是「什麼時候做」。這裡只做投影顯示，
   // 絕不為它建 ScheduledBlock 或 fixed_event mirror；點一下開作業本身編輯。
   const [saEdit, setSaEdit] = useState(null);
@@ -69,7 +69,8 @@ export default function CalendarView({ tasks, reload, lists = [] }) {
   const scheduledTaskIds = new Set(schedule.blocks.map(b => Number(b.task_id)));
   // 檢視方式記起來（跟任務排序一樣）：選了 3日／1日，下次開還是同一個
   const [view, setViewRaw] = useState(() => {
-    try { return localStorage.getItem('calView') || 'week'; } catch { return 'week'; }
+    // §H：預設「日」視圖（單日聚焦執行），週視圖為次要選項；使用者選過的仍記在 localStorage。
+    try { return localStorage.getItem('calView') || 'day'; } catch { return 'day'; }
   }); // list | year | month | week | 3day | day
   const setView = v => { setViewRaw(v); try { localStorage.setItem('calView', v); } catch {} };
   const [anchor, setAnchor] = useState(today());
@@ -88,6 +89,20 @@ export default function CalendarView({ tasks, reload, lists = [] }) {
     try { localStorage.setItem('evCache', JSON.stringify(list)); } catch {}
   }).catch(() => {});
   useEffect(() => { loadEvents(); api('/schedule/locks').then(setLocks).catch(() => {}); setAnchor(today()); }, []); // 每次打開都回到今天那一週
+
+  // §H：時間軸視圖自動捲到「現在」——打開就看到此刻附近的安排，不用從早上 6 點手動往下滑。
+  // 只在含今天的時段視圖生效；non-today 或清單/月/年視圖找不到 now-line 就不動。
+  const rootRef = useRef(null);
+  useEffect(() => {
+    if (!['day', '3day', 'week'].includes(view)) return;
+    const id = requestAnimationFrame(() => {
+      const el = rootRef.current?.querySelector('.cal-now-line');
+      if (el?.scrollIntoView) el.scrollIntoView({ block: 'center' });
+    });
+    return () => cancelAnimationFrame(id);
+    // anchor 變（換天/週）也重新定位；nowMin 每分鐘變不需要一直捲，故不列入相依。
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [view, anchor]);
 
   // 直接在日曆匯入課表/行程（AI 解析 → 編輯 → 加入）
   const [aiBusy, setAiBusy] = useState(false);
@@ -438,6 +453,14 @@ export default function CalendarView({ tasks, reload, lists = [] }) {
     const s = startMin == null ? 8 * 60 : startMin;
     setAddForm({ title: '', date, start_time: hm(s), end_time: hm(Math.min(s + durH * 60, 24 * 60 - 5)), location: '', color: '', recurring: '', allDay: false });
   }
+  // Global Add（§A）導過來時，直接開對應表單：行程 → 新增行程；重要日子 → 重要日子表單。
+  useEffect(() => {
+    if (!addIntent) return;
+    if (addIntent === 'event') openAdd(anchor, null);
+    else if (addIntent === 'anniversary') setAnnivForm({ title: '', date: anchor, kind: 'due', recurring: '', color: '' });
+    onAddIntentHandled?.();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [addIntent]);
   async function submitAdd() {
     if (!addForm.title.trim()) { alert('請輸入行程名稱'); return; }
     const { allDay, ...f } = addForm;
@@ -566,7 +589,7 @@ export default function CalendarView({ tasks, reload, lists = [] }) {
           ))}
           {days.includes(today()) && nowMin >= H0 * 60 && nowMin <= 24 * 60 && (
             <>
-              <div style={{ position: 'absolute', top: yOf(nowMin), left: 0, right: 0, height: 2, background: NOW_LINE, zIndex: 1 }} />
+              <div className="cal-now-line" style={{ position: 'absolute', top: yOf(nowMin), left: 0, right: 0, height: 2, background: NOW_LINE, zIndex: 1 }} />
               <div style={{ position: 'absolute', top: yOf(nowMin) - 7, right: 4, fontSize: 10, fontWeight: 700, color: NOW_LINE, background: 'var(--bg)', padding: '0 2px', zIndex: 2 }}>{hm(nowMin)}</div>
             </>
           )}
@@ -668,15 +691,21 @@ export default function CalendarView({ tasks, reload, lists = [] }) {
     const list = tasks.filter(t => undone(t) && t.due_date === today()).sort(byTime);
     const over = tasks.filter(t => undone(t) && t.due_date < today()).sort(byTime);
     if (!list.length && !over.length) return null;
-    const row = (t, late) => (
-      <div key={t.id} className="trow">
-        <input type="checkbox" checked={false} onChange={() => toggle(t)} />
-        <span className="title">{t.title}</span>
-        <span className="muted" style={late ? { color: 'var(--red)' } : {}}>
-          {late ? `逾期 ${+t.due_date.slice(5, 7)}/${+t.due_date.slice(8)}` : `${+t.due_date.slice(5, 7)}/${+t.due_date.slice(8)}${t.due_time ? ' ' + t.due_time.slice(0, 5) : ''}`}
-        </span>
-      </div>
-    );
+    const row = (t, late) => {
+      // §M：計畫任務的 due_date 是每日進度，過期是「未完成進度」（warning）不是「逾期」（danger）。
+      const missedProgress = late && t.plan_id != null;
+      const overdue = late && t.plan_id == null;
+      const dstr = `${+t.due_date.slice(5, 7)}/${+t.due_date.slice(8)}`;
+      return (
+        <div key={t.id} className="trow">
+          <input type="checkbox" checked={false} onChange={() => toggle(t)} />
+          <span className="title">{t.title}</span>
+          <span className="muted" style={overdue ? { color: 'var(--red)' } : missedProgress ? { color: 'var(--warning, #b7791f)' } : {}}>
+            {late ? `${missedProgress ? '未完成進度' : '逾期'} ${dstr}` : `${dstr}${t.due_time ? ' ' + t.due_time.slice(0, 5) : ''}`}
+          </span>
+        </div>
+      );
+    };
     return (
       <div className="tgroup" style={{ marginTop: 14 }}>
         <div className="glabel">未完成事項（{over.length + list.length}）</div>
@@ -741,7 +770,7 @@ export default function CalendarView({ tasks, reload, lists = [] }) {
   };
 
   return (
-    <div className="main">
+    <div className="main" ref={rootRef}>
       <div className="main-head cal-head">
         <h2>日曆</h2>
         <select value={view} onChange={e => setView(e.target.value)} className="cal-view-sel">
@@ -752,20 +781,21 @@ export default function CalendarView({ tasks, reload, lists = [] }) {
           <option value="3day">3日</option>
           <option value="day">日</option>
         </select>
-        {view !== 'list' && view !== 'year' && <>
+        {view !== 'list' && view !== 'year' && <span className="cal-nav">
           <button className="icon-btn" onClick={() => view === 'month' ? navMonth(-1) : shift(-1)}>◀</button>
           <b style={{ fontSize: 14, whiteSpace: 'nowrap' }}>{view === 'month' ? `${+anchor.slice(0, 4)}年${+anchor.slice(5, 7)}月` : view === 'week' ? `${+monday.slice(5, 7)}/${+monday.slice(8)} 起` : `${+anchor.slice(5, 7)}/${+anchor.slice(8)}`}</b>
           <button className="icon-btn" onClick={() => view === 'month' ? navMonth(1) : shift(1)}>▶</button>
-        </>}
+        </span>}
+        {/* 動作群組（今天／匯入／時間設定）綁在一起：窄螢幕整組換到第二行、靠右。 */}
+        <div className="cal-actions">
         <button className="btn sm ghost" onClick={() => setAnchor(today())}>今天</button>
         <div style={{ position: 'relative' }}>
-          <button className="icon-btn" title="新增" onClick={() => setAddMenu(m => !m)}><Icon name="plus" size={18} /></button>
+          {/* §A2：移除右上＋（新增行程／重要日子改走 Global Add）。這裡只留「匯入」照片入口。 */}
+          <button className="btn sm ghost" title="匯入課表／行事曆照片" onClick={() => setAddMenu(m => !m)}>匯入</button>
           {addMenu && (
             <>
               <div style={{ position: 'fixed', inset: 0, zIndex: 20 }} onClick={() => setAddMenu(false)} />
               <div className="add-menu">
-                <div onClick={() => openAdd()}><Icon name="pencil" size={15} /> 手動新增行程</div>
-                <div onClick={() => { setAddMenu(false); setAnnivForm({ title: '', date: anchor, kind: 'due', recurring: '', color: '' }); }}>📌 重要日子（期限／考試／紀念日）</div>
                 <label style={{ cursor: 'pointer' }}>
                   <Icon name="calendar" size={15} /> {aiBusy ? 'AI 解析中…' : '匯入課表照片（每週固定）'}
                   <input type="file" accept="image/*,.pdf" style={{ display: 'none' }} onChange={e => { setAddMenu(false); importTimetable(e); }} disabled={aiBusy} />
@@ -777,6 +807,9 @@ export default function CalendarView({ tasks, reload, lists = [] }) {
               </div>
             </>
           )}
+        </div>
+        {/* §J：行事曆右上直達「時間設定」（課表／固定行程／作息／可讀書時間／例外日集中一頁）。 */}
+        {onTimeSettings && <button className="btn sm ghost" onClick={onTimeSettings}>時間設定</button>}
         </div>
       </div>
       <div className="main-body">

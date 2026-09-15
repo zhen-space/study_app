@@ -69,14 +69,16 @@ describe('讀書頁：列出的是該做的，不是排在最後面的', () => {
     expect(got).not.toContain('下週的內容');
   });
 
-  it('已完成與已刪除的不出現', () => {
+  it('已完成／已取消／已刪除的不出現', () => {
     const got = StudyView.pickStudyTasks([
       ...many,
       { id: 50, title: '做完了', due_date: TD, completed: 1, deleted: 0 },
       { id: 51, title: '刪掉了', due_date: TD, completed: 0, deleted: 1 },
+      { id: 52, title: '取消了', due_date: TD, completed: 0, cancelled: 1, deleted: 0 },
     ], TD).map(t => t.title);
     expect(got).not.toContain('做完了');
     expect(got).not.toContain('刪掉了');
+    expect(got).not.toContain('取消了');
   });
 
   it('畫面上第一個「開始」按的就是最該做的那一項', async () => {
@@ -124,8 +126,8 @@ describe('任務頁：照科目分堆看得出各科逾期幾項', () => {
     await draw(
       <Tasks view={{ type: 'tasks' }} tasks={subjTasks} lists={fx.lists}
         filters={[]} habits={[]} reload={() => {}} title="所有任務" />);
-    // 切到「照科目分堆」
-    fireEvent.change(screen.getByRole('combobox'), { target: { value: 'subjectGroup' } });
+    // 切到「照科目分堆」（§K 起「任務」頁多了科目篩選 select，排序 select 用 aria-label 指定）
+    fireEvent.change(screen.getByRole('combobox', { name: '排序方式' }), { target: { value: 'subjectGroup' } });
 
     const phys = screen.getByText('物理', { selector: '.glabel' }).closest('.glabel');
     expect(within(phys).getByText('3 項')).toBeTruthy();

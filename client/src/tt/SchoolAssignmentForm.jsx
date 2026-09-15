@@ -36,10 +36,10 @@ export default function SchoolAssignmentForm({ lists = [], task = null, defaultR
   async function submit(e) {
     e.preventDefault();
     setErr('');
-    if (!f.title.trim()) return setErr('請輸入作業名稱');
+    if (!f.title.trim()) return setErr('請輸入標題');
     if (!f.list_id) return setErr('請選擇科目');
-    if (!f.deadline_date) return setErr(`請填寫${deadlineLabelText(f)}的日期`);
-    if (f.deadline_time && !isTime(f.deadline_time)) return setErr('繳交時間格式不正確');
+    if (!f.deadline_date) return setErr(`請填寫${deadlineLabelText(f)}日期`);
+    if (f.deadline_time && !isTime(f.deadline_time)) return setErr('截止時間格式不正確');
     if (needsCustomDate && !f.reminder_custom_date) return setErr('請選擇自訂提醒日期');
     const rem = reminderSelectionToFields(f.reminder_sel, {
       customDate: f.reminder_custom_date, timeOverride: f.reminder_time_override,
@@ -71,7 +71,10 @@ export default function SchoolAssignmentForm({ lists = [], task = null, defaultR
 
   return (
     <BottomSheet onClose={onClose} label={editing ? '編輯學校作業' : '新增學校作業'}>
-      <form onSubmit={submit} className="sa-form">
+      {/* §G2：鍵盤導覽與送出分離——在文字/日期/時間/數字欄位按 Enter 只是換行/移動，
+          不會意外送出整張表單；只有明確按「新增作業／儲存」才送出（textarea/select 不受影響）。 */}
+      <form onSubmit={submit} className="sa-form"
+        onKeyDown={e => { if (e.key === 'Enter' && e.target.tagName === 'INPUT') e.preventDefault(); }}>
         <h3 style={{ margin: '0 0 var(--sp-3)' }}>{editing ? '編輯學校作業' : '新增學校作業'}</h3>
         {err && <div className="ui-card ui-card--warning" role="alert" style={{ marginBottom: 'var(--sp-3)' }}>{err}</div>}
 
@@ -81,11 +84,11 @@ export default function SchoolAssignmentForm({ lists = [], task = null, defaultR
             <option value="">請選擇科目</option>
             {ownLists.map(l => <option key={l.id} value={l.id}>{l.name}</option>)}
           </select>
-          {ownLists.length === 0 && <span className="ui-meta">還沒有科目。請先在側邊「清單」新增一個科目。</span>}
+          {ownLists.length === 0 && <span className="ui-meta">還沒有科目。請先到「設定 → 科目」新增一個科目。</span>}
         </label>
 
         <label className="sa-field">
-          <span>名稱</span>
+          <span>標題</span>
           <input type="text" autoFocus value={f.title} placeholder="例如：第 3 章習題"
             onChange={e => up({ title: e.target.value })} />
         </label>
@@ -98,14 +101,14 @@ export default function SchoolAssignmentForm({ lists = [], task = null, defaultR
         </div>
 
         <label className="sa-field">
-          <span>{deadlineLabel}</span>
+          <span>{deadlineLabel}日期</span>
           <div className="row" style={{ gap: 'var(--sp-2)' }}>
             <input type="date" aria-label={`${deadlineLabel}日期`} value={f.deadline_date}
               onChange={e => up({ deadline_date: e.target.value })} />
-            <input type="time" aria-label={`${deadlineLabel}時間（可留空）`} value={f.deadline_time}
+            <input type="time" aria-label={`${deadlineLabel}時間（選填）`} value={f.deadline_time}
               onChange={e => up({ deadline_time: e.target.value })} />
           </div>
-          <span className="ui-meta">不填時間＝當天結束以前都可以。</span>
+          <span className="ui-meta">不填時間＝當天結束以前都可以（不會顯示假的 23:59）。</span>
         </label>
 
         <label className="sa-field">

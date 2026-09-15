@@ -88,9 +88,10 @@ export function groupSchoolAssignments(tasks, now = nowTW(), { upcomingDays = 7 
 
 /* ---------- 顯示 ---------- */
 
-// 考試講「考試時間」，其餘講「繳交期限」——語意都是「學校什麼時候要」，不是
-// 「我打算什麼時候做」。
-export const deadlineLabelText = task => (task?.school_assignment_type === 'exam' ? '考試時間' : '繳交期限');
+// Deadline 文案全 App 統一叫「截止」——這是學校要求交件／考試的那個時間點（不是
+// 「我打算什麼時候做」的每日進度，也不是 ScheduledBlock）。刻意不因 type=exam 改叫
+// 「考試時間」：全 App 一致的日期語意（截止／逾期）比逐型別客製更重要（Phase 1 M）。
+export const deadlineLabelText = () => '截止';
 
 const WDH = '日一二三四五六';
 // 繳交期限的顯示：一律顯示日期；有指定時間才顯示時間。deadline_time 為 null 時

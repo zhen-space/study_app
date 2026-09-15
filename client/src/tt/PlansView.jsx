@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { api } from '../api';
 import Icon from './Icons';
 import { usePlans, md } from './plans';
@@ -78,9 +78,16 @@ function SectionRow({ label, count, open, onToggle }) {
   );
 }
 
-export default function PlansView({ tasks, lists, apiPlans = [], openPlan, goWizard, reload }) {
+export default function PlansView({ tasks, lists, apiPlans = [], openPlan, goWizard, reload, createIntent = false, onCreateIntentHandled }) {
   const plans = usePlans(tasks, lists, apiPlans);
   const [creating, setCreating] = useState(false);
+  // Global Add（§A）「計畫」導過來時，直接開「建立計畫」兩條路 sheet（AI 安排 / 空白計畫）。
+  useEffect(() => {
+    if (!createIntent) return;
+    setCreating(true);
+    onCreateIntentHandled?.();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [createIntent]);
   const [blankName, setBlankName] = useState('');
   const [showBlank, setShowBlank] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -127,10 +134,10 @@ export default function PlansView({ tasks, lists, apiPlans = [], openPlan, goWiz
 
   return (
     <div className="main">
+      {/* §A2：移除右上＋，建立計畫改由 Global Add（＋ → 計畫）或空狀態 CTA */}
       <PageHeader
         title="計畫"
         subtitle={live.length ? `${live.length} 個進行中` : ''}
-        actions={<IconButton label="建立計畫" onClick={() => setCreating(true)}><Icon name="plus" size={20} /></IconButton>}
       />
       <div className="main-body">
         {plans.length === 0 && (

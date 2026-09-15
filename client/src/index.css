@@ -162,6 +162,8 @@ select { -webkit-appearance: none; appearance: none; padding-right: 26px;
 .side-item:hover { background: var(--fill); }
 .side-item.active { background: var(--primary-soft); color: var(--primary); font-weight: 600; }
 .side-item .count { margin-left: auto; color: var(--muted); font-size: 13px; }
+/* §K：主導航只在桌機側欄；手機抽屜不放第二套主導航（底部導航負責） */
+.side-primary { display: block; }
 .side-sec { margin-top: 16px; padding: 0 12px 4px; font-size: 12px; font-weight: 600; text-transform: uppercase; letter-spacing: .03em; color: var(--muted); display: flex; justify-content: space-between; align-items: center; }
 .dot { width: 10px; height: 10px; border-radius: 50%; flex-shrink: 0; }
 
@@ -185,7 +187,23 @@ select { -webkit-appearance: none; appearance: none; padding-right: 26px;
 .trow:active { background: var(--fill); }
 .trow.sel { background: var(--primary-soft); }
 .trow input[type=checkbox] { width: 22px; height: 22px; flex-shrink: 0; accent-color: var(--primary); }
-.trow .title { flex: 1; }
+/* §E 兩層列：標題在上、科目＋日期在下 */
+.trow-main { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 3px; }
+.trow-line1 { display: flex; align-items: center; gap: var(--sp-2); }
+.trow-line2 { display: flex; align-items: center; gap: var(--sp-3); font-size: 12px; color: var(--text-2); }
+.trow-subject { display: inline-flex; align-items: center; gap: 5px; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.trow-swatch { width: 7px; height: 7px; border-radius: 50%; flex-shrink: 0; }
+.trow .title { flex: 1; min-width: 0; }
+/* §E 第一層 filter chips */
+.task-filter { display: flex; gap: var(--sp-2); flex-wrap: wrap; padding: var(--sp-1) 0 var(--sp-2); }
+.filter-chip { cursor: pointer; user-select: none; -webkit-user-select: none; border: 1px solid var(--border); background: var(--surface-2); display: inline-flex; align-items: center; gap: 5px; }
+.filter-chip.on { background: var(--primary); color: #fff; border-color: var(--primary); }
+.filter-chip-n { font-size: 11px; opacity: .8; }
+.filter-chip.on .filter-chip-n { opacity: .95; }
+/* §K 任務視圖切換列（學校作業／已完成／垃圾桶等，取代側欄舊 Todo IA） */
+.task-viewtabs { display: flex; gap: 2px; flex-wrap: wrap; padding: var(--sp-1) 0; border-bottom: 1px solid var(--separator, var(--border)); margin-bottom: var(--sp-2); }
+.seg-tab { cursor: pointer; background: none; border: none; padding: 6px 10px; font-size: 14px; color: var(--text-2); border-radius: var(--radius-sm, 8px); }
+.seg-tab.on { color: var(--primary); font-weight: 650; background: var(--primary-soft); }
 .trow.done .title { color: var(--text-3); }
 .trow .title { transition: color var(--motion-fast) var(--ease); }
 .chip { font-size: 12px; padding: 3px 9px; border-radius: var(--radius-pill); background: var(--fill); color: var(--text-2); }
@@ -205,6 +223,9 @@ select { -webkit-appearance: none; appearance: none; padding-right: 26px;
 .detail input.title { font-size: 20px; font-weight: 700; background: none; padding: 4px 0; width: 100%; letter-spacing: -.01em; }
 .detail input.title:focus { box-shadow: none; }
 .detail textarea { min-height: 90px; resize: vertical; width: 100%; }
+/* §F 明細分區小標 */
+.detail-sec-t { font-size: 12px; font-weight: 700; letter-spacing: .02em; color: var(--text-3, var(--muted)); text-transform: none; margin-top: 4px; padding-top: 12px; border-top: 1px solid var(--separator, var(--border)); }
+.detail .detail-sec-t:first-of-type { border-top: none; padding-top: 0; }
 .drow { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 .drow label { font-size: 13px; color: var(--muted); width: 56px; flex-shrink: 0; }
 .subtask { display: flex; align-items: center; gap: 10px; padding: 4px 0; }
@@ -220,10 +241,12 @@ select { -webkit-appearance: none; appearance: none; padding-right: 26px;
 .cal-task { background: var(--primary-soft); color: var(--primary); border-radius: 6px; padding: 2px 5px; margin-top: 2px; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; cursor: pointer; font-weight: 500; }
 .cal-task.done { opacity: .5; text-decoration: line-through; }
 /* 日曆頂列：緊湊、不換行、視圖選單縮小 */
-.cal-head { flex-wrap: nowrap; gap: 6px; justify-content: space-between; } /* 同一行、平均分佈到最右邊 */
+.cal-head { flex-wrap: wrap; gap: 6px; row-gap: 8px; } /* 放得下就一行；窄螢幕動作群組換到第二行、靠右，避免「匯入」被切掉 */
 .cal-head h2 { font-size: 22px; flex-shrink: 0; }
 .cal-head .btn.sm { padding: 5px 9px; white-space: nowrap; flex-shrink: 0; }
 .cal-head .icon-btn { flex-shrink: 0; }
+.cal-head .cal-nav { display: flex; align-items: center; gap: 6px; flex-shrink: 0; }
+.cal-head .cal-actions { display: flex; align-items: center; gap: 6px; flex-shrink: 0; margin-left: auto; } /* 推到最右；換行時整組一起下去仍靠右 */
 .cal-view-sel { padding: 6px 26px 6px 10px; font-size: 14px; width: auto; }
 .add-menu { position: absolute; right: 0; top: 40px; z-index: 30; background: var(--card); border-radius: 12px;
   box-shadow: var(--shadow); padding: 6px; min-width: 168px; }
@@ -301,11 +324,22 @@ select { -webkit-appearance: none; appearance: none; padding-right: 26px;
 .hcell { width: 14px; height: 14px; border-radius: 4px; background: var(--fill); }
 
 /* mobile */
-.menu-btn, .bottom-nav, .fab { display: none; }
+.menu-btn, .bottom-nav { display: none; }
+/* Global Add FAB（§A）：桌機也顯示（右下固定），手機版由下方 media query 抬到底部導航之上 */
+.fab { display: grid; place-items: center; position: fixed; right: 24px; bottom: 24px; z-index: 18;
+  width: 56px; height: 56px; border-radius: 50%; background: var(--primary); color: #fff; border: none;
+  cursor: pointer; box-shadow: 0 6px 20px rgba(0,134,204,.4); transition: transform .1s; }
+.fab:active { transform: scale(.92); }
+/* Global Add 第一層選單 */
+.ga-list { display: flex; flex-direction: column; gap: 2px; }
+.ga-item { display: flex; align-items: center; gap: 12px; width: 100%; padding: 14px 12px;
+  background: transparent; border: none; border-radius: 12px; font-size: 16px; color: var(--text); cursor: pointer; text-align: left; }
+.ga-item:hover, .ga-item:active { background: var(--fill); }
 @media (max-width: 768px) {
   body { font-size: 16px; }
   input, select, textarea { font-size: 16px; } /* 避免 iOS 聚焦時自動放大 */
   .menu-btn { display: block; font-size: 24px; padding: 8px 12px; }
+  .side-primary { display: none; }
   .sidebar { position: fixed; left: 0; top: 0; bottom: 0; z-index: 20; transform: translateX(-100%); transition: transform .25s cubic-bezier(.32,.72,0,1); }
   .sidebar.open { transform: none; box-shadow: 0 0 40px rgba(0,0,0,.3); }
   .backdrop { position: fixed; inset: 0; background: rgba(0,0,0,.35); z-index: 15; backdrop-filter: blur(2px); }
@@ -938,6 +972,8 @@ select { -webkit-appearance: none; appearance: none; padding-right: 26px;
 .mc-chapter-body { display: flex; flex-direction: column; gap: var(--sp-3); padding: 0 0 var(--sp-3) 12px; }
 .mc-node { display: flex; flex-direction: column; gap: var(--sp-2); min-width: 0; }
 .mc-node-title { font-size: 15px; overflow-wrap: anywhere; }
+.mc-copy-siblings { margin-top: 6px; font-size: 12px; color: var(--primary); background: none; border: none; padding: 2px 0; cursor: pointer; }
+.mc-copy-siblings:hover { text-decoration: underline; }
 .mc-node--chapter .mc-node-title { color: var(--text-2); font-size: 13px; font-weight: 600; }
 .mc-ask { display: flex; align-items: center; flex-wrap: wrap; gap: var(--sp-2); }
 .mc-ask-label { font-size: 13px; color: var(--text-2); overflow-wrap: anywhere; }

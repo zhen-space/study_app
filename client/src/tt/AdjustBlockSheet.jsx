@@ -30,6 +30,24 @@ export default function AdjustBlockSheet({ block, task, lists = [], versionId, r
   const [checking, setChecking] = useState(false);
   const [saving, setSaving] = useState(false);
   const [err, setErr] = useState('');
+  // §N：鎖定改成「就地的 context action」——在調整這一項時直接鎖／解鎖，
+  // 不必跑去獨立的排程鎖定頁。鎖定與「儲存新安排（manual move）」分開，語意不混。
+  const [taskLock, setTaskLock] = useState(null);
+  const [lockBusy, setLockBusy] = useState(false);
+  useEffect(() => {
+    if (!task?.id) return;
+    api('/schedule/locks').then(ls => setTaskLock((ls || []).find(l => l.type === 'task' && Number(l.task_id) === Number(task.id)) || null)).catch(() => {});
+  }, [task?.id]);
+  async function toggleLock() {
+    setLockBusy(true); setErr('');
+    try {
+      if (taskLock) await api(`/schedule/locks/${taskLock.id}`, { method: 'DELETE' });
+      else await api('/schedule/locks', { method: 'POST', body: { type: 'task', task_id: task.id } });
+      const ls = await api('/schedule/locks');
+      setTaskLock((ls || []).find(l => l.type === 'task' && Number(l.task_id) === Number(task.id)) || null);
+    } catch (e) { setErr(e.message); }
+    setLockBusy(false);
+  }
 
   const subject = lists.find(l => String(l.id) === String(task?.list_id));
   const changed = date !== block.date
@@ -121,6 +139,17 @@ export default function AdjustBlockSheet({ block, task, lists = [], versionId, r
           <input type="time" value={end} aria-label="結束時間" onChange={e => setEnd(e.target.value)} />
         </div>
       )}
+
+      {/* §N：鎖定 context action。與上面的「換到哪一天／時段」是兩件事，分區呈現。 */}
+      <div className="sheet-sec" style={{ marginTop: 'var(--sp-4)' }}>鎖定</div>
+      <div className="row" style={{ alignItems: 'center', gap: 'var(--sp-2)' }}>
+        <div className="ui-meta" style={{ flex: 1 }}>
+          {taskLock ? '已鎖定：AI 重新排程時不會改動這一項。' : '鎖定後，AI 重新排程不會改動這一項的時間。'}
+        </div>
+        <Button size="sm" variant={taskLock ? 'secondary' : 'tertiary'} disabled={lockBusy} onClick={toggleLock}>
+          {lockBusy ? '處理中…' : taskLock ? '解除鎖定' : '鎖定這一項'}
+        </Button>
+      </div>
 
       {/* 放不下的原因照後端回的講。這裡刻意不提供「還是要放」——
           讓使用者繞過去，等於讓 App 產生一份它自己知道做不到的計畫。 */}

@@ -5,6 +5,7 @@ import { THEMES, getTheme, setTheme } from './theme';
 import { getNotifyPrefs, setNotifyPrefs, permissionState, requestPermission, NOTIFY_KINDS } from './notify';
 import GoogleCalendarCard from './GoogleCalendarCard';
 import AppleCalendarCard from './AppleCalendarCard';
+import Icon, { LIST_COLORS } from './Icons';
 
 // 「設定」。在這頁出現以前，作息時間只能在排程精靈第 2 步裡改——想調睡覺時間
 // 得先開一個計畫走到第二步。這裡只收跟「App 怎麼運作」有關的設定，
@@ -12,7 +13,51 @@ import AppleCalendarCard from './AppleCalendarCard';
 
 const HHMM = /^([01]\d|2[0-3]):[0-5]\d$/;
 
-export default function SettingsView() {
+// §K：科目（清單）管理從側欄移到設定。新增／改名／改色／刪除，沿用既有 /lists API。
+function SubjectManager({ lists = [], reload }) {
+  const own = lists.filter(l => !l.shared_in);
+  const [editing, setEditing] = useState(null);
+  const add = async () => {
+    const name = prompt('科目名稱：');
+    if (!name?.trim()) return;
+    await api('/lists', { method: 'POST', body: { name: name.trim(), color: LIST_COLORS[own.length % LIST_COLORS.length] } });
+    reload?.();
+  };
+  const patch = async (l, body) => { await api(`/lists/${l.id}`, { method: 'PATCH', body }); reload?.(); };
+  const del = async l => { if (!confirm(`刪除科目「${l.name}」？（任務會移到願望清單）`)) return; await api(`/lists/${l.id}`, { method: 'DELETE' }); reload?.(); };
+  return (
+    <section className="ui-section">
+      <div className="ui-section-title">科目</div>
+      <SurfaceCard>
+        {own.length === 0 && <div className="ui-meta" style={{ marginBottom: 'var(--sp-2)' }}>還沒有科目。新增後可用於任務分類與學校作業。</div>}
+        {own.map(l => (
+          <div key={l.id} className="ui-row" style={{ alignItems: 'center' }}>
+            <span className="dot" style={{ background: l.color, width: 10, height: 10, marginRight: 8 }} />
+            <div className="ui-row-main">
+              <input aria-label={`科目名稱 ${l.name}`} defaultValue={l.name}
+                onBlur={e => e.target.value.trim() && e.target.value.trim() !== l.name && patch(l, { name: e.target.value.trim() })}
+                onKeyDown={e => e.key === 'Enter' && e.target.blur()}
+                style={{ border: 'none', background: 'none', fontSize: 15, width: '100%' }} />
+              {editing === l.id && (
+                <div className="row" style={{ gap: 6, marginTop: 6, flexWrap: 'wrap' }}>
+                  {LIST_COLORS.map(c => (
+                    <span key={c} onClick={() => patch(l, { color: c })}
+                      style={{ width: 18, height: 18, borderRadius: '50%', background: c, cursor: 'pointer', outline: l.color === c ? '2px solid var(--text)' : 'none' }} />
+                  ))}
+                </div>
+              )}
+            </div>
+            <button className="ui-iconbtn" aria-label={`改色 ${l.name}`} onClick={() => setEditing(editing === l.id ? null : l.id)}><Icon name="palette" size={16} /></button>
+            <button className="ui-iconbtn" aria-label={`刪除 ${l.name}`} onClick={() => del(l)} style={{ color: 'var(--danger)' }}><Icon name="trash" size={16} /></button>
+          </div>
+        ))}
+        <Button size="sm" style={{ marginTop: 'var(--sp-2)' }} onClick={add}>＋ 新增科目</Button>
+      </SurfaceCard>
+    </section>
+  );
+}
+
+export default function SettingsView({ lists = [], reload }) {
   const [s, setS] = useState(null);
   const [err, setErr] = useState('');
   const [saved, setSaved] = useState('');
@@ -61,7 +106,7 @@ export default function SettingsView() {
 
   return (
     <div className="main">
-      <PageHeader title="設定" subtitle="外觀、作息、提醒" />
+      <PageHeader title="設定" subtitle="外觀、科目、提醒、作息" />
       <div className="main-body">
         {err && <SurfaceCard tone="warning" role="alert">{err}</SurfaceCard>}
 
@@ -77,6 +122,9 @@ export default function SettingsView() {
             </div>
           </SurfaceCard>
         </section>
+
+        {/* ---------- 科目（§K：從側欄移來） ---------- */}
+        <SubjectManager lists={lists} reload={reload} />
 
         {/* ---------- 提醒 ---------- */}
         <section className="ui-section">

@@ -13,6 +13,10 @@ export default function Companion({ pet, tasks }) {
 
   const size = m?.walk.size || 64;
   const moveDur = m?.walk.moveDur || 3;
+  // Shell-level 安全區（Phase 1 O）：角色的活動範圍 = 內容安全區 − 底部導航 − 右下 Global Add。
+  // 右側保留一欄給 Global Add FAB，角色不會走到 ＋ 底下；容器底部抬到底部導航之上，
+  // 角色與說話泡泡都不會被 Bottom Nav 切掉。
+  const FAB_RESERVE = 76;
 
   // 走動節奏依個性：皮皮竄來竄去、藍牙慢吞吞
   useEffect(() => {
@@ -21,7 +25,7 @@ export default function Companion({ pet, tasks }) {
     const [gMin, gMax] = m.walk.gap;
     function wander() {
       if (!alive) return;
-      const max = Math.min(window.innerWidth, 500) - size - 12;
+      const max = Math.max(40, Math.min(window.innerWidth, 500) - size - 12 - FAB_RESERVE);
       const nx = 8 + Math.random() * max;
       setDir(nx > xRef.current ? 1 : -1);
       xRef.current = nx;
@@ -65,26 +69,36 @@ export default function Companion({ pet, tasks }) {
 
   if (!m) return null;
 
+  // 說話泡泡：以角色為中心，但夾在視窗內，避免靠邊時被螢幕左／右緣切掉（配合 §O 安全區）。
+  // 泡泡放在「不會跟著位移動畫飄」的外層容器（容器左緣貼齊視窗左緣），直接用視窗座標定位；
+  // 若掛在角色內層，位移中的 translateX 動畫會讓泡泡短暫偏出畫面。角色左緣視窗座標即為 x。
+  const BUBBLE_W = 220;
+  const vw = typeof window !== 'undefined' ? window.innerWidth : 375;
+  // 桌機（≥769px）有常駐側欄（寬 230px）：角色只在內容區活動，不壓在側欄導覽上。
+  const originLeft = vw >= 769 ? 230 : 0;
+  // 泡泡 left 相對容器（容器左緣＝originLeft）；夾成視窗座標 [8, vw−8−寬度] 都在畫面內。
+  const bubbleLeft = Math.max(8 - originLeft, Math.min(x + size / 2 - BUBBLE_W / 2, vw - 8 - BUBBLE_W - originLeft));
+
   return (
     <div style={{
-      position: 'fixed', bottom: 'calc(64px + env(safe-area-inset-bottom))', left: 0, right: 0,
+      position: 'fixed', bottom: 'calc(92px + env(safe-area-inset-bottom))',
+      left: originLeft, right: `calc(${FAB_RESERVE}px + env(safe-area-inset-right))`,
       height: size, pointerEvents: 'none', zIndex: 14,
     }}>
+      {msg && (
+        <div style={{
+          position: 'absolute', bottom: size + 4, left: bubbleLeft,
+          background: 'var(--card)', border: '1px solid var(--border)', borderRadius: 12,
+          padding: '8px 12px', fontSize: 13, width: 'max-content', maxWidth: BUBBLE_W,
+          boxShadow: '0 4px 14px rgba(0,0,0,.15)', lineHeight: 1.5,
+        }}>{msg}</div>
+      )}
       <div onClick={poke} style={{
         position: 'absolute', left: 0, bottom: 0, width: size,
         transform: `translateX(${x}px)`,
         transition: `transform ${moveDur}s ease-in-out`,
         pointerEvents: 'auto', cursor: 'pointer',
       }}>
-        {msg && (
-          <div style={{
-            position: 'absolute', bottom: size + 4, left: '50%',
-            transform: `translateX(${x > 200 ? '-80%' : '-20%'})`,
-            background: 'var(--card)', border: '1px solid var(--border)', borderRadius: 12,
-            padding: '8px 12px', fontSize: 13, width: 'max-content', maxWidth: 220,
-            boxShadow: '0 4px 14px rgba(0,0,0,.15)', lineHeight: 1.5,
-          }}>{msg}</div>
-        )}
         <div className={jump ? 'pet-jumping' : ''} style={{ transform: `scaleX(${dir})` }}>
           <PetSprite type={pet.type} equipped={pet.equipped || []} size={size} walking />
         </div>

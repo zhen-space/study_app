@@ -83,6 +83,18 @@ export default function MaterialContentCheck({ book, onCancel, onDone }) {
     return { ...p, [key]: cur.includes(kind) ? cur.filter(k => k !== kind) : [...cur, kind] };
   });
 
+  // §P5：把某一節已勾的內容種類，複製到「本章其他節」——一章內結構通常一致，
+  // 逐節重點一次是苦工。已指定種類的 unsupported 節點也一起套；未指定的不動。
+  const applyToChapterSiblings = (ch, sourceKey) => {
+    const kinds = picks[sourceKey] || [];
+    setPicks(p => {
+      const next = { ...p };
+      for (const c of ch.children) if (childKey(c) !== sourceKey) next[childKey(c)] = [...kinds];
+      for (const u of ch.unsupported_nodes || []) { const uk = childKey(u); if (uk !== sourceKey && kindOf[uk]) next[uk] = [...kinds]; }
+      return next;
+    });
+  };
+
   // 一次套到整本。教材通常每一節的結構都一樣，一節一節點三十次不是確認，是苦工。
   // 套用之後仍然可以逐一調整——決定的人始終是學生。
   const applyAll = (scope, kind) => {
@@ -214,6 +226,12 @@ export default function MaterialContentCheck({ book, onCancel, onDone }) {
                       <div className="mc-node-title">{c.title}</div>
                       <KindChips kinds={CHILD_KINDS} value={picks[childKey(c)] || []}
                         idPrefix={c.title} onToggle={kind => toggle(childKey(c), kind)} />
+                      {ch.children.length > 1 && (picks[childKey(c)]?.length || 0) > 0 && (
+                        <button type="button" className="mc-copy-siblings"
+                          onClick={() => applyToChapterSiblings(ch, childKey(c))}>
+                          套用到本章其他節
+                        </button>
+                      )}
                     </div>
                   ))}
                   {(ch.unsupported_nodes || []).map(u => {

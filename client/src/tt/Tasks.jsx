@@ -1,9 +1,9 @@
 import { useEffect, useRef, useState } from 'react';
 import { api } from '../api';
 import { matchView, groupTasks, defaultSort, PRI, today, addDays } from './helpers';
+import { relativeDay, zhDateShort } from './dateSemantics';
 import VocabCard from './VocabCard';
 import MemoCard from './MemoCard';
-import SchoolAssignmentForm from './SchoolAssignmentForm';
 
 const WDC = '日一二三四五六';
 
@@ -187,7 +187,11 @@ function RepeatPicker({ value, dueDate, missPolicy, onChange }) {
 
 function TaskRow({ t, lists, sel, onSel, onToggle, onDragStart, onDropOn, onSwipeDelete }) {
   const list = lists.find(l => l.id === t.list_id);
-  const overdue = t.due_date && t.due_date < today() && !t.completed;
+  const pastDue = t.due_date && t.due_date < today() && !t.completed;
+  // §M：計畫任務的 due_date 是 AI 排的每日進度——過了原定日是「未完成進度」（warning），
+  // 不是「逾期」（danger）。逾期紅只留給非計畫任務的使用者截止。
+  const overdue = pastDue && t.plan_id == null;
+  const missedProgress = pastDue && t.plan_id != null;
   // 右滑刪除：滑超過 90px 放開就刪（可用底部的「復原」救回）
   const sw = useRef(null);
   const [dx, setDx] = useState(0);
@@ -220,23 +224,38 @@ function TaskRow({ t, lists, sel, onSel, onToggle, onDragStart, onDropOn, onSwip
         onTouchStart={start} onTouchMove={move} onTouchEnd={end} onTouchCancel={end}
         style={{ transform: dx ? `translateX(${dx}px)` : undefined, transition: dx ? 'none' : 'transform .18s', position: 'relative', background: 'var(--card)' }}>
         <input type="checkbox" checked={!!t.completed} onClick={e => e.stopPropagation()} onChange={() => onToggle(t)} />
-        {t.priority > 0 && <span className={PRI[t.priority][1]}>⚑</span>}
-        <span className="title">{t.title}</span>
-        {t.subtasks.length > 0 && <span className="chip">{t.subtasks.filter(s => s.done).length}/{t.subtasks.length}</span>}
-        {/* chip--tag：手機上要收起來。每一筆排進來的讀書任務都掛著同一個
-            「讀書計劃」標籤，那一格寬度換不到任何資訊，卻把長標題擠成好幾行。 */}
-        {t.tags.map(tag => <span key={tag} className="chip chip--tag">#{tag}</span>)}
-        {t.due_date && <span className="muted trow-due" style={overdue ? { color: 'var(--red)' } : {}}>{t.due_date.slice(5)}{t.due_time ? ' ' + t.due_time : ''}</span>}
-        {list && <span className="dot" style={{ background: list.color }} title={list.name} />}
+        {/* §E：兩層資訊。第一層＝標題（主角）；第二層＝科目名＋日期（次要）。
+            過去只有一顆神秘色點代表科目，要記得色碼才知道是哪一科；改成直接寫科目名。 */}
+        <div className="trow-main">
+          <div className="trow-line1">
+            {t.priority > 0 && <span className={PRI[t.priority][1]}>⚑</span>}
+            <span className="title">{t.title}</span>
+            {t.subtasks.length > 0 && <span className="chip">{t.subtasks.filter(s => s.done).length}/{t.subtasks.length}</span>}
+            {/* chip--tag：手機上要收起來。每一筆排進來的讀書任務都掛著同一個
+                「讀書計劃」標籤，那一格寬度換不到任何資訊，卻把長標題擠成好幾行。 */}
+            {t.tags.map(tag => <span key={tag} className="chip chip--tag">#{tag}</span>)}
+          </div>
+          {(list || t.due_date) && (
+            <div className="trow-line2">
+              {list && <span className="trow-subject"><span className="trow-swatch" style={{ background: list.color }} />{list.name}</span>}
+              {t.due_date && <span className="trow-due" style={overdue ? { color: 'var(--red)' } : missedProgress ? { color: 'var(--warning, #b7791f)' } : undefined} title={missedProgress ? '未完成進度（原定日期已過）' : undefined}>{relativeDay(t.due_date, today())}{t.due_time ? ' ' + t.due_time : ''}</span>}
+            </div>
+          )}
+        </div>
       </div>
     </div>
   );
 }
 
+// §F 任務明細：分成「任務資訊／安排／實際讀書／其他」四區，不再是一長條扁平表單。
+// 刪除收進右上「•••」（不再一顆紅按鈕擺在最下面誤觸）；標籤改 chips（非開發者式逗號字串）；
+// 多出一個「實際讀書」摘要（讀了多久），把 generic 的「日期」歸到「安排」語意底下。
 export function Detail({ task, lists, onSave, onDelete, onClose }) {
   const [t, setT] = useState(task);
   const up = patch => { const nt = { ...t, ...patch }; setT(nt); onSave(nt); };
   const [newSub, setNewSub] = useState('');
+  const [newTag, setNewTag] = useState('');
+  const [menu, setMenu] = useState(false);
 
   // 附件
   const [atts, setAtts] = useState([]);
@@ -244,6 +263,13 @@ export function Detail({ task, lists, onSave, onDelete, onClose }) {
   // 一定要包成 { }：箭頭函式直接回傳 Promise 的話，React 會把那個 Promise 當成
   // 清理函式，關掉任務時就會 destroy() → 「l is not a function」整頁掛掉
   useEffect(() => { loadAtts(); }, [task.id]);
+  // 實際讀書：這個任務累計讀了多久（只算 completed 的 StudySession；來源是 GET /study-sessions）
+  const [sessions, setSessions] = useState([]);
+  useEffect(() => {
+    api('/study-sessions').then(rows => setSessions((rows || []).filter(s => Number(s.task_id) === Number(task.id) && s.status === 'completed'))).catch(() => {});
+  }, [task.id]);
+  const studyMin = sessions.reduce((a, s) => a + (s.actual_minutes || 0), 0);
+
   async function addAtt(e) {
     const file = e.target.files[0];
     if (!file) return;
@@ -265,21 +291,34 @@ export function Detail({ task, lists, onSave, onDelete, onClose }) {
     aEl.href = url; aEl.download = full.name; aEl.click();
     setTimeout(() => URL.revokeObjectURL(url), 5000);
   }
+  const addTag = raw => { const v = raw.trim(); if (!v || t.tags.includes(v)) return; up({ tags: [...t.tags, v] }); };
 
   return (
     <div className="detail">
       <div className="drow" style={{ justifyContent: 'space-between' }}>
+        <button className="btn sm" onClick={onClose} title="完成編輯">✓ 完成</button>
+        <div style={{ position: 'relative' }}>
+          <button className="icon-btn" aria-label="更多" onClick={() => setMenu(m => !m)}>⋯</button>
+          {menu && (
+            <>
+              <div style={{ position: 'fixed', inset: 0, zIndex: 40 }} onClick={() => setMenu(false)} />
+              <div className="sa-menu" role="menu">
+                <button role="menuitem" className="sa-menu-danger" onClick={() => { setMenu(false); onDelete(t); }}>刪除任務</button>
+              </div>
+            </>
+          )}
+        </div>
+      </div>
+      <input className="title" value={t.title} onChange={e => up({ title: e.target.value })} />
+
+      {/* ── 任務資訊 ── */}
+      <div className="detail-sec-t">任務資訊</div>
+      <div className="drow">
+        <label>科目</label>
         <select value={t.list_id || ''} onChange={e => up({ list_id: e.target.value ? +e.target.value : null })}>
           <option value="">願望清單</option>
           {lists.map(l => <option key={l.id} value={l.id}>{l.name}</option>)}
         </select>
-        <button className="btn sm" onClick={onClose} title="完成編輯">✓ 完成</button>
-      </div>
-      <input className="title" value={t.title} onChange={e => up({ title: e.target.value })} />
-      <div className="drow">
-        <label>日期</label>
-        <input type="date" value={t.due_date || ''} onChange={e => up({ due_date: e.target.value || null })} />
-        <input type="time" value={t.due_time || ''} onChange={e => up({ due_time: e.target.value || null })} />
       </div>
       <div className="drow">
         <label>優先級</label>
@@ -287,14 +326,18 @@ export function Detail({ task, lists, onSave, onDelete, onClose }) {
           {[0, 1, 2, 3].map(p => <option key={p} value={p}>{PRI[p][0]}</option>)}
         </select>
       </div>
-      {RECURRING_UI && (
-        <RepeatPicker value={t.recurring} dueDate={t.due_date} missPolicy={t.miss_policy}
-          onChange={(recurring, miss_policy) => up({ recurring, miss_policy })} />
-      )}
-      <div className="drow">
+      <div className="drow" style={{ alignItems: 'flex-start' }}>
         <label>標籤</label>
-        <input placeholder="用逗號分隔" value={t.tags.join(',')}
-          onChange={e => up({ tags: e.target.value.split(/[,，]/).map(s => s.trim()).filter(Boolean) })} style={{ flex: 1 }} />
+        <div style={{ flex: 1, display: 'flex', flexWrap: 'wrap', gap: 6, alignItems: 'center' }}>
+          {t.tags.map(tag => (
+            <span key={tag} className="chip chip--tag" style={{ display: 'inline-flex', gap: 4, alignItems: 'center' }}>#{tag}
+              <button className="icon-btn" style={{ padding: 0, lineHeight: 1 }} aria-label={`移除標籤 ${tag}`}
+                onClick={() => up({ tags: t.tags.filter(x => x !== tag) })}>✕</button>
+            </span>
+          ))}
+          <input placeholder="＋標籤" value={newTag} onChange={e => setNewTag(e.target.value)}
+            onKeyDown={e => { if (e.key === 'Enter') { e.preventDefault(); addTag(newTag); setNewTag(''); } }} style={{ width: 92 }} />
+        </div>
       </div>
       <div>
         <label className="muted">子任務</label>
@@ -309,6 +352,29 @@ export function Detail({ task, lists, onSave, onDelete, onClose }) {
           <input placeholder="＋新增子任務" value={newSub} onChange={e => setNewSub(e.target.value)} style={{ width: '100%', marginTop: 4 }} />
         </form>
       </div>
+
+      {/* ── 安排 ── */}
+      <div className="detail-sec-t">安排</div>
+      <div className="drow">
+        <label>日期</label>
+        <input type="date" value={t.due_date || ''} onChange={e => up({ due_date: e.target.value || null })} />
+      </div>
+      <div className="drow">
+        <label>時間</label>
+        <input type="time" value={t.due_time || ''} onChange={e => up({ due_time: e.target.value || null })} />
+      </div>
+      {RECURRING_UI && (
+        <RepeatPicker value={t.recurring} dueDate={t.due_date} missPolicy={t.miss_policy}
+          onChange={(recurring, miss_policy) => up({ recurring, miss_policy })} />
+      )}
+      {t.plan_id != null && <div className="ui-meta" style={{ marginTop: 6 }}>此任務屬於讀書計畫，時段由排程管理；要改安排請到「計畫」裡調整。</div>}
+
+      {/* ── 實際讀書 ── */}
+      <div className="detail-sec-t">實際讀書</div>
+      <div className="ui-meta">{studyMin > 0 ? `累計讀了 ${studyMin} 分鐘（${sessions.length} 次）` : '還沒有讀書紀錄'}</div>
+
+      {/* ── 其他 ── */}
+      <div className="detail-sec-t">其他</div>
       <textarea placeholder="備註..." value={t.notes} onChange={e => up({ notes: e.target.value })} />
       <div>
         <label className="muted">📎 附件</label>
@@ -321,72 +387,22 @@ export function Detail({ task, lists, onSave, onDelete, onClose }) {
         ))}
         <input type="file" onChange={addAtt} style={{ marginTop: 4, width: '100%' }} />
       </div>
-      <button className="btn sm" style={{ background: 'var(--red)', alignSelf: 'flex-start' }} onClick={() => onDelete(t)}>刪除任務</button>
     </div>
   );
 }
 
-function AddSheet({ view, lists, onDone, onClose }) {
-  const td = today();
-  const tm = addDays(today(), 1);
-  const [f, setF] = useState({
-    title: '',
-    due_date: view.type === 'today' ? td : '',
-    priority: 0,
-    list_id: view.type === 'list' ? view.id : '',
-    recurring: null,
-    miss_policy: 'keep',
-  });
-  const [showRepeat, setShowRepeat] = useState(false);
-  async function submit(e) {
-    e.preventDefault();
-    if (!f.title.trim()) return;
-    const body = { title: f.title.trim(), priority: f.priority };
-    if (f.due_date) body.due_date = f.due_date;
-    if (f.list_id) body.list_id = +f.list_id;
-    if (f.recurring) { body.recurring = f.recurring; body.miss_policy = f.miss_policy; }
-    if (view.type === 'tag') body.tags = [view.tag];
-    await api('/tasks', { method: 'POST', body });
-    onDone();
-  }
-  return (
-    <div className="sheet-back" onClick={onClose}>
-      <form className="sheet" onClick={e => e.stopPropagation()} onSubmit={submit}>
-        <input type="text" autoFocus placeholder="準備做什麼？" value={f.title} onChange={e => setF({ ...f, title: e.target.value })} />
-        <div className="opts">
-          <button type="button" className={'tag-pill' + (f.due_date === td ? ' on' : '')} onClick={() => setF({ ...f, due_date: f.due_date === td ? '' : td })}>今天</button>
-          <button type="button" className={'tag-pill' + (f.due_date === tm ? ' on' : '')} onClick={() => setF({ ...f, due_date: f.due_date === tm ? '' : tm })}>明天</button>
-          <input type="date" value={f.due_date} onChange={e => setF({ ...f, due_date: e.target.value })} style={{ padding: '2px 6px' }} />
-          <select value={f.priority} onChange={e => setF({ ...f, priority: +e.target.value })}>
-            {[0, 1, 2, 3].map(p => <option key={p} value={p}>⚑ {PRI[p][0]}</option>)}
-          </select>
-          <select value={f.list_id} onChange={e => setF({ ...f, list_id: e.target.value })}>
-            <option value="">願望清單</option>
-            {lists.map(l => <option key={l.id} value={l.id}>{l.name}</option>)}
-          </select>
-          {RECURRING_UI && (
-            <button type="button" className={'tag-pill' + (f.recurring ? ' on' : '')} onClick={() => setShowRepeat(s => !s)}>
-              🔁 {f.recurring ? repeatLabel(f.recurring, f.due_date) : '重複'}
-            </button>
-          )}
-        </div>
-        {RECURRING_UI && showRepeat && (
-          <div style={{ marginTop: 8 }}>
-            <RepeatPicker value={f.recurring} dueDate={f.due_date} missPolicy={f.miss_policy}
-              onChange={(r, mp) => setF({ ...f, recurring: r, miss_policy: mp || f.miss_policy })} />
-          </div>
-        )}
-        <button className="btn">新增任務</button>
-      </form>
-    </div>
-  );
-}
+// AddSheet／saForm 已移除：新增一律走 Shell 的 Global Add（§A）；列表內只保留 inline quick-add。
 
-export default function Tasks({ view, tasks, lists, filters, habits = [], reload, title, subtitle = '', listLabel = '', goVocab, goMemo, topSlot = null }) {
+export default function Tasks({ view, tasks, lists, filters, habits = [], reload, title, subtitle = '', listLabel = '', goVocab, goMemo, topSlot = null, onNav }) {
   const [selId, setSelId] = useState(null);
   const [quick, setQuick] = useState('');
-  const [showAdd, setShowAdd] = useState(false);
-  const [saForm, setSaForm] = useState(false);   // 從「新增任務」流程也能清楚選到「學校作業」
+  // §E 第一層 filters（只在「任務」總表出現）：全部／今天／逾期／未排程。記在 localStorage。
+  const [taskFilter, setTaskFilter] = useState(() => {
+    try { return localStorage.getItem('taskFilter') || 'all'; } catch { return 'all'; }
+  });
+  const pickFilter = v => { setTaskFilter(v); try { localStorage.setItem('taskFilter', v); } catch {} };
+  // §K：科目過濾（''＝全部科目）。custom lists 從側欄移到這裡。
+  const [subjFilter, setSubjFilter] = useState('');
   // 排序方式記起來：下次開啟還是同一個（default | time | priority | title）
   const [sortBy, setSortBy] = useState(() => {
     try { return localStorage.getItem('taskSort') || 'default'; } catch { return 'default'; }
@@ -446,7 +462,22 @@ export default function Tasks({ view, tasks, lists, filters, habits = [], reload
     setOver({});
   }, [tasks]);
   const tv = Object.keys(over).length ? tasks.map(t => over[t.id] ? { ...t, ...over[t.id] } : t) : tasks;
-  const shown = tv.filter(t => matchView(t, view, { filters }) && !hidden.has(t.id));
+  const shownAll = tv.filter(t => matchView(t, view, { filters }) && !hidden.has(t.id));
+  // 第一層 filters 只用在「任務」總表（tasks/all）；其餘視圖語意已由 view 決定，不套。
+  const showChips = ['tasks', 'all'].includes(view.type);
+  const tdF = today();
+  const weekEnd = addDays(tdF, 6);
+  const chipFn = {
+    all: () => true,
+    today: t => t.due_date === tdF,
+    week: t => t.due_date && t.due_date >= tdF && t.due_date <= weekEnd,
+    overdue: t => t.due_date && t.due_date < tdF && !t.completed,
+    unscheduled: t => !t.due_date,
+  };
+  // §K：科目（清單）過濾移進「任務」頁（取代側欄的 per-subject 清單）
+  const subjFiltered = showChips && subjFilter ? shownAll.filter(t => String(t.list_id) === subjFilter) : shownAll;
+  const shown = showChips ? subjFiltered.filter(chipFn[taskFilter] || chipFn.all) : shownAll;
+  const chipCount = k => (subjFilter ? shownAll.filter(t => String(t.list_id) === subjFilter) : shownAll).filter(chipFn[k]).length;
   const sel = tv.find(t => t.id === selId);
 
   async function restore(t) {
@@ -558,7 +589,7 @@ export default function Tasks({ view, tasks, lists, filters, habits = [], reload
           </div>
           {!listLabel && <span className="muted">{shown.length} 項</span>}
           {!listLabel && !['trash', 'completed'].includes(view.type) && shown.length > 1 && (
-            <select value={sortBy} onChange={e => pickSort(e.target.value)} style={{ marginLeft: 'auto', fontSize: 13 }}>
+            <select aria-label="排序方式" value={sortBy} onChange={e => pickSort(e.target.value)} style={{ marginLeft: 'auto', fontSize: 13 }}>
               <option value="default">預設排序</option>
               <option value="time">依時間</option>
               <option value="subject">依科目</option>
@@ -571,16 +602,43 @@ export default function Tasks({ view, tasks, lists, filters, habits = [], reload
             <button className="btn sm ghost" style={{ marginLeft: 'auto' }} onClick={emptyTrash}>清空垃圾桶</button>
           )}
         </div>
+        {/* §K：舊 Todo IA（學校作業／已完成／垃圾桶）從側欄移進「任務」頁的視圖切換列 */}
+        {onNav && ['tasks', 'all', 'completed', 'trash'].includes(view.type) && (
+          <div className="task-viewtabs" role="tablist" aria-label="任務視圖">
+            {[['tasks', '任務', ['tasks', 'all']], ['school', '學校作業', ['school']], ['completed', '已完成', ['completed']], ['trash', '垃圾桶', ['trash']]].map(([type, label, actives]) => (
+              <button key={type} role="tab" aria-selected={actives.includes(view.type)}
+                className={'seg-tab' + (actives.includes(view.type) ? ' on' : '')} onClick={() => onNav({ type })}>{label}</button>
+            ))}
+          </div>
+        )}
+        {showChips && (
+          <div className="row" style={{ gap: 'var(--sp-2)', alignItems: 'center', flexWrap: 'wrap' }}>
+            <div className="task-filter" role="tablist" aria-label="任務篩選">
+              {[['all', '全部'], ['today', '今天'], ['week', '本週'], ['overdue', '逾期'], ['unscheduled', '未排程']].map(([k, label]) => {
+                const n = k === 'all' ? 0 : chipCount(k);
+                return (
+                  <button key={k} role="tab" aria-selected={taskFilter === k}
+                    className={'chip filter-chip' + (taskFilter === k ? ' on' : '')} onClick={() => pickFilter(k)}>
+                    {label}{n > 0 ? <span className="filter-chip-n">{n}</span> : ''}
+                  </button>
+                );
+              })}
+            </div>
+            {lists.length > 0 && (
+              <select aria-label="依科目篩選" value={subjFilter} onChange={e => setSubjFilter(e.target.value)}
+                style={{ marginLeft: 'auto', fontSize: 13 }}>
+                <option value="">全部科目</option>
+                {lists.map(l => <option key={l.id} value={String(l.id)}>{l.name}</option>)}
+              </select>
+            )}
+          </div>
+        )}
         {!['completed', 'trash', 'search'].includes(view.type) && (
           <div className="row" style={{ gap: 'var(--sp-2)', alignItems: 'center' }}>
             <form className="quick-add" style={{ flex: 1 }} onSubmit={quickAdd}>
               <input placeholder="＋ 新增任務，按 Enter 儲存" value={quick} onChange={e => setQuick(e.target.value)} />
             </form>
-            <button type="button" className="btn sm ghost" onClick={() => setSaForm(true)}>＋ 學校作業</button>
           </div>
-        )}
-        {saForm && (
-          <SchoolAssignmentForm lists={lists} onClose={() => setSaForm(false)} onSaved={() => reload('tasks')} />
         )}
         <div className="main-body">
           {topSlot}
@@ -606,7 +664,7 @@ export default function Tasks({ view, tasks, lists, filters, habits = [], reload
             ? shown.map(t => (
               <div key={t.id} className="trow" style={{ cursor: 'default' }}>
                 <span className="title" style={{ color: 'var(--muted)' }}>{t.title}</span>
-                {t.due_date && <span className="muted">{t.due_date.slice(5)}</span>}
+                {t.due_date && <span className="muted">{zhDateShort(t.due_date)}</span>}
                 <button className="btn sm ghost" onClick={() => restore(t)}>還原</button>
                 <button className="icon-btn" title="永久刪除" onClick={() => hardDel(t)}>✕</button>
               </div>
@@ -668,9 +726,7 @@ export default function Tasks({ view, tasks, lists, filters, habits = [], reload
 
           {view.type === 'today' && <VocabCard goVocab={goVocab} />}
         </div>
-        {view.type !== 'completed' && <button className="fab" onClick={() => setShowAdd(true)}>＋</button>}
       </div>
-      {showAdd && <AddSheet view={view} lists={lists} onDone={() => { setShowAdd(false); reload(); }} onClose={() => setShowAdd(false)} />}
       {sel && <Detail key={sel.id} task={sel} lists={lists} onSave={save} onDelete={del} onClose={closeDetail} />}
       {toast && (
         <div className="toast">

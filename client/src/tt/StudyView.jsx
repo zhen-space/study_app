@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import { api } from '../api';
 import { today, onActivePlan } from './helpers';
+import { zhDateShort, dailyProgressLabel, deadlineLabel } from './dateSemantics';
 import { Button, PageHeader, SurfaceCard, EmptyState, BottomSheet } from './ui';
 import PomodoroPanel from './PomodoroPanel';
 
@@ -18,8 +19,10 @@ const MAX_ROWS = 8;
 export function pickStudyTasks(tasks, td = today(), limit = MAX_ROWS) {
   const rank = t => (!t.due_date ? 2 : t.due_date < td ? 0 : 1);   // 逾期 → 有日期 → 沒日期
   return tasks
-    // 已結束／暫停等非進行中計畫的任務不是「現在可以開始讀」的候選
-    .filter(t => !t.completed && !t.deleted && onActivePlan(t))
+    // 已完成／已取消／已刪除、以及非進行中計畫（已結束／暫停／完成）的任務，
+    // 都不是「現在可以開始讀」的候選。取消的作業若漏掉，server 也會在開始時 409，
+    // 但候選清單就不該列出來。
+    .filter(t => !t.completed && !t.cancelled && !t.deleted && onActivePlan(t))
     .sort((a, b) =>
       rank(a) - rank(b)
       || (a.due_date || '9999-99-99').localeCompare(b.due_date || '9999-99-99')
@@ -28,13 +31,17 @@ export function pickStudyTasks(tasks, td = today(), limit = MAX_ROWS) {
     .slice(0, limit);
 }
 
-const dueLabel = (t, td) => {
-  if (!t.due_date) return '尚未安排';
-  const hm = t.due_time ? ' ' + t.due_time.slice(0, 5) : '';
-  if (t.due_date < td) return `逾期 ${t.due_date.slice(5)}${hm}`;
-  if (t.due_date === td) return `今天${hm}`;
-  return t.due_date.slice(5) + hm;
+// §M：due_date 的語意依來源不同——
+//   計畫任務（plan_id）＝AI 排的「每日進度」：過了原定日叫「未完成進度」，絕不叫「逾期」。
+//   非計畫任務＝使用者自訂的截止：過了才叫「逾期」。
+// tone 供上色：'missed'（未完成進度，非緊急）、'overdue'（逾期，danger）、其餘中性。
+const dueInfo = (t, td) => {
+  if (!t.due_date) return { text: '尚未安排', tone: 'normal' };
+  if (t.plan_id != null) return dailyProgressLabel(t.due_date, td);
+  const d = deadlineLabel(t.due_date, t.due_time, td);
+  return { text: d.text, tone: d.tone };
 };
+const dueLabel = (t, td) => dueInfo(t, td).text;
 
 // 補登：真的讀了，只是當下沒開計時器。它是正式的讀書紀錄，分鐘數會進統計；
 // 但它不是「正在讀」，所以不會有計時器的中間狀態，也不會把教材標成完成。
@@ -132,7 +139,43 @@ export default function StudyView({ tasks, goPlans }) {
             title="還沒有可以讀的任務"
             description="先建立一個讀書計畫，AI 會把教材內容排成每天的任務；也可以到「任務」自己加一項。"
             action={goPlans && <Button variant="primary" size="lg" onClick={goPlans}>建立讀書計畫</Button>} />
-        : <SurfaceCard><b>開始一段讀書</b><div className="ui-meta" style={{ marginTop: 4 }}>照時間先後列出最該做的幾項。</div>{pick.map(t => <div className="ui-row" key={t.id}><div className="ui-row-main"><div className="ui-row-title">{t.title}</div><div className="ui-row-sub" style={t.due_date && t.due_date < td ? { color: 'var(--danger)' } : undefined}>{dueLabel(t, td)}</div></div><Button size="sm" variant="primary" onClick={() => start(t)}>開始</Button></div>)}</SurfaceCard>}
+        // 無 session：只給「一個主要推薦」（最該先讀的那一項），其餘收成一行、點開才展開。
+        // §D：不再一整排逾期 task ＋ 開始互相搶焦點；主要動作只有一個。
+        : (() => {
+          const [top, ...rest] = pick;
+          // §M：逾期（deadline）才紅；未完成進度（plan daily progress）用 warning，不是 danger。
+          const overdueTone = t => {
+            const tone = dueInfo(t, td).tone;
+            if (tone === 'overdue') return { color: 'var(--danger)' };
+            if (tone === 'missed') return { color: 'var(--warning, #b7791f)' };
+            return undefined;
+          };
+          return (
+            <section className="ui-section">
+              <div className="ui-section-title">開始一段讀書</div>
+              <SurfaceCard tone="accent">
+                <div className="ui-meta">最該先讀</div>
+                <div style={{ fontSize: 18, fontWeight: 650, marginTop: 2 }}>{top.title}</div>
+                <div className="ui-meta" style={overdueTone(top)}>{dueLabel(top, td)}</div>
+                <Button variant="primary" size="lg" block style={{ marginTop: 'var(--sp-4)' }} onClick={() => start(top)}>開始</Button>
+              </SurfaceCard>
+              {rest.length > 0 && (
+                <details className="study-more" style={{ marginTop: 'var(--sp-3)' }}>
+                  <summary className="ui-meta" style={{ cursor: 'pointer', padding: 'var(--sp-2) 0' }}>其他可以開始（{rest.length}）</summary>
+                  {rest.map(t => (
+                    <div className="ui-row" key={t.id}>
+                      <div className="ui-row-main">
+                        <div className="ui-row-title">{t.title}</div>
+                        <div className="ui-row-sub" style={overdueTone(t)}>{dueLabel(t, td)}</div>
+                      </div>
+                      <Button size="sm" onClick={() => start(t)}>開始</Button>
+                    </div>
+                  ))}
+                </details>
+              )}
+            </section>
+          );
+        })()}
       {/* 補登不受「正在讀」影響：它記的是已經讀完的事，任何時候都補得了。
           沒有任何任務時就沒得補，那時的出口是上面的空狀態。 */}
       {candidates.length > 0 && (

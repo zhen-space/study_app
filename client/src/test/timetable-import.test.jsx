@@ -47,7 +47,7 @@ function mockApi(preview = PREVIEW) {
 
 // 打開「新增」選單，選課表匯入，並丟一個假檔案進去
 async function uploadTimetable(container) {
-  fireEvent.click(screen.getByRole('button', { name: /新增|＋/ }));
+  fireEvent.click(screen.getByRole('button', { name: '匯入' }));
   const label = await screen.findByText(/匯入課表照片/);
   const input = label.closest('label').querySelector('input[type="file"]');
   const file = new File(['x'], 'timetable.png', { type: 'image/png' });
@@ -130,7 +130,7 @@ describe('課表匯入 v2 串接', () => {
       return [];
     });
     render(<CalendarView tasks={[]} reload={async () => {}} />);
-    fireEvent.click(screen.getByRole('button', { name: /新增|＋/ }));
+    fireEvent.click(screen.getByRole('button', { name: '匯入' }));
     const label = await screen.findByText(/匯入行事曆照片/);
     const input = label.closest('label').querySelector('input[type="file"]');
     fireEvent.change(input, { target: { files: [new File(['x'], 'cal.png', { type: 'image/png' })] } });

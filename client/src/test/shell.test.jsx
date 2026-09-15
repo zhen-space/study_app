@@ -172,7 +172,8 @@ describe('PlansView / PlanDetailView', () => {
     const titles = [...main().querySelectorAll('.plan-card b')].map(b => b.textContent);
     expect(titles).toContain('物理');
     expect(titles).toContain('地科');
-    expect(screen.getByRole('button', { name: '建立計畫' })).toBeInTheDocument();
+    // §A2：Plans 右上＋已移除，建立計畫改由 Global Add（右下 ＋）
+    expect(screen.getByRole('button', { name: '新增' })).toBeInTheDocument();
     noCrash();
   });
 
@@ -259,24 +260,36 @@ describe('Recurring Task v1', () => {
 });
 
 describe('既有 secondary 入口沒有因 IA 重構消失', () => {
-  it('11. 排程精靈、單字本、備忘錄、矩陣、習慣、寵物、統計都還到得了', async () => {
+  // §K 正式 IA：側欄只留 學習（目標／教材庫／統計）、工具（單字本／備忘錄／習慣）、
+  // 個人化（寵物）、App（設定）。排程精靈改由「計畫→建立計畫」、矩陣退出第一層。
+  it('11. 側欄次要功能（目標／教材庫／統計／單字本／備忘錄／習慣／寵物／設定）都還到得了', async () => {
     await mountShell();
     const side = document.querySelector('.sidebar');
-    for (const name of ['排程精靈', '單字本', '備忘錄', '矩陣', '習慣', '寵物', '統計']) {
+    for (const name of ['目標', '教材庫', '統計', '單字本', '備忘錄', '習慣', '寵物', '設定']) {
       const item = within(side).getByText(name);
       expect(item, `側邊欄應該還找得到「${name}」`).toBeTruthy();
       await click(item);
       noCrash();
     }
+    // 舊 IA 已移出側欄
+    expect(within(side).queryByText('排程精靈')).toBeNull();
+    expect(within(side).queryByText('矩陣')).toBeNull();
+    expect(within(side).queryByText('排程鎖定')).toBeNull();
   });
 
-  it('任務清單分頁（未來 7 天／願望清單／已完成／垃圾桶）都還在', async () => {
+  // §K：舊 Todo IA（學校作業／已完成／垃圾桶等）從側欄移進「任務」頁的視圖切換列與本週篩選。
+  it('任務視圖切換（學校作業／已完成／垃圾桶）與本週篩選在「任務」頁', async () => {
     await mountShell();
-    const side = document.querySelector('.sidebar');
-    for (const name of ['所有任務', '未來 7 天', '願望清單', '已完成', '垃圾桶']) {
-      await click(within(side).getByText(name));
+    for (const name of ['學校作業', '已完成', '垃圾桶']) {
+      await click(navButton('任務'));                       // 回「任務」頁才有視圖切換列
+      await click(screen.getByRole('tab', { name }));
       noCrash();
     }
+    await click(navButton('任務'));
+    expect(screen.getByRole('tab', { name: /本週/ })).toBeTruthy();
+    // 側欄不再有舊 Todo 清單
+    const side = document.querySelector('.sidebar');
+    expect(within(side).queryByText('未來 7 天')).toBeNull();
   });
 });
 

@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { api } from '../api';
 import { matchView, today } from './helpers';
 import Tasks from './Tasks';
@@ -22,7 +22,8 @@ import MaterialLibraryView from './MaterialLibraryView';
 import SettingsView from './SettingsView';
 import SchoolAssignmentView from './SchoolAssignmentView';
 import Companion from './Companion';
-import Icon, { LIST_ICONS, LIST_COLORS } from './Icons';
+import GlobalAdd from './GlobalAdd';
+import Icon from './Icons';
 import { dueNotifications, notify } from './notify';
 
 export default function Shell({ onLogout }) {
@@ -96,84 +97,31 @@ export default function Shell({ onLogout }) {
     return () => clearInterval(iv);
   }, [tasks, blocks]);
 
-  // 自訂標籤（存在帳號設定）＋任務上實際出現的標籤；防髒資料：tags 一定要是陣列
-  const [customTags, setCustomTags] = useState([]);
-  useEffect(() => { api('/settings').then(s => setCustomTags(s.custom_tags || [])).catch(() => {}); }, []);
-  const tags = useMemo(() => [...new Set([
-    ...customTags,
-    ...tasks.flatMap(t => Array.isArray(t.tags) ? t.tags : []),
-  ])].filter(t => typeof t === 'string' && t.trim() && !/^[a-zA-Z]{1,2}$/.test(t.trim())), [tasks, customTags]);
-  async function addTag() {
-    const name = prompt('新標籤名稱：');
-    if (!name?.trim()) return;
-    const next = [...new Set([...customTags, name.trim()])];
-    setCustomTags(next);
-    await api('/settings', { method: 'PUT', body: { custom_tags: next } });
-  }
-  async function delTag(t) {
-    if (!confirm(`移除標籤「${t}」？（不影響已標記的任務）`)) return;
-    const next = customTags.filter(x => x !== t);
-    setCustomTags(next);
-    await api('/settings', { method: 'PUT', body: { custom_tags: next } });
-  }
+  // §K：自訂標籤／清單／篩選器的管理已移出側欄——標籤/篩選器不再是學生 IA；
+  // 科目（清單）改在「設定」管理。這裡只留主導航計數與 Global Add 意圖狀態。
+  const [saReminderTime, setSaReminderTime] = useState('18:00');
+  const [calAddIntent, setCalAddIntent] = useState(null);   // Global Add → 行事曆（'event'|'anniversary'）
+  const [planCreateIntent, setPlanCreateIntent] = useState(false); // Global Add → 計畫（開建立計畫兩條路 sheet）
+  useEffect(() => { api('/settings').then(s => { if (s.school_assignment_default_reminder_time) setSaReminderTime(s.school_assignment_default_reminder_time); }).catch(() => {}); }, []);
   const count = v => tasks.filter(t => matchView(t, v, { filters })).length;
 
-  async function addList() {
-    const name = prompt('清單名稱：');
-    if (!name?.trim()) return;
-    await api('/lists', { method: 'POST', body: { name: name.trim(), color: LIST_COLORS[lists.length % LIST_COLORS.length] } });
-    reload();
-  }
-  async function addFilter() {
-    const name = prompt('篩選器名稱：');
-    if (!name?.trim()) return;
-    const pri = prompt('只顯示優先級？（0無 1低 2中 3高，留空不限）');
-    const tag = prompt('只顯示標籤？（留空不限）');
-    const due = prompt('期限？（today / week / overdue，留空不限）');
-    const rule = {};
-    if (pri) rule.priority = +pri;
-    if (tag) rule.tag = tag.trim();
-    if (due) rule.due = due.trim();
-    await api('/filters', { method: 'POST', body: { name: name.trim(), rule } });
-    reload();
-  }
-  async function delList(l) {
-    if (!confirm(`刪除清單「${l.name}」？（任務會移到願望清單）`)) return;
-    await api(`/lists/${l.id}`, { method: 'DELETE' });
-    if (view.type === 'list' && view.id === l.id) setView({ type: 'today' });
-    reload();
-  }
-
-  // 任務頁底下的清單分頁（「今天」已經獨立成主導航，這裡不再重複）
+  // 任務頁底下的清單分頁名稱（titleOf 用；智慧清單本身已移進「任務」頁的視圖切換列/篩選）
   const smart = [
     ['tasks', 'all', '所有任務'], ['week', 'week', '未來 7 天'], ['inbox', 'inbox', '願望清單'],
     ['completed', 'done', '已完成'], ['trash', 'trash', '垃圾桶'],
   ];
-  const [editList, setEditList] = useState(null); // 正在編輯的清單 id
-  async function patchList(l, body) {
-    await api(`/lists/${l.id}`, { method: 'PATCH', body });
-    reload();
-  }
-  async function shareList(l) {
-    const members = await api(`/lists/${l.id}/shares`).catch(() => []);
-    const cur = members.length ? `目前共享給：${members.map(m => m.email).join('、')}\n（輸入其中一個 email 可取消共享）\n\n` : '';
-    const email = prompt(`${cur}輸入要共享「${l.name}」的對象 email：`);
-    if (!email?.trim()) return;
-    const ex = members.find(m => m.email === email.trim().toLowerCase());
-    if (ex) {
-      if (confirm(`取消與 ${ex.email} 的共享？`)) await api(`/lists/${l.id}/share/${ex.id}`, { method: 'DELETE' });
-    } else {
-      try { await api(`/lists/${l.id}/share`, { method: 'POST', body: { email: email.trim() } }); alert('已共享！對方登入後就會看到這個清單'); }
-      catch (e) { alert(e.message); }
-    }
-    reload();
-  }
   // 主導航（桌面側邊欄也照同一套 IA）
   const mainNav = [['today', 'today', '今天'], ['plans', 'wizard', '計畫'], ['study', 'pomo', '讀書'], ['tasks', 'all', '任務'], ['calendar', 'calendar', '行事曆']];
-  // 不屬於五大主導航的既有功能：一個都沒刪，收在「更多」
-  const pages = [['wizard', 'wizard', '排程精靈'], ['schedule-history', 'calendar', '排程紀錄'], ['locks', 'calendar', '排程鎖定'], ['routines', 'calendar', '我的固定時間'], ['material', 'book', '教材庫'], ['goals', 'wizard', '目標'], ['vocab', 'book', '單字本'], ['memo', 'note', '備忘錄'], ['matrix', 'matrix', '矩陣'], ['habits', 'habit', '習慣'], ['pet', 'paw', '寵物'], ['stats', 'stats', '統計'], ['settings', 'settings', '設定']];
+  // §K 正式 IA：側欄只放次要功能，分四類。主導航（5）與舊 Todo IA（智慧清單／科目／
+  // 篩選器／標籤）不再出現在側欄；排程精靈由「計畫→建立計畫」進入、時間設定由行事曆進入、
+  // 排程鎖定改 context action（§N）、排程紀錄／矩陣退出第一層（route 仍在，供內部/深連結）。
+  const pageGroups = [
+    ['學習', [['goals', 'wizard', '目標'], ['material', 'book', '教材庫'], ['stats', 'stats', '統計']]],
+    ['工具', [['vocab', 'book', '單字本'], ['memo', 'note', '備忘錄'], ['habits', 'habit', '習慣']]],
+    ['個人化', [['pet', 'paw', '寵物']]],
+    ['App', [['settings', 'settings', '設定']]],
+  ];
 
-  const is = v => JSON.stringify(view) === JSON.stringify(v);
   const titleOf = () => {
     if (view.type === 'list') return lists.find(l => l.id === view.id)?.name || '';
     if (view.type === 'tag') return '#' + view.tag;
@@ -192,80 +140,24 @@ export default function Shell({ onLogout }) {
       <div className={'sidebar' + (side ? ' open' : '')}>
         <input placeholder="🔍 搜尋任務" value={searchQ} style={{ margin: '0 2px 8px', width: 'calc(100% - 4px)' }}
           onChange={e => { const q = e.target.value; setSearchQ(q); setViewRaw(q.trim() ? { type: 'search', q } : { type: 'today' }); }} />
-        <div className="side-sec">主導航</div>
-        {mainNav.map(([type, icon, label]) => (
-          <div key={type} className={'side-item' + (view.type === type ? ' active' : '')} onClick={() => setView({ type })}>
-            <Icon name={icon} size={18} style={{ opacity: .8 }} />{label}
-            <span className="count">{type === 'today' ? count({ type: 'today' }) : ''}</span>
-          </div>
-        ))}
-        <div className="side-sec">任務清單</div>
-        {smart.map(([type, icon, label]) => (
-          <div key={type} className={'side-item' + (is({ type }) ? ' active' : '')} onClick={() => setView({ type })}>
-            <Icon name={icon} size={18} style={{ opacity: .8 }} />{label}
-            <span className="count">{!['completed', 'trash'].includes(type) ? count({ type }) : ''}</span>
-          </div>
-        ))}
-        <div key="school" className={'side-item' + (view.type === 'school' ? ' active' : '')} onClick={() => setView({ type: 'school' })}>
-          <Icon name="book" size={18} style={{ opacity: .8 }} />學校作業
-          <span className="count">{tasks.filter(t => t.task_kind === 'school_assignment' && !t.completed && !t.cancelled && !t.deleted).length || ''}</span>
-        </div>
-        <div className="side-sec">清單 <button className="icon-btn" onClick={addList}>＋</button></div>
-        {lists.map(l => (
-          <div key={l.id}>
-            <div className={'side-item' + (is({ type: 'list', id: l.id }) ? ' active' : '')} onClick={() => setView({ type: 'list', id: l.id })}>
-              <Icon name={l.icon || 'book'} size={18} style={{ color: l.color }} />
-              {l.name}{l.shared_in ? <span className="muted" style={{ fontSize: 11 }}>（{l.owner_email}）</span> : ''}
-              {l.shared_out ? <Icon name="share" size={13} style={{ opacity: .5 }} /> : null}
-              <span className="count">{count({ type: 'list', id: l.id })}</span>
-              {!l.shared_in &&
-                <button className="icon-btn" title="編輯清單" onClick={e => { e.stopPropagation(); setEditList(editList === l.id ? null : l.id); }}>
-                  <Icon name="pencil" size={15} />
-                </button>}
+        {/* §K：主導航只在桌機側欄出現（手機由底部導航負責，側欄抽屜不再放第二套主導航）。 */}
+        <div className="side-primary">
+          <div className="side-sec">主導航</div>
+          {mainNav.map(([type, icon, label]) => (
+            <div key={type} className={'side-item' + ((type === 'tasks' ? TASK_VIEWS.includes(view.type) : view.type === type) ? ' active' : '')} onClick={() => setView({ type })}>
+              <Icon name={icon} size={18} style={{ opacity: .8 }} />{label}
+              <span className="count">{type === 'today' ? count({ type: 'today' }) : ''}</span>
             </div>
-            {editList === l.id && (
-              <div className="list-editor">
-                <input defaultValue={l.name} onBlur={e => e.target.value.trim() && e.target.value.trim() !== l.name && patchList(l, { name: e.target.value.trim() })}
-                  onKeyDown={e => e.key === 'Enter' && e.target.blur()} />
-                <div className="swatches">
-                  {LIST_COLORS.map(c => (
-                    <span key={c} className={'swatch' + (l.color === c ? ' on' : '')} style={{ background: c }} onClick={() => patchList(l, { color: c })} />
-                  ))}
-                </div>
-                <div className="icon-grid">
-                  {LIST_ICONS.map(ic => (
-                    <span key={ic} className={'icon-cell' + ((l.icon || 'book') === ic ? ' on' : '')} style={{ color: l.color }}
-                      onClick={() => patchList(l, { icon: ic })}><Icon name={ic} size={18} /></span>
-                  ))}
-                </div>
-                <div className="row" style={{ marginTop: 8 }}>
-                  <button className="btn sm ghost" onClick={() => shareList(l)}><Icon name="share" size={14} /> 共享</button>
-                  <button className="btn sm ghost" style={{ color: 'var(--red)' }} onClick={() => delList(l)}><Icon name="trash" size={14} /> 刪除</button>
-                  <button className="btn sm" style={{ marginLeft: 'auto' }} onClick={() => setEditList(null)}><Icon name="check" size={14} /></button>
-                </div>
-              </div>
-            )}
-          </div>
-        ))}
-        <div className="side-sec">篩選器 <button className="icon-btn" onClick={addFilter}>＋</button></div>
-        {filters.map(f => (
-          <div key={f.id} className={'side-item' + (is({ type: 'filter', id: f.id }) ? ' active' : '')} onClick={() => setView({ type: 'filter', id: f.id })}>
-            🔍 {f.name}
-            <button className="icon-btn" style={{ marginLeft: 'auto' }} onClick={e => { e.stopPropagation(); api(`/filters/${f.id}`, { method: 'DELETE' }).then(reload); }}>✕</button>
-          </div>
-        ))}
-        <div className="side-sec">標籤 <button className="icon-btn" onClick={addTag}><Icon name="plus" size={14} /></button></div>
-        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, padding: '0 10px' }}>
-          {tags.map(t => (
-            <span key={t} className={'tag-pill' + (is({ type: 'tag', tag: t }) ? ' on' : '')} onClick={() => setView({ type: 'tag', tag: t })}>
-              #{t}{customTags.includes(t) && <span style={{ marginLeft: 4, opacity: .6 }} onClick={e => { e.stopPropagation(); delTag(t); }}>×</span>}
-            </span>
           ))}
         </div>
-        <div className="side-sec">更多</div>
-        {pages.map(([type, icon, label]) => (
-          <div key={type} className={'side-item' + (view.type === type ? ' active' : '')} onClick={() => setView({ type })}>
-            <Icon name={icon} size={18} style={{ opacity: .8 }} />{label}
+        {pageGroups.map(([sec, items]) => (
+          <div key={sec}>
+            <div className="side-sec">{sec}</div>
+            {items.map(([type, icon, label]) => (
+              <div key={type} className={'side-item' + (view.type === type ? ' active' : '')} onClick={() => setView({ type })}>
+                <Icon name={icon} size={18} style={{ opacity: .8 }} />{label}
+              </div>
+            ))}
           </div>
         ))}
         <div style={{ flex: 1 }} />
@@ -277,14 +169,17 @@ export default function Shell({ onLogout }) {
             goStudy={() => setView({ type: 'study' })} goVocab={() => setView({ type: 'vocab' })} goMemo={() => setView({ type: 'memo' })}
             goWizardEdit={(planId, section) => setView({ type: 'wizard', mode: 'edit', planId, section, from: `plan:${planId}` })} />
         : view.type === 'plans' ? <PlansView tasks={tasks} lists={lists} apiPlans={apiPlans} reload={reload}
-            openPlan={k => setView({ type: 'plan', key: k })} goWizard={() => setView({ type: 'wizard' })} />
+            openPlan={k => setView({ type: 'plan', key: k })} goWizard={() => setView({ type: 'wizard' })}
+            createIntent={planCreateIntent} onCreateIntentHandled={() => setPlanCreateIntent(false)} />
         : view.type === 'plan' ? <PlanDetailView planKey={view.key} tasks={tasks} lists={lists} apiPlans={apiPlans} reload={reload}
             onBack={() => setView({ type: 'plans' })} goWizard={() => setView({ type: 'wizard' })}
             // 「調整計畫」＝Edit Mode：帶著這個計畫進精靈，不會建立新計畫
             adjustPlan={(planId, section) => setView({ type: 'wizard', mode: 'edit', planId, section, from: view.key })}
             goLocks={() => setView({ type: 'locks' })} />
         : view.type === 'study' || view.type === 'pomo' ? <StudyView tasks={tasks.filter(t => !t.deleted)} goPlans={() => setView({ type: 'plans' })} />
-        : view.type === 'calendar' ? <CalendarView tasks={tasks.filter(t => !t.deleted)} reload={reload} lists={lists} />
+        : view.type === 'calendar' ? <CalendarView tasks={tasks.filter(t => !t.deleted)} reload={reload} lists={lists}
+            addIntent={calAddIntent} onAddIntentHandled={() => setCalAddIntent(null)}
+            onTimeSettings={() => setView({ type: 'routines' })} />
         : view.type === 'schedule-history' ? <ScheduleHistoryView onRestored={() => reload('tasks')} />
         : view.type === 'locks' ? <LocksView tasks={tasks} />
         : view.type === 'routines' ? <RoutinesView />
@@ -293,7 +188,7 @@ export default function Shell({ onLogout }) {
         : view.type === 'matrix' ? <MatrixView tasks={tasks.filter(t => !t.deleted)} reload={reload} />
         : view.type === 'habits' ? <HabitsView habits={habits} reload={reload} />
         : view.type === 'stats' ? <StatsView />
-        : view.type === 'settings' ? <SettingsView />
+        : view.type === 'settings' ? <SettingsView lists={lists} reload={reload} />
         : view.type === 'pet' ? <PetView />
         // key：建立／調整不同計畫要當成不同的精靈重新開始，
         // 否則 React 會沿用同一個實例，草稿與既有任務都會是上一個計畫的
@@ -307,9 +202,18 @@ export default function Shell({ onLogout }) {
         : view.type === 'memo' ? <MemoView />
         : view.type === 'school' ? <SchoolAssignmentView tasks={tasks.filter(t => !t.deleted)} lists={lists} reload={reload} />
         : <Tasks view={view} tasks={tasks} lists={lists} filters={filters} habits={habits} reload={reload} title={titleOf()}
+            onNav={setView}
             goVocab={() => setView({ type: 'vocab' })} goMemo={() => setView({ type: 'memo' })} />}
 
       {view.type !== 'pet' && petData && <Companion pet={petData.pet} tasks={tasks} />}
+
+      {/* Global Add（§A）：Today / 計畫 / 任務 / 行事曆 共用同一顆右下 ＋。
+          Study / Wizard / Plan 明細 / 設定等操作或表單狀態不顯示。 */}
+      {(['today', 'plans', 'calendar'].includes(view.type) || TASK_VIEWS.includes(view.type)) && (
+        <GlobalAdd lists={lists} reload={reload} defaultReminderTime={saReminderTime}
+          onPlan={() => { setPlanCreateIntent(true); setViewRaw({ type: 'plans' }); }}
+          onCalendarAdd={kind => { setCalAddIntent(kind); setViewRaw({ type: 'calendar' }); }} />
+      )}
 
       {/* 手機底部導航：今天｜計畫｜〔讀書〕｜任務｜行事曆。
           「讀書」是中央主要動作，不是一般分頁——凸起的圓形按鈕、永遠是強調色。 */}
