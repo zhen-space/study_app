@@ -1229,15 +1229,23 @@ export async function runRollingPreview(userId, body) {
   for (const b of frozen) frozenMinByTask.set(Number(b.task_id), (frozenMinByTask.get(Number(b.task_id)) || 0) + (Number(b.planned_minutes) || 0));
 
   const FAR = addDays(win.rolling_start, 180);
+  // §Phase1-4/5：不再對缺 estimated_minutes 的任務默認 60 分。缺估＝需要使用者補填，
+  // 列進 missingEstimate，最後回結構化 MISSING_ESTIMATE，不猜、不產生可確認 candidate。
+  const missingEstimate = [];
   const items = [];
   for (const t of planTasks) {
     const est = Number(t.estimated_minutes) || 0;
     const frozenMin = frozenMinByTask.get(Number(t.id)) || 0;
-    // 已凍結部分不再重排；沒有 estimate 又完全沒被凍結的，給一個保守的 60 分鐘 tail。
-    const remaining = est > 0 ? Math.max(0, est - frozenMin) : (frozenMin > 0 ? 0 : 60);
-    if (remaining <= 0) continue;
-    items.push({ task_id: Number(t.id), subject_id: t.list_id ?? Number(t.id), title: t.title,
-      minutes: remaining, start: win.rolling_start, end: t.deadline_date || FAR });
+    if (est > 0) {
+      const remaining = Math.max(0, est - frozenMin);   // 已凍結部分不再重排
+      if (remaining <= 0) continue;
+      items.push({ task_id: Number(t.id), subject_id: t.list_id ?? Number(t.id), title: t.title,
+        minutes: remaining, start: win.rolling_start, end: t.deadline_date || FAR });
+    } else if (frozenMin <= 0) {
+      // 沒 estimate 又完全沒被凍結 → 需要 tail 卻不知道要排多久：要求補估。
+      missingEstimate.push(Number(t.id));
+    }
+    // est<=0 但 frozenMin>0：全部已凍結，tail 無需重排，也不需要估時。
   }
 
   // §9 trigger task：可能是 pending plan_id=NULL 的新作業（virtual membership，零 DB mutation）。
@@ -1249,70 +1257,136 @@ export async function runRollingPreview(userId, body) {
     if (triggerTask && !triggerTask.deleted && !triggerTask.completed && !triggerTask.cancelled
       && triggerTask.plan_id == null) {
       virtualPlanTaskIds.push(triggerId);
-      const est = Number(triggerTask.estimated_minutes) || 60;
-      items.push({ task_id: triggerId, subject_id: triggerTask.list_id ?? triggerId, title: triggerTask.title,
-        minutes: est, start: win.rolling_start, end: triggerTask.deadline_date || FAR });
+      const est = Number(triggerTask.estimated_minutes) || 0;
+      if (est > 0) {
+        items.push({ task_id: triggerId, subject_id: triggerTask.list_id ?? triggerId, title: triggerTask.title,
+          minutes: est, start: win.rolling_start, end: triggerTask.deadline_date || FAR });
+      } else {
+        missingEstimate.push(triggerId);
+      }
     }
+  }
+
+  // §Phase1-5：任何要重排的 task 缺 estimate 就 fail closed——回 task ids，不排、不回 candidate。
+  if (missingEstimate.length) {
+    return { status: 200, body: {
+      window: win, base_version_id: baseVersionId,
+      code: 'MISSING_ESTIMATE',
+      missing_estimate_task_ids: [...new Set(missingEstimate)],
+      blocks: null, candidate_blocks: null, diff: null, infeasible: null,
+    } };
   }
 
   const freezePins = frozen.map(b => ({ id: b.id, task_id: b.task_id, date: b.date, start_time: b.start_time, end_time: b.end_time, planned_minutes: b.planned_minutes, task_title_snapshot: b.title }));
 
+  // §Phase1-1/2：candidate 必須是**完整 user-level schedule** = 其他 Plan 的 carry-forward
+  // ＋ current Plan 的 placement，與 applySchedule 走同一支 builder，otherwise diff 會把
+  // 其他 Plan 誤判成 removed、且 preview 與 apply 版本不一致。effFrom=freeze_start（今天）
+  // 與 rolling/apply 傳的 effectiveFrom 一致。
+  const carryForward = (await sched.otherPlanCarryForwardBlocks(q, userId, baseVersionId, planId, win.freeze_start))
+    .map(b => ({ task_id: Number(b.task_id), date: b.date, start_time: b.start_time || null, end_time: b.end_time || null, planned_minutes: b.planned_minutes ?? null }));
+
+  const frozenIdSet = new Set(frozen.map(b => Number(b.task_id)));
+  let pre = null;
+  let currentCandidate;
   if (!items.length) {
-    // 沒有要重排的 tail：candidate 就是凍結的既有安排本身（可能是全部凍結完了）。
-    const candidate0 = freezePins.map(b => ({ task_id: Number(b.task_id), date: b.date, start_time: b.start_time || null, end_time: b.end_time || null, planned_minutes: b.planned_minutes ?? null }));
-    return { status: 200, body: { window: win, base_version_id: baseVersionId, frozen: freezePins,
-      movable: movable.map(b => ({ id: b.id, task_id: b.task_id, date: b.date, start_time: b.start_time, end_time: b.end_time })),
-      blocks: candidate0, attach_task_ids: [], diff: calculateScheduleDiff(activeBlocks.map(b => ({ task_id: Number(b.task_id), date: b.date, start_time: b.start_time, end_time: b.end_time, planned_minutes: b.planned_minutes })), candidate0, { comparisonFrom: win.today, includeUnchanged: true }), unplaced: false, infeasible: null } };
+    // 沒有要重排的 tail：current Plan candidate 就是凍結的既有安排本身。
+    currentCandidate = freezePins.map(b => ({ task_id: Number(b.task_id), date: b.date, start_time: b.start_time || null, end_time: b.end_time || null, planned_minutes: b.planned_minutes ?? null }));
+  } else {
+    // §Phase1-6：PLAN_CAPACITY_GAP 要有意義，容量必須以「deadline 綁定的視窗」量測，
+    // 不是固定 180 天（那樣容量永遠夠、gap 永遠 0）。所有 tail 都有 deadline 時，
+    // 視窗末端＝最晚 deadline；只要有一項無 deadline（end=FAR）就退回 FAR。
+    // 各 item 本來就以自己的 deadline 綁定放置，收窄整體視窗不改變實際 placement。
+    const previewEnd = items.reduce((mx, i) => (i.end > mx ? i.end : mx), win.rolling_start);
+    pre = await runPreview(userId, {
+      items, plan_id: planId, startDate: win.rolling_start, endDate: previewEnd, timed: true,
+      external_busy: body.external_busy,
+    }, { freezePins, virtualPlanTaskIds });
+    if (pre.status !== 200) return pre;
+    currentCandidate = (pre.body.blocks || []).filter(b => b.task_id != null).map(b => ({
+      task_id: Number(b.task_id), date: b.date, start_time: b.start_time || null, end_time: b.end_time || null,
+      planned_minutes: b.planned_minutes ?? null,
+    }));
   }
 
-  const pre = await runPreview(userId, {
-    items, plan_id: planId, startDate: win.rolling_start, endDate: FAR, timed: true,
-    external_busy: body.external_busy,
-  }, { freezePins, virtualPlanTaskIds });
-  if (pre.status !== 200) return pre;
-
-  let candidate = (pre.body.blocks || []).filter(b => b.task_id != null).map(b => ({
-    task_id: Number(b.task_id), date: b.date, start_time: b.start_time || null, end_time: b.end_time || null,
-    planned_minutes: b.planned_minutes ?? null,
-  }));
-
-  // §7/§11：placement 演算法在範圍太短時會退讓把 block 排到 deadline 之後。
-  // preview 絕不能把「排到 deadline 後」當成成功——用此刻 Task 的 deadline 逐一驗，
-  // 任何違反都代表 strict freeze 下排不進 → 標記 infeasible，並把違反的 block 從
-  // 回傳的 candidate 拿掉（不呈現、也不可 apply；apply 端 enforceDeadlines 會再擋）。
+  // §Phase1-3：所有 candidate block（含 carry-forward、tail、以及 Stability Window 內 frozen）
+  // 都以 CURRENT Task deadline 重驗——不再跳過 frozen。deadlineById 覆蓋所有涉及的 task。
+  const allTaskIds = [...new Set([...carryForward, ...currentCandidate].map(b => Number(b.task_id)))];
   const deadlineById = new Map();
-  for (const t of planTasks) deadlineById.set(Number(t.id), { deadline_date: t.deadline_date, deadline_time: t.deadline_time });
-  if (triggerTask) deadlineById.set(Number(triggerTask.id), { deadline_date: triggerTask.deadline_date, deadline_time: triggerTask.deadline_time });
-  const frozenIdSet = new Set(frozen.map(b => Number(b.task_id)));
+  if (allTaskIds.length) {
+    const rows = await q.all(`SELECT id, deadline_date, deadline_time FROM tasks WHERE user_id=? AND id IN (${allTaskIds.map(() => '?').join(',')})`, [userId, ...allTaskIds]);
+    for (const r of rows) deadlineById.set(Number(r.id), { deadline_date: r.deadline_date, deadline_time: r.deadline_time });
+  }
+  // 違反 deadline 的**非凍結** current tail block 從可套用的 candidate 拿掉（不呈現、不可 apply；
+  // apply 端 enforceDeadlines 仍會擋）。凍結／carry-forward 的違反不移除（那是既存事實），
+  // 但一律列進 deadline_violations 並使整體 infeasible，交給使用者處理。
   const deadlineViolations = [];
-  candidate = candidate.filter(b => {
-    if (frozenIdSet.has(Number(b.task_id))) return true;   // 凍結的既有安排不在此重判
+  currentCandidate = currentCandidate.filter(b => {
     const v = deadlineViolation(b, deadlineById.get(Number(b.task_id)));
-    if (v) { deadlineViolations.push(v); return false; }
-    return true;
+    if (!v) return true;
+    deadlineViolations.push(v);
+    return frozenIdSet.has(Number(b.task_id));   // 凍結的違反仍保留（呈現＋標記 infeasible）
   });
+  for (const b of carryForward) {
+    const v = deadlineViolation(b, deadlineById.get(Number(b.task_id)));
+    if (v) deadlineViolations.push(v);
+  }
 
-  // §6 diff vs 目前 active。frozen 今天／明天必須全部在 unchanged。
+  // 完整 user-level candidate（§Phase1-1）：carry-forward ＋ current Plan candidate。
+  const candidateBlocks = [...carryForward, ...currentCandidate];
+
+  // §6 diff vs 目前 active（全 user）。frozen 今天／明天與其他 Plan 都必須在 unchanged。
   const before = activeBlocks.map(b => ({ task_id: Number(b.task_id), date: b.date, start_time: b.start_time, end_time: b.end_time, planned_minutes: b.planned_minutes }));
-  const diff = calculateScheduleDiff(before, candidate, { comparisonFrom: win.today, includeUnchanged: true });
+  const diff = calculateScheduleDiff(before, candidateBlocks, { comparisonFrom: win.today, includeUnchanged: true });
   const frozenTaskIds = new Set(frozen.map(b => Number(b.task_id)));
   const frozenBroken = diff.items.some(it => frozenTaskIds.has(Number(it.task_id)) && (it.type === 'moved' || it.type === 'removed'));
 
-  // §7 INFEASIBLE_WITH_FREEZE：strict freeze 下 trigger 排不進（unplaced 分鐘）→ 結構化回傳，
-  // 不 silent break freeze、不排到 deadline 後、不假裝成功。
-  let infeasible = null;
+  // §Phase1-6/7 gap 分類：
+  //   TASK_INFEASIBLE  —— 某個 task 在自己的 deadline 前排不進（deadline 違反 / freeze 下無位置）。
+  //   PLAN_CAPACITY_GAP —— 整個 Plan 需要的分鐘數 > 視窗內可用容量（reuse feasibilityGap）。
+  const feas = pre?.body?.feasibility || null;
+  const planCapacityGap = feas && feas.gap_minutes > 0 ? {
+    code: 'PLAN_CAPACITY_GAP',
+    requested_minutes: feas.requested_minutes, available_minutes: feas.capacity_minutes,
+    scheduled_minutes: feas.scheduled_minutes, gap_minutes: feas.gap_minutes, gap_hours: feas.gap_hours,
+  } : null;
+
   const liveTrigger = triggerTask && !triggerTask.deleted && !triggerTask.completed && !triggerTask.cancelled ? triggerTask : null;
-  const placedTrigger = liveTrigger ? candidate.some(b => Number(b.task_id) === Number(liveTrigger.id)) : true;
-  if (pre.body.unplaced || frozenBroken || deadlineViolations.length || (liveTrigger && !placedTrigger)) {
+  const placedTrigger = liveTrigger ? currentCandidate.some(b => Number(b.task_id) === Number(liveTrigger.id)) : true;
+
+  // TASK_INFEASIBLE 清單：deadline 違反的 task ＋ freeze 下排不進的 trigger。
+  const infeasibleTaskIds = new Set(deadlineViolations.map(v => Number(v.task_id)));
+  if (liveTrigger && !placedTrigger) infeasibleTaskIds.add(Number(liveTrigger.id));
+  const taskInfeasible = [...infeasibleTaskIds].map(id => {
+    const dl = deadlineById.get(id) || (liveTrigger && Number(liveTrigger.id) === id ? { deadline_date: liveTrigger.deadline_date, deadline_time: liveTrigger.deadline_time } : {});
+    return { code: 'TASK_INFEASIBLE', task_id: id, deadline_date: dl?.deadline_date || null, deadline_time: dl?.deadline_time || null,
+      reason: deadlineViolations.some(v => Number(v.task_id) === id) ? 'deadline_violated' : 'no_slot_under_freeze' };
+  });
+
+  // solutions：freeze 放寬 ＋ feasibility 建議（延長天數／每天加時間）。真正 Lock 不在其中。
+  const solutions = [];
+  if (frozenBroken || (liveTrigger && !placedTrigger)) solutions.push({ type: 'relax_stability_window' }, { type: 'select_movable_blocks' });
+  if (planCapacityGap) for (const rec of feas.recommendations || []) solutions.push(rec);
+
+  let infeasible = null;
+  if (pre?.body?.unplaced || frozenBroken || deadlineViolations.length || (liveTrigger && !placedTrigger) || planCapacityGap) {
     infeasible = {
       code: 'INFEASIBLE_WITH_FREEZE',
       freeze_start: win.freeze_start, freeze_through: win.freeze_through, rolling_start: win.rolling_start,
       trigger_task_id: liveTrigger ? Number(liveTrigger.id) : (Number.isInteger(triggerId) ? triggerId : null),
       deadline_date: liveTrigger?.deadline_date || null,
       deadline_time: liveTrigger?.deadline_time || null,
-      required_minutes: liveTrigger ? (Number(liveTrigger.estimated_minutes) || 60) : null,
-      reason: frozenBroken ? 'freeze_conflict' : (deadlineViolations.length ? 'deadline_before_rolling_start' : 'insufficient_time_under_freeze'),
+      required_minutes: liveTrigger ? (Number(liveTrigger.estimated_minutes) || null) : null,
+      reason: frozenBroken ? 'freeze_conflict' : (deadlineViolations.length ? 'deadline_before_rolling_start' : (planCapacityGap ? 'plan_capacity_gap' : 'insufficient_time_under_freeze')),
       deadline_violations: deadlineViolations,
+      // §Phase1-6/7 結構化 gap：
+      task_infeasible: taskInfeasible,
+      plan_capacity_gap: planCapacityGap,
+      requested_minutes: feas?.requested_minutes ?? null,
+      available_minutes: feas?.capacity_minutes ?? null,
+      scheduled_minutes: feas?.scheduled_minutes ?? null,
+      gap_minutes: feas?.gap_minutes ?? null,
+      solutions,
       options: ['KEEP_CURRENT', 'RELAX_FREEZE', 'SELECT_MOVABLE_BLOCKS'],
     };
   }
@@ -1322,10 +1396,13 @@ export async function runRollingPreview(userId, body) {
     base_version_id: baseVersionId,
     frozen: freezePins,
     movable: movable.map(b => ({ id: b.id, task_id: b.task_id, date: b.date, start_time: b.start_time, end_time: b.end_time })),
-    blocks: candidate,
+    // §Phase1-1：blocks = current Plan candidate（送 rolling/apply；apply 端 §5 自行 carry-forward
+    //   重建，preview 不信前端傳其他 Plan）。candidate_blocks = 完整 user-level（＝apply 會建的版本）。
+    blocks: currentCandidate,
+    candidate_blocks: candidateBlocks,
     attach_task_ids: virtualPlanTaskIds,
     diff,
-    unplaced: !!pre.body.unplaced,
+    unplaced: !!pre?.body?.unplaced,
     infeasible,
   } };
 }
