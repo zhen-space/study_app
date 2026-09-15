@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { api } from '../api';
 import { matchView, groupTasks, defaultSort, PRI, today, addDays } from './helpers';
-import { relativeDay } from './dateSemantics';
+import { relativeDay, zhDateShort } from './dateSemantics';
 import VocabCard from './VocabCard';
 import MemoCard from './MemoCard';
 
@@ -664,7 +664,7 @@ export default function Tasks({ view, tasks, lists, filters, habits = [], reload
             ? shown.map(t => (
               <div key={t.id} className="trow" style={{ cursor: 'default' }}>
                 <span className="title" style={{ color: 'var(--muted)' }}>{t.title}</span>
-                {t.due_date && <span className="muted">{t.due_date.slice(5)}</span>}
+                {t.due_date && <span className="muted">{zhDateShort(t.due_date)}</span>}
                 <button className="btn sm ghost" onClick={() => restore(t)}>還原</button>
                 <button className="icon-btn" title="永久刪除" onClick={() => hardDel(t)}>✕</button>
               </div>

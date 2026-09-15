@@ -154,13 +154,13 @@ export default function PlanDetailView({ planKey, tasks, lists, apiPlans = [], r
     const itemIds = [...new Set((tasks || [])
       .filter(t => Number(t.plan_id) === Number(plan.planId) && !t.completed && !t.deleted && t.material_content_item_id != null)
       .map(t => t.material_content_item_id))];
+    // 沒有可複製的教材內容（例如純手動計畫）就走一般建立流程，不建立空的草稿計畫。
+    if (!itemIds.length || !adjustPlan) { close(); goWizard?.(); return; }
     const np = await api('/plans', { method: 'POST', body: { name: `${plan.name}（新一輪）`, status: 'draft', source: 'manual' } });
-    if (itemIds.length) await selectItems(np.id, itemIds, true).catch(() => {});
+    await selectItems(np.id, itemIds, true).catch(() => {});
     close();
-    await reload();
-    // 進精靈設定時間並套用（有複製到選取就用 edit 模式讀回選取；否則走一般建立）
-    if (itemIds.length && adjustPlan) adjustPlan(np.id, '');
-    else goWizard?.();
+    // 進精靈（在新計畫上、edit 模式讀回剛複製的選取）設定時間並套用產生任務。
+    adjustPlan(np.id, '');
   });
 
   // 暫停／刪除：retain 沒選之前不會送出，後端也會再擋一次（缺 boolean 一律 400）。

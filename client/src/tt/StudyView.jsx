@@ -19,8 +19,10 @@ const MAX_ROWS = 8;
 export function pickStudyTasks(tasks, td = today(), limit = MAX_ROWS) {
   const rank = t => (!t.due_date ? 2 : t.due_date < td ? 0 : 1);   // 逾期 → 有日期 → 沒日期
   return tasks
-    // 已結束／暫停等非進行中計畫的任務不是「現在可以開始讀」的候選
-    .filter(t => !t.completed && !t.deleted && onActivePlan(t))
+    // 已完成／已取消／已刪除、以及非進行中計畫（已結束／暫停／完成）的任務，
+    // 都不是「現在可以開始讀」的候選。取消的作業若漏掉，server 也會在開始時 409，
+    // 但候選清單就不該列出來。
+    .filter(t => !t.completed && !t.cancelled && !t.deleted && onActivePlan(t))
     .sort((a, b) =>
       rank(a) - rank(b)
       || (a.due_date || '9999-99-99').localeCompare(b.due_date || '9999-99-99')
