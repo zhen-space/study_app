@@ -1,0 +1,368 @@
+// 持續型段考 Plan Phase 2：Atomic Content Attachment（backend/domain）迴歸。
+//
+// 擴充 /api/schedule/rolling/preview 與 /apply：在不先改 production state 的前提下
+// 預覽並「原子」加入 (1) 多個 existing standalone Task (2) 多個 School Assignment
+// (3) Material content item selection (4) Material selection 所需的新 Task。
+//
+// 直接呼叫 engine（runRollingPreview / applySchedule），才驗得到 transaction 內的
+// defence-in-depth 與 rollback。三時區各跑一次。
+import { test, describe, before } from 'node:test';
+import assert from 'node:assert/strict';
+import { mkdtempSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import path from 'node:path';
+
+process.env.DB_FILE = path.join(mkdtempSync(path.join(tmpdir(), 'attach-')), 'attach.sqlite');
+process.env.TURSO_DATABASE_URL = '';
+
+const { q, initSchema } = await import('../src/db/init.js');
+const sched = await import('../src/schedule/persistence.js');
+const { runRollingPreview } = await import('../src/routes/schedule.js');
+const { todayTW, addDays } = await import('../src/util/date.js');
+
+const TODAY = todayTW();
+const D = n => addDays(TODAY, n);
+
+let uid = 5000;
+const nextUser = () => ++uid;
+
+async function mkUser(id) {
+  await q.run('INSERT INTO users (id,email,password_hash,sleep_start,sleep_end,meal_windows) VALUES (?,?,?,?,?,?)',
+    [id, `att${id}@t`, 'x', '23:00', '07:00', '[]']);
+}
+async function mkPlan(userId, status = 'active', target_date = D(30)) {
+  const p = await q.run('INSERT INTO plans (user_id,name,status,target_date) VALUES (?,?,?,?)', [userId, `計畫${userId}`, status, target_date]);
+  return p.lastInsertRowid;
+}
+async function mkList(userId, name = '數學') {
+  const l = await q.run('INSERT INTO lists (user_id,name) VALUES (?,?)', [userId, name]);
+  return l.lastInsertRowid;
+}
+// standalone Task（plan_id=NULL）；o.kind='school_assignment' + deadline 就是 School Assignment。
+const estOf = o => (Object.prototype.hasOwnProperty.call(o, 'est') ? o.est : 60);   // 允許顯式 null
+async function mkStandalone(userId, listId, o = {}) {
+  const r = await q.run(
+    `INSERT INTO tasks (user_id,list_id,title,plan_id,estimated_minutes,deadline_date,deadline_time,task_kind,school_assignment_type)
+     VALUES (?,?,?,?,?,?,?,?,?)`,
+    [userId, listId, o.title || '待辦', o.plan_id ?? null, estOf(o), o.deadline_date ?? null, o.deadline_time ?? null,
+      o.kind || 'standard', o.school_assignment_type ?? null]);
+  return r.lastInsertRowid;
+}
+async function mkPlanTask(userId, planId, listId, o = {}) {
+  return mkStandalone(userId, listId, { ...o, plan_id: planId });
+}
+async function seedVersion(userId, blocks) {
+  const v = await sched.createScheduleVersion(userId, { source: sched.SOURCE.INITIAL, effectiveFrom: D(0), blocks });
+  return v.version_id;
+}
+async function mkBook(userId, listId) {
+  const b = await q.run('INSERT INTO material_books (user_id,title,subject_list_id) VALUES (?,?,?)', [userId, '教材', listId]);
+  return b.lastInsertRowid;
+}
+async function mkNode(userId, bookId) {
+  const n = await q.run('INSERT INTO material_nodes (user_id,book_id,parent_id,kind,title) VALUES (?,?,?,?,?)', [userId, bookId, null, 'chapter', '章']);
+  return n.lastInsertRowid;
+}
+async function mkContentItem(userId, bookId, nodeId, o = {}) {
+  const r = await q.run(
+    'INSERT INTO material_content_items (user_id,book_id,node_id,kind,title,estimated_minutes) VALUES (?,?,?,?,?,?)',
+    [userId, bookId, nodeId, o.kind || 'reading', o.title || '內容', estOf(o)]);
+  return r.lastInsertRowid;
+}
+// 一次做好一本書＋一個章＋一份內容，回傳 content_item_id。
+async function mkMaterialItem(userId, listId, o = {}) {
+  const book = await mkBook(userId, listId);
+  const node = await mkNode(userId, book);
+  return mkContentItem(userId, book, node, o);
+}
+
+const countTasks = u => q.get('SELECT COUNT(*) c FROM tasks WHERE user_id=?', [u]).then(r => r.c);
+const countPMI = u => q.get('SELECT COUNT(*) c FROM plan_material_items WHERE user_id=?', [u]).then(r => r.c);
+const countProgress = u => q.get('SELECT COUNT(*) c FROM material_progress WHERE user_id=?', [u]).then(r => r.c);
+const countVersions = u => q.get('SELECT COUNT(*) c FROM schedule_versions WHERE user_id=?', [u]).then(r => r.c);
+const countSessions = u => q.get('SELECT COUNT(*) c FROM study_sessions WHERE user_id=?', [u]).then(r => r.c);
+
+// 把一次 preview 的結果原封不動送進 apply（模擬真實 client round-trip）。
+async function applyFromPreview(u, planId, pv, extra = {}) {
+  const b = pv.body;
+  return sched.applySchedule(u, {
+    planId, source: sched.SOURCE.AI_REPLAN, reason: 'phase2',
+    effectiveFrom: b.window.freeze_start,
+    blocks: b.blocks || [],
+    expectedBaseVersionId: b.base_version_id ?? null,
+    attachTaskIds: b.attach_task_ids || [],
+    taskCreates: b.task_creates || [],
+    freezeBlocks: (b.frozen && b.frozen.length)
+      ? b.frozen.map(f => ({ task_id: f.task_id, date: f.date, start_time: f.start_time, end_time: f.end_time, planned_minutes: f.planned_minutes }))
+      : null,
+    enforceDeadlines: true,
+    ...extra,
+  });
+}
+
+before(async () => { await initSchema(); });
+
+describe('Phase 2. Atomic Content Attachment', () => {
+  test('P1 preview 零 DB mutation（attach + material selection 都不寫任何表）', async () => {
+    const u = nextUser(); await mkUser(u);
+    const plan = await mkPlan(u); const list = await mkList(u);
+    const t1 = await mkStandalone(u, list, { est: 60 });
+    const cid = await mkMaterialItem(u, list, { est: 90 });
+    const before = { tasks: await countTasks(u), pmi: await countPMI(u), prog: await countProgress(u), ver: await countVersions(u) };
+    const r = await runRollingPreview(u, { plan_id: plan, add_task_ids: [t1], material_selections: [{ content_item_id: cid, client_key: 'k1' }] });
+    assert.equal(r.status, 200);
+    assert.equal(await countTasks(u), before.tasks, 'preview 不得建立 Task');
+    assert.equal(await countPMI(u), before.pmi, 'preview 不得寫 plan_material_items');
+    assert.equal(await countProgress(u), before.prog, 'preview 不得寫 material_progress');
+    assert.equal(await countVersions(u), before.ver, 'preview 不得建立 ScheduleVersion');
+    assert.equal((await q.get('SELECT plan_id FROM tasks WHERE id=?', [t1])).plan_id, null, 'preview 不得 PATCH tasks.plan_id');
+  });
+
+  test('P2 批次 existing Task attach：多個 standalone Task 進 attach_task_ids 與 candidate', async () => {
+    const u = nextUser(); await mkUser(u);
+    const plan = await mkPlan(u); const list = await mkList(u);
+    const ids = [];
+    for (let i = 0; i < 3; i++) ids.push(await mkStandalone(u, list, { est: 60, title: `T${i}` }));
+    const r = await runRollingPreview(u, { plan_id: plan, add_task_ids: ids });
+    assert.equal(r.status, 200);
+    for (const id of ids) assert.ok(r.body.attach_task_ids.includes(Number(id)), `attach_task_ids 應含 ${id}`);
+    assert.deepEqual([...r.body.pending_changes.attach_task_ids].sort(), [...ids].sort());
+    for (const id of ids) assert.ok(r.body.candidate_blocks.some(b => Number(b.task_id) === Number(id)), `candidate 應排入 ${id}`);
+  });
+
+  test('P3 批次 School Assignment attach + P4 deadline 完整保留（apply 後不被覆寫）', async () => {
+    const u = nextUser(); await mkUser(u);
+    const plan = await mkPlan(u); const list = await mkList(u);
+    const sa1 = await mkStandalone(u, list, { est: 60, kind: 'school_assignment', school_assignment_type: 'homework', deadline_date: D(4), deadline_time: '18:00', title: 'SA1' });
+    const sa2 = await mkStandalone(u, list, { est: 60, kind: 'school_assignment', school_assignment_type: 'report', deadline_date: D(6), title: 'SA2' });
+    const pv = await runRollingPreview(u, { plan_id: plan, add_task_ids: [sa1, sa2] });
+    assert.equal(pv.status, 200);
+    assert.ok(pv.body.attach_task_ids.includes(Number(sa1)) && pv.body.attach_task_ids.includes(Number(sa2)));
+    // School Assignment 的 candidate block 不得晚於其 deadline（日期＋同日 deadline_time）。
+    for (const b of pv.body.candidate_blocks) {
+      if (Number(b.task_id) === Number(sa1)) { assert.ok(b.date <= D(4), 'SA1 不得排到 deadline 後'); if (b.date === D(4) && b.end_time) assert.ok(b.end_time <= '18:00'); }
+      if (Number(b.task_id) === Number(sa2)) assert.ok(b.date <= D(6), 'SA2 不得排到 deadline 後');
+    }
+    const res = await applyFromPreview(u, plan, pv);
+    assert.ok(res.version_id);
+    // deadline_date/deadline_time 一字不動（mirror 只寫 due_date/due_time）。
+    const a1 = await q.get('SELECT plan_id,deadline_date,deadline_time FROM tasks WHERE id=?', [sa1]);
+    assert.equal(a1.plan_id, plan, 'School Assignment 已掛入本計畫');
+    assert.equal(a1.deadline_date, D(4), 'deadline_date 不得被覆寫');
+    assert.equal(a1.deadline_time, '18:00', 'deadline_time 不得被覆寫');
+    assert.equal((await q.get('SELECT deadline_date FROM tasks WHERE id=?', [sa2])).deadline_date, D(6));
+  });
+
+  test('P5 Material selection + Task create 原子成功（建立 Task、寫 selection、排入 block）', async () => {
+    const u = nextUser(); await mkUser(u);
+    const plan = await mkPlan(u); const list = await mkList(u);
+    const cid = await mkMaterialItem(u, list, { est: 90, title: '第一章閱讀' });
+    const pv = await runRollingPreview(u, { plan_id: plan, material_selections: [{ content_item_id: cid, client_key: 'm1' }] });
+    assert.equal(pv.status, 200);
+    assert.equal(pv.body.task_creates.length, 1, 'material selection → 一個待建立 Task');
+    assert.equal(pv.body.task_creates[0].content_item_id, cid);
+    assert.ok(pv.body.candidate_blocks.some(b => b.client_key === 'm1'), 'candidate 用 client_key 佔位（尚無 task_id）');
+    const versBefore = await countVersions(u);
+    const res = await applyFromPreview(u, plan, pv);
+    assert.ok(res.version_id);
+    // 新 Task 建立、指向 material item、掛在本計畫。
+    const task = await q.get('SELECT id,plan_id,material_content_item_id,estimated_minutes FROM tasks WHERE user_id=? AND material_content_item_id=?', [u, cid]);
+    assert.ok(task, '應建立對應 Material 的新 Task');
+    assert.equal(task.plan_id, plan);
+    assert.equal(task.estimated_minutes, 90, 'estimated_minutes 以 CURRENT material item 為準');
+    // plan_material_items selection 列（selected=1、指向新 Task）。
+    const pmi = await q.get('SELECT selected,task_id,removed_at FROM plan_material_items WHERE user_id=? AND plan_id=? AND content_item_id=?', [u, plan, cid]);
+    assert.ok(pmi, '應寫入 plan_material_items selection');
+    assert.equal(pmi.selected, 1);
+    assert.equal(Number(pmi.task_id), Number(task.id));
+    assert.equal(pmi.removed_at, null);
+    // block 進入新版本。
+    assert.ok(await q.get('SELECT 1 FROM scheduled_blocks WHERE schedule_version_id=? AND task_id=?', [res.version_id, task.id]), 'Material Task 應有排定 block');
+    assert.equal(await countVersions(u), versBefore + 1, '只建立一個新 ScheduleVersion');
+  });
+
+  test('P6 Material completion 不被修改（selection ≠ completion）', async () => {
+    const u = nextUser(); await mkUser(u);
+    const plan = await mkPlan(u); const list = await mkList(u);
+    const cid = await mkMaterialItem(u, list, { est: 60 });
+    const progBefore = await countProgress(u);
+    const pv = await runRollingPreview(u, { plan_id: plan, material_selections: [{ content_item_id: cid, client_key: 'm1' }] });
+    await applyFromPreview(u, plan, pv);
+    assert.equal(await countProgress(u), progBefore, 'apply 不得寫 material_progress（完成度）');
+    const prog = await q.get('SELECT completed FROM material_progress WHERE user_id=? AND content_item_id=?', [u, cid]);
+    assert.equal(prog, undefined, '沒有任何 completion 列被建立');
+  });
+
+  test('P7 inactive Plan 拒絕（preview + apply）', async () => {
+    const u = nextUser(); await mkUser(u);
+    const plan = await mkPlan(u, 'paused'); const list = await mkList(u);
+    const t = await mkStandalone(u, list, { est: 60 });
+    const r = await runRollingPreview(u, { plan_id: plan, add_task_ids: [t] });
+    assert.equal(r.status, 409);
+    assert.equal(r.body.code, 'PLAN_NOT_ROLLING_ELIGIBLE');
+    await assert.rejects(() => sched.applySchedule(u, { planId: plan, source: sched.SOURCE.AI_REPLAN, effectiveFrom: D(0), blocks: [], attachTaskIds: [t], enforceDeadlines: true }));
+    assert.equal((await q.get('SELECT plan_id FROM tasks WHERE id=?', [t])).plan_id, null, 'inactive plan 不得掛入 Task');
+  });
+
+  test('P8 cross-user 拒絕（別人的 Task / material item）', async () => {
+    const owner = nextUser(); await mkUser(owner);
+    const other = nextUser(); await mkUser(other);
+    const listO = await mkList(other);
+    const foreignTask = await mkStandalone(other, listO, { est: 60 });
+    const foreignItem = await mkMaterialItem(other, listO, { est: 60 });
+    const plan = await mkPlan(owner); await mkList(owner);
+    const r1 = await runRollingPreview(owner, { plan_id: plan, add_task_ids: [foreignTask] });
+    assert.equal(r1.body.code, 'ADD_VALIDATION_FAILED');
+    assert.ok(r1.body.add_errors.some(e => e.kind === 'task' && Number(e.id) === Number(foreignTask) && e.reason === 'not_found'));
+    const r2 = await runRollingPreview(owner, { plan_id: plan, material_selections: [{ content_item_id: foreignItem, client_key: 'x' }] });
+    assert.equal(r2.body.code, 'ADD_VALIDATION_FAILED');
+    assert.ok(r2.body.add_errors.some(e => e.kind === 'material' && Number(e.id) === Number(foreignItem) && e.reason === 'not_found'));
+    // apply 端同樣擋下（owner-scoped）。
+    await assert.rejects(() => sched.applySchedule(owner, { planId: plan, source: sched.SOURCE.AI_REPLAN, effectiveFrom: D(0), blocks: [], attachTaskIds: [foreignTask], enforceDeadlines: true }));
+    assert.equal((await q.get('SELECT plan_id FROM tasks WHERE id=?', [foreignTask])).plan_id, null);
+  });
+
+  test('P9 already-attached / attached-to-other-plan 拒絕（preview + apply）', async () => {
+    const u = nextUser(); await mkUser(u);
+    const planA = await mkPlan(u); const planB = await mkPlan(u); const list = await mkList(u);
+    const inThis = await mkPlanTask(u, planA, list, { est: 60 });        // 已在 planA
+    const inOther = await mkPlanTask(u, planB, list, { est: 60 });       // 在 planB
+    const r1 = await runRollingPreview(u, { plan_id: planA, add_task_ids: [inThis] });
+    assert.equal(r1.body.code, 'ADD_VALIDATION_FAILED');
+    assert.ok(r1.body.add_errors.some(e => Number(e.id) === Number(inThis) && e.reason === 'already_attached'));
+    const r2 = await runRollingPreview(u, { plan_id: planA, add_task_ids: [inOther] });
+    assert.ok(r2.body.add_errors.some(e => Number(e.id) === Number(inOther) && e.reason === 'attached_to_other_plan'));
+    // apply：把 planB 的 Task 掛到 planA 一律拒絕。
+    await assert.rejects(() => sched.applySchedule(u, { planId: planA, source: sched.SOURCE.AI_REPLAN, effectiveFrom: D(0), blocks: [], attachTaskIds: [inOther], enforceDeadlines: true }));
+    assert.equal(Number((await q.get('SELECT plan_id FROM tasks WHERE id=?', [inOther])).plan_id), Number(planB), 'planB Task 仍屬 planB');
+  });
+
+  test('P10 missing estimate fail closed（existing Task 與 material item）', async () => {
+    const u = nextUser(); await mkUser(u);
+    const plan = await mkPlan(u); const list = await mkList(u);
+    const noEst = await mkStandalone(u, list, { est: null });
+    const r1 = await runRollingPreview(u, { plan_id: plan, add_task_ids: [noEst] });
+    assert.equal(r1.body.code, 'MISSING_ESTIMATE');
+    assert.ok(r1.body.missing_estimate_task_ids.includes(Number(noEst)));
+    assert.equal(r1.body.blocks, null);
+    const cidNoEst = await mkMaterialItem(u, list, { est: null });
+    const r2 = await runRollingPreview(u, { plan_id: plan, material_selections: [{ content_item_id: cidNoEst, client_key: 'mm' }] });
+    assert.equal(r2.body.code, 'MISSING_ESTIMATE');
+    assert.ok(r2.body.missing_estimate_material_keys.includes('mm'));
+    assert.equal(r2.body.candidate_blocks, null);
+  });
+
+  test('P11 already-completed material 拒絕', async () => {
+    const u = nextUser(); await mkUser(u);
+    const plan = await mkPlan(u); const list = await mkList(u);
+    const cid = await mkMaterialItem(u, list, { est: 60 });
+    await q.run('INSERT INTO material_progress (user_id,content_item_id,completed,completed_at) VALUES (?,?,1,?)', [u, cid, D(0)]);
+    const r = await runRollingPreview(u, { plan_id: plan, material_selections: [{ content_item_id: cid, client_key: 'c' }] });
+    assert.equal(r.body.code, 'ADD_VALIDATION_FAILED');
+    assert.ok(r.body.add_errors.some(e => e.kind === 'material' && Number(e.id) === Number(cid) && e.reason === 'already_completed'));
+  });
+
+  test('P12 stale preview → rollback（attach / create / version 都不留下）', async () => {
+    const u = nextUser(); await mkUser(u);
+    const plan = await mkPlan(u); const list = await mkList(u);
+    const seedTask = await mkPlanTask(u, plan, list, { est: 60 });
+    const v = await seedVersion(u, [{ task_id: seedTask, date: D(2), start_time: '19:00', end_time: '20:00', planned_minutes: 60 }]);
+    const attach = await mkStandalone(u, list, { est: 60 });
+    const cid = await mkMaterialItem(u, list, { est: 60 });
+    const tasksBefore = await countTasks(u); const pmiBefore = await countPMI(u); const verBefore = await countVersions(u);
+    await assert.rejects(() => sched.applySchedule(u, {
+      planId: plan, source: sched.SOURCE.AI_REPLAN, effectiveFrom: D(0),
+      blocks: [{ task_id: seedTask, date: D(3), start_time: '19:00', end_time: '20:00', planned_minutes: 60 },
+        { client_key: 'm', date: D(3), start_time: '20:10', end_time: '21:10', planned_minutes: 60 }],
+      expectedBaseVersionId: v - 999,               // 過時 → STALE
+      attachTaskIds: [attach], taskCreates: [{ client_key: 'm', title: 'M', material_content_item_id: cid }],
+      enforceDeadlines: true,
+    }), e => e.code === 'STALE_SCHEDULE_PREVIEW');
+    assert.equal((await q.get('SELECT plan_id FROM tasks WHERE id=?', [attach])).plan_id, null, 'attach 已 rollback');
+    assert.equal(await countTasks(u), tasksBefore, 'task create 已 rollback');
+    assert.equal(await countPMI(u), pmiBefore, 'selection 已 rollback');
+    assert.equal(await countVersions(u), verBefore, '未建立新版本');
+  });
+
+  test('P13 deadline/target 違反 → 整筆 rollback（含 attach、material create、selection）', async () => {
+    const u = nextUser(); await mkUser(u);
+    const plan = await mkPlan(u, 'active', D(3)); const list = await mkList(u);   // Plan target D(3)
+    const seedTask = await mkPlanTask(u, plan, list, { est: 60 });
+    const v = await seedVersion(u, [{ task_id: seedTask, date: D(2), start_time: '19:00', end_time: '20:00', planned_minutes: 60 }]);
+    const attach = await mkStandalone(u, list, { est: 60 });
+    const cid = await mkMaterialItem(u, list, { est: 60 });
+    const tasksBefore = await countTasks(u); const pmiBefore = await countPMI(u); const verBefore = await countVersions(u);
+    // material create 的 block 排在 D(4) > Plan target D(3) → DEADLINE_VIOLATION → 全 rollback。
+    await assert.rejects(() => sched.applySchedule(u, {
+      planId: plan, source: sched.SOURCE.AI_REPLAN, effectiveFrom: D(0),
+      blocks: [{ task_id: seedTask, date: D(2), start_time: '19:00', end_time: '20:00', planned_minutes: 60 },
+        { client_key: 'm', date: D(4), start_time: '19:00', end_time: '20:00', planned_minutes: 60 }],
+      expectedBaseVersionId: v, attachTaskIds: [attach],
+      taskCreates: [{ client_key: 'm', title: 'M', material_content_item_id: cid }],
+      enforceDeadlines: true,
+    }), e => e.code === 'DEADLINE_VIOLATION');
+    assert.equal((await q.get('SELECT plan_id FROM tasks WHERE id=?', [attach])).plan_id, null, 'attach rollback');
+    assert.equal(await countTasks(u), tasksBefore, 'material task create rollback');
+    assert.equal(await countPMI(u), pmiBefore, 'selection rollback');
+    assert.equal(await countVersions(u), verBefore, '未建立新版本');
+  });
+
+  test('P14 Lock 違反 → rollback', async () => {
+    const u = nextUser(); await mkUser(u);
+    const plan = await mkPlan(u); const list = await mkList(u);
+    const locked = await mkPlanTask(u, plan, list, { est: 60 });
+    const v = await seedVersion(u, [{ task_id: locked, date: D(2), start_time: '19:00', end_time: '20:00', planned_minutes: 60 }]);
+    await q.run('INSERT INTO schedule_locks (user_id,type,task_id) VALUES (?,?,?)', [u, 'task', locked]);
+    const attach = await mkStandalone(u, list, { est: 60 });
+    const tasksBefore = await countTasks(u);
+    // candidate 少了被鎖的 block（把它移走）→ assertCandidateLocks 應炸。
+    await assert.rejects(() => sched.applySchedule(u, {
+      planId: plan, source: sched.SOURCE.AI_REPLAN, effectiveFrom: D(0),
+      blocks: [{ task_id: locked, date: D(5), start_time: '19:00', end_time: '20:00', planned_minutes: 60 }],
+      expectedBaseVersionId: v, attachTaskIds: [attach], enforceDeadlines: true,
+    }));
+    assert.equal((await q.get('SELECT plan_id FROM tasks WHERE id=?', [attach])).plan_id, null, 'lock 違反 → attach rollback');
+    assert.equal(await countTasks(u), tasksBefore);
+  });
+
+  test('P15 freeze 違反 → rollback', async () => {
+    const u = nextUser(); await mkUser(u);
+    const plan = await mkPlan(u); const list = await mkList(u);
+    const frozen = await mkPlanTask(u, plan, list, { est: 60 });
+    const v = await seedVersion(u, [{ task_id: frozen, date: D(0), start_time: '19:00', end_time: '20:00', planned_minutes: 60 }]);
+    const attach = await mkStandalone(u, list, { est: 60 });
+    await assert.rejects(() => sched.applySchedule(u, {
+      planId: plan, source: sched.SOURCE.AI_REPLAN, effectiveFrom: D(0),
+      blocks: [{ task_id: frozen, date: D(3), start_time: '19:00', end_time: '20:00', planned_minutes: 60 }],  // 把凍結 block 搬走
+      expectedBaseVersionId: v, attachTaskIds: [attach],
+      freezeBlocks: [{ task_id: frozen, date: D(0), start_time: '19:00', end_time: '20:00', planned_minutes: 60 }],
+      enforceDeadlines: true,
+    }), e => e.code === 'FREEZE_VIOLATION');
+    assert.equal((await q.get('SELECT plan_id FROM tasks WHERE id=?', [attach])).plan_id, null, 'freeze 違反 → attach rollback');
+  });
+
+  test('P16 成功套用：只建立一個新版本 + 其他 Plan blocks 完整 carry-forward + StudySession 不受影響', async () => {
+    const u = nextUser(); await mkUser(u);
+    const planA = await mkPlan(u); const planB = await mkPlan(u);
+    const listA = await mkList(u, '數'); const listB = await mkList(u, '理');
+    const tA = await mkPlanTask(u, planA, listA, { est: 60 });
+    const tB = await mkPlanTask(u, planB, listB, { est: 60 });
+    const v = await seedVersion(u, [
+      { task_id: tA, date: D(2), start_time: '19:00', end_time: '20:00', planned_minutes: 60 },
+      { task_id: tB, date: D(3), start_time: '19:00', end_time: '20:00', planned_minutes: 60 },
+    ]);
+    // 一筆既有 StudySession，套用後必須完全不動。
+    await q.run('INSERT INTO study_sessions (user_id,task_id,started_at,actual_minutes,status,source) VALUES (?,?,?,?,?,?)',
+      [u, tA, `${D(0)}T10:00:00`, 25, 'completed', 'manual']);
+    const attach = await mkStandalone(u, listA, { est: 60 });
+    const sessBefore = await countSessions(u); const verBefore = await countVersions(u);
+    const pv = await runRollingPreview(u, { plan_id: planA, add_task_ids: [attach] });
+    assert.equal(pv.status, 200);
+    const res = await applyFromPreview(u, planA, pv);
+    assert.ok(res.version_id);
+    assert.equal(await countVersions(u), verBefore + 1, '成功只建立一個新版本');
+    // planB 的 block 完整 carry-forward 進新版本。
+    assert.ok(await q.get('SELECT 1 FROM scheduled_blocks WHERE schedule_version_id=? AND task_id=?', [res.version_id, tB]), '其他 Plan block 應 carry-forward');
+    assert.equal(await countSessions(u), sessBefore, 'StudySession 完全不受影響');
+  });
+});

@@ -1032,8 +1032,11 @@ export async function applySchedule(userId, {
       // 否則精靈就成了「已完成教材還能長出新任務」的旁路。
       let materialItem = null;
       if (c.material_content_item_id != null) {
+        // §Phase2 DiD：以 CURRENT material item 重讀（存在、屬於使用者、未完成、估時），
+        // 不信 client 傳的 estimated_minutes。Material selection ≠ completion——只讀 progress
+        // 判斷是否已完成，絕不寫 material_progress。
         materialItem = await tx.get(
-          `SELECT i.id, i.book_id, COALESCE(p.completed,0) AS completed
+          `SELECT i.id, i.book_id, i.estimated_minutes, COALESCE(p.completed,0) AS completed
              FROM material_content_items i
              LEFT JOIN material_progress p ON p.content_item_id=i.id AND p.user_id=i.user_id
             WHERE i.id=? AND i.user_id=?`, [c.material_content_item_id, userId]);
@@ -1042,22 +1045,35 @@ export async function applySchedule(userId, {
           throw new ScheduleInputError(`這份教材已完成，不需要再排程：${c.material_content_item_id}`);
         }
       }
+      // §Phase2 DiD：Material Task 的估時優先以 CURRENT material item 為準（不信 client 灌水的值）；
+      // material item 沒有估時時才回退到 client 值 / block 分鐘總和，維持既有 Wizard material 流程。
+      // 缺估的 fail-closed 由 rolling preview 端（MISSING_ESTIMATE）負責，apply 不在此改變既有行為。
+      const estimated = (materialItem && Number(materialItem.estimated_minutes) > 0)
+        ? Number(materialItem.estimated_minutes)
+        : (c.estimated_minutes ?? (blocks.filter(b => b.client_key === c.client_key)
+            .reduce((total, b) => total + (Number(b.planned_minutes) || 0), 0) || null));
       const r = await tx.run(
         `INSERT INTO tasks (user_id,list_id,title,notes,priority,tags,subtasks,recurring,miss_policy,plan_id,deadline_date,estimated_minutes,material_content_item_id,material_book_id)
          VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
         [userId, c.list_id || null, String(c.title).trim(), c.notes || '', c.priority || 0,
           JSON.stringify(c.tags || []), JSON.stringify(c.subtasks || []), c.recurring || null,
           c.miss_policy || 'keep', planId, c.deadline_date || null,
-          c.estimated_minutes ?? (blocks.filter(b => b.client_key === c.client_key)
-            .reduce((total, b) => total + (Number(b.planned_minutes) || 0), 0) || null),
-          materialItem?.id ?? null, materialItem?.book_id ?? null]);
+          estimated, materialItem?.id ?? null, materialItem?.book_id ?? null]);
       created.set(c.client_key, r.lastInsertRowid);
-      // selection 列記下這次實際產生的 Task，取消選取時才知道要讓誰退出排程。
+      // §Phase2：原子寫入 Material selection（plan_material_items），preview 不預寫。
+      // 一計畫一 content_item 一列：既有列（含先前取消選取的）改回 selected=1 並指向新 Task；
+      // 沒有才 INSERT。這是「選取」，與 material_progress（完成度）完全分離。
       if (materialItem) {
-        await tx.run(
-          `UPDATE plan_material_items SET task_id=?,updated_at=CURRENT_TIMESTAMP
+        const upd = await tx.run(
+          `UPDATE plan_material_items SET selected=1,task_id=?,removed_at=NULL,updated_at=CURRENT_TIMESTAMP
             WHERE user_id=? AND plan_id=? AND content_item_id=?`,
           [r.lastInsertRowid, userId, planId, materialItem.id]);
+        if (!upd.changes) {
+          await tx.run(
+            `INSERT INTO plan_material_items (user_id,plan_id,content_item_id,selected,task_id)
+             VALUES (?,?,?,1,?)`,
+            [userId, planId, materialItem.id, r.lastInsertRowid]);
+        }
       }
     }
 
