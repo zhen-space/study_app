@@ -30,8 +30,8 @@ async function mkUser(id) {
   await q.run('INSERT INTO users (id,email,password_hash,sleep_start,sleep_end,meal_windows) VALUES (?,?,?,?,?,?)',
     [id, `roll${id}@t`, 'x', '23:00', '07:00', '[]']);
 }
-async function mkPlan(userId, status = 'active') {
-  const p = await q.run('INSERT INTO plans (user_id,name,status) VALUES (?,?,?)', [userId, `計畫${userId}`, status]);
+async function mkPlan(userId, status = 'active', target_date = null) {
+  const p = await q.run('INSERT INTO plans (user_id,name,status,target_date) VALUES (?,?,?,?)', [userId, `計畫${userId}`, status, target_date]);
   return p.lastInsertRowid;
 }
 async function mkList(userId, name = '數學') {
@@ -344,6 +344,20 @@ describe('K. Phase 1 backend correctness', () => {
     assert.equal(r.body.candidate_blocks, null);
   });
 
+  test('K3b 缺 estimate 但今天已有 frozen block：仍須 fail closed，不得用 frozen 時數暗自推定已排完', async () => {
+    const u = nextUser(); await mkUser(u);
+    const plan = await mkPlan(u); const list = await mkList(u);
+    // tNull 缺 estimate，但今天（freeze 窗內）已有一個 block。舊漏洞會因 frozenMin>0 跳過。
+    const tNull = (await q.run('INSERT INTO tasks (user_id,list_id,title,plan_id,estimated_minutes) VALUES (?,?,?,?,?)',
+      [u, list, '缺估但今天已排', plan, null])).lastInsertRowid;
+    await seedVersion(u, [{ task_id: tNull, date: D(0), start_time: '19:00', end_time: '20:00', planned_minutes: 60 }]);
+    const r = await runRollingPreview(u, { plan_id: plan });
+    assert.equal(r.status, 200);
+    assert.equal(r.body.code, 'MISSING_ESTIMATE', '缺估即使有 frozen block 仍須 MISSING_ESTIMATE');
+    assert.ok(r.body.missing_estimate_task_ids.includes(Number(tNull)), '缺估 task 必須被列出，不得被 frozen 掩蓋');
+    assert.equal(r.body.blocks, null, '缺估時不得產生可確認 candidate');
+  });
+
   test('K4 TASK_INFEASIBLE：某 task deadline 太近、freeze 下排不進 → task_infeasible 列出該 task', async () => {
     const u = nextUser(); await mkUser(u);
     const plan = await mkPlan(u); const list = await mkList(u);
@@ -357,20 +371,87 @@ describe('K. Phase 1 backend correctness', () => {
       'task_infeasible 應含 deadline 排不進的該 task');
   });
 
-  test('K5 PLAN_CAPACITY_GAP：deadline 綁定視窗內需求 > 容量 → plan_capacity_gap 含 requested/available/gap', async () => {
+  // 使用者作息 23:00–07:00 → 每天可排 07:00–23:00 = 960 分。以合法估時（1–1440）
+  // 與短期限製造真正的 capacity gap，證明 production 可達輸入即可觸發 PLAN_CAPACITY_GAP。
+  const DAY_CAPACITY = 960;
+
+  test('K5 PLAN_CAPACITY_GAP（合法估時）：Task deadline 綁定視窗內需求 > 容量 → gap 含 requested/available/gap', async () => {
     const u = nextUser(); await mkUser(u);
     const plan = await mkPlan(u); const list = await mkList(u);
-    const t = await mkTask(u, plan, list, { est: 6000, deadline_date: D(3) });
-    const t2 = await mkTask(u, plan, list, { est: 6000, deadline_date: D(3) });
-    const t3 = await mkTask(u, plan, list, { est: 60 });
-    await seedVersion(u, [{ task_id: t3, date: D(0), start_time: '19:00', end_time: '20:00', planned_minutes: 60 }]);
+    // 4 份合法估時 800 分（<1440），皆 deadline D(3)。視窗 rolling_start=D(2)~D(3)=2 天≈1920 分，
+    // 需求 3200 分 > 容量 → gap>0。每份 <每日容量，避免單份超日造成的放置雜訊。
+    const ids = [];
+    for (let i = 0; i < 4; i++) ids.push(await mkTask(u, plan, list, { est: 800, deadline_date: D(3), title: `K5-${i}` }));
     const r = await runRollingPreview(u, { plan_id: plan });
     assert.equal(r.status, 200);
     assert.ok(r.body.infeasible, '應 infeasible');
     assert.ok(r.body.infeasible.plan_capacity_gap, '應回 PLAN_CAPACITY_GAP');
     assert.ok(r.body.infeasible.plan_capacity_gap.gap_minutes > 0, 'gap_minutes 應 > 0');
-    assert.ok(r.body.infeasible.requested_minutes >= 12000, 'requested 應含全部 tail 需求');
+    assert.equal(r.body.infeasible.requested_minutes, 3200, 'requested 應為全部 tail 合法估時總和');
     assert.ok(typeof r.body.infeasible.available_minutes === 'number', '應回 available_minutes');
+    assert.ok(r.body.infeasible.available_minutes <= 2 * DAY_CAPACITY + 1, '容量須以 deadline 綁定的 2 天視窗量測，不是 180 天');
+    assert.equal(r.body.missing_planning_horizon, null, 'Task 皆有 deadline → 視窗封閉，無 missing horizon');
+  });
+
+  test('K5b Task 無 deadline、由 Plan target_date 收緊 → 觸發 gap（否則 180 天永遠夠）', async () => {
+    const u = nextUser();
+    await mkUser(u);
+    // Plan target_date = D(2)（＝rolling_start），視窗僅 1 天 960 分。
+    const plan = await mkPlan(u, 'active', D(2)); const list = await mkList(u);
+    // 兩份合法估時 800、皆無自身 deadline。需求 1600 > 960 → 只有靠 Plan target_date 收緊才有 gap。
+    await mkTask(u, plan, list, { est: 800, title: 'nb-1' });
+    await mkTask(u, plan, list, { est: 800, title: 'nb-2' });
+    const r = await runRollingPreview(u, { plan_id: plan });
+    assert.equal(r.status, 200);
+    assert.equal(r.body.missing_planning_horizon, null, 'Plan target_date 提供上界 → 不算 missing horizon');
+    assert.ok(r.body.infeasible?.plan_capacity_gap, 'Plan target_date 收緊後應觸發 PLAN_CAPACITY_GAP');
+    assert.ok(r.body.infeasible.plan_capacity_gap.gap_minutes > 0);
+    assert.ok(r.body.infeasible.available_minutes <= DAY_CAPACITY + 1, '視窗須收到 Plan target_date（1 天），不是 180 天');
+  });
+
+  test('K5c Task deadline 早於 Plan target_date → 以「較早」的 Task deadline 為上限', async () => {
+    const u = nextUser(); await mkUser(u);
+    const plan = await mkPlan(u, 'active', D(10)); const list = await mkList(u);   // Plan target 很遠
+    // 兩份 800、Task deadline D(2)（早於 Plan target D(10)）。若誤用較晚者，視窗 9 天容量足、無 gap。
+    await mkTask(u, plan, list, { est: 800, deadline_date: D(2), title: 'ed-1' });
+    await mkTask(u, plan, list, { est: 800, deadline_date: D(2), title: 'ed-2' });
+    const r = await runRollingPreview(u, { plan_id: plan });
+    assert.equal(r.status, 200);
+    assert.ok(r.body.infeasible?.plan_capacity_gap, '以較早的 Task deadline 為界時視窗僅 1 天 → 應有 gap');
+    assert.ok(r.body.infeasible.plan_capacity_gap.gap_minutes > 0);
+    assert.ok(r.body.infeasible.available_minutes <= DAY_CAPACITY + 1, '上限須取較早的 Task deadline，不得被 Plan target_date 放寬');
+  });
+
+  test('K5d School Assignment deadline 不被 Plan target_date 放寬（hard upper bound）', async () => {
+    const u = nextUser(); await mkUser(u);
+    const plan = await mkPlan(u, 'active', D(10)); const list = await mkList(u);   // Plan target 較晚
+    // School Assignment 形狀：deadline_date + deadline_time，且早於 Plan target。
+    const sa1 = await mkTask(u, plan, list, { est: 800, deadline_date: D(2), deadline_time: '18:00', title: 'SA-1' });
+    const sa2 = await mkTask(u, plan, list, { est: 800, deadline_date: D(2), deadline_time: '18:00', title: 'SA-2' });
+    const r = await runRollingPreview(u, { plan_id: plan });
+    assert.equal(r.status, 200);
+    // 上限＝School Assignment deadline D(2)：視窗 1 天 → 需求 1600 > 960 → gap（證明未被 target 放寬到 D(10)）。
+    assert.ok(r.body.infeasible?.plan_capacity_gap, 'School Assignment deadline 為 hard 上限 → 應有 gap');
+    assert.ok(r.body.infeasible.available_minutes <= DAY_CAPACITY + 1, 'Plan target_date 不得把 School Assignment deadline 放寬到更晚');
+    // 任何可套用 candidate 都不得排到 School Assignment deadline 之後。
+    for (const b of (r.body.candidate_blocks || [])) {
+      if (Number(b.task_id) === Number(sa1) || Number(b.task_id) === Number(sa2)) {
+        assert.ok(b.date <= D(2), 'School Assignment block 不得排到其 deadline 之後');
+      }
+    }
+  });
+
+  test('K7 Task 與 Plan 皆無期限 → 明確回 missing_planning_horizon、不宣稱假 gap，但仍照常排', async () => {
+    const u = nextUser(); await mkUser(u);
+    const plan = await mkPlan(u); const list = await mkList(u);   // Plan 無 target_date
+    const t = await mkTask(u, plan, list, { est: 800, title: '無期限' });   // Task 無 deadline
+    const r = await runRollingPreview(u, { plan_id: plan });
+    assert.equal(r.status, 200);
+    assert.ok(r.body.missing_planning_horizon, '兩者皆無 → 應明確回 missing_planning_horizon');
+    assert.equal(r.body.missing_planning_horizon.code, 'MISSING_PLANNING_HORIZON');
+    assert.ok(r.body.missing_planning_horizon.missing_horizon_task_ids.includes(Number(t)), '應列出無上界的 task');
+    assert.ok(!r.body.infeasible?.plan_capacity_gap, '無 planning horizon → 不得宣稱 PLAN_CAPACITY_GAP');
+    assert.ok(Array.isArray(r.body.blocks), '仍應照常排程（開放視窗），不因缺 horizon 而拒絕');
   });
 
   test('K6 mutation probe：Stability override（relax_freeze）不得解開 Lock', async () => {

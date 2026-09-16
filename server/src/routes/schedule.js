@@ -1203,7 +1203,7 @@ async function loadActivePlanBlocks(userId) {
 export async function runRollingPreview(userId, body) {
   const planId = Number(body.plan_id);
   if (!Number.isInteger(planId)) return { status: 400, body: { error: '缺少有效的計畫 id' } };
-  const plan = await q.get('SELECT id,status FROM plans WHERE id=? AND user_id=?', [planId, userId]);
+  const plan = await q.get('SELECT id,status,target_date FROM plans WHERE id=? AND user_id=?', [planId, userId]);
   if (!plan) return { status: 404, body: { error: '找不到這個計畫' } };
   // §16：只有 draft/active 計畫能滾動重排；paused/ended/completed/deleted 一律拒絕。
   if (!['draft', 'active'].includes(plan.status)) {
@@ -1229,23 +1229,45 @@ export async function runRollingPreview(userId, body) {
   for (const b of frozen) frozenMinByTask.set(Number(b.task_id), (frozenMinByTask.get(Number(b.task_id)) || 0) + (Number(b.planned_minutes) || 0));
 
   const FAR = addDays(win.rolling_start, 180);
+  // §Phase1-2 scheduling upper bound：每個要排的 task 的排程上界。
+  //   Task 有 deadline：用 Task deadline（School Assignment 的 hard upper bound）。
+  //   Task 無 deadline、Plan 有 target_date：用 Plan target_date。
+  //   兩者都有：取「較早」者——Plan target_date 只能進一步收緊，
+  //     絕不能把 School Assignment 的 deadline 覆寫成更晚。
+  //   兩者皆無：回 null（沒有可信的 planning horizon）。
+  const planTarget = plan.target_date || null;
+  const schedulingUpperBound = taskDeadline => {
+    if (taskDeadline && planTarget) return taskDeadline < planTarget ? taskDeadline : planTarget;
+    return taskDeadline || planTarget || null;
+  };
+
   // §Phase1-4/5：不再對缺 estimated_minutes 的任務默認 60 分。缺估＝需要使用者補填，
   // 列進 missingEstimate，最後回結構化 MISSING_ESTIMATE，不猜、不產生可確認 candidate。
+  //
+  // §Phase1-1（fail-closed 補洞）：只要仍需參與本 Plan 排程的未完成 Task 缺 estimate，
+  // 一律 fail closed。**不得**因為今天／明天剛好已有 frozen block 就跳過——frozen 時數
+  // 不代表整件工作已排完，缺估時系統無從得知 frozen 是否涵蓋全部工作。
   const missingEstimate = [];
+  // §Phase1-2：既無自身 deadline、Plan 也無 target_date 的 task——沒有可信 planning horizon。
+  // 這類 task 仍可排（放到開放視窗最早位置），但**不能**據此量測 Plan-level 容量：
+  // 只要有一項無上界，就不宣稱 PLAN_CAPACITY_GAP，並在回應標記 missing_planning_horizon，
+  // 不用 180 天假裝算得出有意義的 gap。
+  const missingHorizon = [];
   const items = [];
+  const addItem = (t, minutes, deadlineDate) => {
+    const id = Number(t.id ?? t.task_id);
+    const ub = schedulingUpperBound(deadlineDate || null);
+    if (!ub) missingHorizon.push(id);                 // 無上界：仍排，但視窗不封閉
+    items.push({ task_id: id, subject_id: t.list_id ?? id,
+      title: t.title, minutes, start: win.rolling_start, end: ub || FAR });
+  };
   for (const t of planTasks) {
     const est = Number(t.estimated_minutes) || 0;
+    if (est <= 0) { missingEstimate.push(Number(t.id)); continue; }   // 缺估 → fail closed（不看 frozen）
     const frozenMin = frozenMinByTask.get(Number(t.id)) || 0;
-    if (est > 0) {
-      const remaining = Math.max(0, est - frozenMin);   // 已凍結部分不再重排
-      if (remaining <= 0) continue;
-      items.push({ task_id: Number(t.id), subject_id: t.list_id ?? Number(t.id), title: t.title,
-        minutes: remaining, start: win.rolling_start, end: t.deadline_date || FAR });
-    } else if (frozenMin <= 0) {
-      // 沒 estimate 又完全沒被凍結 → 需要 tail 卻不知道要排多久：要求補估。
-      missingEstimate.push(Number(t.id));
-    }
-    // est<=0 但 frozenMin>0：全部已凍結，tail 無需重排，也不需要估時。
+    const remaining = Math.max(0, est - frozenMin);   // 已凍結部分不再重排
+    if (remaining <= 0) continue;
+    addItem(t, remaining, t.deadline_date);
   }
 
   // §9 trigger task：可能是 pending plan_id=NULL 的新作業（virtual membership，零 DB mutation）。
@@ -1258,12 +1280,8 @@ export async function runRollingPreview(userId, body) {
       && triggerTask.plan_id == null) {
       virtualPlanTaskIds.push(triggerId);
       const est = Number(triggerTask.estimated_minutes) || 0;
-      if (est > 0) {
-        items.push({ task_id: triggerId, subject_id: triggerTask.list_id ?? triggerId, title: triggerTask.title,
-          minutes: est, start: win.rolling_start, end: triggerTask.deadline_date || FAR });
-      } else {
-        missingEstimate.push(triggerId);
-      }
+      if (est > 0) addItem(triggerTask, est, triggerTask.deadline_date);
+      else missingEstimate.push(triggerId);
     }
   }
 
@@ -1276,6 +1294,16 @@ export async function runRollingPreview(userId, body) {
       blocks: null, candidate_blocks: null, diff: null, infeasible: null,
     } };
   }
+
+  // §Phase1-2：有 task 既無自身 deadline、Plan 也無 target_date → 沒有可信 planning horizon。
+  // 這是 validation result，不是致命錯誤：排程照常進行（開放視窗），但**不封閉容量視窗**、
+  // 不宣稱 PLAN_CAPACITY_GAP。horizonBounded 為 false 時，capacity gap 一律不採信。
+  const horizonBounded = missingHorizon.length === 0;
+  const missingPlanningHorizon = horizonBounded ? null : {
+    code: 'MISSING_PLANNING_HORIZON',
+    missing_horizon_task_ids: [...new Set(missingHorizon)],
+    plan_target_date: planTarget,
+  };
 
   const freezePins = frozen.map(b => ({ id: b.id, task_id: b.task_id, date: b.date, start_time: b.start_time, end_time: b.end_time, planned_minutes: b.planned_minutes, task_title_snapshot: b.title }));
 
@@ -1344,8 +1372,11 @@ export async function runRollingPreview(userId, body) {
   // §Phase1-6/7 gap 分類：
   //   TASK_INFEASIBLE  —— 某個 task 在自己的 deadline 前排不進（deadline 違反 / freeze 下無位置）。
   //   PLAN_CAPACITY_GAP —— 整個 Plan 需要的分鐘數 > 視窗內可用容量（reuse feasibilityGap）。
+  // §Phase1-2：只有在視窗封閉（每個 tail item 都有 Task deadline 或 Plan target_date 上界）時，
+  // capacity gap 才有意義。有任一項無上界 → horizonBounded=false → 不宣稱 PLAN_CAPACITY_GAP，
+  // 改由 missing_planning_horizon 說明。
   const feas = pre?.body?.feasibility || null;
-  const planCapacityGap = feas && feas.gap_minutes > 0 ? {
+  const planCapacityGap = horizonBounded && feas && feas.gap_minutes > 0 ? {
     code: 'PLAN_CAPACITY_GAP',
     requested_minutes: feas.requested_minutes, available_minutes: feas.capacity_minutes,
     scheduled_minutes: feas.scheduled_minutes, gap_minutes: feas.gap_minutes, gap_hours: feas.gap_hours,
@@ -1382,6 +1413,7 @@ export async function runRollingPreview(userId, body) {
       // §Phase1-6/7 結構化 gap：
       task_infeasible: taskInfeasible,
       plan_capacity_gap: planCapacityGap,
+      missing_planning_horizon: missingPlanningHorizon,
       requested_minutes: feas?.requested_minutes ?? null,
       available_minutes: feas?.capacity_minutes ?? null,
       scheduled_minutes: feas?.scheduled_minutes ?? null,
@@ -1404,6 +1436,8 @@ export async function runRollingPreview(userId, body) {
     diff,
     unplaced: !!pre?.body?.unplaced,
     infeasible,
+    // §Phase1-2：非致命的 planning-horizon validation（有 task 無上界時才非 null）。
+    missing_planning_horizon: missingPlanningHorizon,
   } };
 }
 
