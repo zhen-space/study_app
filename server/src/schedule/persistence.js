@@ -5,7 +5,7 @@ import { calculateScheduleDiff } from './diff.js';
 import { classifyPlacement, findSelfCollisions, timedOverlap } from './feasibility.js';
 import { canonicalizeBlockTiming, timingProblem } from './timing.js';
 import { planTaskDisposition, lockReleaseReason } from './plan-cleanup.js';
-import { samePlacement, deadlineViolation } from './rolling.js';
+import { samePlacement, effectiveDeadlineViolation } from './rolling.js';
 
 // 手動調整的說法：使用者是「現在正要放」，不是「想恢復舊安排」。
 const MANUAL_MESSAGES = {
@@ -1097,18 +1097,22 @@ export async function applySchedule(userId, {
       if (violations.length) throw new ScheduleFreezeViolationError(violations);
     }
 
-    // §11 hard deadline defence-in-depth：用「此刻的 Task」再驗每一個 candidate block，
-    // 不信前端傳的 item.end。超過 deadline_date／deadline_time 一律拒絕。
+    // §11 / §Phase1-Fix effective upper bound defence-in-depth：用「此刻的 Task 與此刻所屬
+    // Plan 的 target_date」再驗每一個 candidate block（含其他 Plan 的 carry-forward），不信前端
+    // 傳的 item.end 或已算好的上限。有效上限＝Task deadline 與 Plan target_date 取較早者；
+    // School Assignment 同日 deadline_time 仍獨立檢查。任何越界 block 一律整筆拒絕、不建版本。
     if (enforceDeadlines) {
       const ids = [...new Set(candidateBlocks.map(b => Number(b.task_id)))];
       if (ids.length) {
         const rows = await tx.all(
-          `SELECT id, deadline_date, deadline_time FROM tasks WHERE user_id=? AND id IN (${ids.map(() => '?').join(',')})`,
+          `SELECT t.id, t.deadline_date, t.deadline_time, p.target_date AS plan_target_date
+             FROM tasks t LEFT JOIN plans p ON p.id=t.plan_id AND p.user_id=t.user_id
+            WHERE t.user_id=? AND t.id IN (${ids.map(() => '?').join(',')})`,
           [userId, ...ids]);
         const byId = new Map(rows.map(t => [Number(t.id), t]));
         const violations = [];
         for (const b of candidateBlocks) {
-          const v = deadlineViolation(b, byId.get(Number(b.task_id)));
+          const v = effectiveDeadlineViolation(b, byId.get(Number(b.task_id)));
           if (v) violations.push(v);
         }
         if (violations.length) throw new ScheduleDeadlineViolationError(violations);

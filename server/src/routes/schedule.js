@@ -8,7 +8,7 @@ import { explainSchedule, explainSentences } from '../schedule/explain.js';
 import { normalizeConstraints } from '../schedule/constraints.js';
 import { loadGoogleBusy, GoogleCalendarError } from '../integrations/google-calendar.js';
 import { validateIntervals, normalizeIntervals, mergeBusyIntervals, busyByDay, combineDayMaps } from '../schedule/busy.js';
-import { freezeWindow, parseRollingPolicy, normalizeOverride, partitionFreeze, deadlineViolation } from '../schedule/rolling.js';
+import { freezeWindow, parseRollingPolicy, normalizeOverride, partitionFreeze, effectiveDeadlineViolation } from '../schedule/rolling.js';
 import { calculateScheduleDiff } from '../schedule/diff.js';
 
 const router = Router();
@@ -1380,23 +1380,33 @@ export async function runRollingPreview(userId, body) {
     ...items.map(i => Number(i.task_id)),
     ...unplacedTasks.map(u => Number(u.task_id)),
   ])];
+  // §Phase1-Fix effective upper bound：連同各 task 所屬 Plan 的 CURRENT target_date 一起讀，
+  // 讓 preview 以「Task deadline 與 Plan target_date 取較早者」重驗，不只查 Task deadline。
   const deadlineById = new Map();
   if (allTaskIds.length) {
-    const rows = await q.all(`SELECT id, deadline_date, deadline_time FROM tasks WHERE user_id=? AND id IN (${allTaskIds.map(() => '?').join(',')})`, [userId, ...allTaskIds]);
-    for (const r of rows) deadlineById.set(Number(r.id), { deadline_date: r.deadline_date, deadline_time: r.deadline_time });
+    const rows = await q.all(
+      `SELECT t.id, t.deadline_date, t.deadline_time, p.target_date AS plan_target_date
+         FROM tasks t LEFT JOIN plans p ON p.id=t.plan_id AND p.user_id=t.user_id
+        WHERE t.user_id=? AND t.id IN (${allTaskIds.map(() => '?').join(',')})`, [userId, ...allTaskIds]);
+    for (const r of rows) deadlineById.set(Number(r.id), { deadline_date: r.deadline_date, deadline_time: r.deadline_time, plan_target_date: r.plan_target_date });
   }
-  // 違反 deadline 的**非凍結** current tail block 從可套用的 candidate 拿掉（不呈現、不可 apply；
+  // current Plan candidate（含虛擬掛入的 trigger）一律以「CURRENT Plan target_date」為 Plan 上限，
+  // 不用 join 出來的值（trigger 的 plan_id 還是 NULL、join 不到），也不信 client。
+  const ctxCurrent = tid => ({ ...(deadlineById.get(Number(tid)) || {}), plan_target_date: planTarget });
+  // 違反有效上限的**非凍結** current tail block 從可套用的 candidate 拿掉（不呈現、不可 apply；
   // apply 端 enforceDeadlines 仍會擋）。凍結／carry-forward 的違反不移除（那是既存事實），
   // 但一律列進 deadline_violations 並使整體 infeasible，交給使用者處理。
   const deadlineViolations = [];
   currentCandidate = currentCandidate.filter(b => {
-    const v = deadlineViolation(b, deadlineById.get(Number(b.task_id)));
+    const v = effectiveDeadlineViolation(b, ctxCurrent(b.task_id));
     if (!v) return true;
     deadlineViolations.push(v);
     return frozenIdSet.has(Number(b.task_id));   // 凍結的違反仍保留（呈現＋標記 infeasible）
   });
+  // carry-forward 以各自 Plan 的 CURRENT target_date（join 值）＋各自 Task deadline 為上限；
+  // 越界者列入 deadline_violations，不得靜默帶進完整 user-level candidate。
   for (const b of carryForward) {
-    const v = deadlineViolation(b, deadlineById.get(Number(b.task_id)));
+    const v = effectiveDeadlineViolation(b, deadlineById.get(Number(b.task_id)));
     if (v) deadlineViolations.push(v);
   }
 

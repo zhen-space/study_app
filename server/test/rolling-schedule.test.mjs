@@ -522,3 +522,83 @@ describe('K. Phase 1 backend correctness', () => {
       'Lock 的 task 不得被移進 rolling window');
   });
 });
+
+/* ================= L. effective upper bound（Task deadline × Plan target_date）DiD ================= */
+describe('L. effective upper bound defence-in-depth', () => {
+  // preview：tail 一律被 preview window 收在有效上限內，唯一能自然越界的是 freeze 窗內的既有 block。
+  // Task 無 deadline、段考就在今天（Plan target=D(0)）、明天仍有 frozen block（D(1)>D(0)）→ infeasible。
+  test('L1 preview：Task 無 deadline、frozen block 晚於 Plan target_date → infeasible（plan_target 違反）', async () => {
+    const u = nextUser(); await mkUser(u);
+    const plan = await mkPlan(u, 'active', D(0)); const list = await mkList(u);
+    const t = await mkTask(u, plan, list, { est: 60 });   // 無 deadline
+    await seedVersion(u, [{ task_id: t, date: D(1), start_time: '19:00', end_time: '20:00', planned_minutes: 60 }]);
+    const r = await runRollingPreview(u, { plan_id: plan });
+    assert.equal(r.status, 200);
+    assert.ok(r.body.infeasible, 'block 晚於 Plan target_date 應 infeasible');
+    assert.ok(r.body.infeasible.deadline_violations.some(v => Number(v.task_id) === Number(t) && v.type === 'plan_target'),
+      '應以 Plan target_date 判為越界（即使 Task 無 deadline）');
+  });
+
+  // apply 端 helper：期望整筆被拒（DEADLINE_VIOLATION）且不建立新版本。
+  const applyRejectsNoVersion = async (u, plan, baseV, blocks) => {
+    const before = await sched.getActiveVersionId(u);
+    await assert.rejects(() => sched.applySchedule(u, { planId: plan, source: sched.SOURCE.AI_REPLAN, effectiveFrom: D(0),
+      blocks, expectedBaseVersionId: baseV, enforceDeadlines: true }),
+      e => e.code === 'DEADLINE_VIOLATION' && e.status === 409);
+    assert.equal(await sched.getActiveVersionId(u), before, 'apply 被拒後不得建立新版本');
+  };
+
+  test('L2 apply：Task 無 deadline、Plan target=D(3)、block=D(4) 繞過 preview → 拒絕、不建版', async () => {
+    const u = nextUser(); await mkUser(u);
+    const plan = await mkPlan(u, 'active', D(3)); const list = await mkList(u);
+    const t = await mkTask(u, plan, list, { est: 60 });   // 無 deadline
+    const v = await seedVersion(u, [{ task_id: t, date: D(2), start_time: '19:00', end_time: '20:00', planned_minutes: 60 }]);
+    await applyRejectsNoVersion(u, plan, v, [{ task_id: t, date: D(4), start_time: '19:00', end_time: '20:00', planned_minutes: 60 }]);
+  });
+
+  test('L3 apply：Task deadline=D(5)、Plan target=D(3)、block=D(4) → 取較早者 D(3) 拒絕', async () => {
+    const u = nextUser(); await mkUser(u);
+    const plan = await mkPlan(u, 'active', D(3)); const list = await mkList(u);
+    const t = await mkTask(u, plan, list, { est: 60, deadline_date: D(5) });
+    const v = await seedVersion(u, [{ task_id: t, date: D(2), start_time: '19:00', end_time: '20:00', planned_minutes: 60 }]);
+    await applyRejectsNoVersion(u, plan, v, [{ task_id: t, date: D(4), start_time: '19:00', end_time: '20:00', planned_minutes: 60 }]);
+  });
+
+  test('L4 apply：Task deadline=D(2)、Plan target=D(5)、block=D(3) → 取較早者 D(2) 拒絕', async () => {
+    const u = nextUser(); await mkUser(u);
+    const plan = await mkPlan(u, 'active', D(5)); const list = await mkList(u);
+    const t = await mkTask(u, plan, list, { est: 60, deadline_date: D(2) });
+    const v = await seedVersion(u, [{ task_id: t, date: D(2), start_time: '19:00', end_time: '20:00', planned_minutes: 60 }]);
+    await applyRejectsNoVersion(u, plan, v, [{ task_id: t, date: D(3), start_time: '19:00', end_time: '20:00', planned_minutes: 60 }]);
+  });
+
+  test('L5 apply 重讀 CURRENT Plan target：更新 target_date 後用舊 preview candidate apply → 拒絕', async () => {
+    const u = nextUser(); await mkUser(u);
+    const plan = await mkPlan(u, 'active', D(5)); const list = await mkList(u);
+    const t = await mkTask(u, plan, list, { est: 60 });   // 無 deadline
+    const v = await seedVersion(u, [{ task_id: t, date: D(2), start_time: '19:00', end_time: '20:00', planned_minutes: 60 }]);
+    // 舊 preview 在 target=D(5) 下 D(4) 合法；把 target 收緊到 D(3) 後，apply 必須以 CURRENT target 重驗。
+    await q.run('UPDATE plans SET target_date=? WHERE id=? AND user_id=?', [D(3), plan, u]);
+    await applyRejectsNoVersion(u, plan, v, [{ task_id: t, date: D(4), start_time: '19:00', end_time: '20:00', planned_minutes: 60 }]);
+  });
+
+  test('L6 apply：其他 Plan carry-forward block 超過該 Plan CURRENT target_date → 不得靜默寫入新版', async () => {
+    const u = nextUser(); await mkUser(u);
+    const planA = await mkPlan(u, 'active', D(30)); const planB = await mkPlan(u, 'active', D(3));
+    const listA = await mkList(u, '數'); const listB = await mkList(u, '理');
+    const tA = await mkTask(u, planA, listA, { est: 60 });
+    const tB = await mkTask(u, planB, listB, { est: 60 });   // planB 無 task deadline，靠 planB target D(3)
+    // planB 既有 active block 在 D(4)（> planB target D(3)）。
+    const v = await seedVersion(u, [
+      { task_id: tA, date: D(2), start_time: '19:00', end_time: '20:00', planned_minutes: 60 },
+      { task_id: tB, date: D(4), start_time: '19:00', end_time: '20:00', planned_minutes: 60 },
+    ]);
+    const before = await sched.getActiveVersionId(u);
+    // 對 planA 做一次本身合法的 rolling apply；carry-forward 會帶入 planB 的 D(4) 越界 block → 整筆拒絕。
+    await assert.rejects(() => sched.applySchedule(u, { planId: planA, source: sched.SOURCE.AI_REPLAN, effectiveFrom: D(0),
+      blocks: [{ task_id: tA, date: D(3), start_time: '19:00', end_time: '20:00', planned_minutes: 60 }],
+      expectedBaseVersionId: v, enforceDeadlines: true }),
+      e => e.code === 'DEADLINE_VIOLATION');
+    assert.equal(await sched.getActiveVersionId(u), before, '不得寫入含越界 carry-forward 的新版');
+  });
+});
