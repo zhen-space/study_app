@@ -1157,6 +1157,36 @@ export async function runPreview(userId, body, previewOpts = {}) {
     ],
   });
 
+  // §Phase1-Fix2：結構化 unplaced Tasks——不只回 boolean。以「要求分鐘 vs 實際排入分鐘」
+  // 逐 task 比對，讓 Rolling 能把每一個排不進的 Task（含非 trigger、原本就屬於 Plan 的 Task、
+  // 以及只排入部分分鐘的 Task）映射成 TASK_INFEASIBLE。必須在 pinned block 併入之前計算，
+  // 否則部分凍結的 Task 會被凍結 block 的分鐘灌水成「已排完」。
+  const requiredByTask = new Map();
+  const itemByTask = new Map();
+  for (const it of items) {
+    if (it.task_id == null) continue;
+    const tid = Number(it.task_id);
+    requiredByTask.set(tid, (requiredByTask.get(tid) || 0) + (Number(it.minutes) || 0));
+    if (!itemByTask.has(tid)) itemByTask.set(tid, it);
+  }
+  const scheduledByTask = new Map();
+  for (const b of blocks) {
+    if (b.task_id == null || !b.start_time || !b.end_time) continue;
+    const mins = toMin(b.end_time) - toMin(b.start_time);
+    if (mins > 0) scheduledByTask.set(Number(b.task_id), (scheduledByTask.get(Number(b.task_id)) || 0) + mins);
+  }
+  const unplacedTasks = [];
+  for (const [tid, required] of requiredByTask) {
+    const scheduled = scheduledByTask.get(tid) || 0;
+    if (scheduled >= required) continue;                     // 全部排入 → 不算 unplaced
+    const it = itemByTask.get(tid);
+    unplacedTasks.push({
+      task_id: tid, required_minutes: required, scheduled_minutes: scheduled,
+      missing_minutes: required - scheduled,
+      reason: (it && it.end < it.start) ? 'deadline_before_window' : 'insufficient_capacity',
+    });
+  }
+
   // 每個項目自己的截止日：內部欄位清掉之前，先留一份公開的給前端
   // （Phase 2A 的 tasks.deadline_date 要用。純輸出欄位，不影響排程語意）
   blocks.push(...pinned.map(b => ({ task_id:b.task_id, title:b.task_title_snapshot, subject_id:null, date:b.date, start_time:b.start_time, end_time:b.end_time, planned_minutes:b.planned_minutes, _pinned:true })));
@@ -1164,6 +1194,7 @@ export async function runPreview(userId, body, previewOpts = {}) {
   blocks.sort((a, b) => a.date === b.date ? (a.start_time || '').localeCompare(b.start_time || '') : a.date.localeCompare(b.date));
   return { status: 200, body: {
     blocks, check, feasibility, unplaced: failed.length > 0,
+    unplaced_tasks: unplacedTasks,
     message: failed.length ? `空檔不足，排不進去：${[...new Set(failed)].slice(0, 5).join('、')}${failed.length > 5 ? '…' : ''}（請延長日期或減少內容）` : undefined,
   } };
 }
@@ -1228,7 +1259,6 @@ export async function runRollingPreview(userId, body) {
   const frozenMinByTask = new Map();
   for (const b of frozen) frozenMinByTask.set(Number(b.task_id), (frozenMinByTask.get(Number(b.task_id)) || 0) + (Number(b.planned_minutes) || 0));
 
-  const FAR = addDays(win.rolling_start, 180);
   // §Phase1-2 scheduling upper bound：每個要排的 task 的排程上界。
   //   Task 有 deadline：用 Task deadline（School Assignment 的 hard upper bound）。
   //   Task 無 deadline、Plan 有 target_date：用 Plan target_date。
@@ -1248,18 +1278,20 @@ export async function runRollingPreview(userId, body) {
   // 一律 fail closed。**不得**因為今天／明天剛好已有 frozen block 就跳過——frozen 時數
   // 不代表整件工作已排完，缺估時系統無從得知 frozen 是否涵蓋全部工作。
   const missingEstimate = [];
-  // §Phase1-2：既無自身 deadline、Plan 也無 target_date 的 task——沒有可信 planning horizon。
-  // 這類 task 仍可排（放到開放視窗最早位置），但**不能**據此量測 Plan-level 容量：
-  // 只要有一項無上界，就不宣稱 PLAN_CAPACITY_GAP，並在回應標記 missing_planning_horizon，
-  // 不用 180 天假裝算得出有意義的 gap。
+  // §Phase1-Fix1：既無自身 deadline、Plan 也無 target_date 的 task——沒有可信 planning horizon。
+  // 持續型段考 Plan 的 Contract 已確定學生至少知道段考日期；沒有 horizon 就不能建立可信的
+  // 段考排程。一律 fail closed（回 MISSING_PLANNING_HORIZON、不產生可確認 candidate），
+  // 不得用 FAR 假造 180 天上限。一般非段考、需無期限排程的 Plan 應走既有一般 /preview 流程。
   const missingHorizon = [];
   const items = [];
   const addItem = (t, minutes, deadlineDate) => {
     const id = Number(t.id ?? t.task_id);
     const ub = schedulingUpperBound(deadlineDate || null);
-    if (!ub) missingHorizon.push(id);                 // 無上界：仍排，但視窗不封閉
+    // §Phase1-Fix1：沒有上界（Task 與 Plan 都無期限）就不建 item——不得用 FAR 假造
+    // 180 天 horizon 產生可套用的排程。這類 task 記入 missingHorizon，稍後 fail closed。
+    if (!ub) { missingHorizon.push(id); return; }
     items.push({ task_id: id, subject_id: t.list_id ?? id,
-      title: t.title, minutes, start: win.rolling_start, end: ub || FAR });
+      title: t.title, minutes, start: win.rolling_start, end: ub });
   };
   for (const t of planTasks) {
     const est = Number(t.estimated_minutes) || 0;
@@ -1295,15 +1327,17 @@ export async function runRollingPreview(userId, body) {
     } };
   }
 
-  // §Phase1-2：有 task 既無自身 deadline、Plan 也無 target_date → 沒有可信 planning horizon。
-  // 這是 validation result，不是致命錯誤：排程照常進行（開放視窗），但**不封閉容量視窗**、
-  // 不宣稱 PLAN_CAPACITY_GAP。horizonBounded 為 false 時，capacity gap 一律不採信。
-  const horizonBounded = missingHorizon.length === 0;
-  const missingPlanningHorizon = horizonBounded ? null : {
-    code: 'MISSING_PLANNING_HORIZON',
-    missing_horizon_task_ids: [...new Set(missingHorizon)],
-    plan_target_date: planTarget,
-  };
+  // §Phase1-Fix1：沒有 planning horizon → fail closed。blocks/candidate_blocks 皆為 null，
+  // 前端 canConfirm 無法成立；不建立由任意 180 天上限產生的可套用 ScheduleVersion。
+  if (missingHorizon.length) {
+    return { status: 200, body: {
+      window: win, base_version_id: baseVersionId,
+      code: 'MISSING_PLANNING_HORIZON',
+      missing_horizon_task_ids: [...new Set(missingHorizon)],
+      plan_target_date: planTarget,
+      blocks: null, candidate_blocks: null, diff: null, infeasible: null,
+    } };
+  }
 
   const freezePins = frozen.map(b => ({ id: b.id, task_id: b.task_id, date: b.date, start_time: b.start_time, end_time: b.end_time, planned_minutes: b.planned_minutes, task_title_snapshot: b.title }));
 
@@ -1321,10 +1355,9 @@ export async function runRollingPreview(userId, body) {
     // 沒有要重排的 tail：current Plan candidate 就是凍結的既有安排本身。
     currentCandidate = freezePins.map(b => ({ task_id: Number(b.task_id), date: b.date, start_time: b.start_time || null, end_time: b.end_time || null, planned_minutes: b.planned_minutes ?? null }));
   } else {
-    // §Phase1-6：PLAN_CAPACITY_GAP 要有意義，容量必須以「deadline 綁定的視窗」量測，
-    // 不是固定 180 天（那樣容量永遠夠、gap 永遠 0）。所有 tail 都有 deadline 時，
-    // 視窗末端＝最晚 deadline；只要有一項無 deadline（end=FAR）就退回 FAR。
-    // 各 item 本來就以自己的 deadline 綁定放置，收窄整體視窗不改變實際 placement。
+    // §Phase1-6：PLAN_CAPACITY_GAP 要有意義，容量必須以「上界綁定的視窗」量測，不是固定 180 天。
+    // 走到這裡每個 item 都有上界（Task deadline 或 Plan target_date，無上界者已 fail closed），
+    // 視窗末端＝最晚上界。各 item 本來就以自己的上界綁定放置，收窄整體視窗不改變實際 placement。
     const previewEnd = items.reduce((mx, i) => (i.end > mx ? i.end : mx), win.rolling_start);
     pre = await runPreview(userId, {
       items, plan_id: planId, startDate: win.rolling_start, endDate: previewEnd, timed: true,
@@ -1338,8 +1371,15 @@ export async function runRollingPreview(userId, body) {
   }
 
   // §Phase1-3：所有 candidate block（含 carry-forward、tail、以及 Stability Window 內 frozen）
-  // 都以 CURRENT Task deadline 重驗——不再跳過 frozen。deadlineById 覆蓋所有涉及的 task。
-  const allTaskIds = [...new Set([...carryForward, ...currentCandidate].map(b => Number(b.task_id)))];
+  // 都以 CURRENT Task deadline 重驗——不再跳過 frozen。deadlineById 覆蓋所有涉及的 task，
+  // 另含所有 item task（含完全排不進、不在 candidate 內的 unplaced task），供 TASK_INFEASIBLE 用。
+  const unplacedTasks = pre?.body?.unplaced_tasks || [];
+  const allTaskIds = [...new Set([
+    ...carryForward.map(b => Number(b.task_id)),
+    ...currentCandidate.map(b => Number(b.task_id)),
+    ...items.map(i => Number(i.task_id)),
+    ...unplacedTasks.map(u => Number(u.task_id)),
+  ])];
   const deadlineById = new Map();
   if (allTaskIds.length) {
     const rows = await q.all(`SELECT id, deadline_date, deadline_time FROM tasks WHERE user_id=? AND id IN (${allTaskIds.map(() => '?').join(',')})`, [userId, ...allTaskIds]);
@@ -1372,11 +1412,10 @@ export async function runRollingPreview(userId, body) {
   // §Phase1-6/7 gap 分類：
   //   TASK_INFEASIBLE  —— 某個 task 在自己的 deadline 前排不進（deadline 違反 / freeze 下無位置）。
   //   PLAN_CAPACITY_GAP —— 整個 Plan 需要的分鐘數 > 視窗內可用容量（reuse feasibilityGap）。
-  // §Phase1-2：只有在視窗封閉（每個 tail item 都有 Task deadline 或 Plan target_date 上界）時，
-  // capacity gap 才有意義。有任一項無上界 → horizonBounded=false → 不宣稱 PLAN_CAPACITY_GAP，
-  // 改由 missing_planning_horizon 說明。
+  // §Phase1-2：走到這裡每個 tail item 都已有上界（無上界者早已 fail closed），
+  // 視窗封閉，capacity gap 才有意義。reuse feasibilityGap 的 gap_minutes。
   const feas = pre?.body?.feasibility || null;
-  const planCapacityGap = horizonBounded && feas && feas.gap_minutes > 0 ? {
+  const planCapacityGap = feas && feas.gap_minutes > 0 ? {
     code: 'PLAN_CAPACITY_GAP',
     requested_minutes: feas.requested_minutes, available_minutes: feas.capacity_minutes,
     scheduled_minutes: feas.scheduled_minutes, gap_minutes: feas.gap_minutes, gap_hours: feas.gap_hours,
@@ -1385,14 +1424,29 @@ export async function runRollingPreview(userId, body) {
   const liveTrigger = triggerTask && !triggerTask.deleted && !triggerTask.completed && !triggerTask.cancelled ? triggerTask : null;
   const placedTrigger = liveTrigger ? currentCandidate.some(b => Number(b.task_id) === Number(liveTrigger.id)) : true;
 
-  // TASK_INFEASIBLE 清單：deadline 違反的 task ＋ freeze 下排不進的 trigger。
-  const infeasibleTaskIds = new Set(deadlineViolations.map(v => Number(v.task_id)));
-  if (liveTrigger && !placedTrigger) infeasibleTaskIds.add(Number(liveTrigger.id));
-  const taskInfeasible = [...infeasibleTaskIds].map(id => {
-    const dl = deadlineById.get(id) || (liveTrigger && Number(liveTrigger.id) === id ? { deadline_date: liveTrigger.deadline_date, deadline_time: liveTrigger.deadline_time } : {});
-    return { code: 'TASK_INFEASIBLE', task_id: id, deadline_date: dl?.deadline_date || null, deadline_time: dl?.deadline_time || null,
-      reason: deadlineViolations.some(v => Number(v.task_id) === id) ? 'deadline_violated' : 'no_slot_under_freeze' };
+  // §Phase1-Fix2：TASK_INFEASIBLE 必須涵蓋**所有**排不進的 Task，不只 deadline 違反與 trigger：
+  //   ① deadline 違反的 candidate block（含 frozen／carry-forward）
+  //   ② freeze 下完全排不進的 trigger
+  //   ③ 底層 preview 回報的所有 unplaced Task（含非 trigger、原本就屬於 Plan、只排入部分分鐘者）
+  // 每個 task_id 都映射成結構化 TASK_INFEASIBLE，帶 required/scheduled/missing 與 deadline。
+  const dlOf = id => deadlineById.get(id)
+    || (liveTrigger && Number(liveTrigger.id) === id ? { deadline_date: liveTrigger.deadline_date, deadline_time: liveTrigger.deadline_time } : {});
+  const infByTask = new Map();
+  const putInf = (id, patch) => {
+    id = Number(id);
+    const dl = dlOf(id);
+    const prev = infByTask.get(id) || { code: 'TASK_INFEASIBLE', task_id: id,
+      deadline_date: dl?.deadline_date || null, deadline_time: dl?.deadline_time || null };
+    infByTask.set(id, { ...prev, ...patch });
+  };
+  for (const v of deadlineViolations) putInf(v.task_id, { reason: 'deadline_violated' });
+  for (const ut of unplacedTasks) putInf(ut.task_id, {
+    required_minutes: ut.required_minutes, scheduled_minutes: ut.scheduled_minutes, missing_minutes: ut.missing_minutes,
+    // deadline 違反優先保留其 reason；否則沿用 preview 的 reason（deadline_before_window / insufficient_capacity）。
+    reason: infByTask.get(Number(ut.task_id))?.reason === 'deadline_violated' ? 'deadline_violated' : ut.reason,
   });
+  if (liveTrigger && !placedTrigger && !infByTask.has(Number(liveTrigger.id))) putInf(liveTrigger.id, { reason: 'no_slot_under_freeze' });
+  const taskInfeasible = [...infByTask.values()];
 
   // solutions：freeze 放寬 ＋ feasibility 建議（延長天數／每天加時間）。真正 Lock 不在其中。
   const solutions = [];
@@ -1400,7 +1454,7 @@ export async function runRollingPreview(userId, body) {
   if (planCapacityGap) for (const rec of feas.recommendations || []) solutions.push(rec);
 
   let infeasible = null;
-  if (pre?.body?.unplaced || frozenBroken || deadlineViolations.length || (liveTrigger && !placedTrigger) || planCapacityGap) {
+  if (pre?.body?.unplaced || frozenBroken || deadlineViolations.length || taskInfeasible.length || (liveTrigger && !placedTrigger) || planCapacityGap) {
     infeasible = {
       code: 'INFEASIBLE_WITH_FREEZE',
       freeze_start: win.freeze_start, freeze_through: win.freeze_through, rolling_start: win.rolling_start,
@@ -1413,7 +1467,6 @@ export async function runRollingPreview(userId, body) {
       // §Phase1-6/7 結構化 gap：
       task_infeasible: taskInfeasible,
       plan_capacity_gap: planCapacityGap,
-      missing_planning_horizon: missingPlanningHorizon,
       requested_minutes: feas?.requested_minutes ?? null,
       available_minutes: feas?.capacity_minutes ?? null,
       scheduled_minutes: feas?.scheduled_minutes ?? null,
@@ -1436,8 +1489,6 @@ export async function runRollingPreview(userId, body) {
     diff,
     unplaced: !!pre?.body?.unplaced,
     infeasible,
-    // §Phase1-2：非致命的 planning-horizon validation（有 task 無上界時才非 null）。
-    missing_planning_horizon: missingPlanningHorizon,
   } };
 }
 
