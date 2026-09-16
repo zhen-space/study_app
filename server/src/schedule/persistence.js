@@ -5,7 +5,7 @@ import { calculateScheduleDiff } from './diff.js';
 import { classifyPlacement, findSelfCollisions, timedOverlap } from './feasibility.js';
 import { canonicalizeBlockTiming, timingProblem } from './timing.js';
 import { planTaskDisposition, lockReleaseReason } from './plan-cleanup.js';
-import { samePlacement, deadlineViolation } from './rolling.js';
+import { samePlacement, effectiveDeadlineViolation } from './rolling.js';
 
 // 手動調整的說法：使用者是「現在正要放」，不是「想恢復舊安排」。
 const MANUAL_MESSAGES = {
@@ -934,6 +934,26 @@ async function createScheduleVersionInTx(tx, userId, {
     return { version_id: versionId, version_no: versionNo, block_count: normalizedBlocks.length };
 }
 
+// 其他 Plan 的 carry-forward：ScheduleVersion 是 user-level 全域 snapshot，本次只替
+// current Plan 換 block，其他 draft/active Plan 仍有效的 future placement（date>=effFrom）
+// 必須原封不動帶進新版本。preview 與 apply **共用同一支 builder**（§Phase1-2），避免
+// preview 把其他 Plan 的 block 誤判成 removed、也避免 preview 的 candidate 與 apply
+// 實際建立的版本不一致。runner 可以是 tx 或 q（都提供 .all）。
+export async function otherPlanCarryForwardBlocks(runner, userId, activeVersionId, planId, effFrom) {
+  if (activeVersionId == null) return [];
+  const rows = await runner.all(
+    `SELECT b.task_id, b.date, b.start_time, b.end_time, b.planned_minutes
+       FROM scheduled_blocks b
+       JOIN tasks t ON t.id=b.task_id AND t.user_id=b.user_id
+      WHERE b.schedule_version_id=? AND b.user_id=?
+        AND t.plan_id IS NOT NULL AND t.plan_id<>?
+        AND COALESCE(t.deleted,0)=0 AND t.completed=0 AND COALESCE(t.cancelled,0)=0
+        AND b.date>=?
+      ORDER BY b.date, COALESCE(b.start_time,''), b.id`,
+    [activeVersionId, userId, planId, effFrom]);
+  return rows.map(canonicalizeBlockTiming);
+}
+
 // Wizard 初次建立與 AI Replan 的正式套用入口。任務的身分／內容變動與
 // ScheduleVersion、active pointer、due mirror 必須同生共死；尤其不能先把
 // Task 改到新日期、卻在建立版本失敗時留下半套資料。
@@ -1056,18 +1076,8 @@ export async function applySchedule(userId, {
     // ScheduleVersion 是 user-level 全域 snapshot，不是單一 Plan 的 snapshot。
     // 本次只替 current Plan 換 block；其他 Plan 仍有效的 future placement 必須從
     // active version 原封不動帶進 candidate，不然 mirror 會把它們誤判成 unplaced。
-    const carryForwardBlocks = active?.active_version_id == null
-      ? []
-      : (await tx.all(
-        `SELECT b.task_id, b.date, b.start_time, b.end_time, b.planned_minutes
-           FROM scheduled_blocks b
-           JOIN tasks t ON t.id=b.task_id AND t.user_id=b.user_id
-          WHERE b.schedule_version_id=? AND b.user_id=?
-            AND t.plan_id IS NOT NULL AND t.plan_id<>?
-            AND COALESCE(t.deleted,0)=0 AND t.completed=0 AND COALESCE(t.cancelled,0)=0
-            AND b.date>=?
-          ORDER BY b.date, COALESCE(b.start_time,''), b.id`,
-        [active.active_version_id, userId, planId, effFrom])).map(canonicalizeBlockTiming);
+    // preview 走同一支 builder（§Phase1-2），確保 preview candidate === apply 版本。
+    const carryForwardBlocks = await otherPlanCarryForwardBlocks(tx, userId, active?.active_version_id ?? null, planId, effFrom);
     const candidateBlocks = [...carryForwardBlocks, ...resolvedBlocks];
     // 即使 caller 繞過 preview，也不得把有重疊的全域 snapshot 寫進資料庫。
     // 這一步仍在 transaction 內，失敗時前面的 Task 異動會一併 rollback。
@@ -1087,18 +1097,22 @@ export async function applySchedule(userId, {
       if (violations.length) throw new ScheduleFreezeViolationError(violations);
     }
 
-    // §11 hard deadline defence-in-depth：用「此刻的 Task」再驗每一個 candidate block，
-    // 不信前端傳的 item.end。超過 deadline_date／deadline_time 一律拒絕。
+    // §11 / §Phase1-Fix effective upper bound defence-in-depth：用「此刻的 Task 與此刻所屬
+    // Plan 的 target_date」再驗每一個 candidate block（含其他 Plan 的 carry-forward），不信前端
+    // 傳的 item.end 或已算好的上限。有效上限＝Task deadline 與 Plan target_date 取較早者；
+    // School Assignment 同日 deadline_time 仍獨立檢查。任何越界 block 一律整筆拒絕、不建版本。
     if (enforceDeadlines) {
       const ids = [...new Set(candidateBlocks.map(b => Number(b.task_id)))];
       if (ids.length) {
         const rows = await tx.all(
-          `SELECT id, deadline_date, deadline_time FROM tasks WHERE user_id=? AND id IN (${ids.map(() => '?').join(',')})`,
+          `SELECT t.id, t.deadline_date, t.deadline_time, p.target_date AS plan_target_date
+             FROM tasks t LEFT JOIN plans p ON p.id=t.plan_id AND p.user_id=t.user_id
+            WHERE t.user_id=? AND t.id IN (${ids.map(() => '?').join(',')})`,
           [userId, ...ids]);
         const byId = new Map(rows.map(t => [Number(t.id), t]));
         const violations = [];
         for (const b of candidateBlocks) {
-          const v = deadlineViolation(b, byId.get(Number(b.task_id)));
+          const v = effectiveDeadlineViolation(b, byId.get(Number(b.task_id)));
           if (v) violations.push(v);
         }
         if (violations.length) throw new ScheduleDeadlineViolationError(violations);

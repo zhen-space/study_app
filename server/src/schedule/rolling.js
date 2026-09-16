@@ -70,6 +70,22 @@ export function deadlineViolation(block, task) {
   return null;
 }
 
+// §Phase1-Fix effective upper bound：每個 candidate block 的有效日期上限 defence-in-depth。
+//   有效上限 = Task deadline 與該 block 所屬 Plan 的 target_date 取「較早」者。
+//     ・Plan target_date 是整天上限（無時間分量）：block.date 晚於它即違反。
+//     ・Task deadline 仍含 School Assignment 同日 deadline_time 檢查（沿用 deadlineViolation）。
+//   任一違反即回結構化違反物件（type 標明是 plan_target 還是 deadline），否則 null。
+// preview 與 apply 共用同一把尺；apply 端一律以 CURRENT Plan target_date／Task deadline 重讀，
+// 不信 client 傳來的 target date 或已算好的上限。
+export function effectiveDeadlineViolation(block, ctx) {
+  if (!ctx) return null;
+  const { deadline_date, deadline_time, plan_target_date } = ctx;
+  if (plan_target_date && block.date > plan_target_date) {
+    return { task_id: Number(block.task_id), type: 'plan_target', deadline_date: plan_target_date, deadline_time: null, block_date: block.date };
+  }
+  return deadlineViolation(block, { deadline_date, deadline_time });
+}
+
 // override（§8）正規化。使用者的放寬選擇必須存在 preview request 裡，server 不自己猜。
 //   mode: 'none' | 'relax_freeze' | 'select_movable'
 //   movable_block_ids: SELECT_MOVABLE_BLOCKS 時，使用者明確允許移動的 frozen block id
