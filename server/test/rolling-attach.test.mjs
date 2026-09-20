@@ -96,6 +96,7 @@ async function applyFromPreview(u, planId, pv, extra = {}) {
       ? b.frozen.map(f => ({ task_id: f.task_id, date: f.date, start_time: f.start_time, end_time: f.end_time, planned_minutes: f.planned_minutes }))
       : null,
     enforceDeadlines: true,
+    rollingStrict: true,                    // 與正式 rolling/apply route 一致
     ...extra,
   });
 }
@@ -364,5 +365,175 @@ describe('Phase 2. Atomic Content Attachment', () => {
     // planB 的 block 完整 carry-forward 進新版本。
     assert.ok(await q.get('SELECT 1 FROM scheduled_blocks WHERE schedule_version_id=? AND task_id=?', [res.version_id, tB]), '其他 Plan block 應 carry-forward');
     assert.equal(await countSessions(u), sessBefore, 'StudySession 完全不受影響');
+  });
+});
+
+/* ===== Phase 2 final audit：strict rolling apply、CURRENT material、client_key、
+        duplicate selection、active-only、candidate presence、synthetic id 清除 ===== */
+describe('Phase 2 audit. strict rolling atomic attachment', () => {
+  // 直接對 applySchedule 送 rolling strict 請求（＝正式 rolling/apply route）。
+  const strictApply = (u, planId, o) => sched.applySchedule(u, {
+    planId, source: sched.SOURCE.AI_REPLAN, effectiveFrom: D(0), enforceDeadlines: true, rollingStrict: true, ...o,
+  });
+
+  test('A1 rolling apply 拒絕任意非 Material task_create（零寫入）', async () => {
+    const u = nextUser(); await mkUser(u);
+    const plan = await mkPlan(u); await mkList(u);
+    const before = { t: await countTasks(u), v: await countVersions(u) };
+    await assert.rejects(() => strictApply(u, plan, {
+      taskCreates: [{ client_key: 'x', title: '任意任務', estimated_minutes: 60 }],
+      blocks: [{ client_key: 'x', date: D(2), start_time: '19:00', end_time: '20:00', planned_minutes: 60 }],
+    }), e => e.code === 'ROLLING_STRICT_TASK_CREATE');
+    assert.equal(await countTasks(u), before.t, '不得建立任何 Task');
+    assert.equal(await countVersions(u), before.v, '不得建立版本');
+  });
+
+  test('A2 preview 後 CURRENT material estimate 變 null → apply fail closed + 全 rollback', async () => {
+    const u = nextUser(); await mkUser(u);
+    const plan = await mkPlan(u); const list = await mkList(u);
+    const cid = await mkMaterialItem(u, list, { est: 90 });
+    const pv = await runRollingPreview(u, { plan_id: plan, material_selections: [{ content_item_id: cid, client_key: 'm' }] });
+    assert.equal(pv.status, 200);
+    await q.run('UPDATE material_content_items SET estimated_minutes=NULL WHERE id=? AND user_id=?', [cid, u]);
+    const before = { t: await countTasks(u), p: await countPMI(u), v: await countVersions(u) };
+    await assert.rejects(() => applyFromPreview(u, plan, pv), e => e.code === 'MATERIAL_ESTIMATE_MISSING');
+    assert.equal(await countTasks(u), before.t, 'task create rollback');
+    assert.equal(await countPMI(u), before.p, 'selection rollback');
+    assert.equal(await countVersions(u), before.v, '無新版本');
+  });
+
+  test('A3 client 偽造 title/list_id/estimate → apply 一律用 CURRENT material 值', async () => {
+    const u = nextUser(); await mkUser(u);
+    const plan = await mkPlan(u); const realList = await mkList(u, '真科目'); const bogusList = await mkList(u, '假科目');
+    const cid = await mkMaterialItem(u, realList, { est: 90, title: '真標題' });
+    const pv = await runRollingPreview(u, { plan_id: plan, material_selections: [{ content_item_id: cid, client_key: 'm' }] });
+    // 竄改 client 傳回的 task_create（模擬惡意 client）。
+    pv.body.task_creates = pv.body.task_creates.map(tc => ({ ...tc, title: '假標題', list_id: bogusList, estimated_minutes: 5, material_book_id: 999999 }));
+    const res = await applyFromPreview(u, plan, pv);
+    assert.ok(res.version_id);
+    const task = await q.get('SELECT title,list_id,estimated_minutes FROM tasks WHERE user_id=? AND material_content_item_id=?', [u, cid]);
+    assert.equal(task.title, '真標題', 'title 用 CURRENT material');
+    assert.equal(Number(task.list_id), Number(realList), 'list_id 用 CURRENT material book subject');
+    assert.equal(task.estimated_minutes, 90, 'estimated_minutes 用 CURRENT material');
+  });
+
+  test('A4 兩個 Material 共用同一 client_key → preview 與 apply 均拒絕', async () => {
+    const u = nextUser(); await mkUser(u);
+    const plan = await mkPlan(u); const list = await mkList(u);
+    const c1 = await mkMaterialItem(u, list, { est: 60 });
+    const c2 = await mkMaterialItem(u, list, { est: 60 });
+    const pv = await runRollingPreview(u, { plan_id: plan, material_selections: [
+      { content_item_id: c1, client_key: 'dup' }, { content_item_id: c2, client_key: 'dup' }] });
+    assert.equal(pv.body.code, 'ADD_VALIDATION_FAILED');
+    assert.ok(pv.body.add_errors.some(e => e.reason === 'duplicate_client_key'));
+    // apply 端亦拒絕（不以 Map overwrite 掩蓋）。
+    await assert.rejects(() => strictApply(u, plan, {
+      taskCreates: [{ client_key: 'dup', material_content_item_id: c1 }, { client_key: 'dup', material_content_item_id: c2 }],
+      blocks: [{ client_key: 'dup', date: D(2), start_time: '19:00', end_time: '20:00', planned_minutes: 60 }],
+    }), e => e.code === 'DUPLICATE_CLIENT_KEY');
+  });
+
+  test('A5 同 Material 已 selected/已有 live Task → 不建重複 Task、不覆寫 linkage', async () => {
+    const u = nextUser(); await mkUser(u);
+    const plan = await mkPlan(u); const list = await mkList(u);
+    const cid = await mkMaterialItem(u, list, { est: 60 });
+    const pv1 = await runRollingPreview(u, { plan_id: plan, material_selections: [{ content_item_id: cid, client_key: 'm' }] });
+    const res1 = await applyFromPreview(u, plan, pv1);
+    assert.ok(res1.version_id);
+    const firstTask = await q.get('SELECT id FROM tasks WHERE user_id=? AND material_content_item_id=?', [u, cid]);
+    const firstPmi = await q.get('SELECT task_id FROM plan_material_items WHERE user_id=? AND plan_id=? AND content_item_id=?', [u, plan, cid]);
+    // preview 再選一次同一 material → already_selected。
+    const pv2 = await runRollingPreview(u, { plan_id: plan, material_selections: [{ content_item_id: cid, client_key: 'm2' }] });
+    assert.equal(pv2.body.code, 'ADD_VALIDATION_FAILED');
+    assert.ok(pv2.body.add_errors.some(e => e.reason === 'already_selected'));
+    // apply 硬送第二次 → ALREADY_SELECTED，且不得覆寫原 linkage、不得建立第二個 Task。
+    await assert.rejects(() => strictApply(u, plan, {
+      taskCreates: [{ client_key: 'm2', material_content_item_id: cid }],
+      blocks: [{ client_key: 'm2', date: D(2), start_time: '19:00', end_time: '20:00', planned_minutes: 60 }],
+    }), e => e.code === 'ALREADY_SELECTED');
+    assert.equal((await q.get('SELECT COUNT(*) c FROM tasks WHERE user_id=? AND material_content_item_id=? AND COALESCE(deleted,0)=0', [u, cid])).c, 1, '仍只有一個 Task');
+    assert.equal(Number((await q.get('SELECT task_id FROM plan_material_items WHERE user_id=? AND plan_id=? AND content_item_id=?', [u, plan, cid])).task_id), Number(firstPmi.task_id), 'linkage 未被覆寫');
+    assert.ok(firstTask);
+  });
+
+  test('A6 draft Plan 的 preview attachment → 拒絕', async () => {
+    const u = nextUser(); await mkUser(u);
+    const plan = await mkPlan(u, 'draft'); const list = await mkList(u);
+    const t = await mkStandalone(u, list, { est: 60 });
+    const r = await runRollingPreview(u, { plan_id: plan, add_task_ids: [t] });
+    assert.equal(r.status, 409);
+    assert.equal(r.body.code, 'PLAN_NOT_ACTIVE_FOR_ATTACH');
+  });
+
+  test('A7 preview 後 Plan active→draft → apply 拒絕新增且 rollback（active-only）', async () => {
+    const u = nextUser(); await mkUser(u);
+    const plan = await mkPlan(u, 'active'); const list = await mkList(u);
+    const t = await mkStandalone(u, list, { est: 60 });
+    const pv = await runRollingPreview(u, { plan_id: plan, add_task_ids: [t] });
+    assert.equal(pv.status, 200);
+    // draft 仍能滾動重排，但含新增內容時必須是 active → apply 應以 CURRENT status 拒絕。
+    await q.run('UPDATE plans SET status=? WHERE id=? AND user_id=?', ['draft', plan, u]);
+    await assert.rejects(() => applyFromPreview(u, plan, pv), e => e.code === 'PLAN_NOT_ACTIVE_FOR_ATTACH');
+    assert.equal((await q.get('SELECT plan_id FROM tasks WHERE id=?', [t])).plan_id, null, 'attach rollback');
+  });
+
+  test('A8 attach_task_id 未出現在 blocks → apply 拒絕', async () => {
+    const u = nextUser(); await mkUser(u);
+    const plan = await mkPlan(u); const list = await mkList(u);
+    const t = await mkStandalone(u, list, { est: 60 });
+    await assert.rejects(() => strictApply(u, plan, { attachTaskIds: [t], blocks: [] }),
+      e => e.code === 'ATTACH_NOT_IN_CANDIDATE');
+    assert.equal((await q.get('SELECT plan_id FROM tasks WHERE id=?', [t])).plan_id, null, 'attach rollback');
+  });
+
+  test('A9 task_create client_key 未出現在 blocks → apply 拒絕', async () => {
+    const u = nextUser(); await mkUser(u);
+    const plan = await mkPlan(u); const list = await mkList(u);
+    const cid = await mkMaterialItem(u, list, { est: 60 });
+    const before = { t: await countTasks(u), v: await countVersions(u) };
+    await assert.rejects(() => strictApply(u, plan, {
+      taskCreates: [{ client_key: 'm', material_content_item_id: cid }], blocks: [],
+    }), e => e.code === 'CREATE_NOT_IN_CANDIDATE');
+    assert.equal(await countTasks(u), before.t, '無 Task 殘留');
+    assert.equal(await countVersions(u), before.v, '無新版本');
+  });
+
+  test('A10 block 使用未知 client_key → apply 拒絕', async () => {
+    const u = nextUser(); await mkUser(u);
+    const plan = await mkPlan(u); await mkList(u);
+    await assert.rejects(() => strictApply(u, plan, {
+      taskCreates: [], blocks: [{ client_key: 'ghost', date: D(2), start_time: '19:00', end_time: '20:00', planned_minutes: 60 }],
+    }), e => e.code === 'BLOCK_UNKNOWN_IDENTITY');
+  });
+
+  test('A11 preview response 深層結構完全沒有負數 synthetic task id', async () => {
+    const u = nextUser(); await mkUser(u);
+    const plan = await mkPlan(u); const list = await mkList(u);
+    const t = await mkStandalone(u, list, { est: 60 });
+    const c1 = await mkMaterialItem(u, list, { est: 60 });
+    const c2 = await mkMaterialItem(u, list, { est: 60 });
+    const pv = await runRollingPreview(u, { plan_id: plan, add_task_ids: [t], material_selections: [
+      { content_item_id: c1, client_key: 'a' }, { content_item_id: c2, client_key: 'b' }] });
+    assert.equal(pv.status, 200);
+    const json = JSON.stringify(pv.body);
+    assert.ok(!/"task_id":\s*-\d/.test(json), 'response 不得殘留負數 synthetic task id');
+    // material candidate block 一律 task_id:null + client_key。
+    const matBlocks = (pv.body.candidate_blocks || []).filter(b => b.client_key);
+    assert.ok(matBlocks.length >= 2 && matBlocks.every(b => b.task_id === null), 'material block 一律 {task_id:null, client_key}');
+    // 遞迴掃描任何 task_id 欄位皆不得為負。
+    const scan = o => { if (Array.isArray(o)) o.forEach(scan); else if (o && typeof o === 'object') { if ('task_id' in o && typeof o.task_id === 'number') assert.ok(o.task_id > 0, 'task_id 不得為負'); Object.values(o).forEach(scan); } };
+    scan(pv.body);
+  });
+
+  test('A12 School Assignment deadline 於 strict apply 後仍完整保留', async () => {
+    const u = nextUser(); await mkUser(u);
+    const plan = await mkPlan(u); const list = await mkList(u);
+    const sa = await mkStandalone(u, list, { est: 60, kind: 'school_assignment', school_assignment_type: 'homework', deadline_date: D(4), deadline_time: '18:00' });
+    const pv = await runRollingPreview(u, { plan_id: plan, add_task_ids: [sa] });
+    await applyFromPreview(u, plan, pv);
+    const a = await q.get('SELECT plan_id,deadline_date,deadline_time FROM tasks WHERE id=?', [sa]);
+    assert.equal(Number(a.plan_id), Number(plan));
+    assert.equal(a.deadline_date, D(4));
+    assert.equal(a.deadline_time, '18:00');
   });
 });

@@ -1240,6 +1240,14 @@ export async function runRollingPreview(userId, body) {
   if (!['draft', 'active'].includes(plan.status)) {
     return { status: 409, body: { error: '目前未執行的計畫不能滾動重排', code: 'PLAN_NOT_ROLLING_ELIGIBLE', plan_status: plan.status } };
   }
+  // §Phase2 blocker5：只要 request 含任何新增內容（trigger／add_task_ids／material_selections），
+  // CURRENT Plan 必須是 active；draft/paused/… 一律拒絕新增。不含新增的滾動重排維持 draft/active 皆可。
+  const hasAdditions = Number.isInteger(Number(body.trigger_task_id))
+    || (Array.isArray(body.add_task_ids) && body.add_task_ids.length > 0)
+    || (Array.isArray(body.material_selections) && body.material_selections.length > 0);
+  if (hasAdditions && plan.status !== 'active') {
+    return { status: 409, body: { error: '只有進行中的計畫可以加入內容', code: 'PLAN_NOT_ACTIVE_FOR_ATTACH', plan_status: plan.status } };
+  }
 
   // §2 rolling policy：horizon 預設吃 plan_constraints；body.freeze.horizon_days 可覆寫。
   const con = await q.get('SELECT intent_json FROM plan_constraints WHERE plan_id=? AND user_id=?', [planId, userId]);
@@ -1348,12 +1356,16 @@ export async function runRollingPreview(userId, body) {
   }
 
   // ② material content item selections → 虛擬新 Task
-  const seenMaterial = new Set();
+  const seenMaterial = new Set();           // §blocker4：同 request 同一 content item 只能一次
+  const seenKey = new Set();                // §blocker3：client_key 同 request 唯一
   for (const sel of (Array.isArray(body.material_selections) ? body.material_selections : [])) {
     const cid = Number(sel?.content_item_id);
-    const clientKey = String(sel?.client_key || `mat-${cid}`);
     if (!Number.isInteger(cid) || cid <= 0) { addErrors.push({ kind: 'material', id: sel?.content_item_id, reason: 'invalid_id' }); continue; }
-    if (seenMaterial.has(cid)) continue;
+    // §blocker3：client_key trim 後非空、同 request 唯一。缺省時以 mat-<cid> 補（每 content item 唯一）。
+    const rawKey = sel?.client_key == null ? `mat-${cid}` : String(sel.client_key).trim();
+    if (!rawKey) { addErrors.push({ kind: 'material', id: cid, reason: 'invalid_client_key' }); continue; }
+    if (seenKey.has(rawKey)) { addErrors.push({ kind: 'material', id: cid, client_key: rawKey, reason: 'duplicate_client_key' }); continue; }
+    if (seenMaterial.has(cid)) { addErrors.push({ kind: 'material', id: cid, reason: 'duplicate_material_selection' }); continue; }
     const mi = await q.get(
       `SELECT i.id, i.book_id, i.title, i.estimated_minutes, b.subject_list_id,
               COALESCE(p.completed,0) AS completed
@@ -1363,11 +1375,22 @@ export async function runRollingPreview(userId, body) {
         WHERE i.id=? AND i.user_id=?`, [cid, userId]);
     if (!mi) { addErrors.push({ kind: 'material', id: cid, reason: 'not_found' }); continue; }   // cross-user 亦然
     if (Number(mi.completed) === 1) { addErrors.push({ kind: 'material', id: cid, reason: 'already_completed' }); continue; }
-    seenMaterial.add(cid);
+    // §blocker4：CURRENT plan_material_items 已 selected=1 且 linked Task 仍存在，或本 Plan 已有
+    // 未刪除的同 content item Material Task → already_selected（不得建立第二個 Task）。
+    const dup = await q.get(
+      `SELECT 1 FROM plan_material_items pmi
+        WHERE pmi.user_id=? AND pmi.plan_id=? AND pmi.content_item_id=? AND pmi.selected=1 AND pmi.task_id IS NOT NULL
+          AND EXISTS (SELECT 1 FROM tasks t WHERE t.id=pmi.task_id AND t.user_id=? AND COALESCE(t.deleted,0)=0)
+       UNION SELECT 1 FROM tasks WHERE user_id=? AND plan_id=? AND material_content_item_id=? AND COALESCE(deleted,0)=0`,
+      [userId, planId, cid, userId, userId, planId, cid]);
+    if (dup) { addErrors.push({ kind: 'material', id: cid, reason: 'already_selected' }); continue; }
+    seenMaterial.add(cid); seenKey.add(rawKey);
+    const clientKey = rawKey;
     const negId = --negSeq;                 // -1, -2, ...：preview 內的虛擬 task 身分
     negIdToKey.set(negId, clientKey);
     virtualIdentities.push({ client_key: clientKey, content_item_id: cid, title: mi.title, estimated_minutes: mi.estimated_minutes ?? null, list_id: mi.subject_list_id ?? null });
-    // task_creates 走 applySchedule 的 material create 分支：欄位名必須是 material_content_item_id。
+    // task_creates 只帶身分（client_key + material_content_item_id）；title/list_id/estimate 由 apply
+    // 以 CURRENT material 重讀，preview 這裡附的值僅供 UI 顯示，apply strict 不採信。
     materialCreates.push({ client_key: clientKey, material_content_item_id: cid, content_item_id: cid, title: mi.title, list_id: mi.subject_list_id ?? null, estimated_minutes: mi.estimated_minutes ?? null });
     const est = Number(mi.estimated_minutes) || 0;
     // Material Task 沒有自身 deadline → upper bound 由 Plan target_date 決定（schedulingUpperBound）。
@@ -1617,6 +1640,7 @@ router.post('/rolling/apply', async (req, res) => {
       taskCreates: b.task_creates || [],
       freezeBlocks: b.freeze_blocks || null,
       enforceDeadlines: true,
+      rollingStrict: true,                 // §Phase2：rolling apply 一律開啟嚴格驗證
     }));
   } catch (e) {
     res.status(e.status || 500).json({ error: e.message, code: e.code, violations: e.violations, conflicts: e.conflicts, active_version_id: e.active_version_id });
