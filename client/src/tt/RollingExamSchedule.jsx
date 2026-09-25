@@ -5,11 +5,16 @@ import { fetchExternalBusy } from './calendarBusy';
 import { today } from './helpers';
 import { sectionize, INFEASIBLE_OPTIONS, buildFreezePayload, applyPayload, canConfirm } from './rollingSchedule';
 
+const EMPTY = [];
+
 // 段考滾動重排的預覽→（override）→再預覽→確認→套用流程。
 //
 // 硬性：任何 override 都必須「回到 preview 產生新 candidate、使用者再 confirm」，
 // 不能直接 apply；前端不直接建立 ScheduledBlock，一律走 /rolling/apply。
-export default function RollingExamSchedule({ planId, triggerTaskId = null, scheduleEnd = null, onClose, onApplied }) {
+export default function RollingExamSchedule({
+  planId, triggerTaskId = null, addTaskIds = EMPTY, materialSelections = EMPTY,
+  scheduleEnd = null, tasks = EMPTY, onClose, onApplied,
+}) {
   const [preview, setPreview] = useState(null);
   const [loading, setLoading] = useState(false);
   const [applying, setApplying] = useState(false);
@@ -22,6 +27,8 @@ export default function RollingExamSchedule({ planId, triggerTaskId = null, sche
     try {
       const body = { plan_id: planId };
       if (triggerTaskId != null) body.trigger_task_id = triggerTaskId;
+      if (addTaskIds.length) body.add_task_ids = addTaskIds;
+      if (materialSelections.length) body.material_selections = materialSelections;
       if (freeze) body.freeze = freeze;
       // 裝置行事曆（Apple/EventKit）：原生層＋已授權＋有選行事曆才帶進來；web/PWA no-op。
       // 範圍＝今天到這個計畫的目標日（涵蓋 rolling 後天起實際會排的 tail）；沒有目標日就略過。
@@ -34,7 +41,7 @@ export default function RollingExamSchedule({ planId, triggerTaskId = null, sche
     } catch (e) {
       setError(e.message || '預覽失敗'); setPreview(null);
     } finally { setLoading(false); }
-  }, [planId, triggerTaskId, scheduleEnd]);
+  }, [planId, triggerTaskId, addTaskIds, materialSelections, scheduleEnd]);
 
   useEffect(() => { doPreview(null); }, [doPreview]);
 
@@ -71,11 +78,17 @@ export default function RollingExamSchedule({ planId, triggerTaskId = null, sche
 
   const sec = preview ? sectionize(preview) : null;
   const allFrozenPins = preview ? [...(preview.frozen || []), ...(preview.movable || [])] : [];
+  const titleFor = it => {
+    if (it.client_key) return preview?.virtual_task_identities?.find(v => v.client_key === it.client_key)?.title || '新增教材內容';
+    return tasks.find(t => Number(t.id) === Number(it.task_id))?.title || '讀書安排';
+  };
 
   return (
     <BottomSheet onClose={onClose} label="段考滾動重排">
       <div className="rolling">
-        <h3 style={{ margin: '0 0 var(--sp-3)' }}>這次段考安排・滾動重排</h3>
+        <h3 style={{ margin: '0 0 var(--sp-3)' }}>
+          {addTaskIds.length || materialSelections.length ? '加入內容並重新安排' : '這次段考安排・滾動重排'}
+        </h3>
         {error && <div className="ui-card ui-card--warning" role="alert" style={{ marginBottom: 'var(--sp-3)' }}>{error}</div>}
         {loading && <div className="ui-meta">預覽中…</div>}
 
@@ -86,7 +99,18 @@ export default function RollingExamSchedule({ planId, triggerTaskId = null, sche
               後天（{preview.window?.rolling_start}）起重新安排。
             </div>
 
-            {preview.infeasible ? (
+            {preview.code && !preview.infeasible ? (
+              <div className="ui-card ui-card--warning" role="alert">
+                <b>{preview.code === 'MISSING_ESTIMATE' ? '請先補上預估時間'
+                  : preview.code === 'MISSING_PLANNING_HORIZON' ? '請先設定計畫期限'
+                    : '有內容目前不能加入'}</b>
+                <div className="ui-meta" style={{ marginTop: 2 }}>
+                  {preview.code === 'MISSING_ESTIMATE' ? '沒有預估時間就無法判斷要排多久。'
+                    : preview.code === 'MISSING_PLANNING_HORIZON' ? '需要目標日期才能產生段考安排。'
+                      : '內容可能已加入其他計畫、已完成，或資料已變更。請重新選擇。'}
+                </div>
+              </div>
+            ) : preview.infeasible ? (
               <div className="ui-card ui-card--warning rolling-infeasible" role="alert">
                 <b>在不動今天／明天的前提下排不進來</b>
                 <div className="ui-meta">
@@ -103,10 +127,12 @@ export default function RollingExamSchedule({ planId, triggerTaskId = null, sche
               </div>
             ) : (
               <>
-                <RollingSection title={`今天／明天・維持不變（${sec.frozen.length}）`} items={sec.frozen} tone="frozen" />
-                <RollingSection title={`新加入（${sec.added.length}）`} items={sec.added} tone="added" />
-                <RollingSection title={`重新安排（${sec.moved.length}）`} items={sec.moved} tone="moved" />
-                {preview.unplaced && <div className="ui-meta" style={{ color: 'var(--warning)' }}>有部分工作這次排不進去（unplaced）。</div>}
+                <RollingSection title={`今天／明天・維持不變（${sec.frozen.length}）`} items={sec.frozen} tone="frozen" titleFor={titleFor} />
+                <RollingSection title={`其他維持不變（${sec.unchanged.length}）`} items={sec.unchanged} tone="frozen" titleFor={titleFor} />
+                <RollingSection title={`新加入（${sec.added.length}）`} items={sec.added} tone="added" titleFor={titleFor} />
+                <RollingSection title={`重新安排（${sec.moved.length}）`} items={sec.moved} tone="moved" titleFor={titleFor} />
+                <RollingSection title={`移出安排（${sec.removed.length}）`} items={sec.removed} tone="removed" titleFor={titleFor} />
+                {!!preview.unplaced?.length && <div className="ui-meta" style={{ color: 'var(--warning)' }}>有部分工作這次排不進去。</div>}
               </>
             )}
 
@@ -139,14 +165,14 @@ export default function RollingExamSchedule({ planId, triggerTaskId = null, sche
   );
 }
 
-function RollingSection({ title, items, tone }) {
+function RollingSection({ title, items, tone, titleFor }) {
   if (!items?.length) return null;
   return (
     <section className={'ui-section rolling-sec rolling-sec--' + tone}>
       <div className="ui-section-title">{title}</div>
       {items.map((it, i) => {
         const b = it.after_blocks?.[0] || it.before_blocks?.[0] || {};
-        return <div key={i} className="ui-row"><span className="ui-row-main">{b.date} {b.start_time || ''}{b.end_time ? `–${b.end_time}` : ''}</span></div>;
+        return <div key={i} className="ui-row"><span className="ui-row-main"><b>{titleFor?.(it)}</b><span className="ui-meta">{b.date} {b.start_time || ''}{b.end_time ? `–${b.end_time}` : ''}</span></span></div>;
       })}
     </section>
   );

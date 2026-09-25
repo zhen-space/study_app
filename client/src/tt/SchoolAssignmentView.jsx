@@ -1,8 +1,9 @@
 import { useState } from 'react';
 import { api } from '../api';
-import { Button, PageHeader, SurfaceCard, EmptyState } from './ui';
+import { Button, PageHeader, SurfaceCard, EmptyState, BottomSheet } from './ui';
 import { onActivePlan } from './helpers';
 import SchoolAssignmentForm from './SchoolAssignmentForm';
+import RollingExamSchedule from './RollingExamSchedule';
 import {
   TYPE_LABEL, isSchoolAssignment, isOverdue, groupSchoolAssignments,
   formatDeadline, deadlineLabelText, nowTW,
@@ -10,7 +11,7 @@ import {
 
 // 一列學校作業：科目 · 名稱 · 類型 · 期限 · 狀態。生命週期一律沿用既有 Task
 // API（PATCH /tasks/:id），沒有 school-specific 的完成／取消／刪除／reopen。
-export function SARow({ t, list, now, onEdit, reload, showSubject = true }) {
+export function SARow({ t, list, now, onEdit, onAddPlan, reload, showSubject = true }) {
   const [menu, setMenu] = useState(false);
   const [busy, setBusy] = useState(false);
   const done = !!t.completed;
@@ -56,6 +57,9 @@ export function SARow({ t, list, now, onEdit, reload, showSubject = true }) {
             <div style={{ position: 'fixed', inset: 0, zIndex: 40 }} onClick={() => setMenu(false)} />
             <div className="sa-menu" role="menu">
               <button role="menuitem" onClick={() => { setMenu(false); onEdit(t); }}>編輯</button>
+              {t.plan_id == null && !done && !cancelled && onAddPlan && (
+                <button role="menuitem" onClick={() => { setMenu(false); onAddPlan(t); }}>加入計畫</button>
+              )}
               {done || cancelled
                 ? <button role="menuitem" onClick={() => patch({ completed: false, cancelled: false })}>重新開啟</button>
                 : <button role="menuitem" onClick={() => patch({ cancelled: true })}>取消作業</button>}
@@ -74,7 +78,7 @@ function Group({ title, tone, items, ...row }) {
     <section className="ui-section">
       <div className={'ui-section-title' + (tone === 'danger' ? ' sa-title-danger' : '')}>{title}（{items.length}）</div>
       <SurfaceCard>
-        {items.map(t => <SARow key={t.id} t={t} list={row.listOf(t)} now={row.now} onEdit={row.onEdit} reload={row.reload} />)}
+        {items.map(t => <SARow key={t.id} t={t} list={row.listOf(t)} now={row.now} onEdit={row.onEdit} onAddPlan={row.onAddPlan} reload={row.reload} />)}
       </SurfaceCard>
     </section>
   );
@@ -123,8 +127,11 @@ export function SchoolAssignmentToday({ tasks, lists, reload }) {
 }
 
 // 「任務」底下的專屬學校作業視圖（不是新的 bottom tab；資料仍來自既有 Task API）。
-export default function SchoolAssignmentView({ tasks, lists, reload }) {
+export default function SchoolAssignmentView({ tasks, lists, plans = [], reload }) {
   const [form, setForm] = useState(null);
+  const [attach, setAttach] = useState(null);
+  const [attachPlan, setAttachPlan] = useState('');
+  const [rolling, setRolling] = useState(null);
   const now = nowTW();
   const all = tasks.filter(t => isSchoolAssignment(t) && !t.deleted);
   const listOf = t => lists.find(l => l.id === t.list_id);
@@ -139,6 +146,8 @@ export default function SchoolAssignmentView({ tasks, lists, reload }) {
   const later = active.filter(t => !overdue.includes(t) && !dueToday.includes(t) && !upcoming.includes(t));
   const doneOrCancelled = all.filter(t => t.completed || t.cancelled);
   const [showDone, setShowDone] = useState(false);
+  const activePlans = plans.filter(p => p.status === 'active');
+  const rowProps = { listOf, now, onEdit: setForm, onAddPlan: t => { setAttach(t); setAttachPlan(''); }, reload };
 
   return (
     <div className="main">
@@ -150,10 +159,10 @@ export default function SchoolAssignmentView({ tasks, lists, reload }) {
             action={<Button variant="primary" onClick={() => setForm({})}>＋ 新增第一份作業</Button>} />
         ) : (
           <>
-            <Group title="已逾期" tone="danger" items={overdue} listOf={listOf} now={now} onEdit={setForm} reload={reload} />
-            <Group title="今天要交" items={dueToday} listOf={listOf} now={now} onEdit={setForm} reload={reload} />
-            <Group title="即將到期（7 天內）" items={upcoming} listOf={listOf} now={now} onEdit={setForm} reload={reload} />
-            <Group title="之後" items={later} listOf={listOf} now={now} onEdit={setForm} reload={reload} />
+            <Group title="已逾期" tone="danger" items={overdue} {...rowProps} />
+            <Group title="今天要交" items={dueToday} {...rowProps} />
+            <Group title="即將到期（7 天內）" items={upcoming} {...rowProps} />
+            <Group title="之後" items={later} {...rowProps} />
             {doneOrCancelled.length > 0 && (
               <section className="ui-section">
                 <button className="ui-section-title sa-toggle" onClick={() => setShowDone(s => !s)}>
@@ -172,6 +181,29 @@ export default function SchoolAssignmentView({ tasks, lists, reload }) {
       {form && (
         <SchoolAssignmentForm lists={lists} task={form.id ? form : null}
           onClose={() => setForm(null)} onSaved={() => reload('tasks')} />
+      )}
+      {attach && (
+        <BottomSheet onClose={() => setAttach(null)} label="加入計畫">
+          <b>把「{attach.title}」加入哪個計畫？</b>
+          <div className="ui-meta" style={{ marginTop: 2 }}>期限不會改變；下一步會先預覽新版安排。</div>
+          {activePlans.length ? (
+            <select aria-label="選擇計畫" value={attachPlan} onChange={e => setAttachPlan(e.target.value)}
+              style={{ width: '100%', marginTop: 'var(--sp-4)' }}>
+              <option value="">請選擇</option>
+              {activePlans.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
+            </select>
+          ) : <EmptyState title="沒有進行中的計畫" description="先建立或重新開始一個計畫。" />}
+          <div className="row" style={{ marginTop: 'var(--sp-4)' }}>
+            <Button variant="tertiary" onClick={() => setAttach(null)}>取消</Button>
+            <Button variant="primary" style={{ marginLeft: 'auto' }} disabled={!attachPlan}
+              onClick={() => { setRolling({ addTaskIds: [attach.id], planId: Number(attachPlan) }); setAttach(null); }}>預覽安排</Button>
+          </div>
+        </BottomSheet>
+      )}
+      {rolling && (
+        <RollingExamSchedule planId={rolling.planId} addTaskIds={rolling.addTaskIds} tasks={tasks}
+          scheduleEnd={plans.find(p => Number(p.id) === Number(rolling.planId))?.target_date || null}
+          onClose={() => setRolling(null)} onApplied={async () => { await reload(); }} />
       )}
     </div>
   );

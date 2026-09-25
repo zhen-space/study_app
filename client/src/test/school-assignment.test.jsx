@@ -209,6 +209,20 @@ describe('新增／編輯表單', () => {
 
 /* ==================== 串接：生命週期（沿用 Task API） ==================== */
 describe('生命週期沿用既有 Task API', () => {
+  it('只有 standalone 未完成作業可以從選單加入計畫', () => {
+    const onAddPlan = vi.fn();
+    const { rerender } = render(<SARow t={sa({ id: 6, plan_id: null })} list={{ id: 1, name: '數學' }} now={NOW}
+      onEdit={() => {}} onAddPlan={onAddPlan} reload={() => {}} />);
+    fireEvent.click(screen.getByRole('button', { name: '更多' }));
+    fireEvent.click(screen.getByRole('menuitem', { name: '加入計畫' }));
+    expect(onAddPlan).toHaveBeenCalledWith(expect.objectContaining({ id: 6 }));
+
+    rerender(<SARow t={sa({ id: 6, plan_id: 9 })} list={{ id: 1, name: '數學' }} now={NOW}
+      onEdit={() => {}} onAddPlan={onAddPlan} reload={() => {}} />);
+    fireEvent.click(screen.getByRole('button', { name: '更多' }));
+    expect(screen.queryByRole('menuitem', { name: '加入計畫' })).not.toBeInTheDocument();
+  });
+
   const reload = vi.fn();
   beforeEach(() => { api.mockReset(); api.mockResolvedValue({}); reload.mockReset(); });
 
