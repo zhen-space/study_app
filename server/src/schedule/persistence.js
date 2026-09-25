@@ -1038,6 +1038,7 @@ export async function applySchedule(userId, {
 
     const created = new Map();
     const createdMaterialItemId = new Map();   // client_key → material_content_item_id（candidate 驗證用）
+    const createdMaterialEstimate = new Map(); // client_key → CURRENT estimated_minutes（block 分鐘一致性驗證用）
     const seenContentItem = new Set();         // 同 request 內不得重複選同一 content item
     for (const c of taskCreates) {
       // §Phase2 blocker3：client_key trim 後非空、同 request 唯一；不以 Map overwrite 掩蓋 collision。
@@ -1093,6 +1094,26 @@ export async function applySchedule(userId, {
           `SELECT 1 FROM tasks WHERE user_id=? AND plan_id=? AND material_content_item_id=? AND COALESCE(deleted,0)=0`,
           [userId, planId, materialItem.id]);
         if (dupSel || dupTask) throw new ScheduleInputError(`這份教材已加入本計畫：${materialItem.id}`, 'ALREADY_SELECTED');
+        // §Phase2 audit blocker3：candidate blocks 是照 preview 當下的 material 估時排出來的。
+        // 若 apply 前 CURRENT material 的 scheduling-relevant 欄位已與 preview snapshot 不同（估時、
+        // 名稱、書、科目、content item 身分），代表使用者確認的 candidate 已過時 → MATERIAL_STALE 整筆
+        // rollback，要求重新 preview；不得用 CURRENT 欄位卻沿用舊 blocks。snapshot 只用來比對，仍以 CURRENT 建立。
+        const snap = c.material_snapshot;
+        if (snap) {
+          const cur = {
+            content_item_id: Number(materialItem.id),
+            title: materialItem.title ?? null,
+            estimated_minutes: materialItem.estimated_minutes ?? null,
+            material_book_id: materialItem.book_id ?? null,
+            subject_list_id: materialItem.subject_list_id ?? null,
+          };
+          const same = Number(snap.content_item_id) === cur.content_item_id
+            && (snap.title ?? null) === cur.title
+            && (snap.estimated_minutes ?? null) === cur.estimated_minutes
+            && (snap.material_book_id ?? null) === cur.material_book_id
+            && (snap.subject_list_id ?? null) === cur.subject_list_id;
+          if (!same) throw new ScheduleInputError(`教材資料在你預覽之後已變更，請重新預覽：${materialItem.id}`, 'MATERIAL_STALE');
+        }
       } else {
         // 既有 Wizard / 非 strict：沿用原行為（信 client；material item 估時優先，否則回退 client/block）。
         if (!String(c.title || '').trim()) throw new ScheduleInputError('新任務資料不正確');
@@ -1115,6 +1136,7 @@ export async function applySchedule(userId, {
           estimated, materialItem?.id ?? null, bookId]);
       created.set(key, r.lastInsertRowid);
       createdMaterialItemId.set(key, materialItem?.id ?? null);
+      if (rollingStrict && materialItem) createdMaterialEstimate.set(key, Number(estimated));
       // §Phase2：原子寫入 Material selection（plan_material_items），preview 不預寫。
       // 一計畫一 content_item 一列：既有列（含先前取消選取的）改回 selected=1 並指向新 Task；
       // 沒有才 INSERT。這是「選取」，與 material_progress（完成度）完全分離。
@@ -1137,13 +1159,31 @@ export async function applySchedule(userId, {
       await tx.run('UPDATE tasks SET deleted=1 WHERE id=? AND user_id=?', [taskId, userId]);
     }
 
-    const resolvedBlocks = blocks.map(b => {
-      // client_key 用 trim 後的值對回；未知 key（created 沒有）→ taskId 為 null → 整筆拒絕。
+    // §Phase2 audit blocker2：strict rolling 模式下每個 block 必須「恰好一種 identity」。
+    //   ・existing Task：有合法 task_id、且不得同時帶 client_key
+    //   ・新建 Material Task：帶已宣告的 client_key、task_id 為 null／缺省
+    //   ・同時有 task_id 與 client_key → 拒絕（不得用 ?? 讓 task_id 掩蓋未知 key）
+    //   ・未知 client_key／空白 client_key／兩者都沒有 → 拒絕
+    const resolveStrict = b => {
+      const hasTid = b.task_id != null;
+      const hasKeyField = b.client_key != null;
+      const rawKey = hasKeyField ? String(b.client_key).trim() : '';
+      if (hasTid && hasKeyField) throw new ScheduleInputError('排程區塊不得同時帶 task_id 與 client_key', 'BLOCK_AMBIGUOUS_IDENTITY');
+      if (hasTid) return { ...b, task_id: Number(b.task_id) };
+      if (!hasKeyField) throw new ScheduleInputError('排程區塊缺少 identity（task_id 或 client_key）', 'BLOCK_MISSING_IDENTITY');
+      if (!rawKey) throw new ScheduleInputError('排程區塊的 client_key 不得為空白', 'BLOCK_BLANK_CLIENT_KEY');
+      const id = created.get(rawKey);
+      if (id == null) throw new ScheduleInputError('排程區塊引用未知 client_key', 'BLOCK_UNKNOWN_IDENTITY');
+      return { ...b, task_id: id, client_key: rawKey };
+    };
+    const resolveLenient = b => {
+      // 既有 Wizard/Replan：維持原行為（task_id 優先，其次 client_key）。
       const key = b.client_key != null ? String(b.client_key).trim() : null;
       const taskId = b.task_id ?? (key ? created.get(key) : undefined);
       if (taskId == null) throw new ScheduleInputError('排程區塊找不到對應任務（未知或缺少 client_key）', 'BLOCK_UNKNOWN_IDENTITY');
       return { ...b, task_id: taskId };
-    });
+    };
+    const resolvedBlocks = blocks.map(b => (rollingStrict ? resolveStrict(b) : resolveLenient(b)));
 
     // §Phase2 blocker6：新增內容必須實際出現在正式 candidate。strict 模式下：
     //   ・每個 attach_task_id 至少有一個 candidate block
@@ -1156,6 +1196,30 @@ export async function applySchedule(userId, {
       }
       for (const [key, id] of created) {
         if (!blockTaskIds.has(Number(id))) throw new ScheduleInputError(`新增內容未排入本次版本：${key}`, 'CREATE_NOT_IN_CANDIDATE');
+      }
+      // §Phase2 audit blocker3（forge-proof）：每個 Material Task 的候選 block 分鐘總和必須等於
+      // CURRENT estimated_minutes。preview 是照當下估時排滿的；若估時在 apply 前改變（即使 client
+      // 偽造 snapshot 使其與 CURRENT 一致），舊 blocks 的分鐘總和就對不上 CURRENT → MATERIAL_STALE。
+      // 這一步不信任 client snapshot，直接拿 DB 的 CURRENT 估時對帳。
+      // preview 的 candidate block 分鐘可能只以 start/end 表示（planned_minutes 為 null），
+      // 因此優先取明確的 planned_minutes，否則由 end_time-start_time 推導。
+      const minutesOf = b => {
+        const pm = Number(b.planned_minutes);
+        if (Number.isFinite(pm) && pm > 0) return pm;
+        if (b.start_time && b.end_time) {
+          const t = s => Number(s.slice(0, 2)) * 60 + Number(s.slice(3, 5));
+          return Math.max(0, t(b.end_time) - t(b.start_time));
+        }
+        return 0;
+      };
+      for (const [key, id] of created) {
+        if (!createdMaterialEstimate.has(key)) continue;   // 只驗 Material Task
+        const scheduled = resolvedBlocks
+          .filter(b => Number(b.task_id) === Number(id))
+          .reduce((total, b) => total + minutesOf(b), 0);
+        if (scheduled !== Number(createdMaterialEstimate.get(key))) {
+          throw new ScheduleInputError(`教材排定分鐘與 CURRENT 估時不一致，請重新預覽：${key}`, 'MATERIAL_STALE');
+        }
       }
     }
     const active = await tx.get('SELECT active_version_id FROM user_schedule_state WHERE user_id=?', [userId]);

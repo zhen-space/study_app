@@ -1242,7 +1242,13 @@ export async function runRollingPreview(userId, body) {
   }
   // §Phase2 blocker5：只要 request 含任何新增內容（trigger／add_task_ids／material_selections），
   // CURRENT Plan 必須是 active；draft/paused/… 一律拒絕新增。不含新增的滾動重排維持 draft/active 皆可。
-  const hasAdditions = Number.isInteger(Number(body.trigger_task_id))
+  //
+  // §Phase2 audit blocker1：trigger_task_id 只有在「合法正整數」時才算新增。
+  // Number(null)/Number('')/Number(0) 都是 0，Number.isInteger(0) 為 true——不能用它判斷，
+  // 否則沒有新增內容的 draft rolling replan 會被誤判成 attachment 而被 PLAN_NOT_ACTIVE_FOR_ATTACH 擋掉。
+  const isPositiveIntId = v => v != null && v !== '' && Number.isInteger(Number(v)) && Number(v) > 0;
+  const triggerIsAddition = isPositiveIntId(body.trigger_task_id);
+  const hasAdditions = triggerIsAddition
     || (Array.isArray(body.add_task_ids) && body.add_task_ids.length > 0)
     || (Array.isArray(body.material_selections) && body.material_selections.length > 0);
   if (hasAdditions && plan.status !== 'active') {
@@ -1389,9 +1395,19 @@ export async function runRollingPreview(userId, body) {
     const negId = --negSeq;                 // -1, -2, ...：preview 內的虛擬 task 身分
     negIdToKey.set(negId, clientKey);
     virtualIdentities.push({ client_key: clientKey, content_item_id: cid, title: mi.title, estimated_minutes: mi.estimated_minutes ?? null, list_id: mi.subject_list_id ?? null });
-    // task_creates 只帶身分（client_key + material_content_item_id）；title/list_id/estimate 由 apply
-    // 以 CURRENT material 重讀，preview 這裡附的值僅供 UI 顯示，apply strict 不採信。
-    materialCreates.push({ client_key: clientKey, material_content_item_id: cid, content_item_id: cid, title: mi.title, list_id: mi.subject_list_id ?? null, estimated_minutes: mi.estimated_minutes ?? null });
+    // §Phase2 audit blocker3：附上 preview 當下的 scheduling-relevant material snapshot／fingerprint。
+    // apply transaction 會重讀 CURRENT material 並與此比對；任一欄位不同即回 stale error 整筆 rollback，
+    // 因為 candidate blocks 是照這份 snapshot 的估時排出來的。snapshot 僅供比對，apply 仍以 CURRENT 建立。
+    const materialSnapshot = {
+      content_item_id: cid,
+      title: mi.title ?? null,
+      estimated_minutes: mi.estimated_minutes ?? null,
+      material_book_id: mi.book_id ?? null,
+      subject_list_id: mi.subject_list_id ?? null,
+    };
+    // task_creates 只帶身分（client_key + material_content_item_id）＋ snapshot；title/list_id/estimate 由
+    // apply 以 CURRENT material 重讀，preview 這裡附的值僅供 UI 顯示，apply strict 不採信。
+    materialCreates.push({ client_key: clientKey, material_content_item_id: cid, content_item_id: cid, title: mi.title, list_id: mi.subject_list_id ?? null, estimated_minutes: mi.estimated_minutes ?? null, material_snapshot: materialSnapshot });
     const est = Number(mi.estimated_minutes) || 0;
     // Material Task 沒有自身 deadline → upper bound 由 Plan target_date 決定（schedulingUpperBound）。
     if (est > 0) addItem({ id: negId, list_id: mi.subject_list_id ?? negId, title: mi.title }, est, null);

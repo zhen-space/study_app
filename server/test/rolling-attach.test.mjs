@@ -537,3 +537,115 @@ describe('Phase 2 audit. strict rolling atomic attachment', () => {
     assert.equal(a.deadline_time, '18:00');
   });
 });
+
+/* ===== Phase 2 audit round 2：hasAdditions 正整數、strict block identity、material stale ===== */
+describe('Phase 2 audit r2. hasAdditions / block identity / material stale', () => {
+  const strictApply = (u, planId, o) => sched.applySchedule(u, {
+    planId, source: sched.SOURCE.AI_REPLAN, effectiveFrom: D(0), enforceDeadlines: true, rollingStrict: true, ...o,
+  });
+
+  test('B1 hasAdditions：trigger_task_id 只有合法正整數才算新增（draft 無新增仍可用）', async () => {
+    const u = nextUser(); await mkUser(u);
+    const plan = await mkPlan(u, 'draft'); const list = await mkList(u);
+    const pt = await mkPlanTask(u, plan, list, { est: 60 });
+    await seedVersion(u, [{ task_id: pt, date: D(2), start_time: '19:00', end_time: '20:00', planned_minutes: 60 }]);
+    // 非新增值：omitted / null / '' / 0 / '0' → draft rolling replan 仍可用（不被 attach 擋）。
+    for (const v of [undefined, null, '', 0, '0']) {
+      const body = { plan_id: plan };
+      if (v !== undefined) body.trigger_task_id = v;
+      const r = await runRollingPreview(u, body);
+      assert.equal(r.status, 200, `trigger_task_id=${JSON.stringify(v)} 不應算新增`);
+      assert.notEqual(r.body.code, 'PLAN_NOT_ACTIVE_FOR_ATTACH');
+    }
+    // 正整數 / 正整數字串 → 算新增 → draft 拒絕。
+    for (const v of [pt, String(pt)]) {
+      const r = await runRollingPreview(u, { plan_id: plan, trigger_task_id: v });
+      assert.equal(r.body.code, 'PLAN_NOT_ACTIVE_FOR_ATTACH', `trigger_task_id=${v} 應算新增`);
+    }
+    // draft + 真正的 add / material 也一律拒絕。
+    const t2 = await mkStandalone(u, list, { est: 60 });
+    assert.equal((await runRollingPreview(u, { plan_id: plan, add_task_ids: [t2] })).body.code, 'PLAN_NOT_ACTIVE_FOR_ATTACH');
+    const cidD = await mkMaterialItem(u, list, { est: 60 });
+    assert.equal((await runRollingPreview(u, { plan_id: plan, material_selections: [{ content_item_id: cidD, client_key: 'x' }] })).body.code, 'PLAN_NOT_ACTIVE_FOR_ATTACH');
+  });
+
+  test('B2 strict block identity：ambiguous / missing / blank / unknown 一律拒絕且零寫入', async () => {
+    const u = nextUser(); await mkUser(u);
+    const plan = await mkPlan(u); const list = await mkList(u);
+    const t = await mkStandalone(u, list, { est: 60 });
+    const cid = await mkMaterialItem(u, list, { est: 60 });
+    // ambiguous：block 同時帶 task_id 與 client_key（不得讓 task_id 掩蓋未知 key）。
+    await assert.rejects(() => strictApply(u, plan, {
+      attachTaskIds: [t],
+      blocks: [{ task_id: t, client_key: 'ghost', date: D(2), start_time: '19:00', end_time: '20:00', planned_minutes: 60 }],
+    }), e => e.code === 'BLOCK_AMBIGUOUS_IDENTITY');
+    assert.equal((await q.get('SELECT plan_id FROM tasks WHERE id=?', [t])).plan_id, null, 'ambiguous → rollback');
+    // missing：block 兩者都沒有。
+    await assert.rejects(() => strictApply(u, plan, {
+      blocks: [{ date: D(2), start_time: '19:00', end_time: '20:00', planned_minutes: 60 }],
+    }), e => e.code === 'BLOCK_MISSING_IDENTITY');
+    // blank client_key。
+    const before = await countTasks(u);
+    await assert.rejects(() => strictApply(u, plan, {
+      taskCreates: [{ client_key: 'm', material_content_item_id: cid }],
+      blocks: [{ client_key: '   ', date: D(2), start_time: '19:00', end_time: '20:00', planned_minutes: 60 }],
+    }), e => e.code === 'BLOCK_BLANK_CLIENT_KEY');
+    // unknown key（無對應 task_create）。
+    await assert.rejects(() => strictApply(u, plan, {
+      blocks: [{ client_key: 'nope', date: D(2), start_time: '19:00', end_time: '20:00', planned_minutes: 60 }],
+    }), e => e.code === 'BLOCK_UNKNOWN_IDENTITY');
+    assert.equal(await countTasks(u), before, '全程零寫入');
+  });
+
+  // 建一份 material selection 的 preview，回 { u, plan, list, cid, pv }。
+  const setupMat = async (est = 90, title = '原標題') => {
+    const u = nextUser(); await mkUser(u);
+    const plan = await mkPlan(u); const list = await mkList(u);
+    const cid = await mkMaterialItem(u, list, { est, title });
+    const pv = await runRollingPreview(u, { plan_id: plan, material_selections: [{ content_item_id: cid, client_key: 'm' }] });
+    assert.equal(pv.status, 200);
+    return { u, plan, list, cid, pv };
+  };
+
+  test('B3 material stale：estimate / title / subject / book 改變 → apply 拒絕且零寫入；未變 → 成功', async () => {
+    // estimate 90→120
+    { const { u, plan, cid, pv } = await setupMat();
+      await q.run('UPDATE material_content_items SET estimated_minutes=120 WHERE id=? AND user_id=?', [cid, u]);
+      const b = { t: await countTasks(u), p: await countPMI(u), v: await countVersions(u) };
+      await assert.rejects(() => applyFromPreview(u, plan, pv), e => e.code === 'MATERIAL_STALE');
+      assert.equal(await countTasks(u), b.t); assert.equal(await countPMI(u), b.p); assert.equal(await countVersions(u), b.v);
+    }
+    // title 改變
+    { const { u, plan, cid, pv } = await setupMat();
+      await q.run('UPDATE material_content_items SET title=? WHERE id=? AND user_id=?', ['新標題', cid, u]);
+      await assert.rejects(() => applyFromPreview(u, plan, pv), e => e.code === 'MATERIAL_STALE');
+    }
+    // subject/list 改變（book.subject_list_id）
+    { const { u, plan, cid, pv } = await setupMat();
+      const other = await mkList(u, '別科');
+      await q.run('UPDATE material_books SET subject_list_id=? WHERE id=(SELECT book_id FROM material_content_items WHERE id=?) AND user_id=?', [other, cid, u]);
+      await assert.rejects(() => applyFromPreview(u, plan, pv), e => e.code === 'MATERIAL_STALE');
+    }
+    // book 改變（把 content item 移到另一本書）
+    { const { u, plan, list, cid, pv } = await setupMat();
+      const book2 = await mkBook(u, list);
+      await q.run('UPDATE material_content_items SET book_id=? WHERE id=? AND user_id=?', [book2, cid, u]);
+      await assert.rejects(() => applyFromPreview(u, plan, pv), e => e.code === 'MATERIAL_STALE');
+    }
+    // 完全未變 → 成功
+    { const { u, plan, pv } = await setupMat();
+      const res = await applyFromPreview(u, plan, pv);
+      assert.ok(res.version_id, '未變更應正常成功');
+    }
+  });
+
+  test('B3b client 偽造 snapshot 仍不可通過（block 分鐘與 CURRENT 估時對帳）', async () => {
+    const { u, plan, cid, pv } = await setupMat(90);
+    // CURRENT 估時改 120；client 偽造 snapshot 讓它「看起來一致」（=120），但 candidate 仍是 90 分鐘。
+    await q.run('UPDATE material_content_items SET estimated_minutes=120 WHERE id=? AND user_id=?', [cid, u]);
+    pv.body.task_creates = pv.body.task_creates.map(tc => ({ ...tc, material_snapshot: { ...tc.material_snapshot, estimated_minutes: 120 } }));
+    const b = { t: await countTasks(u), v: await countVersions(u) };
+    await assert.rejects(() => applyFromPreview(u, plan, pv), e => e.code === 'MATERIAL_STALE');
+    assert.equal(await countTasks(u), b.t, '零寫入'); assert.equal(await countVersions(u), b.v);
+  });
+});
