@@ -19,6 +19,7 @@ const feasible = () => ({
     { task_id: 11, date: '2026-09-14', start_time: '19:00', end_time: '20:00', planned_minutes: 60 },
   ],
   attach_task_ids: [],
+  task_creates: [],
   diff: { items: [
     { task_id: 10, type: 'unchanged', before_blocks: [{ date: '2026-09-12', start_time: '19:00', end_time: '20:00' }], after_blocks: [{ date: '2026-09-12', start_time: '19:00', end_time: '20:00' }] },
     { task_id: 11, type: 'added', before_blocks: [], after_blocks: [{ date: '2026-09-14', start_time: '19:00', end_time: '20:00' }] },
@@ -50,11 +51,12 @@ describe('rollingSchedule 純函式', () => {
     expect(buildFreezePayload('SELECT_MOVABLE_BLOCKS', { movableBlockIds: [1, 2] }).override).toEqual({ mode: 'select_movable', movable_block_ids: [1, 2] });
   });
   it('applyPayload：帶 base_version_id / blocks / freeze_blocks / attach', () => {
-    const p = applyPayload({ ...feasible(), plan_id: 7 });
+    const p = applyPayload({ ...feasible(), plan_id: 7, task_creates: [{ client_key: 'm1', material_snapshot_token: 'signed' }] });
     expect(p.base_version_id).toBe(5);
     expect(p.plan_id).toBe(7);
     expect(p.blocks).toHaveLength(2);
     expect(p.freeze_blocks).toHaveLength(1);
+    expect(p.task_creates).toEqual([{ client_key: 'm1', material_snapshot_token: 'signed' }]);
   });
   it('canConfirm：feasible → true；infeasible → false', () => {
     expect(canConfirm(feasible())).toBe(true);
@@ -81,6 +83,29 @@ describe('RollingExamSchedule 流程', () => {
     // 只打 rolling preview / apply，沒有任何直接建立 block 的呼叫
     const paths = api.mock.calls.map(c => c[0]);
     expect(paths.every(p => p === '/schedule/rolling/preview' || p === '/schedule/rolling/apply')).toBe(true);
+  });
+
+  it('加入內容 → preview 帶 existing tasks 與 material selections，apply 帶簽章 task_creates', async () => {
+    const p = { ...feasible(), attach_task_ids: [21], task_creates: [{ client_key: 'mat-8', material_snapshot_token: 'signed' }] };
+    api.mockResolvedValueOnce(p).mockResolvedValueOnce({ version_id: 43 });
+    render(<RollingExamSchedule planId={7} addTaskIds={[21]}
+      materialSelections={[{ content_item_id: 8, client_key: 'mat-8' }]}
+      onClose={() => {}} onApplied={() => {}} />);
+    await waitFor(() => expect(api).toHaveBeenCalled());
+    const preview = api.mock.calls.find(c => c[0] === '/schedule/rolling/preview');
+    expect(preview[1].body.add_task_ids).toEqual([21]);
+    expect(preview[1].body.material_selections).toEqual([{ content_item_id: 8, client_key: 'mat-8' }]);
+    fireEvent.click(await screen.findByRole('button', { name: '確認套用' }));
+    await waitFor(() => expect(api.mock.calls.some(c => c[0] === '/schedule/rolling/apply')).toBe(true));
+    const apply = api.mock.calls.find(c => c[0] === '/schedule/rolling/apply');
+    expect(apply[1].body.task_creates).toEqual(p.task_creates);
+  });
+
+  it('缺估時 → 說明要先補預估時間，不能確認', async () => {
+    api.mockResolvedValueOnce({ ...feasible(), code: 'MISSING_ESTIMATE', blocks: null, candidate_blocks: null, diff: null });
+    render(<RollingExamSchedule planId={7} addTaskIds={[21]} onClose={() => {}} onApplied={() => {}} />);
+    expect(await screen.findByText('請先補上預估時間')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: '確認套用' })).toBeDisabled();
   });
 
   it('INFEASIBLE → 顯示三選項；確認套用被停用', async () => {

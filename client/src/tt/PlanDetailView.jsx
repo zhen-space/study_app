@@ -11,6 +11,7 @@ import ReplanSheet from './ReplanSheet';
 import ConstraintSheet from './ConstraintSheet';
 import ExplainSheet from './ExplainSheet';
 import RollingExamSchedule from './RollingExamSchedule';
+import PlanContentPicker from './PlanContentPicker';
 import { Button, IconButton, PageHeader, SurfaceCard, ProgressBar, ListRow, BottomSheet, EmptyState } from './ui';
 
 // 單一計畫的內容。
@@ -23,6 +24,7 @@ import { Button, IconButton, PageHeader, SurfaceCard, ProgressBar, ListRow, Bott
 // 舊資料沒有 plan id，這些操作對它沒有意義，一律不顯示。
 
 const STATUS_LABEL = { draft: '草稿', active: '進行中', paused: '已暫停', completed: '已完成', ended: '已結束', archived: '已封存' };
+const EMPTY_ADDITIONS = [];
 
 // 暫停／刪除都必須明確選「未完成的任務怎麼辦」。刻意不給預設值：
 // 猜錯的兩個方向都很痛（以為留著結果被刪、以為清掉結果還在），
@@ -78,6 +80,7 @@ export default function PlanDetailView({ planKey, tasks, lists, apiPlans = [], r
   }, []);
   const [sheet, setSheet] = useState(null);   // manage | edit | add | adjust | cannotComplete | confirmEnd
   const [showRolling, setShowRolling] = useState(false);   // 段考滾動重排
+  const [rollingAdditions, setRollingAdditions] = useState(null);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState('');
   const [replan, setReplan] = useState(false);
@@ -318,8 +321,11 @@ export default function PlanDetailView({ planKey, tasks, lists, apiPlans = [], r
             <span className="chip" style={{ marginLeft: 'auto' }}>{statusLabel}</span>
           )}
         </div>
-        {workable && (
+        {plan.status === 'active' && (
           <div className="row" style={{ marginTop: 'var(--sp-2)' }}>
+            <Button size="sm" variant="primary" onClick={() => setSheet('addContent')}>
+              <Icon name="plus" size={14} /> 加入內容
+            </Button>
             <Button size="sm" variant="secondary" onClick={() => setShowRolling(true)}>
               <Icon name="calendar" size={14} /> 段考滾動重排
             </Button>
@@ -327,7 +333,11 @@ export default function PlanDetailView({ planKey, tasks, lists, apiPlans = [], r
           </div>
         )}
         {showRolling && (
-          <RollingExamSchedule planId={plan.planId} onClose={() => setShowRolling(false)}
+          <RollingExamSchedule planId={plan.planId}
+            tasks={tasks}
+            addTaskIds={rollingAdditions?.addTaskIds || EMPTY_ADDITIONS}
+            materialSelections={rollingAdditions?.materialSelections || EMPTY_ADDITIONS}
+            onClose={() => { setShowRolling(false); setRollingAdditions(null); }}
             scheduleEnd={raw?.target_date
               || plan.items.reduce((m, t) => (t.deadline_date && t.deadline_date > m ? t.deadline_date : m), '')
               || null}
@@ -645,6 +655,12 @@ export default function PlanDetailView({ planKey, tasks, lists, apiPlans = [], r
               onClick={() => endPlan(true)}>結束計畫</Button>
           </div>
         </BottomSheet>
+      )}
+
+      {/* ---------- 加入既有內容 ---------- */}
+      {sheet === 'addContent' && (
+        <PlanContentPicker planId={plan.planId} tasks={tasks} lists={lists} onClose={close}
+          onPreview={additions => { close(); setRollingAdditions(additions); setShowRolling(true); }} />
       )}
 
       {/* ---------- 新增任務 ---------- */}

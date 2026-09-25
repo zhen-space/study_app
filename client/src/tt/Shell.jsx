@@ -200,7 +200,7 @@ export default function Shell({ onLogout }) {
             onDone={() => setView({ type: 'plan', key: view.from || `plan:${view.planId}` })} />
         : view.type === 'vocab' ? <VocabView />
         : view.type === 'memo' ? <MemoView />
-        : view.type === 'school' ? <SchoolAssignmentView tasks={tasks.filter(t => !t.deleted)} lists={lists} reload={reload} />
+        : view.type === 'school' ? <SchoolAssignmentView tasks={tasks.filter(t => !t.deleted)} lists={lists} plans={apiPlans} reload={reload} />
         : <Tasks view={view} tasks={tasks} lists={lists} filters={filters} habits={habits} reload={reload} title={titleOf()}
             onNav={setView}
             goVocab={() => setView({ type: 'vocab' })} goMemo={() => setView({ type: 'memo' })} />}

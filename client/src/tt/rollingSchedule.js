@@ -55,6 +55,7 @@ export function applyPayload(preview) {
     base_version_id: preview.base_version_id,
     blocks: preview.blocks || [],
     attach_task_ids: preview.attach_task_ids || [],
+    task_creates: preview.task_creates || [],
     freeze_blocks: (preview.frozen || []).map(b => ({
       task_id: b.task_id, date: b.date, start_time: b.start_time || null,
       end_time: b.end_time || null, planned_minutes: b.planned_minutes ?? null,
