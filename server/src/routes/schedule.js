@@ -9,6 +9,7 @@ import { normalizeConstraints } from '../schedule/constraints.js';
 import { loadGoogleBusy, GoogleCalendarError } from '../integrations/google-calendar.js';
 import { validateIntervals, normalizeIntervals, mergeBusyIntervals, busyByDay, combineDayMaps } from '../schedule/busy.js';
 import { freezeWindow, parseRollingPolicy, normalizeOverride, partitionFreeze, effectiveDeadlineViolation } from '../schedule/rolling.js';
+import { signMaterialSnapshotToken } from '../schedule/material-token.js';
 import { calculateScheduleDiff } from '../schedule/diff.js';
 
 const router = Router();
@@ -1240,6 +1241,20 @@ export async function runRollingPreview(userId, body) {
   if (!['draft', 'active'].includes(plan.status)) {
     return { status: 409, body: { error: '目前未執行的計畫不能滾動重排', code: 'PLAN_NOT_ROLLING_ELIGIBLE', plan_status: plan.status } };
   }
+  // §Phase2 blocker5：只要 request 含任何新增內容（trigger／add_task_ids／material_selections），
+  // CURRENT Plan 必須是 active；draft/paused/… 一律拒絕新增。不含新增的滾動重排維持 draft/active 皆可。
+  //
+  // §Phase2 audit blocker1：trigger_task_id 只有在「合法正整數」時才算新增。
+  // Number(null)/Number('')/Number(0) 都是 0，Number.isInteger(0) 為 true——不能用它判斷，
+  // 否則沒有新增內容的 draft rolling replan 會被誤判成 attachment 而被 PLAN_NOT_ACTIVE_FOR_ATTACH 擋掉。
+  const isPositiveIntId = v => v != null && v !== '' && Number.isInteger(Number(v)) && Number(v) > 0;
+  const triggerIsAddition = isPositiveIntId(body.trigger_task_id);
+  const hasAdditions = triggerIsAddition
+    || (Array.isArray(body.add_task_ids) && body.add_task_ids.length > 0)
+    || (Array.isArray(body.material_selections) && body.material_selections.length > 0);
+  if (hasAdditions && plan.status !== 'active') {
+    return { status: 409, body: { error: '只有進行中的計畫可以加入內容', code: 'PLAN_NOT_ACTIVE_FOR_ATTACH', plan_status: plan.status } };
+  }
 
   // §2 rolling policy：horizon 預設吃 plan_constraints；body.freeze.horizon_days 可覆寫。
   const con = await q.get('SELECT intent_json FROM plan_constraints WHERE plan_id=? AND user_id=?', [planId, userId]);
@@ -1317,12 +1332,107 @@ export async function runRollingPreview(userId, body) {
     }
   }
 
-  // §Phase1-5：任何要重排的 task 缺 estimate 就 fail closed——回 task ids，不排、不回 candidate。
-  if (missingEstimate.length) {
+  // §Phase2 Atomic Content Attachment（preview 端，零 DB mutation）：
+  //   ① 批次 existing standalone Task（含 School Assignment，task_kind 只是形狀）虛擬掛入。
+  //   ② 批次 Material content item selection → 各給一個虛擬新 Task（負數合成 id + client_key），
+  //      apply 時才真的建立 Task 與寫入 plan_material_items selection。
+  // 全部只讀、不寫；任何非法輸入一律 fail closed（不產生可確認 candidate）。
+  const addErrors = [];                     // {kind, id, reason}
+  const missingEstimateMaterial = [];       // 缺估的 material selection client_key
+  const materialCreates = [];               // apply 端 task_creates 用（material selection → 新 Task）
+  const virtualIdentities = [];             // client_key → {content_item_id,title,estimated_minutes,list_id}
+  const negIdToKey = new Map();             // 負數合成 task id → client_key（輸出時換回）
+  let negSeq = 0;
+
+  // ① existing standalone tasks / school assignments
+  const seenAttach = new Set(virtualPlanTaskIds.map(Number));
+  for (const raw of (Array.isArray(body.add_task_ids) ? body.add_task_ids : [])) {
+    const id = Number(raw);
+    if (!Number.isInteger(id) || id <= 0) { addErrors.push({ kind: 'task', id: raw, reason: 'invalid_id' }); continue; }
+    if (seenAttach.has(id)) continue;       // 去重（含 trigger）
+    const t = await q.get('SELECT id,plan_id,list_id,title,estimated_minutes,deadline_date,deadline_time,deleted,completed,cancelled FROM tasks WHERE id=? AND user_id=?', [id, userId]);
+    if (!t) { addErrors.push({ kind: 'task', id, reason: 'not_found' }); continue; }             // cross-user 也走這（owner-scoped）
+    if (t.deleted || t.completed || t.cancelled) { addErrors.push({ kind: 'task', id, reason: 'ended' }); continue; }
+    if (t.plan_id != null && Number(t.plan_id) === planId) { addErrors.push({ kind: 'task', id, reason: 'already_attached' }); continue; }
+    if (t.plan_id != null) { addErrors.push({ kind: 'task', id, reason: 'attached_to_other_plan' }); continue; }
+    seenAttach.add(id);
+    virtualPlanTaskIds.push(id);
+    const est = Number(t.estimated_minutes) || 0;
+    if (est > 0) addItem(t, est, t.deadline_date);   // School Assignment deadline 為其 upper bound，原封不動沿用
+    else missingEstimate.push(id);
+  }
+
+  // ② material content item selections → 虛擬新 Task
+  const seenMaterial = new Set();           // §blocker4：同 request 同一 content item 只能一次
+  const seenKey = new Set();                // §blocker3：client_key 同 request 唯一
+  for (const sel of (Array.isArray(body.material_selections) ? body.material_selections : [])) {
+    const cid = Number(sel?.content_item_id);
+    if (!Number.isInteger(cid) || cid <= 0) { addErrors.push({ kind: 'material', id: sel?.content_item_id, reason: 'invalid_id' }); continue; }
+    // §blocker3：client_key trim 後非空、同 request 唯一。缺省時以 mat-<cid> 補（每 content item 唯一）。
+    const rawKey = sel?.client_key == null ? `mat-${cid}` : String(sel.client_key).trim();
+    if (!rawKey) { addErrors.push({ kind: 'material', id: cid, reason: 'invalid_client_key' }); continue; }
+    if (seenKey.has(rawKey)) { addErrors.push({ kind: 'material', id: cid, client_key: rawKey, reason: 'duplicate_client_key' }); continue; }
+    if (seenMaterial.has(cid)) { addErrors.push({ kind: 'material', id: cid, reason: 'duplicate_material_selection' }); continue; }
+    const mi = await q.get(
+      `SELECT i.id, i.book_id, i.title, i.estimated_minutes, b.subject_list_id,
+              COALESCE(p.completed,0) AS completed
+         FROM material_content_items i
+         LEFT JOIN material_books b ON b.id=i.book_id AND b.user_id=i.user_id
+         LEFT JOIN material_progress p ON p.content_item_id=i.id AND p.user_id=i.user_id
+        WHERE i.id=? AND i.user_id=?`, [cid, userId]);
+    if (!mi) { addErrors.push({ kind: 'material', id: cid, reason: 'not_found' }); continue; }   // cross-user 亦然
+    if (Number(mi.completed) === 1) { addErrors.push({ kind: 'material', id: cid, reason: 'already_completed' }); continue; }
+    // §blocker4：CURRENT plan_material_items 已 selected=1 且 linked Task 仍存在，或本 Plan 已有
+    // 未刪除的同 content item Material Task → already_selected（不得建立第二個 Task）。
+    const dup = await q.get(
+      `SELECT 1 FROM plan_material_items pmi
+        WHERE pmi.user_id=? AND pmi.plan_id=? AND pmi.content_item_id=? AND pmi.selected=1 AND pmi.task_id IS NOT NULL
+          AND EXISTS (SELECT 1 FROM tasks t WHERE t.id=pmi.task_id AND t.user_id=? AND COALESCE(t.deleted,0)=0)
+       UNION SELECT 1 FROM tasks WHERE user_id=? AND plan_id=? AND material_content_item_id=? AND COALESCE(deleted,0)=0`,
+      [userId, planId, cid, userId, userId, planId, cid]);
+    if (dup) { addErrors.push({ kind: 'material', id: cid, reason: 'already_selected' }); continue; }
+    seenMaterial.add(cid); seenKey.add(rawKey);
+    const clientKey = rawKey;
+    const negId = --negSeq;                 // -1, -2, ...：preview 內的虛擬 task 身分
+    negIdToKey.set(negId, clientKey);
+    virtualIdentities.push({ client_key: clientKey, content_item_id: cid, title: mi.title, estimated_minutes: mi.estimated_minutes ?? null, list_id: mi.subject_list_id ?? null });
+    // §Phase2 audit r3：附上伺服器簽章的 opaque material_snapshot_token（client 無法自行重建）。
+    // token 綁 user/plan/base_version/client_key/content_item，並簽入 preview 當下的 CURRENT
+    // title/estimated_minutes/material_book_id/subject_list_id。apply 驗簽後才取出比對，普通 JSON
+    // snapshot 一律不採信。這一層擋住「client 把 CURRENT 改掉、同時偽造 snapshot 使其一致」。
+    const material_snapshot_token = signMaterialSnapshotToken({
+      user_id: userId, plan_id: planId, base_version_id: baseVersionId ?? null,
+      client_key: clientKey, content_item_id: cid,
+      title: mi.title ?? null, estimated_minutes: mi.estimated_minutes ?? null,
+      material_book_id: mi.book_id ?? null, subject_list_id: mi.subject_list_id ?? null,
+    });
+    // task_creates 只帶身分（client_key + material_content_item_id）＋簽章 token；title/list_id/estimate
+    // 由 apply 以 CURRENT material 重讀，preview 這裡附的值僅供 UI 顯示，apply strict 不採信。
+    materialCreates.push({ client_key: clientKey, material_content_item_id: cid, content_item_id: cid, title: mi.title, list_id: mi.subject_list_id ?? null, estimated_minutes: mi.estimated_minutes ?? null, material_snapshot_token });
+    const est = Number(mi.estimated_minutes) || 0;
+    // Material Task 沒有自身 deadline → upper bound 由 Plan target_date 決定（schedulingUpperBound）。
+    if (est > 0) addItem({ id: negId, list_id: mi.subject_list_id ?? negId, title: mi.title }, est, null);
+    else missingEstimateMaterial.push(clientKey);
+  }
+
+  // 非法 add → fail closed（不產生可確認 candidate）。cross-user / 已掛他計畫 / 已在本計畫 /
+  // 已完成 material / 不存在 / 非法 id 都在此擋下。
+  if (addErrors.length) {
+    return { status: 200, body: {
+      window: win, base_version_id: baseVersionId,
+      code: 'ADD_VALIDATION_FAILED',
+      add_errors: addErrors,
+      blocks: null, candidate_blocks: null, diff: null, infeasible: null,
+    } };
+  }
+
+  // §Phase1-5 / §Phase2：任何要排的 task（含 material selection）缺 estimate → fail closed。
+  if (missingEstimate.length || missingEstimateMaterial.length) {
     return { status: 200, body: {
       window: win, base_version_id: baseVersionId,
       code: 'MISSING_ESTIMATE',
       missing_estimate_task_ids: [...new Set(missingEstimate)],
+      missing_estimate_material_keys: [...new Set(missingEstimateMaterial)],
       blocks: null, candidate_blocks: null, diff: null, infeasible: null,
     } };
   }
@@ -1486,6 +1596,17 @@ export async function runRollingPreview(userId, body) {
     };
   }
 
+  // §Phase2：material selection 在 preview 內用負數合成 id 佔位；輸出時換成
+  // { task_id:null, client_key }，讓 apply 端用 client_key 對回即將建立的新 Task。
+  const keyFor = id => negIdToKey.get(Number(id)) || null;
+  const pubBlocks = arr => (arr || []).map(b => { const k = keyFor(b.task_id); return k ? { ...b, task_id: null, client_key: k } : b; });
+  const pubItems = arr => (arr || []).map(it => { const k = keyFor(it.task_id); return k ? { ...it, task_id: null, client_key: k } : it; });
+  if (infeasible) {
+    infeasible.task_infeasible = pubItems(infeasible.task_infeasible);
+    infeasible.deadline_violations = pubItems(infeasible.deadline_violations);
+  }
+  if (diff && Array.isArray(diff.items)) diff.items = pubItems(diff.items);
+
   return { status: 200, body: {
     window: win,
     base_version_id: baseVersionId,
@@ -1493,9 +1614,16 @@ export async function runRollingPreview(userId, body) {
     movable: movable.map(b => ({ id: b.id, task_id: b.task_id, date: b.date, start_time: b.start_time, end_time: b.end_time })),
     // §Phase1-1：blocks = current Plan candidate（送 rolling/apply；apply 端 §5 自行 carry-forward
     //   重建，preview 不信前端傳其他 Plan）。candidate_blocks = 完整 user-level（＝apply 會建的版本）。
-    blocks: currentCandidate,
-    candidate_blocks: candidateBlocks,
-    attach_task_ids: virtualPlanTaskIds,
+    blocks: pubBlocks(currentCandidate),
+    candidate_blocks: pubBlocks(candidateBlocks),
+    // §Phase2 apply 端要用的原子加入 payload（preview 全程零 DB mutation）。
+    attach_task_ids: virtualPlanTaskIds,          // existing standalone Task / School Assignment
+    task_creates: materialCreates,                // material selection → 待建立的新 Task（含 content_item_id）
+    pending_changes: {
+      attach_task_ids: virtualPlanTaskIds,
+      material_selections: materialCreates.map(m => ({ client_key: m.client_key, content_item_id: m.content_item_id })),
+    },
+    virtual_task_identities: virtualIdentities,   // client_key → {content_item_id,title,estimated_minutes,list_id}
     diff,
     unplaced: !!pre?.body?.unplaced,
     infeasible,
@@ -1524,8 +1652,12 @@ router.post('/rolling/apply', async (req, res) => {
       blocks: b.blocks || [],
       expectedBaseVersionId: b.base_version_id ?? null,
       attachTaskIds: b.attach_task_ids || [],
+      // §Phase2：material selection → 新 Task 建立；apply 在同一 transaction 內
+      //   建立 Task、寫入 plan_material_items selection、以 CURRENT material item 重驗估時。
+      taskCreates: b.task_creates || [],
       freezeBlocks: b.freeze_blocks || null,
       enforceDeadlines: true,
+      rollingStrict: true,                 // §Phase2：rolling apply 一律開啟嚴格驗證
     }));
   } catch (e) {
     res.status(e.status || 500).json({ error: e.message, code: e.code, violations: e.violations, conflicts: e.conflicts, active_version_id: e.active_version_id });
