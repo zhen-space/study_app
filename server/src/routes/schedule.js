@@ -9,6 +9,7 @@ import { normalizeConstraints } from '../schedule/constraints.js';
 import { loadGoogleBusy, GoogleCalendarError } from '../integrations/google-calendar.js';
 import { validateIntervals, normalizeIntervals, mergeBusyIntervals, busyByDay, combineDayMaps } from '../schedule/busy.js';
 import { freezeWindow, parseRollingPolicy, normalizeOverride, partitionFreeze, effectiveDeadlineViolation } from '../schedule/rolling.js';
+import { signMaterialSnapshotToken } from '../schedule/material-token.js';
 import { calculateScheduleDiff } from '../schedule/diff.js';
 
 const router = Router();
@@ -1395,19 +1396,19 @@ export async function runRollingPreview(userId, body) {
     const negId = --negSeq;                 // -1, -2, ...：preview 內的虛擬 task 身分
     negIdToKey.set(negId, clientKey);
     virtualIdentities.push({ client_key: clientKey, content_item_id: cid, title: mi.title, estimated_minutes: mi.estimated_minutes ?? null, list_id: mi.subject_list_id ?? null });
-    // §Phase2 audit blocker3：附上 preview 當下的 scheduling-relevant material snapshot／fingerprint。
-    // apply transaction 會重讀 CURRENT material 並與此比對；任一欄位不同即回 stale error 整筆 rollback，
-    // 因為 candidate blocks 是照這份 snapshot 的估時排出來的。snapshot 僅供比對，apply 仍以 CURRENT 建立。
-    const materialSnapshot = {
-      content_item_id: cid,
-      title: mi.title ?? null,
-      estimated_minutes: mi.estimated_minutes ?? null,
-      material_book_id: mi.book_id ?? null,
-      subject_list_id: mi.subject_list_id ?? null,
-    };
-    // task_creates 只帶身分（client_key + material_content_item_id）＋ snapshot；title/list_id/estimate 由
-    // apply 以 CURRENT material 重讀，preview 這裡附的值僅供 UI 顯示，apply strict 不採信。
-    materialCreates.push({ client_key: clientKey, material_content_item_id: cid, content_item_id: cid, title: mi.title, list_id: mi.subject_list_id ?? null, estimated_minutes: mi.estimated_minutes ?? null, material_snapshot: materialSnapshot });
+    // §Phase2 audit r3：附上伺服器簽章的 opaque material_snapshot_token（client 無法自行重建）。
+    // token 綁 user/plan/base_version/client_key/content_item，並簽入 preview 當下的 CURRENT
+    // title/estimated_minutes/material_book_id/subject_list_id。apply 驗簽後才取出比對，普通 JSON
+    // snapshot 一律不採信。這一層擋住「client 把 CURRENT 改掉、同時偽造 snapshot 使其一致」。
+    const material_snapshot_token = signMaterialSnapshotToken({
+      user_id: userId, plan_id: planId, base_version_id: baseVersionId ?? null,
+      client_key: clientKey, content_item_id: cid,
+      title: mi.title ?? null, estimated_minutes: mi.estimated_minutes ?? null,
+      material_book_id: mi.book_id ?? null, subject_list_id: mi.subject_list_id ?? null,
+    });
+    // task_creates 只帶身分（client_key + material_content_item_id）＋簽章 token；title/list_id/estimate
+    // 由 apply 以 CURRENT material 重讀，preview 這裡附的值僅供 UI 顯示，apply strict 不採信。
+    materialCreates.push({ client_key: clientKey, material_content_item_id: cid, content_item_id: cid, title: mi.title, list_id: mi.subject_list_id ?? null, estimated_minutes: mi.estimated_minutes ?? null, material_snapshot_token });
     const est = Number(mi.estimated_minutes) || 0;
     // Material Task 沒有自身 deadline → upper bound 由 Plan target_date 決定（schedulingUpperBound）。
     if (est > 0) addItem({ id: negId, list_id: mi.subject_list_id ?? negId, title: mi.title }, est, null);

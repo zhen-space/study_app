@@ -6,6 +6,7 @@ import { classifyPlacement, findSelfCollisions, timedOverlap } from './feasibili
 import { canonicalizeBlockTiming, timingProblem } from './timing.js';
 import { planTaskDisposition, lockReleaseReason } from './plan-cleanup.js';
 import { samePlacement, effectiveDeadlineViolation } from './rolling.js';
+import { verifyMaterialSnapshotToken } from './material-token.js';
 
 // 手動調整的說法：使用者是「現在正要放」，不是「想恢復舊安排」。
 const MANUAL_MESSAGES = {
@@ -1094,26 +1095,29 @@ export async function applySchedule(userId, {
           `SELECT 1 FROM tasks WHERE user_id=? AND plan_id=? AND material_content_item_id=? AND COALESCE(deleted,0)=0`,
           [userId, planId, materialItem.id]);
         if (dupSel || dupTask) throw new ScheduleInputError(`這份教材已加入本計畫：${materialItem.id}`, 'ALREADY_SELECTED');
-        // §Phase2 audit blocker3：candidate blocks 是照 preview 當下的 material 估時排出來的。
-        // 若 apply 前 CURRENT material 的 scheduling-relevant 欄位已與 preview snapshot 不同（估時、
-        // 名稱、書、科目、content item 身分），代表使用者確認的 candidate 已過時 → MATERIAL_STALE 整筆
-        // rollback，要求重新 preview；不得用 CURRENT 欄位卻沿用舊 blocks。snapshot 只用來比對，仍以 CURRENT 建立。
-        const snap = c.material_snapshot;
-        if (snap) {
-          const cur = {
-            content_item_id: Number(materialItem.id),
-            title: materialItem.title ?? null,
-            estimated_minutes: materialItem.estimated_minutes ?? null,
-            material_book_id: materialItem.book_id ?? null,
-            subject_list_id: materialItem.subject_list_id ?? null,
-          };
-          const same = Number(snap.content_item_id) === cur.content_item_id
-            && (snap.title ?? null) === cur.title
-            && (snap.estimated_minutes ?? null) === cur.estimated_minutes
-            && (snap.material_book_id ?? null) === cur.material_book_id
-            && (snap.subject_list_id ?? null) === cur.subject_list_id;
-          if (!same) throw new ScheduleInputError(`教材資料在你預覽之後已變更，請重新預覽：${materialItem.id}`, 'MATERIAL_STALE');
+        // §Phase2 audit r3：驗證伺服器簽章的 material_snapshot_token，不採信 client 傳回的普通 JSON。
+        // 步驟：①驗簽 ②綁定此次 user/plan/base_version/client_key/content item ③從 token 取出 preview
+        // 當下的 CURRENT 值，與此刻 CURRENT material 比較。任一不符 → MATERIAL_STALE 整筆 rollback；
+        // token 缺失／格式錯誤／簽章錯誤 → 明確錯誤並整筆 rollback。strict 一律 fail closed，無 unsigned fallback。
+        const verified = verifyMaterialSnapshotToken(c.material_snapshot_token);
+        if (!verified.ok) {
+          const code = verified.reason === 'missing' ? 'MATERIAL_TOKEN_MISSING' : 'MATERIAL_TOKEN_INVALID';
+          throw new ScheduleInputError(`教材簽章缺失或不正確：${materialItem.id}`, code);
         }
+        const snap = verified.payload;
+        // ② binding：token 必須綁在此次請求的 user／plan／base version／client_key／content item 上。
+        const bound = Number(snap.user_id) === Number(userId)
+          && Number(snap.plan_id) === Number(planId)
+          && String(snap.client_key) === String(key)
+          && Number(snap.content_item_id) === Number(materialItem.id)
+          && Number(snap.base_version_id ?? -1) === Number(expectedBaseVersionId ?? -1);
+        if (!bound) throw new ScheduleInputError(`教材簽章與此次請求不符，請重新預覽：${materialItem.id}`, 'MATERIAL_STALE');
+        // ③ CURRENT 比較：token 內 preview 當下的值 vs 此刻 CURRENT material。
+        const same = (snap.title ?? null) === (materialItem.title ?? null)
+          && (snap.estimated_minutes ?? null) === (materialItem.estimated_minutes ?? null)
+          && Number(snap.material_book_id ?? -1) === Number(materialItem.book_id ?? -1)
+          && Number(snap.subject_list_id ?? -1) === Number(materialItem.subject_list_id ?? -1);
+        if (!same) throw new ScheduleInputError(`教材資料在你預覽之後已變更，請重新預覽：${materialItem.id}`, 'MATERIAL_STALE');
       } else {
         // 既有 Wizard / 非 strict：沿用原行為（信 client；material item 估時優先，否則回退 client/block）。
         if (!String(c.title || '').trim()) throw new ScheduleInputError('新任務資料不正確');

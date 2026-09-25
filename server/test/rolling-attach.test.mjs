@@ -18,6 +18,7 @@ process.env.TURSO_DATABASE_URL = '';
 const { q, initSchema } = await import('../src/db/init.js');
 const sched = await import('../src/schedule/persistence.js');
 const { runRollingPreview } = await import('../src/routes/schedule.js');
+const { signMaterialSnapshotToken } = await import('../src/schedule/material-token.js');
 const { todayTW, addDays } = await import('../src/util/date.js');
 
 const TODAY = todayTW();
@@ -81,6 +82,20 @@ const countPMI = u => q.get('SELECT COUNT(*) c FROM plan_material_items WHERE us
 const countProgress = u => q.get('SELECT COUNT(*) c FROM material_progress WHERE user_id=?', [u]).then(r => r.c);
 const countVersions = u => q.get('SELECT COUNT(*) c FROM schedule_versions WHERE user_id=?', [u]).then(r => r.c);
 const countSessions = u => q.get('SELECT COUNT(*) c FROM study_sessions WHERE user_id=?', [u]).then(r => r.c);
+const countPMISel = u => q.get('SELECT COUNT(*) c FROM plan_material_items WHERE user_id=?', [u]).then(r => r.c);
+
+// 產生一個「與 CURRENT material 一致」的合法簽章 token（測試模擬 preview 端）。
+async function tokenFor(u, planId, cid, clientKey, baseVersion = null) {
+  const mi = await q.get(
+    `SELECT i.id,i.book_id,i.title,i.estimated_minutes,b.subject_list_id
+       FROM material_content_items i LEFT JOIN material_books b ON b.id=i.book_id AND b.user_id=i.user_id
+      WHERE i.id=? AND i.user_id=?`, [cid, u]);
+  return signMaterialSnapshotToken({
+    user_id: u, plan_id: planId, base_version_id: baseVersion, client_key: clientKey, content_item_id: cid,
+    title: mi.title ?? null, estimated_minutes: mi.estimated_minutes ?? null,
+    material_book_id: mi.book_id ?? null, subject_list_id: mi.subject_list_id ?? null,
+  });
+}
 
 // 把一次 preview 的結果原封不動送進 apply（模擬真實 client round-trip）。
 async function applyFromPreview(u, planId, pv, extra = {}) {
@@ -426,9 +441,13 @@ describe('Phase 2 audit. strict rolling atomic attachment', () => {
       { content_item_id: c1, client_key: 'dup' }, { content_item_id: c2, client_key: 'dup' }] });
     assert.equal(pv.body.code, 'ADD_VALIDATION_FAILED');
     assert.ok(pv.body.add_errors.some(e => e.reason === 'duplicate_client_key'));
-    // apply 端亦拒絕（不以 Map overwrite 掩蓋）。
+    // apply 端亦拒絕（不以 Map overwrite 掩蓋）。兩個 create 都帶合法 token，確保是在 dup 守門被擋。
+    const tkC1 = await tokenFor(u, plan, c1, 'dup');
+    const tkC2 = await tokenFor(u, plan, c2, 'dup');
     await assert.rejects(() => strictApply(u, plan, {
-      taskCreates: [{ client_key: 'dup', material_content_item_id: c1 }, { client_key: 'dup', material_content_item_id: c2 }],
+      taskCreates: [
+        { client_key: 'dup', material_content_item_id: c1, material_snapshot_token: tkC1 },
+        { client_key: 'dup', material_content_item_id: c2, material_snapshot_token: tkC2 }],
       blocks: [{ client_key: 'dup', date: D(2), start_time: '19:00', end_time: '20:00', planned_minutes: 60 }],
     }), e => e.code === 'DUPLICATE_CLIENT_KEY');
   });
@@ -491,8 +510,9 @@ describe('Phase 2 audit. strict rolling atomic attachment', () => {
     const plan = await mkPlan(u); const list = await mkList(u);
     const cid = await mkMaterialItem(u, list, { est: 60 });
     const before = { t: await countTasks(u), v: await countVersions(u) };
+    const tkA9 = await tokenFor(u, plan, cid, 'm');
     await assert.rejects(() => strictApply(u, plan, {
-      taskCreates: [{ client_key: 'm', material_content_item_id: cid }], blocks: [],
+      taskCreates: [{ client_key: 'm', material_content_item_id: cid, material_snapshot_token: tkA9 }], blocks: [],
     }), e => e.code === 'CREATE_NOT_IN_CANDIDATE');
     assert.equal(await countTasks(u), before.t, '無 Task 殘留');
     assert.equal(await countVersions(u), before.v, '無新版本');
@@ -586,8 +606,9 @@ describe('Phase 2 audit r2. hasAdditions / block identity / material stale', () 
     }), e => e.code === 'BLOCK_MISSING_IDENTITY');
     // blank client_key。
     const before = await countTasks(u);
+    const tkB2 = await tokenFor(u, plan, cid, 'm');
     await assert.rejects(() => strictApply(u, plan, {
-      taskCreates: [{ client_key: 'm', material_content_item_id: cid }],
+      taskCreates: [{ client_key: 'm', material_content_item_id: cid, material_snapshot_token: tkB2 }],
       blocks: [{ client_key: '   ', date: D(2), start_time: '19:00', end_time: '20:00', planned_minutes: 60 }],
     }), e => e.code === 'BLOCK_BLANK_CLIENT_KEY');
     // unknown key（無對應 task_create）。
@@ -639,13 +660,102 @@ describe('Phase 2 audit r2. hasAdditions / block identity / material stale', () 
     }
   });
 
-  test('B3b client 偽造 snapshot 仍不可通過（block 分鐘與 CURRENT 估時對帳）', async () => {
-    const { u, plan, cid, pv } = await setupMat(90);
-    // CURRENT 估時改 120；client 偽造 snapshot 讓它「看起來一致」（=120），但 candidate 仍是 90 分鐘。
-    await q.run('UPDATE material_content_items SET estimated_minutes=120 WHERE id=? AND user_id=?', [cid, u]);
-    pv.body.task_creates = pv.body.task_creates.map(tc => ({ ...tc, material_snapshot: { ...tc.material_snapshot, estimated_minutes: 120 } }));
+  test('B3b block 分鐘對帳（token 與 CURRENT 皆一致，但 candidate block 分鐘被竄改）仍被擋下', async () => {
+    const { u, plan, pv } = await setupMat(90);
+    // material 完全未變 → token 與 CURRENT 一致（不觸發 token/CURRENT 比較）；但把 Material Task 的
+    // candidate block 分鐘竄改成 30 分（<估時 90）。只有 block-minutes 對帳這層能擋——用來守住這層。
+    pv.body.blocks = pv.body.blocks.map(b => (b.client_key ? { ...b, start_time: '19:00', end_time: '19:30', planned_minutes: 30 } : b));
     const b = { t: await countTasks(u), v: await countVersions(u) };
     await assert.rejects(() => applyFromPreview(u, plan, pv), e => e.code === 'MATERIAL_STALE');
     assert.equal(await countTasks(u), b.t, '零寫入'); assert.equal(await countVersions(u), b.v);
+  });
+});
+
+/* ===== Phase 2 audit round 3：material_snapshot_token（HMAC 簽章、client 無法偽造）===== */
+describe('Phase 2 audit r3. signed material snapshot token', () => {
+  const strictApply = (u, planId, o) => sched.applySchedule(u, {
+    planId, source: sched.SOURCE.AI_REPLAN, effectiveFrom: D(0), enforceDeadlines: true, rollingStrict: true, ...o,
+  });
+
+  test('C1 token 被竄改 / 缺失 / 綁定不符（content/client_key/plan/user/base）一律拒絕且零寫入', async () => {
+    const u = nextUser(); await mkUser(u);
+    const u2 = nextUser(); await mkUser(u2);
+    const plan = await mkPlan(u); const plan2 = await mkPlan(u);
+    const list = await mkList(u);
+    const cid = await mkMaterialItem(u, list, { est: 60 });
+    const cid2 = await mkMaterialItem(u, list, { est: 60 });
+    const mi = await q.get(
+      `SELECT i.id,i.book_id,i.title,i.estimated_minutes,b.subject_list_id
+         FROM material_content_items i LEFT JOIN material_books b ON b.id=i.book_id AND b.user_id=i.user_id
+        WHERE i.id=? AND i.user_id=?`, [cid, u]);
+    const base = { user_id: u, plan_id: plan, base_version_id: null, client_key: 'm', content_item_id: cid,
+      title: mi.title, estimated_minutes: mi.estimated_minutes, material_book_id: mi.book_id, subject_list_id: mi.subject_list_id };
+    const sign = over => signMaterialSnapshotToken({ ...base, ...over });
+    const block = { client_key: 'm', date: D(2), start_time: '19:00', end_time: '20:00', planned_minutes: 60 };
+    const reject = async (tok, code) => {
+      const b = { t: await countTasks(u), p: await countPMISel(u), v: await countVersions(u) };
+      const tc = tok === undefined ? { client_key: 'm', material_content_item_id: cid }
+        : { client_key: 'm', material_content_item_id: cid, material_snapshot_token: tok };
+      await assert.rejects(() => strictApply(u, plan, { taskCreates: [tc], blocks: [block] }), e => e.code === code);
+      assert.equal(await countTasks(u), b.t, '零 Task'); assert.equal(await countPMISel(u), b.p, '零 selection'); assert.equal(await countVersions(u), b.v, '零 version');
+    };
+    const good = sign({});
+    await reject(good.slice(0, -1) + (good.slice(-1) === 'A' ? 'B' : 'A'), 'MATERIAL_TOKEN_INVALID'); // 竄改一字元
+    await reject(undefined, 'MATERIAL_TOKEN_MISSING');                    // 缺 token
+    await reject('not-a-token', 'MATERIAL_TOKEN_INVALID');               // 格式錯誤
+    await reject(sign({ content_item_id: cid2 }), 'MATERIAL_STALE');     // 另一 content item 的 token
+    await reject(sign({ client_key: 'other' }), 'MATERIAL_STALE');       // 另一 client_key
+    await reject(sign({ plan_id: plan2 }), 'MATERIAL_STALE');            // 另一 Plan
+    await reject(sign({ user_id: u2 }), 'MATERIAL_STALE');               // 另一 user
+    await reject(sign({ base_version_id: 999999 }), 'MATERIAL_STALE');   // 另一 base version
+  });
+
+  test('C2 title / subject_list_id / material_book_id 改變後偽造普通 snapshot 仍拒絕（token 為準）', async () => {
+    const mk = async () => {
+      const u = nextUser(); await mkUser(u);
+      const plan = await mkPlan(u); const list = await mkList(u);
+      const cid = await mkMaterialItem(u, list, { est: 90, title: '原' });
+      const pv = await runRollingPreview(u, { plan_id: plan, material_selections: [{ content_item_id: cid, client_key: 'm' }] });
+      // 模擬 client 偽造普通 snapshot（apply 已不採信這個欄位，只認 token）。
+      pv.body.task_creates = pv.body.task_creates.map(tc => ({ ...tc, material_snapshot: { content_item_id: cid, title: '任意', estimated_minutes: 999, material_book_id: 1, subject_list_id: 1 } }));
+      return { u, plan, list, cid, pv };
+    };
+    { const { u, plan, cid, pv } = await mk();
+      await q.run('UPDATE material_content_items SET title=? WHERE id=? AND user_id=?', ['新標題', cid, u]);
+      await assert.rejects(() => applyFromPreview(u, plan, pv), e => e.code === 'MATERIAL_STALE'); }
+    { const { u, plan, cid, pv } = await mk();
+      const other = await mkList(u, '別科');
+      await q.run('UPDATE material_books SET subject_list_id=? WHERE id=(SELECT book_id FROM material_content_items WHERE id=?) AND user_id=?', [other, cid, u]);
+      await assert.rejects(() => applyFromPreview(u, plan, pv), e => e.code === 'MATERIAL_STALE'); }
+    { const { u, plan, list, cid, pv } = await mk();
+      const book2 = await mkBook(u, list);
+      await q.run('UPDATE material_content_items SET book_id=? WHERE id=? AND user_id=?', [book2, cid, u]);
+      await assert.rejects(() => applyFromPreview(u, plan, pv), e => e.code === 'MATERIAL_STALE'); }
+  });
+
+  test('C3 合法未修改 token → 正常成功', async () => {
+    const u = nextUser(); await mkUser(u);
+    const plan = await mkPlan(u); const list = await mkList(u);
+    const cid = await mkMaterialItem(u, list, { est: 90 });
+    const pv = await runRollingPreview(u, { plan_id: plan, material_selections: [{ content_item_id: cid, client_key: 'm' }] });
+    const res = await applyFromPreview(u, plan, pv);
+    assert.ok(res.version_id);
+    assert.ok(await q.get('SELECT 1 FROM tasks WHERE user_id=? AND material_content_item_id=?', [u, cid]), '合法 token 應成功建立 Task');
+  });
+
+  test('C4 estimate 改變且企圖偽造 token（簽章失效）仍拒絕', async () => {
+    const u = nextUser(); await mkUser(u);
+    const plan = await mkPlan(u); const list = await mkList(u);
+    const cid = await mkMaterialItem(u, list, { est: 90 });
+    const pv = await runRollingPreview(u, { plan_id: plan, material_selections: [{ content_item_id: cid, client_key: 'm' }] });
+    await q.run('UPDATE material_content_items SET estimated_minutes=120 WHERE id=? AND user_id=?', [cid, u]);
+    // client 想把 token 內估時改成 120——但它沒有 secret，任何竄改都讓簽章失效。
+    pv.body.task_creates = pv.body.task_creates.map(tc => {
+      const t = tc.material_snapshot_token;
+      return { ...tc, material_snapshot_token: t.slice(0, -2) + (t.slice(-2) === 'AA' ? 'BB' : 'AA') };
+    });
+    const b = { t: await countTasks(u), v: await countVersions(u) };
+    await assert.rejects(() => applyFromPreview(u, plan, pv), e => e.code === 'MATERIAL_TOKEN_INVALID');
+    assert.equal(await countTasks(u), b.t); assert.equal(await countVersions(u), b.v);
   });
 });
