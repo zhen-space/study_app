@@ -12,6 +12,7 @@ import ConstraintSheet from './ConstraintSheet';
 import ExplainSheet from './ExplainSheet';
 import RollingExamSchedule from './RollingExamSchedule';
 import PlanContentPicker from './PlanContentPicker';
+import PlanTimeline from './PlanTimeline';
 import { Button, IconButton, PageHeader, SurfaceCard, ProgressBar, ListRow, BottomSheet, EmptyState } from './ui';
 
 // 單一計畫的內容。
@@ -360,6 +361,16 @@ export default function PlanDetailView({ planKey, tasks, lists, apiPlans = [], r
             {plan.overdue > 0 && <span className="ui-meta" style={{ color: 'var(--warning, #b7791f)' }}>未完成進度 {plan.overdue} 項</span>}
           </div>
         </div>
+
+        {/* 段考進度時間軸：Progress 之後、任務清單之前。學生不必開 Calendar 就能理解每段日期要完成什麼。
+            現役計畫可「加入內容／調整」；歷史（非 active）計畫由 PlanTimeline 唯讀呈現、不給操作入口。 */}
+        {isReal && (
+          <PlanTimeline
+            plan={plan}
+            onAddContent={plan.status === 'active' ? () => setShowRolling(true) : undefined}
+            onAdjust={plan.status === 'active' ? () => setShowRolling(true) : undefined}
+          />
+        )}
 
         {/* 已結束：清楚標示歷史／唯讀，並給出唯一的回頭路 */}
         {plan.status === 'ended' && (

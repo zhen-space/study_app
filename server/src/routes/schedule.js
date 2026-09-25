@@ -10,6 +10,7 @@ import { loadGoogleBusy, GoogleCalendarError } from '../integrations/google-cale
 import { validateIntervals, normalizeIntervals, mergeBusyIntervals, busyByDay, combineDayMaps } from '../schedule/busy.js';
 import { freezeWindow, parseRollingPolicy, normalizeOverride, partitionFreeze, effectiveDeadlineViolation } from '../schedule/rolling.js';
 import { signMaterialSnapshotToken } from '../schedule/material-token.js';
+import { buildPlanTimeline } from '../schedule/timeline.js';
 import { calculateScheduleDiff } from '../schedule/diff.js';
 
 const router = Router();
@@ -1677,6 +1678,106 @@ router.post('/rolling/apply', async (req, res) => {
 router.get('/active', async (req, res) => {
   res.json(await sched.getActiveSchedule(req.userId));
 });
+
+// 段考進度時間軸（純 projection，讀 CURRENT world；不新增 schema／第二套 state）。
+// 現役（draft/active）計畫用 active ScheduleVersion 的 block 投影出「日期區間 → 應完成內容」；
+// paused/completed/ended 等歷史計畫唯讀呈現當前可驗證的任務（不進入現役排程）。
+router.get('/timeline/:planId', async (req, res) => {
+  try {
+    const r = await getPlanTimeline(req.userId, Number(req.params.planId));
+    res.status(r.status).json(r.body);
+  } catch (e) { res.status(e.status || 500).json({ error: e.message }); }
+});
+
+export async function getPlanTimeline(userId, planId) {
+  {
+    if (!Number.isInteger(planId)) return { status: 400, body: { error: '缺少有效的計畫 id' } };
+    const plan = await q.get('SELECT id,status,target_date FROM plans WHERE id=? AND user_id=?', [planId, userId]);
+    if (!plan) return { status: 404, body: { error: '找不到這個計畫' } };
+
+    const activeVersionId = await sched.getActiveVersionId(userId);
+    // CURRENT plan tasks：未刪除、未取消（含已完成，用來標記完成狀態）。
+    const tasks = await q.all(
+      `SELECT id,list_id,title,deadline_date,deadline_time,estimated_minutes,completed,
+              task_kind,material_content_item_id
+         FROM tasks
+        WHERE user_id=? AND plan_id=? AND COALESCE(deleted,0)=0 AND COALESCE(cancelled,0)=0`,
+      [userId, planId]);
+
+    // active 版本裡屬於本計畫、未刪未完未取消 task 的 block（現役計畫才有意義）。
+    const blocks = ['draft', 'active'].includes(plan.status) && activeVersionId != null
+      ? await q.all(
+        `SELECT b.id,b.task_id,b.date,b.start_time,b.end_time,b.planned_minutes
+           FROM scheduled_blocks b
+           JOIN tasks t ON t.id=b.task_id AND t.user_id=b.user_id
+          WHERE b.schedule_version_id=? AND b.user_id=? AND t.plan_id=?
+            AND COALESCE(t.deleted,0)=0 AND t.completed=0 AND COALESCE(t.cancelled,0)=0`,
+        [activeVersionId, userId, planId])
+      : [];
+
+    // 科目名稱。
+    const subjectsById = new Map();
+    const listIds = [...new Set(tasks.map(t => t.list_id).filter(v => v != null).map(Number))];
+    if (listIds.length) {
+      const rows = await q.all(`SELECT id,name FROM lists WHERE user_id=? AND id IN (${listIds.map(() => '?').join(',')})`, [userId, ...listIds]);
+      for (const r of rows) subjectsById.set(Number(r.id), r.name);
+    }
+
+    // Material 路徑：content item → book title + node（章/節/主題）路徑 + item title。
+    const materialById = new Map();
+    const contentIds = [...new Set(tasks.map(t => t.material_content_item_id).filter(v => v != null).map(Number))];
+    if (contentIds.length) {
+      const cis = await q.all(
+        `SELECT i.id,i.book_id,i.node_id,i.title,b.title AS book_title,b.subject_list_id
+           FROM material_content_items i
+           LEFT JOIN material_books b ON b.id=i.book_id AND b.user_id=i.user_id
+          WHERE i.user_id=? AND i.id IN (${contentIds.map(() => '?').join(',')})`, [userId, ...contentIds]);
+      const bookIds = [...new Set(cis.map(c => c.book_id).filter(v => v != null).map(Number))];
+      const nodeById = new Map();
+      if (bookIds.length) {
+        const nodes = await q.all(`SELECT id,parent_id,title,kind FROM material_nodes WHERE user_id=? AND book_id IN (${bookIds.map(() => '?').join(',')})`, [userId, ...bookIds]);
+        for (const n of nodes) nodeById.set(Number(n.id), n);
+      }
+      const pathOf = nodeId => {
+        const out = [];
+        let cur = nodeId != null ? nodeById.get(Number(nodeId)) : null;
+        const seen = new Set();
+        while (cur && !seen.has(Number(cur.id))) {
+          seen.add(Number(cur.id));
+          out.unshift({ title: cur.title, kind: cur.kind });
+          cur = cur.parent_id != null ? nodeById.get(Number(cur.parent_id)) : null;
+        }
+        return out;
+      };
+      for (const c of cis) {
+        materialById.set(Number(c.id), {
+          book_id: c.book_id ?? null, book_title: c.book_title ?? null,
+          subject_list_id: c.subject_list_id ?? null,
+          path: pathOf(c.node_id), item_title: c.title ?? null,
+        });
+      }
+    }
+
+    // Lock：現行未釋放的 task lock（標記用）。
+    const lockRows = await q.all(
+      `SELECT l.task_id FROM schedule_locks l
+        WHERE l.user_id=? AND l.released_at IS NULL AND l.type='task' AND l.task_id IS NOT NULL`, [userId]);
+    const lockedTaskIds = new Set(lockRows.map(r => Number(r.task_id)));
+
+    // StudySession：只用來標記「實際有讀過」，不冒充計畫、不改完成語意。
+    const taskIds = tasks.map(t => Number(t.id));
+    const sessionTaskIds = new Set();
+    if (taskIds.length) {
+      const srows = await q.all(`SELECT DISTINCT task_id FROM study_sessions WHERE user_id=? AND task_id IN (${taskIds.map(() => '?').join(',')})`, [userId, ...taskIds]);
+      for (const r of srows) sessionTaskIds.add(Number(r.task_id));
+    }
+
+    return { status: 200, body: buildPlanTimeline({
+      plan, activeVersionId, tasks, blocks,
+      subjectsById, materialById, lockedTaskIds, sessionTaskIds, today: todayTW(),
+    }) };
+  }
+}
 
 // 版本列表（只有 metadata，不含 blocks）
 router.get('/versions', async (req, res) => {
