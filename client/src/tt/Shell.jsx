@@ -116,7 +116,7 @@ export default function Shell({ onLogout }) {
   // 篩選器／標籤）不再出現在側欄；排程精靈由「計畫→建立計畫」進入、時間設定由行事曆進入、
   // 排程鎖定改 context action（§N）、排程紀錄／矩陣退出第一層（route 仍在，供內部/深連結）。
   const pageGroups = [
-    ['學習', [['goals', 'wizard', '目標'], ['material', 'book', '教材庫'], ['stats', 'stats', '統計']]],
+    ['學習', [['goals', 'wizard', '目標'], ['material', 'book', '教材庫'], ['school', 'note', '學校作業'], ['stats', 'stats', '統計']]],
     ['工具', [['vocab', 'book', '單字本'], ['memo', 'note', '備忘錄'], ['habits', 'habit', '習慣']]],
     ['個人化', [['pet', 'paw', '寵物']]],
     ['App', [['settings', 'settings', '設定']]],
@@ -175,7 +175,8 @@ export default function Shell({ onLogout }) {
             onBack={() => setView({ type: 'plans' })} goWizard={() => setView({ type: 'wizard' })}
             // 「調整計畫」＝Edit Mode：帶著這個計畫進精靈，不會建立新計畫
             adjustPlan={(planId, section) => setView({ type: 'wizard', mode: 'edit', planId, section, from: view.key })}
-            goLocks={() => setView({ type: 'locks' })} />
+            goLocks={() => setView({ type: 'locks' })}
+            goScheduleHistory={() => setView({ type: 'schedule-history' })} />
         : view.type === 'study' || view.type === 'pomo' ? <StudyView tasks={tasks.filter(t => !t.deleted)} goPlans={() => setView({ type: 'plans' })} />
         : view.type === 'calendar' ? <CalendarView tasks={tasks.filter(t => !t.deleted)} reload={reload} lists={lists}
             addIntent={calAddIntent} onAddIntentHandled={() => setCalAddIntent(null)}
