@@ -558,6 +558,33 @@ CREATE TABLE IF NOT EXISTS plan_material_items (
   created_at TEXT DEFAULT CURRENT_TIMESTAMP,
   updated_at TEXT DEFAULT CURRENT_TIMESTAMP
 );
+
+-- 段考「進度安排」（progress segments）。這是 A 層：回答「哪一段日期以前，
+-- 要讀完哪些教材範圍」（例：9/28–10/2 數學第一課～第二課）。
+--
+-- 它刻意是 Plan 內的一個輕量層，不是第二套 ExamPlan、不是第二套排程器、
+-- 也**不是** ScheduledBlock。progress segment 存的是「範圍目標＋期限」這個學習
+-- 意圖本身；它可以在完全沒有每日精確排程（B 層 = ScheduledBlock）的情況下獨立
+-- 存在、被讀取、被更新。完成度不存在這裡——完成度仍以 material_progress／Task
+-- completion／StudySession 為唯一真相，投影時才把兩者合起來算「超前／落後」。
+--
+-- scope_json：這一段要讀完的教材範圍（content_item_id 陣列的快照），語意是
+-- 「範圍目標」，不是選取（選取仍在 plan_material_items）、也不是完成。
+-- kind：study（一般進度）｜review（複習）｜exam（模考當天），純顯示分組用。
+CREATE TABLE IF NOT EXISTS plan_progress_segments (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  user_id INTEGER NOT NULL,
+  plan_id INTEGER NOT NULL,
+  start_date TEXT,
+  end_date TEXT NOT NULL,
+  subject_list_id INTEGER,
+  title TEXT NOT NULL,
+  scope_json TEXT DEFAULT '[]',
+  kind TEXT NOT NULL DEFAULT 'study',
+  order_index INTEGER DEFAULT 0,
+  created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+  updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+);
 `;
 
 export async function initSchema() {
@@ -657,6 +684,9 @@ export async function initSchema() {
   try { await client.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_plan_material_one ON plan_material_items(plan_id, content_item_id)"); } catch {}
   try { await client.execute("CREATE INDEX IF NOT EXISTS idx_plan_material_item ON plan_material_items(user_id, content_item_id, selected)"); } catch {}
   try { await client.execute("CREATE INDEX IF NOT EXISTS idx_tasks_material_item ON tasks(user_id, material_content_item_id)"); } catch {}
+  // 段考進度安排（progress segments）。純 additive，不 backfill：舊 Plan 就是沒有
+  // 任何 segment，投影時視為「尚未安排進度」，不會憑空生出區間。
+  try { await client.execute("CREATE INDEX IF NOT EXISTS idx_plan_progress_segments ON plan_progress_segments(user_id, plan_id, order_index)"); } catch {}
   // 同一列 legacy 來源只能被正式化一次。重複正式化會生出兩本內容相同、
   // 完成度各自獨立的教材，而且沒有任何入口能合併回去。
   try { await client.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_material_book_source_row ON material_book_sources(user_id, source_kind, source_row_id)"); } catch {}
