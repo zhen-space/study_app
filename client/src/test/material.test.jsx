@@ -625,6 +625,48 @@ describe('Material-backed Task 的最終 subject 與 linkage', () => {
   });
 });
 
+/* ============ 分類篩選：科目／題型／使用中 ============ */
+
+describe('教材庫分類篩選', () => {
+  const MULTI = [
+    { id: 1, title: '數學課本', subject_list_id: 1, progress: prog(2, 1), kinds: ['reading', 'unit_exercise'], in_use: true, plan_ids: [9] },
+    { id: 2, title: '英文講義', subject_list_id: 2, progress: prog(1, 0), kinds: ['past_exam'], in_use: false, plan_ids: [] },
+  ];
+  const renderWith = async () => {
+    setApi({ '/material/books': MULTI, '/material/categories': [] });
+    render(<MaterialLibraryView lists={LISTS} />);
+    await waitFor(() => expect(screen.queryByText('數學課本')).toBeTruthy());
+  };
+
+  it('依科目篩選只留該科目的書', async () => {
+    await renderWith();
+    fireEvent.change(screen.getByLabelText('依科目篩選'), { target: { value: '2' } });
+    await flush();
+    expect(screen.queryByText('英文講義')).toBeTruthy();
+    expect(screen.queryByText('數學課本')).toBeNull();
+  });
+
+  it('依題型篩選只留含該題型的書', async () => {
+    await renderWith();
+    fireEvent.change(screen.getByLabelText('依題型篩選'), { target: { value: 'past_exam' } });
+    await flush();
+    expect(screen.queryByText('英文講義')).toBeTruthy();
+    expect(screen.queryByText('數學課本')).toBeNull();
+  });
+
+  it('依使用狀態篩選（使用中／未使用）', async () => {
+    await renderWith();
+    fireEvent.change(screen.getByLabelText('依使用狀態篩選'), { target: { value: 'out' } });
+    await flush();
+    expect(screen.queryByText('英文講義')).toBeTruthy();
+    expect(screen.queryByText('數學課本')).toBeNull();
+    // 清除篩選後兩本都回來
+    fireEvent.click(screen.getByText('清除篩選'));
+    await flush();
+    expect(screen.queryByText('數學課本')).toBeTruthy();
+  });
+});
+
 /* ============ 編輯教材：打錯字要有得救 ============ */
 
 describe('編輯教材', () => {

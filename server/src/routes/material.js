@@ -35,7 +35,24 @@ const num = v => (v == null || v === '' ? null : Number(v));
 /* ---------- Book ---------- */
 
 router.get('/material/books', handle(async (req, res) => {
-  res.json(await material.listBooks(req.userId, { includeArchived: req.query.archived === '1' }));
+  const qy = req.query;
+  const inUse = qy.in_use === '1' ? true : qy.in_use === '0' ? false : undefined;
+  res.json(await material.listBooks(req.userId, {
+    includeArchived: qy.archived === '1',
+    filters: {
+      subject_list_id: qy.subject_list_id,
+      kind: qy.kind,
+      plan_id: qy.plan_id,
+      in_use: inUse,
+    },
+  }));
+}));
+
+// 匯入／新增前的同名檢查：回傳疑似同名（同名＋同科目）的既有教材，讓前端提供
+// 「合併到現有／另存新教材／取消」三選一。這一步不寫任何東西。
+router.get('/material/name-check', handle(async (req, res) => {
+  const books = await material.sameNameBooks(req.userId, req.query.title || '', req.query.subject_list_id ?? null);
+  res.json({ same_name_books: books, has_conflict: books.length > 0 });
 }));
 
 router.post('/material/books', handle(async (req, res) => {

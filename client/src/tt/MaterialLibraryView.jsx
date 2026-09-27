@@ -90,6 +90,10 @@ export default function MaterialLibraryView({ goPlans = null, lists = [] }) {
   const [categories, setCategories] = useState([]);
   const [books, setBooks] = useState([]);
   const [scope, setScope] = useState('all');
+  // 分類篩選：科目 / 題型 / 使用中（皆前端篩選，後端已帶 kinds、in_use）。
+  const [fSubject, setFSubject] = useState('');
+  const [fKind, setFKind] = useState('');
+  const [fUse, setFUse] = useState('');
   const [openBook, setOpenBook] = useState(null);
   const [tree, setTree] = useState(null);
   const [openCh, setOpenCh] = useState({});
@@ -139,11 +143,19 @@ export default function MaterialLibraryView({ goPlans = null, lists = [] }) {
   };
 
   const visibleBooks = useMemo(() => {
-    if (scope === 'all') return books;
-    const cat = categories.find(c => String(c.id) === String(scope));
-    const ids = new Set((cat?.books || []).map(b => b.id));
-    return books.filter(b => ids.has(b.id));
-  }, [scope, books, categories]);
+    let base = books;
+    if (scope !== 'all') {
+      const cat = categories.find(c => String(c.id) === String(scope));
+      const ids = new Set((cat?.books || []).map(b => b.id));
+      base = books.filter(b => ids.has(b.id));
+    }
+    // 分類篩選：科目 / 題型 / 使用中。後端已把 kinds／in_use 帶在每本書上。
+    if (fSubject !== '') base = base.filter(b => String(b.subject_list_id ?? '') === String(fSubject));
+    if (fKind !== '') base = base.filter(b => (b.kinds || []).includes(fKind));
+    if (fUse === 'in') base = base.filter(b => b.in_use);
+    else if (fUse === 'out') base = base.filter(b => !b.in_use);
+    return base;
+  }, [scope, books, categories, fSubject, fKind, fUse]);
 
   // 這本書出現在哪些分類。用來說明「同一本書可以在多個分類」，
   // 避免學生以為那是兩本不同的教材。
@@ -249,6 +261,26 @@ export default function MaterialLibraryView({ goPlans = null, lists = [] }) {
       <SegmentedControl ariaLabel="教材分類" block value={String(scope)} onChange={setScope}
         options={[{ value: 'all', label: '所有教材' },
           ...categories.map(c => ({ value: String(c.id), label: c.name }))]} />
+
+      {/* 分類篩選：科目 / 題型 / 使用中。 */}
+      <div className="ml-filters row" style={{ gap: 8, flexWrap: 'wrap', marginTop: 'var(--sp-2)' }}>
+        <select aria-label="依科目篩選" value={fSubject} onChange={e => setFSubject(e.target.value)}>
+          <option value="">全部科目</option>
+          {lists.map(l => <option key={l.id} value={l.id}>{l.name}</option>)}
+        </select>
+        <select aria-label="依題型篩選" value={fKind} onChange={e => setFKind(e.target.value)}>
+          <option value="">全部題型</option>
+          {Object.entries(ITEM_LABEL).map(([k, label]) => <option key={k} value={k}>{label}</option>)}
+        </select>
+        <select aria-label="依使用狀態篩選" value={fUse} onChange={e => setFUse(e.target.value)}>
+          <option value="">使用狀態（全部）</option>
+          <option value="in">使用中</option>
+          <option value="out">未使用</option>
+        </select>
+        {(fSubject || fKind || fUse) && (
+          <Button size="sm" variant="ghost" onClick={() => { setFSubject(''); setFKind(''); setFUse(''); }}>清除篩選</Button>
+        )}
+      </div>
 
       <div className="ml-addrow ml-addrow--book">
         <input value={adding} onChange={e => setAdding(e.target.value)} placeholder="新增教材名稱"

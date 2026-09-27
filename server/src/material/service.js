@@ -58,7 +58,18 @@ const mustPlan = async (userId, id) => {
 
 /* ---------- Book ---------- */
 
-export async function listBooks(userId, { includeArchived = false } = {}) {
+// 教材名稱正規化：分類／同名判斷用。去頭尾空白、全形空白折成半形、大小寫拉平。
+// 只用於「疑似同名」偵測，不改真正存下來的書名。
+export const normalizeBookName = s => String(s || '').trim().replace(/\s+/g, ' ').toLowerCase();
+
+// 教材庫清單 + 分類資訊。filters（皆可選）：
+//   subject_list_id：只回這個科目的書
+//   kind：只回含有這種題型內容（reading/example/unit_exercise/past_exam）的書
+//   in_use：true=只回使用中（有完成度或被某計畫選取），false=只回未使用
+//   plan_id：只回被這個計畫選取的書
+// 分類欄位（每本書都會帶）：kinds（含哪些題型）、in_use（是否使用中）、
+// plan_ids（目前有哪些計畫選了它）。這些都是 derived，不落地。
+export async function listBooks(userId, { includeArchived = false, filters = {} } = {}) {
   const rows = await q.all(
     `SELECT * FROM material_books WHERE user_id=? ${includeArchived ? '' : 'AND COALESCE(archived,0)=0'}
       ORDER BY COALESCE(archived,0), title, id`, [userId]);
@@ -72,12 +83,70 @@ export async function listBooks(userId, { includeArchived = false } = {}) {
        LEFT JOIN material_progress p ON p.content_item_id=i.id AND p.user_id=i.user_id
       WHERE i.user_id=? GROUP BY i.book_id`, [userId]);
   const m = new Map(stats.map(s => [s.book_id, s]));
-  return rows.map(b => {
+  // 每本書含哪些題型（分類篩選用）。
+  const kindRows = await q.all(
+    'SELECT DISTINCT book_id, kind FROM material_content_items WHERE user_id=?', [userId]);
+  const kindsByBook = new Map();
+  for (const r of kindRows) {
+    if (!kindsByBook.has(r.book_id)) kindsByBook.set(r.book_id, new Set());
+    kindsByBook.get(r.book_id).add(r.kind);
+  }
+  // 每本書目前被哪些計畫選取（selected=1；已刪除的計畫排除）。
+  const planRows = await q.all(
+    `SELECT DISTINCT i.book_id, pmi.plan_id
+       FROM plan_material_items pmi
+       JOIN material_content_items i ON i.id=pmi.content_item_id AND i.user_id=pmi.user_id
+       JOIN plans pl ON pl.id=pmi.plan_id AND pl.user_id=pmi.user_id AND pl.status<>'deleted'
+      WHERE pmi.user_id=? AND pmi.selected=1`, [userId]);
+  const plansByBook = new Map();
+  for (const r of planRows) {
+    if (!plansByBook.has(r.book_id)) plansByBook.set(r.book_id, new Set());
+    plansByBook.get(r.book_id).add(Number(r.plan_id));
+  }
+
+  let out = rows.map(b => {
     const s = m.get(b.id);
     const total = s?.total_items ?? 0;
     const done = s?.completed_items ?? 0;
-    return { ...b, progress: { total_items: total, completed_items: done, percent: total ? Math.round(done / total * 100) : 0 } };
+    const planIds = [...(plansByBook.get(b.id) || [])];
+    // 使用中＝有完成紀錄或被某計畫選取。
+    const inUse = done > 0 || planIds.length > 0;
+    return {
+      ...b,
+      progress: { total_items: total, completed_items: done, percent: total ? Math.round(done / total * 100) : 0 },
+      kinds: [...(kindsByBook.get(b.id) || [])],
+      plan_ids: planIds,
+      in_use: inUse,
+    };
   });
+
+  // 分類篩選（server 端，讓前端可直接帶查詢字串）。
+  const f = filters || {};
+  if (f.subject_list_id != null && f.subject_list_id !== '') {
+    out = out.filter(b => Number(b.subject_list_id) === Number(f.subject_list_id));
+  }
+  if (f.kind) out = out.filter(b => b.kinds.includes(f.kind));
+  if (f.plan_id != null && f.plan_id !== '') {
+    out = out.filter(b => b.plan_ids.includes(Number(f.plan_id)));
+  }
+  if (f.in_use === true) out = out.filter(b => b.in_use);
+  else if (f.in_use === false) out = out.filter(b => !b.in_use);
+  return out;
+}
+
+// 疑似同名的既有教材（同名 + 同科目才算）。用於匯入／新增前的三選一：
+// 合併到現有／另存新教材／取消——在使用者選擇之前，呼叫端不得自動新增或覆寫。
+// subjectListId 為 null 時只比名字（未指定科目的書彼此比較）。
+export async function sameNameBooks(userId, title, subjectListId = null) {
+  const norm = normalizeBookName(title);
+  if (!norm) return [];
+  const rows = await q.all(
+    'SELECT * FROM material_books WHERE user_id=? AND COALESCE(archived,0)=0', [userId]);
+  return rows.filter(b =>
+    normalizeBookName(b.title) === norm
+    && (subjectListId == null || subjectListId === ''
+      ? (b.subject_list_id == null)
+      : Number(b.subject_list_id) === Number(subjectListId)));
 }
 
 export async function createBook(userId, body = {}) {
