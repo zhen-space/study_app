@@ -93,11 +93,19 @@ router.post('/material/books/:id/merge', handle(async (req, res) => {
   }));
 }));
 
-// 刪除的正常語意就是封存，所以 DELETE 預設走 archive。
-// 真的要 hard delete 必須明確帶 ?hard=1，而且完全沒有歷史 reference 才會成功。
+// 刪除的正常語意是「真正的 soft-delete（tombstone）」：教材從教材庫消失，但完成度／
+// StudySession／ScheduleVersion／ScheduledBlock 等歷史一律保留、不 cascade。
+// active／paused Plan 正在選用時擋下（409 IN_USE_BY_ACTIVE_PLAN），帶 ?unlink=1 先安全
+// 解除關聯再刪。?hard=1 仍可對「完全沒有任何 reference」的乾淨書做實體清除。
 router.delete('/material/books/:id', handle(async (req, res) => {
   if (req.query.hard === '1') return res.json(await material.hardDeleteBook(req.userId, req.params.id));
-  res.json(await material.archiveBook(req.userId, req.params.id, true));
+  res.json(await material.softDeleteBook(req.userId, req.params.id, { unlink: req.query.unlink === '1' }));
+}));
+
+// 刪除前的 CURRENT 影響（唯讀）：Plan 依狀態、Task linkage、完成度、StudySession、
+// ScheduledBlock 等，以及會擋刪除的 active／paused 計畫清單。
+router.get('/material/books/:id/impact', handle(async (req, res) => {
+  res.json(await material.bookImpact(req.userId, req.params.id));
 }));
 
 router.post('/material/books/:id/unarchive', handle(async (req, res) => {

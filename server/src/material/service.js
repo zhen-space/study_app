@@ -172,10 +172,12 @@ export async function updateBook(userId, id, body = {}) {
     if (!l) throw new MaterialInputError('找不到這個科目');
   }
   await q.run(
-    'UPDATE material_books SET title=?,publisher=?,subject_list_id=?,updated_at=CURRENT_TIMESTAMP WHERE id=? AND user_id=?',
+    'UPDATE material_books SET title=?,publisher=?,subject_list_id=?,book_type=?,updated_at=CURRENT_TIMESTAMP WHERE id=? AND user_id=?',
     [body.title == null ? b.title : String(body.title).trim(),
       body.publisher == null ? b.publisher : body.publisher,
-      body.subject_list_id === undefined ? b.subject_list_id : (body.subject_list_id ?? null), id, userId]);
+      body.subject_list_id === undefined ? b.subject_list_id : (body.subject_list_id ?? null),
+      body.book_type === undefined ? (b.book_type ?? '') : String(body.book_type ?? ''),
+      id, userId]);
   return getBook(userId, id);
 }
 
@@ -194,6 +196,89 @@ export async function bookReferences(userId, bookId) {
     categories: await one(
       'SELECT COUNT(*) n FROM material_category_books WHERE user_id=? AND book_id=?', [userId, bookId]),
   };
+}
+
+// 刪除前要給使用者看的 CURRENT 影響。全部是唯讀計數／清單，不改任何東西。
+// 語意：completion／StudySession／ScheduleVersion／ScheduledBlock 是歷史，刪除教材
+// 不得 cascade 掉它們；active／paused Plan 正在選用（selected=1）則會擋刪除。
+export async function bookImpact(userId, bookId) {
+  await mustBook(userId, bookId);
+  const one = async (sql, args) => Number((await q.get(sql, args))?.n ?? 0);
+  const itemSub = '(SELECT id FROM material_content_items WHERE user_id=? AND book_id=?)';
+  // 所有引用這本書內容的 Plan（含歷史 selected=0），依狀態分組。
+  const planRows = await q.all(
+    `SELECT DISTINCT pl.id, pl.name, pl.status, pmi.selected
+       FROM plan_material_items pmi
+       JOIN material_content_items i ON i.id=pmi.content_item_id AND i.user_id=pmi.user_id
+       JOIN plans pl ON pl.id=pmi.plan_id AND pl.user_id=pmi.user_id AND pl.status<>'deleted'
+      WHERE pmi.user_id=? AND i.book_id=?`, [userId, bookId]);
+  const plansByStatus = {};
+  for (const p of planRows) plansByStatus[p.status] = (plansByStatus[p.status] || 0) + 1;
+  // 正在使用（selected=1）且 active/paused 的計畫 → 擋刪除，須先解除關聯。
+  const blockingPlans = planRows
+    .filter(p => Number(p.selected) === 1 && (p.status === 'active' || p.status === 'paused'))
+    .map(p => ({ id: p.id, name: p.name, status: p.status }));
+  return {
+    // 既有鍵（hardDelete 沿用）
+    progress: await one(
+      `SELECT COUNT(*) n FROM material_progress p JOIN material_content_items i
+         ON i.id=p.content_item_id WHERE p.user_id=? AND i.book_id=?`, [userId, bookId]),
+    plan_selections: await one(
+      `SELECT COUNT(*) n FROM plan_material_items pmi JOIN material_content_items i
+         ON i.id=pmi.content_item_id WHERE pmi.user_id=? AND i.book_id=?`, [userId, bookId]),
+    tasks: await one('SELECT COUNT(*) n FROM tasks WHERE user_id=? AND material_book_id=?', [userId, bookId]),
+    categories: await one('SELECT COUNT(*) n FROM material_category_books WHERE user_id=? AND book_id=?', [userId, bookId]),
+    // 擴充影響
+    completion_records: await one(
+      `SELECT COUNT(*) n FROM material_progress p JOIN material_content_items i
+         ON i.id=p.content_item_id WHERE p.user_id=? AND i.book_id=?`, [userId, bookId]),
+    task_linkage: await one(
+      `SELECT COUNT(*) n FROM tasks WHERE user_id=? AND (material_book_id=? OR material_content_item_id IN ${itemSub})`,
+      [userId, bookId, userId, bookId]),
+    study_sessions: await one(
+      `SELECT COUNT(*) n FROM study_sessions s JOIN tasks t ON t.id=s.task_id AND t.user_id=s.user_id
+        WHERE s.user_id=? AND (t.material_book_id=? OR t.material_content_item_id IN ${itemSub})`,
+      [userId, bookId, userId, bookId]),
+    scheduled_blocks: await one(
+      `SELECT COUNT(*) n FROM scheduled_blocks b JOIN tasks t ON t.id=b.task_id AND t.user_id=b.user_id
+        WHERE b.user_id=? AND (t.material_book_id=? OR t.material_content_item_id IN ${itemSub})`,
+      [userId, bookId, userId, bookId]),
+    plans_by_status: plansByStatus,
+    blocking_plans: blockingPlans,
+  };
+}
+
+// 教材的安全刪除（soft-delete tombstone）。
+//   ・active／paused Plan 正在選用 → 擋下（409），除非 unlink=true 先安全解除關聯
+//     （沿用 selectItems 的 selected=false lifecycle：Task 安全退出排程，不硬刪）。
+//   ・不 cascade 刪除 Task／StudySession／ScheduleVersion／ScheduledBlock／完成度。
+//   ・set deleted_at → 教材庫看不到，但所有下游引用與歷史仍指向存在的列。
+export async function softDeleteBook(userId, id, { unlink = false } = {}) {
+  await mustBook(userId, id);
+  const impact = await bookImpact(userId, id);
+  if (impact.blocking_plans.length) {
+    if (!unlink) {
+      const err = new MaterialInputError('這本教材正被使用中的計畫選用，請先解除關聯或改用其他方式', 409);
+      err.code = 'IN_USE_BY_ACTIVE_PLAN';
+      err.impact = impact;
+      throw err;
+    }
+    // 解除關聯：把這本書在每個 blocking plan 的已選內容 deselect（安全 lifecycle）。
+    const items = await q.all('SELECT id FROM material_content_items WHERE user_id=? AND book_id=?', [userId, id]);
+    const itemIds = items.map(i => i.id);
+    for (const p of impact.blocking_plans) {
+      const selected = await q.all(
+        `SELECT content_item_id FROM plan_material_items
+          WHERE user_id=? AND plan_id=? AND selected=1 AND content_item_id IN (${itemIds.map(() => '?').join(',') || 'NULL'})`,
+        [userId, p.id, ...itemIds]);
+      const toDrop = selected.map(r => r.content_item_id);
+      if (toDrop.length) await selectItems(userId, p.id, toDrop, false);
+    }
+  }
+  // tombstone。刻意不動 nodes/items/progress/tasks/sessions/versions（歷史保留）。
+  await q.run('UPDATE material_books SET deleted_at=?,updated_at=CURRENT_TIMESTAMP WHERE id=? AND user_id=?',
+    [now(), id, userId]);
+  return { deleted: true, soft: true, unlinked_plans: impact.blocking_plans.map(p => p.id) };
 }
 
 export async function archiveBook(userId, id, archived = true) {
