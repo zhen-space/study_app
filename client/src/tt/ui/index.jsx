@@ -103,16 +103,28 @@ export function ListRow({ leading = null, title, subtitle = null, trailing = nul
 // 鍵盤行為：Escape 關閉、開啟時焦點移進面板、關閉後焦點還給原本的元素。
 export function BottomSheet({ onClose, children, label = '', className = '', ...rest }) {
   const panel = useRef(null);
+  const onCloseRef = useRef(onClose);
+
+  // 呼叫端常用 inline callback（例如 `() => setSheet(null)`）。如果把 callback
+  // 放進下面的 focus effect 依賴，每打一個字造成的 re-render 都會先清理再重跑
+  // effect，把焦點從 input 搶回面板；注音／倉頡等 IME 組字會因此逐鍵中斷。
+  // callback 保持最新即可，面板的 focus lifecycle 只應在 mount/unmount 執行一次。
+  useEffect(() => { onCloseRef.current = onClose; }, [onClose]);
   useEffect(() => {
     const prev = document.activeElement;
     panel.current?.focus();
-    const onKey = e => { if (e.key === 'Escape') { e.stopPropagation(); onClose?.(); } };
+    const onKey = e => {
+      if (e.key === 'Escape' && !e.isComposing && !e.nativeEvent?.isComposing) {
+        e.stopPropagation();
+        onCloseRef.current?.();
+      }
+    };
     document.addEventListener('keydown', onKey);
     return () => {
       document.removeEventListener('keydown', onKey);
       if (prev && typeof prev.focus === 'function') prev.focus();
     };
-  }, [onClose]);
+  }, []);
 
   return (
     <div className="sheet-backdrop cal-modal-back" onClick={onClose}>
