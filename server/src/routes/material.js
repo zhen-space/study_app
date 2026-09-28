@@ -23,6 +23,9 @@ const handle = fn => async (req, res) => {
       if (e.problems) body.problems = e.problems;
       if (e.already_formalized_row_ids) body.already_formalized_row_ids = e.already_formalized_row_ids;
       if (e.stale) body.stale = true;
+      if (e.code) body.code = e.code;
+      if (e.preview) body.preview = e.preview;
+      if (e.impact) body.impact = e.impact;
       return res.status(e.status || 400).json(body);
     }
     console.error('[material]', e);
@@ -35,7 +38,24 @@ const num = v => (v == null || v === '' ? null : Number(v));
 /* ---------- Book ---------- */
 
 router.get('/material/books', handle(async (req, res) => {
-  res.json(await material.listBooks(req.userId, { includeArchived: req.query.archived === '1' }));
+  const qy = req.query;
+  const inUse = qy.in_use === '1' ? true : qy.in_use === '0' ? false : undefined;
+  res.json(await material.listBooks(req.userId, {
+    includeArchived: qy.archived === '1',
+    filters: {
+      subject_list_id: qy.subject_list_id,
+      kind: qy.kind,
+      plan_id: qy.plan_id,
+      in_use: inUse,
+    },
+  }));
+}));
+
+// 匯入／新增前的同名檢查：回傳疑似同名（同名＋同科目）的既有教材，讓前端提供
+// 「合併到現有／另存新教材／取消」三選一。這一步不寫任何東西。
+router.get('/material/name-check', handle(async (req, res) => {
+  const books = await material.sameNameBooks(req.userId, req.query.title || '', req.query.subject_list_id ?? null);
+  res.json({ same_name_books: books, has_conflict: books.length > 0 });
 }));
 
 router.post('/material/books', handle(async (req, res) => {
@@ -57,11 +77,35 @@ router.get('/material/books/:id/references', handle(async (req, res) => {
   res.json({ references: refs, can_hard_delete: Object.values(refs).every(n => n === 0) });
 }));
 
-// 刪除的正常語意就是封存，所以 DELETE 預設走 archive。
-// 真的要 hard delete 必須明確帶 ?hard=1，而且完全沒有歷史 reference 才會成功。
+// 合併／增補目錄 preview：把新 TOC 比對到既有書，回分類與是否需確認順序。不寫入。
+router.post('/material/books/:id/merge/preview', handle(async (req, res) => {
+  const b = req.body || {};
+  res.json(await material.previewBookMerge(req.userId, req.params.id, b.draft ?? b));
+}));
+
+// 合併／增補目錄 apply：單一交易併入既有書，保留完成度／選取／Task linkage。
+router.post('/material/books/:id/merge', handle(async (req, res) => {
+  const b = req.body || {};
+  res.status(201).json(await material.applyBookMerge(req.userId, req.params.id, b.draft ?? b, {
+    expectedFingerprint: b.expected_fingerprint ?? null,
+    confirmOrder: b.confirm_order === true,
+    confirmDuplicates: b.confirm_duplicates === true,
+  }));
+}));
+
+// 刪除的正常語意是「真正的 soft-delete（tombstone）」：教材從教材庫消失，但完成度／
+// StudySession／ScheduleVersion／ScheduledBlock 等歷史一律保留、不 cascade。
+// active／paused Plan 正在選用時擋下（409 IN_USE_BY_ACTIVE_PLAN），帶 ?unlink=1 先安全
+// 解除關聯再刪。?hard=1 仍可對「完全沒有任何 reference」的乾淨書做實體清除。
 router.delete('/material/books/:id', handle(async (req, res) => {
   if (req.query.hard === '1') return res.json(await material.hardDeleteBook(req.userId, req.params.id));
-  res.json(await material.archiveBook(req.userId, req.params.id, true));
+  res.json(await material.softDeleteBook(req.userId, req.params.id, { unlink: req.query.unlink === '1' }));
+}));
+
+// 刪除前的 CURRENT 影響（唯讀）：Plan 依狀態、Task linkage、完成度、StudySession、
+// ScheduledBlock 等，以及會擋刪除的 active／paused 計畫清單。
+router.get('/material/books/:id/impact', handle(async (req, res) => {
+  res.json(await material.bookImpact(req.userId, req.params.id));
 }));
 
 router.post('/material/books/:id/unarchive', handle(async (req, res) => {

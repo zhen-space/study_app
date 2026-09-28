@@ -323,17 +323,17 @@ describe('Plan selection lifecycle（契約 4、6、9）', () => {
 });
 
 describe('Book 刪除語意（契約 5）', () => {
-  test('DELETE 預設是封存，不是刪除', async () => {
-    const B = await seedBook('封存書');
+  test('DELETE 預設是真正的 soft-delete（tombstone），歷史保留、不再出現在教材庫', async () => {
+    const B = await seedBook('刪除書');
+    // 有完成度（歷史），但沒有 active/paused 計畫選用 → 可直接 soft-delete
+    await ok('PUT', `/material/content-items/${B.reading.id}/completion`, { completed: true });
     const out = await ok('DELETE', `/material/books/${B.book.id}`);
-    assert.equal(out.archived, 1);
-    assert.ok(out.archived_at);
-    const list = await ok('GET', '/material/books');
-    assert.equal(list.some(b => b.id === B.book.id), false, '預設清單不含已封存');
-    const all = await ok('GET', '/material/books?archived=1');
-    assert.equal(all.some(b => b.id === B.book.id), true);
-    await ok('POST', `/material/books/${B.book.id}/unarchive`);
-    assert.equal((await ok('GET', '/material/books')).some(b => b.id === B.book.id), true);
+    assert.equal(out.soft, true);
+    // 教材庫看不到（含 ?archived=1 也看不到，因為它是刪除不是封存）
+    assert.equal((await ok('GET', '/material/books')).some(b => b.id === B.book.id), false);
+    assert.equal((await ok('GET', '/material/books?archived=1')).some(b => b.id === B.book.id), false);
+    // 已刪除 → 一般 API 視為不存在（完成度等歷史列不 cascade，見 material-crud 測試）
+    assert.equal((await api('GET', `/material/books/${B.book.id}/tree`)).status, 404);
   });
 
   test('完全沒有歷史 reference 的書才能 hard delete', async () => {

@@ -78,7 +78,7 @@ function SectionRow({ label, count, open, onToggle }) {
   );
 }
 
-export default function PlansView({ tasks, lists, apiPlans = [], openPlan, goWizard, reload, createIntent = false, onCreateIntentHandled }) {
+export default function PlansView({ tasks, lists, apiPlans = [], openPlan, goWizard, goWizardMode, reload, createIntent = false, onCreateIntentHandled }) {
   const plans = usePlans(tasks, lists, apiPlans);
   const [creating, setCreating] = useState(false);
   // Global Add（§A）「計畫」導過來時，直接開「建立計畫」兩條路 sheet（AI 安排 / 空白計畫）。
@@ -196,18 +196,28 @@ export default function PlansView({ tasks, lists, apiPlans = [], openPlan, goWiz
           </div>
           {!showBlank ? (
             <div style={{ marginTop: 'var(--sp-4)' }}>
-              <Button variant="primary" size="lg" block onClick={goWizard}>
-                <Icon name="wizard" size={18} />AI 幫我安排
-              </Button>
-              <div className="ui-meta" style={{ margin: 'var(--sp-2) 0 var(--sp-5)', textAlign: 'center' }}>
-                拍教材或選內容，由 AI 建立安排
-              </div>
+              {/* B6：段考計畫三種模式，明確選擇要不要建立確切安排。 */}
+              <div className="ui-meta" style={{ marginBottom: 'var(--sp-2)' }}>要怎麼安排這個段考計畫？</div>
               <ListRow
-                title="建立空白計畫" subtitle="先建立，再自己加入任務"
+                title="只安排進度" subtitle="設定段考範圍與期限，先不排每日時間（之後可再升級排程）"
                 trailing={<Icon name="chevron" size={16} />}
                 role="button" tabIndex={0} style={{ cursor: 'pointer' }}
                 onClick={() => setShowBlank(true)}
                 onKeyDown={e => { if (e.key === 'Enter') setShowBlank(true); }}
+              />
+              <ListRow
+                title="進度 ＋ 每天要做的" subtitle="AI 排出每天要做哪些內容，但不指定時段"
+                trailing={<Icon name="chevron" size={16} />}
+                role="button" tabIndex={0} style={{ cursor: 'pointer', marginTop: 'var(--sp-2)' }}
+                onClick={() => (goWizardMode || goWizard)('daily')}
+                onKeyDown={e => { if (e.key === 'Enter') (goWizardMode || goWizard)('daily'); }}
+              />
+              <ListRow
+                title="進度 ＋ 具體時段" subtitle="AI 依可用時間與行事曆，排到每天的時段"
+                trailing={<Icon name="chevron" size={16} />}
+                role="button" tabIndex={0} style={{ cursor: 'pointer', marginTop: 'var(--sp-2)' }}
+                onClick={() => (goWizardMode || goWizard)('timed')}
+                onKeyDown={e => { if (e.key === 'Enter') (goWizardMode || goWizard)('timed'); }}
               />
             </div>
           ) : (

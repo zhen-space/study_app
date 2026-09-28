@@ -33,7 +33,7 @@ describe('PlanTimeline', () => {
       segments: [{ range_start: '2026-09-25', range_end: '2026-09-27', display_mode: 'range', groups: [{ subject_id: 1, subject_name: '數學', task_ids: [10] }] }],
     }));
     render(<PlanTimeline plan={plan} />);
-    await waitFor(() => expect(screen.getByText('段考進度')).toBeTruthy());
+    await waitFor(() => expect(screen.getByText('排程摘要')).toBeTruthy());
     expect(screen.getByText('9/25–9/27')).toBeTruthy();
     expect(screen.getByText('數學')).toBeTruthy();
     expect(screen.getByText('第一章 · Ch1 閱讀')).toBeTruthy();
@@ -74,7 +74,7 @@ describe('PlanTimeline', () => {
     const onAddContent = vi.fn(); const onAdjust = vi.fn();
     mockTimeline(range({ empty: true, no_active_schedule: true }));
     render(<PlanTimeline plan={plan} onAddContent={onAddContent} onAdjust={onAdjust} />);
-    await waitFor(() => expect(screen.getByText('這個計畫還沒有安排')).toBeTruthy());
+    await waitFor(() => expect(screen.getByText('這個計畫還沒有確切安排')).toBeTruthy());
     fireEvent.click(screen.getByText('加入內容'));
     expect(onAddContent).toHaveBeenCalled();
   });

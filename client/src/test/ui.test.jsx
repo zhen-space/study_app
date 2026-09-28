@@ -217,16 +217,16 @@ describe('UI-R2：Plans 與 Plan Detail', () => {
     noCrash();
   });
 
-  it('13. 建立計畫走 BottomSheet，AI 是主要動作', async () => {
+  it('13. 建立計畫走 BottomSheet，提供段考三種模式', async () => {
     await mountShell();
     await goPlans();
     await click(screen.getByRole('button', { name: '新增' }));
     await click(screen.getByRole('button', { name: '新增計畫' }));
     const dlg = screen.getByRole('dialog');
-    const ai = within(dlg).getByRole('button', { name: /AI 幫我安排/ });
-    expect(ai.className).toContain('ui-btn--primary');
-    // 空白計畫是次要入口（ListRow，不是同等份量的實心鈕）
-    expect(within(dlg).getByText('建立空白計畫').closest('.ui-row')).toBeTruthy();
+    // 三種模式各是一個 ListRow 入口
+    expect(within(dlg).getByText('只安排進度').closest('.ui-row')).toBeTruthy();
+    expect(within(dlg).getByText('進度 ＋ 每天要做的').closest('.ui-row')).toBeTruthy();
+    expect(within(dlg).getByText('進度 ＋ 具體時段').closest('.ui-row')).toBeTruthy();
     noCrash();
   });
 

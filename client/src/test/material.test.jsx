@@ -625,6 +625,92 @@ describe('Material-backed Task 的最終 subject 與 linkage', () => {
   });
 });
 
+/* ============ 分類篩選：科目／題型／使用中 ============ */
+
+describe('教材庫分類篩選', () => {
+  const MULTI = [
+    { id: 1, title: '數學課本', subject_list_id: 1, progress: prog(2, 1), kinds: ['reading', 'unit_exercise'], in_use: true, plan_ids: [9] },
+    { id: 2, title: '英文講義', subject_list_id: 2, progress: prog(1, 0), kinds: ['past_exam'], in_use: false, plan_ids: [] },
+  ];
+  const renderWith = async () => {
+    setApi({ '/material/books': MULTI, '/material/categories': [] });
+    render(<MaterialLibraryView lists={LISTS} />);
+    await waitFor(() => expect(screen.queryByText('數學課本')).toBeTruthy());
+  };
+
+  it('依科目篩選只留該科目的書', async () => {
+    await renderWith();
+    fireEvent.change(screen.getByLabelText('依科目篩選'), { target: { value: '2' } });
+    await flush();
+    expect(screen.queryByText('英文講義')).toBeTruthy();
+    expect(screen.queryByText('數學課本')).toBeNull();
+  });
+
+  it('依題型篩選只留含該題型的書', async () => {
+    await renderWith();
+    fireEvent.change(screen.getByLabelText('依題型篩選'), { target: { value: 'past_exam' } });
+    await flush();
+    expect(screen.queryByText('英文講義')).toBeTruthy();
+    expect(screen.queryByText('數學課本')).toBeNull();
+  });
+
+  it('依使用狀態篩選（使用中／未使用）', async () => {
+    await renderWith();
+    fireEvent.change(screen.getByLabelText('依使用狀態篩選'), { target: { value: 'out' } });
+    await flush();
+    expect(screen.queryByText('英文講義')).toBeTruthy();
+    expect(screen.queryByText('數學課本')).toBeNull();
+    // 清除篩選後兩本都回來
+    fireEvent.click(screen.getByText('清除篩選'));
+    await flush();
+    expect(screen.queryByText('數學課本')).toBeTruthy();
+  });
+});
+
+/* ============ 刪除教材：顯示影響、安全刪除 ============ */
+
+describe('教材刪除（影響 + 安全刪除）', () => {
+  it('點刪除顯示 CURRENT 影響，確認後呼叫 soft-delete', async () => {
+    let deleted = null;
+    setApi({
+      '/material/books/1/impact': {
+        completion_records: 2, task_linkage: 1, study_sessions: 3, scheduled_blocks: 0,
+        plans_by_status: { active: 1 }, blocking_plans: [],
+      },
+      '/material/books/1': (opts) => {
+        if (opts?.method === 'DELETE') { deleted = true; return { deleted: true, soft: true }; }
+        return {};
+      },
+    });
+    render(<MaterialLibraryView lists={LISTS} />);
+    await waitFor(() => expect(screen.queryByText('新大滿貫')).toBeTruthy());
+    await click(screen.getByRole('button', { name: /新大滿貫/ }));
+    await flush();
+    await click(screen.getByRole('button', { name: '刪除教材' }));
+    await waitFor(() => expect(screen.getByText(/完成度紀錄：2 筆/)).toBeTruthy());
+    expect(screen.getByText(/讀書紀錄（StudySession）：3 筆/)).toBeTruthy();
+    await click(screen.getByRole('button', { name: '確認刪除' }));
+    await flush();
+    expect(deleted).toBe(true);
+  });
+
+  it('active/paused 計畫使用中 → 顯示解除關聯選項', async () => {
+    setApi({
+      '/material/books/1/impact': {
+        completion_records: 0, task_linkage: 1, study_sessions: 0, scheduled_blocks: 0,
+        plans_by_status: { active: 1 }, blocking_plans: [{ id: 7, name: '段考A', status: 'active' }],
+      },
+    });
+    render(<MaterialLibraryView lists={LISTS} />);
+    await waitFor(() => expect(screen.queryByText('新大滿貫')).toBeTruthy());
+    await click(screen.getByRole('button', { name: /新大滿貫/ }));
+    await flush();
+    await click(screen.getByRole('button', { name: '刪除教材' }));
+    await waitFor(() => expect(screen.getByText('解除關聯並刪除')).toBeTruthy());
+    expect(screen.getByText(/「段考A」/)).toBeTruthy();
+  });
+});
+
 /* ============ 編輯教材：打錯字要有得救 ============ */
 
 describe('編輯教材', () => {

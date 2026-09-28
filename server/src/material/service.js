@@ -15,6 +15,8 @@ import {
   NODE_KINDS, ITEM_KINDS,
 } from './tree.js';
 import { validateDraft, draftSummary } from './draft.js';
+import { previewTocMerge, bookFingerprint, normTitle } from './merge.js';
+import { extractOrdinal } from './natural-order.js';
 import {
   legacyFormalizationDraft, formalizedSourceRowIds, readLegacyGroup,
   sourceFingerprint, LEGACY_SOURCE_KIND as LEGACY_KIND,
@@ -29,7 +31,7 @@ const now = () => new Date().toISOString();
 /* ---------- 取用（一律綁 user_id，避免跨帳號窺探） ---------- */
 
 export const getBook = (userId, id) =>
-  q.get('SELECT * FROM material_books WHERE id=? AND user_id=?', [id, userId]);
+  q.get('SELECT * FROM material_books WHERE id=? AND user_id=? AND deleted_at IS NULL', [id, userId]);
 
 const mustBook = async (userId, id) => {
   const b = await getBook(userId, id);
@@ -58,9 +60,20 @@ const mustPlan = async (userId, id) => {
 
 /* ---------- Book ---------- */
 
-export async function listBooks(userId, { includeArchived = false } = {}) {
+// 教材名稱正規化：分類／同名判斷用。去頭尾空白、全形空白折成半形、大小寫拉平。
+// 只用於「疑似同名」偵測，不改真正存下來的書名。
+export const normalizeBookName = s => String(s || '').trim().replace(/\s+/g, ' ').toLowerCase();
+
+// 教材庫清單 + 分類資訊。filters（皆可選）：
+//   subject_list_id：只回這個科目的書
+//   kind：只回含有這種題型內容（reading/example/unit_exercise/past_exam）的書
+//   in_use：true=只回使用中（有完成度或被某計畫選取），false=只回未使用
+//   plan_id：只回被這個計畫選取的書
+// 分類欄位（每本書都會帶）：kinds（含哪些題型）、in_use（是否使用中）、
+// plan_ids（目前有哪些計畫選了它）。這些都是 derived，不落地。
+export async function listBooks(userId, { includeArchived = false, filters = {} } = {}) {
   const rows = await q.all(
-    `SELECT * FROM material_books WHERE user_id=? ${includeArchived ? '' : 'AND COALESCE(archived,0)=0'}
+    `SELECT * FROM material_books WHERE user_id=? AND deleted_at IS NULL ${includeArchived ? '' : 'AND COALESCE(archived,0)=0'}
       ORDER BY COALESCE(archived,0), title, id`, [userId]);
   if (!rows.length) return [];
   // 進度一次算完，不要一本書打一次 DB。
@@ -72,12 +85,70 @@ export async function listBooks(userId, { includeArchived = false } = {}) {
        LEFT JOIN material_progress p ON p.content_item_id=i.id AND p.user_id=i.user_id
       WHERE i.user_id=? GROUP BY i.book_id`, [userId]);
   const m = new Map(stats.map(s => [s.book_id, s]));
-  return rows.map(b => {
+  // 每本書含哪些題型（分類篩選用）。
+  const kindRows = await q.all(
+    'SELECT DISTINCT book_id, kind FROM material_content_items WHERE user_id=?', [userId]);
+  const kindsByBook = new Map();
+  for (const r of kindRows) {
+    if (!kindsByBook.has(r.book_id)) kindsByBook.set(r.book_id, new Set());
+    kindsByBook.get(r.book_id).add(r.kind);
+  }
+  // 每本書目前被哪些計畫選取（selected=1；已刪除的計畫排除）。
+  const planRows = await q.all(
+    `SELECT DISTINCT i.book_id, pmi.plan_id
+       FROM plan_material_items pmi
+       JOIN material_content_items i ON i.id=pmi.content_item_id AND i.user_id=pmi.user_id
+       JOIN plans pl ON pl.id=pmi.plan_id AND pl.user_id=pmi.user_id AND pl.status<>'deleted'
+      WHERE pmi.user_id=? AND pmi.selected=1`, [userId]);
+  const plansByBook = new Map();
+  for (const r of planRows) {
+    if (!plansByBook.has(r.book_id)) plansByBook.set(r.book_id, new Set());
+    plansByBook.get(r.book_id).add(Number(r.plan_id));
+  }
+
+  let out = rows.map(b => {
     const s = m.get(b.id);
     const total = s?.total_items ?? 0;
     const done = s?.completed_items ?? 0;
-    return { ...b, progress: { total_items: total, completed_items: done, percent: total ? Math.round(done / total * 100) : 0 } };
+    const planIds = [...(plansByBook.get(b.id) || [])];
+    // 使用中＝有完成紀錄或被某計畫選取。
+    const inUse = done > 0 || planIds.length > 0;
+    return {
+      ...b,
+      progress: { total_items: total, completed_items: done, percent: total ? Math.round(done / total * 100) : 0 },
+      kinds: [...(kindsByBook.get(b.id) || [])],
+      plan_ids: planIds,
+      in_use: inUse,
+    };
   });
+
+  // 分類篩選（server 端，讓前端可直接帶查詢字串）。
+  const f = filters || {};
+  if (f.subject_list_id != null && f.subject_list_id !== '') {
+    out = out.filter(b => Number(b.subject_list_id) === Number(f.subject_list_id));
+  }
+  if (f.kind) out = out.filter(b => b.kinds.includes(f.kind));
+  if (f.plan_id != null && f.plan_id !== '') {
+    out = out.filter(b => b.plan_ids.includes(Number(f.plan_id)));
+  }
+  if (f.in_use === true) out = out.filter(b => b.in_use);
+  else if (f.in_use === false) out = out.filter(b => !b.in_use);
+  return out;
+}
+
+// 疑似同名的既有教材（同名 + 同科目才算）。用於匯入／新增前的三選一：
+// 合併到現有／另存新教材／取消——在使用者選擇之前，呼叫端不得自動新增或覆寫。
+// subjectListId 為 null 時只比名字（未指定科目的書彼此比較）。
+export async function sameNameBooks(userId, title, subjectListId = null) {
+  const norm = normalizeBookName(title);
+  if (!norm) return [];
+  const rows = await q.all(
+    'SELECT * FROM material_books WHERE user_id=? AND COALESCE(archived,0)=0 AND deleted_at IS NULL', [userId]);
+  return rows.filter(b =>
+    normalizeBookName(b.title) === norm
+    && (subjectListId == null || subjectListId === ''
+      ? (b.subject_list_id == null)
+      : Number(b.subject_list_id) === Number(subjectListId)));
 }
 
 export async function createBook(userId, body = {}) {
@@ -101,10 +172,12 @@ export async function updateBook(userId, id, body = {}) {
     if (!l) throw new MaterialInputError('找不到這個科目');
   }
   await q.run(
-    'UPDATE material_books SET title=?,publisher=?,subject_list_id=?,updated_at=CURRENT_TIMESTAMP WHERE id=? AND user_id=?',
+    'UPDATE material_books SET title=?,publisher=?,subject_list_id=?,book_type=?,updated_at=CURRENT_TIMESTAMP WHERE id=? AND user_id=?',
     [body.title == null ? b.title : String(body.title).trim(),
       body.publisher == null ? b.publisher : body.publisher,
-      body.subject_list_id === undefined ? b.subject_list_id : (body.subject_list_id ?? null), id, userId]);
+      body.subject_list_id === undefined ? b.subject_list_id : (body.subject_list_id ?? null),
+      body.book_type === undefined ? (b.book_type ?? '') : String(body.book_type ?? ''),
+      id, userId]);
   return getBook(userId, id);
 }
 
@@ -123,6 +196,89 @@ export async function bookReferences(userId, bookId) {
     categories: await one(
       'SELECT COUNT(*) n FROM material_category_books WHERE user_id=? AND book_id=?', [userId, bookId]),
   };
+}
+
+// 刪除前要給使用者看的 CURRENT 影響。全部是唯讀計數／清單，不改任何東西。
+// 語意：completion／StudySession／ScheduleVersion／ScheduledBlock 是歷史，刪除教材
+// 不得 cascade 掉它們；active／paused Plan 正在選用（selected=1）則會擋刪除。
+export async function bookImpact(userId, bookId) {
+  await mustBook(userId, bookId);
+  const one = async (sql, args) => Number((await q.get(sql, args))?.n ?? 0);
+  const itemSub = '(SELECT id FROM material_content_items WHERE user_id=? AND book_id=?)';
+  // 所有引用這本書內容的 Plan（含歷史 selected=0），依狀態分組。
+  const planRows = await q.all(
+    `SELECT DISTINCT pl.id, pl.name, pl.status, pmi.selected
+       FROM plan_material_items pmi
+       JOIN material_content_items i ON i.id=pmi.content_item_id AND i.user_id=pmi.user_id
+       JOIN plans pl ON pl.id=pmi.plan_id AND pl.user_id=pmi.user_id AND pl.status<>'deleted'
+      WHERE pmi.user_id=? AND i.book_id=?`, [userId, bookId]);
+  const plansByStatus = {};
+  for (const p of planRows) plansByStatus[p.status] = (plansByStatus[p.status] || 0) + 1;
+  // 正在使用（selected=1）且 active/paused 的計畫 → 擋刪除，須先解除關聯。
+  const blockingPlans = planRows
+    .filter(p => Number(p.selected) === 1 && (p.status === 'active' || p.status === 'paused'))
+    .map(p => ({ id: p.id, name: p.name, status: p.status }));
+  return {
+    // 既有鍵（hardDelete 沿用）
+    progress: await one(
+      `SELECT COUNT(*) n FROM material_progress p JOIN material_content_items i
+         ON i.id=p.content_item_id WHERE p.user_id=? AND i.book_id=?`, [userId, bookId]),
+    plan_selections: await one(
+      `SELECT COUNT(*) n FROM plan_material_items pmi JOIN material_content_items i
+         ON i.id=pmi.content_item_id WHERE pmi.user_id=? AND i.book_id=?`, [userId, bookId]),
+    tasks: await one('SELECT COUNT(*) n FROM tasks WHERE user_id=? AND material_book_id=?', [userId, bookId]),
+    categories: await one('SELECT COUNT(*) n FROM material_category_books WHERE user_id=? AND book_id=?', [userId, bookId]),
+    // 擴充影響
+    completion_records: await one(
+      `SELECT COUNT(*) n FROM material_progress p JOIN material_content_items i
+         ON i.id=p.content_item_id WHERE p.user_id=? AND i.book_id=?`, [userId, bookId]),
+    task_linkage: await one(
+      `SELECT COUNT(*) n FROM tasks WHERE user_id=? AND (material_book_id=? OR material_content_item_id IN ${itemSub})`,
+      [userId, bookId, userId, bookId]),
+    study_sessions: await one(
+      `SELECT COUNT(*) n FROM study_sessions s JOIN tasks t ON t.id=s.task_id AND t.user_id=s.user_id
+        WHERE s.user_id=? AND (t.material_book_id=? OR t.material_content_item_id IN ${itemSub})`,
+      [userId, bookId, userId, bookId]),
+    scheduled_blocks: await one(
+      `SELECT COUNT(*) n FROM scheduled_blocks b JOIN tasks t ON t.id=b.task_id AND t.user_id=b.user_id
+        WHERE b.user_id=? AND (t.material_book_id=? OR t.material_content_item_id IN ${itemSub})`,
+      [userId, bookId, userId, bookId]),
+    plans_by_status: plansByStatus,
+    blocking_plans: blockingPlans,
+  };
+}
+
+// 教材的安全刪除（soft-delete tombstone）。
+//   ・active／paused Plan 正在選用 → 擋下（409），除非 unlink=true 先安全解除關聯
+//     （沿用 selectItems 的 selected=false lifecycle：Task 安全退出排程，不硬刪）。
+//   ・不 cascade 刪除 Task／StudySession／ScheduleVersion／ScheduledBlock／完成度。
+//   ・set deleted_at → 教材庫看不到，但所有下游引用與歷史仍指向存在的列。
+export async function softDeleteBook(userId, id, { unlink = false } = {}) {
+  await mustBook(userId, id);
+  const impact = await bookImpact(userId, id);
+  if (impact.blocking_plans.length) {
+    if (!unlink) {
+      const err = new MaterialInputError('這本教材正被使用中的計畫選用，請先解除關聯或改用其他方式', 409);
+      err.code = 'IN_USE_BY_ACTIVE_PLAN';
+      err.impact = impact;
+      throw err;
+    }
+    // 解除關聯：把這本書在每個 blocking plan 的已選內容 deselect（安全 lifecycle）。
+    const items = await q.all('SELECT id FROM material_content_items WHERE user_id=? AND book_id=?', [userId, id]);
+    const itemIds = items.map(i => i.id);
+    for (const p of impact.blocking_plans) {
+      const selected = await q.all(
+        `SELECT content_item_id FROM plan_material_items
+          WHERE user_id=? AND plan_id=? AND selected=1 AND content_item_id IN (${itemIds.map(() => '?').join(',') || 'NULL'})`,
+        [userId, p.id, ...itemIds]);
+      const toDrop = selected.map(r => r.content_item_id);
+      if (toDrop.length) await selectItems(userId, p.id, toDrop, false);
+    }
+  }
+  // tombstone。刻意不動 nodes/items/progress/tasks/sessions/versions（歷史保留）。
+  await q.run('UPDATE material_books SET deleted_at=?,updated_at=CURRENT_TIMESTAMP WHERE id=? AND user_id=?',
+    [now(), id, userId]);
+  return { deleted: true, soft: true, unlinked_plans: impact.blocking_plans.map(p => p.id) };
 }
 
 export async function archiveBook(userId, id, archived = true) {
@@ -715,6 +871,176 @@ export async function writeDraftTree(userId, draft, { sources = [], verifyInTx =
 export function previewMaterialDraft(input) {
   const { draft, problems } = validateDraft(input);
   return { ok: problems.length === 0, problems, draft, summary: draftSummary(draft) };
+}
+
+/* ---------- 合併 / 增補目錄（同一引擎；對應 blocker 2、3、4） ---------- */
+
+// 載入一本書 CURRENT 的節點與內容（合併比對／指紋用）。
+async function bookTreeRows(userId, bookId) {
+  const nodes = await q.all(
+    'SELECT id,parent_id,kind,title,order_index FROM material_nodes WHERE user_id=? AND book_id=?', [userId, bookId]);
+  const items = await q.all(
+    'SELECT id,node_id,kind,title,order_index FROM material_content_items WHERE user_id=? AND book_id=?', [userId, bookId]);
+  return { nodes, items };
+}
+
+// preview：把新 TOC 比對到既有書，回分類（新增/已存在/疑似重複/順序變更）與是否需
+// 人工確認順序，以及 fingerprint。**完全不寫**。
+export async function previewBookMerge(userId, bookId, input) {
+  const book = await mustBook(userId, bookId);
+  const { draft, problems } = validateDraft(input);
+  if (problems.length) {
+    const err = new MaterialInputError('教材內容有問題，尚未合併', 400);
+    err.problems = problems;
+    throw err;
+  }
+  const rows = await bookTreeRows(userId, bookId);
+  return { book, ...previewTocMerge(rows, draft), summary: draftSummary(draft) };
+}
+
+// apply：在**單一 transaction**內把新 TOC 併進既有書。
+//   ・保留 material_progress / plan selections / task linkage（完全不碰這三張表）
+//   ・不標任何東西完成、相同章節不重複建立（(parent, 正規化標題) 命中就重用）
+//   ・新內容掛到正確父節點；新章節依序數排入（不可靠且未確認 → ORDER_CONFIRMATION_REQUIRED）
+//   ・疑似重複預設 fail-closed（未確認 → DUPLICATE_CONFIRMATION_REQUIRED）
+//   ・apply 在交易內重讀 CURRENT、重算 fingerprint 比對 expected（stale → 409），
+//     重新驗 ownership；不信任 client 傳來的 completion／順序／linkage（draft 本就不帶）
+//   ・任一步失敗整筆 rollback
+export async function applyBookMerge(userId, bookId, input, opts = {}) {
+  const { expectedFingerprint = null, confirmOrder = false, confirmDuplicates = false } = opts;
+  const { draft, problems } = validateDraft(input);
+  if (problems.length) {
+    const err = new MaterialInputError('教材內容有問題，尚未合併', 400);
+    err.problems = problems;
+    throw err;
+  }
+  // Ownership fail-fast：不是自己的（或已刪除的）教材，連交易都不開（IDOR 防線 1）。
+  await mustBook(userId, bookId);
+
+  await q.tx(async tx => {
+    // 交易內重讀 CURRENT，再次確認 ownership 與未刪除（TOCTOU 防線 2）。
+    const book = await tx.get(
+      'SELECT * FROM material_books WHERE id=? AND user_id=? AND deleted_at IS NULL', [bookId, userId]);
+    if (!book) throw new MaterialInputError('找不到這本教材', 404);
+
+    const nodes = await tx.all(
+      'SELECT id,parent_id,kind,title,order_index FROM material_nodes WHERE user_id=? AND book_id=?', [userId, bookId]);
+    const items = await tx.all(
+      'SELECT id,node_id,kind,title,order_index FROM material_content_items WHERE user_id=? AND book_id=?', [userId, bookId]);
+
+    // stale 偵測：preview 當下的 fingerprint 必須與交易內 CURRENT 相同。
+    const fp = bookFingerprint(nodes, items);
+    if (expectedFingerprint != null && expectedFingerprint !== fp) {
+      throw new MaterialInputError('這本教材在你預覽之後有變動，請重新預覽再合併', 409);
+    }
+
+    const preview = previewTocMerge({ nodes, items }, draft);
+    if (preview.order_status === 'ORDER_CONFIRMATION_REQUIRED' && !confirmOrder) {
+      const err = new MaterialInputError('新章節與既有章節的順序無法可靠判定，請確認順序', 409);
+      err.code = 'ORDER_CONFIRMATION_REQUIRED';
+      throw err;
+    }
+    if (preview.has_suspected_duplicates && !confirmDuplicates) {
+      const err = new MaterialInputError('偵測到疑似重複的章節或內容，請確認要合併還是另建', 409);
+      err.code = 'DUPLICATE_CONFIRMATION_REQUIRED';
+      err.preview = preview;
+      throw err;
+    }
+
+    // ---- 索引既有樹 ----
+    const chapters = nodes.filter(n => n.parent_id == null && n.kind === 'chapter');
+    const chapterByNorm = new Map(chapters.map(c => [normTitle(c.title), c]));
+    const childrenByChapter = new Map();
+    for (const n of nodes) {
+      if (n.parent_id != null) {
+        if (!childrenByChapter.has(n.parent_id)) childrenByChapter.set(n.parent_id, []);
+        childrenByChapter.get(n.parent_id).push(n);
+      }
+    }
+    const itemsByNode = new Map();
+    for (const it of items) {
+      if (!itemsByNode.has(it.node_id)) itemsByNode.set(it.node_id, []);
+      itemsByNode.get(it.node_id).push(it);
+    }
+    const nextOrderIn = arr => (arr.length ? Math.max(...arr.map(x => x.order_index ?? 0)) + 1 : 0);
+
+    // 新內容掛到節點：命中既有 (kind, 正規化標題) 就跳過（保留），否則新增。
+    const addItems = async (nodeId, nodeKind, list) => {
+      const existing = itemsByNode.get(nodeId) || [];
+      let ord = nextOrderIn(existing);
+      for (const it of list) {
+        const hit = existing.find(e => e.kind === it.kind && normTitle(e.title) === normTitle(it.title));
+        if (hit) continue; // 已存在 → 保留，不重建
+        const problem = itemPlacementProblem(it.kind, nodeKind);
+        if (problem) throw new MaterialInputError(problem, 400);
+        const r = await tx.run(
+          `INSERT INTO material_content_items (user_id,book_id,node_id,kind,title,estimated_minutes,order_index)
+           VALUES (?,?,?,?,?,?,?)`,
+          [userId, bookId, nodeId, it.kind, it.title, it.estimated_minutes ?? null, ord++]);
+        existing.push({ id: Number(r.lastInsertRowid), kind: it.kind, title: it.title, order_index: ord });
+      }
+    };
+
+    // ---- 決定章的順序 ----
+    // 可靠（新舊序數皆可解析且不重複）→ 併集依序數重排 order_index；
+    // 不可靠但使用者確認 → 新章附在最後，既有順序不動。
+    const reliable = preview.order_status === 'ok';
+    let appendChapterOrder = nextOrderIn(chapters);
+
+    for (const ch of draft.chapters) {
+      let chapterId;
+      let matched = chapterByNorm.get(normTitle(ch.title));
+      if (matched) {
+        chapterId = matched.id;
+      } else {
+        const problem = nodePlacementProblem('chapter', null);
+        if (problem) throw new MaterialInputError(problem, 400);
+        const order = reliable
+          ? (extractOrdinal(ch.title) ?? appendChapterOrder++)
+          : appendChapterOrder++;
+        const c = await tx.run(
+          `INSERT INTO material_nodes (user_id,book_id,parent_id,kind,title,order_index)
+           VALUES (?,?,?,?,?,?)`,
+          [userId, bookId, null, 'chapter', ch.title, order]);
+        chapterId = Number(c.lastInsertRowid);
+        matched = { id: chapterId, title: ch.title, order_index: order };
+        chapters.push(matched);
+        chapterByNorm.set(normTitle(ch.title), matched);
+        childrenByChapter.set(chapterId, []);
+      }
+
+      await addItems(chapterId, 'chapter', ch.content_items);
+
+      const existChildren = childrenByChapter.get(chapterId) || [];
+      const childByKey = new Map(existChildren.map(c => [`${c.kind}|${normTitle(c.title)}`, c]));
+      let childOrder = nextOrderIn(existChildren);
+      for (const child of ch.children) {
+        const key = `${child.kind}|${normTitle(child.title)}`;
+        let cnode = childByKey.get(key);
+        if (!cnode) {
+          const problem = nodePlacementProblem(child.kind, 'chapter');
+          if (problem) throw new MaterialInputError(problem, 400);
+          const n = await tx.run(
+            `INSERT INTO material_nodes (user_id,book_id,parent_id,kind,title,order_index)
+             VALUES (?,?,?,?,?,?)`,
+            [userId, bookId, chapterId, child.kind, child.title, childOrder++]);
+          cnode = { id: Number(n.lastInsertRowid), kind: child.kind, title: child.title };
+          childByKey.set(key, cnode);
+          existChildren.push(cnode);
+          itemsByNode.set(cnode.id, []);
+        }
+        await addItems(cnode.id, child.kind, child.content_items);
+      }
+
+      // 可靠排序時，既有已命中章也依序數重排（新章插入後整體才正確）。
+      if (reliable) {
+        const ord = extractOrdinal(ch.title);
+        if (ord != null) await tx.run('UPDATE material_nodes SET order_index=? WHERE id=? AND user_id=?', [ord, chapterId, userId]);
+      }
+    }
+  });
+
+  return { book: await getBook(userId, bookId), tree: await getBookTree(userId, bookId) };
 }
 
 /* ---------- Just-in-time formalization ---------- */

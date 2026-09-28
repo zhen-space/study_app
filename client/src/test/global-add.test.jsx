@@ -83,7 +83,7 @@ describe('Global Add', () => {
     await click(within(bottomNav()).getByText('計畫').closest('button'));
     await click(screen.getByRole('button', { name: '新增' }));
     await click(screen.getByRole('button', { name: '新增計畫' }));
-    await click(await screen.findByRole('button', { name: /AI 幫我安排/ }));
+    await click((await screen.findByText('進度 ＋ 具體時段')).closest('.ui-row'));
     expect(screen.queryByRole('button', { name: '新增' })).toBeNull();
     await click(within(side).getByText('設定'));                          // Settings
     expect(screen.queryByRole('button', { name: '新增' })).toBeNull();

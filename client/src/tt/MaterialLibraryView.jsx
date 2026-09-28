@@ -2,11 +2,12 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   listCategories, listBooks, getBookTree, setItemCompletion, createCategory, createBook,
   addBookToCategory, updateBook, bookNeedsSubject, ITEM_LABEL, CHAPTER_LEVEL_KINDS,
-  collectBlocked, collectCancelled,
+  collectBlocked, collectCancelled, bookImpact, deleteBook,
 } from './material';
-import { Button, EmptyState, PageHeader, SegmentedControl, ProgressBar } from './ui';
+import { Button, EmptyState, PageHeader, SegmentedControl, ProgressBar, BottomSheet } from './ui';
 import BlockedNotice from './BlockedNotice';
 import MaterialBookEditor from './MaterialBookEditor';
+import AddMaterialFlow from './AddMaterialFlow';
 
 // 教材庫：長期教材 identity、目錄與完成度的正式入口。
 //
@@ -90,6 +91,10 @@ export default function MaterialLibraryView({ goPlans = null, lists = [] }) {
   const [categories, setCategories] = useState([]);
   const [books, setBooks] = useState([]);
   const [scope, setScope] = useState('all');
+  // 分類篩選：科目 / 題型 / 使用中（皆前端篩選，後端已帶 kinds、in_use）。
+  const [fSubject, setFSubject] = useState('');
+  const [fKind, setFKind] = useState('');
+  const [fUse, setFUse] = useState('');
   const [openBook, setOpenBook] = useState(null);
   const [tree, setTree] = useState(null);
   const [openCh, setOpenCh] = useState({});
@@ -99,6 +104,8 @@ export default function MaterialLibraryView({ goPlans = null, lists = [] }) {
   const [editing, setEditing] = useState(false);
   const [adding, setAdding] = useState('');
   const [addSubject, setAddSubject] = useState('');
+  const [appendMode, setAppendMode] = useState(false);   // 增加目錄／匯入更多內容
+  const [deleteState, setDeleteState] = useState(null);   // null | { loading } | { impact }
 
   const load = useCallback(async () => {
     const [c, b] = await Promise.all([listCategories(), listBooks()]);
@@ -138,12 +145,39 @@ export default function MaterialLibraryView({ goPlans = null, lists = [] }) {
     finally { setBusy(false); }
   };
 
+  // 刪除教材：先讀 CURRENT 影響，再讓使用者確認（被 active/paused 計畫使用時提供解除關聯）。
+  const openDelete = async () => {
+    setDeleteState({ loading: true });
+    try { setDeleteState({ impact: await bookImpact(openBook) }); }
+    catch (e) { setErr(e.message); setDeleteState(null); }
+  };
+  const doDelete = async ({ unlink = false } = {}) => {
+    setBusy(true); setErr('');
+    try {
+      await deleteBook(openBook, { unlink });
+      setDeleteState(null); setOpenBook(null); setTree(null); setEditing(false);
+      await load();
+    } catch (e) {
+      // 仍被使用中：把 impact 帶回讓使用者選擇解除關聯。
+      if (e.payload?.code === 'IN_USE_BY_ACTIVE_PLAN') setDeleteState({ impact: e.payload.impact, blocked: true });
+      else setErr(e.message);
+    } finally { setBusy(false); }
+  };
+
   const visibleBooks = useMemo(() => {
-    if (scope === 'all') return books;
-    const cat = categories.find(c => String(c.id) === String(scope));
-    const ids = new Set((cat?.books || []).map(b => b.id));
-    return books.filter(b => ids.has(b.id));
-  }, [scope, books, categories]);
+    let base = books;
+    if (scope !== 'all') {
+      const cat = categories.find(c => String(c.id) === String(scope));
+      const ids = new Set((cat?.books || []).map(b => b.id));
+      base = books.filter(b => ids.has(b.id));
+    }
+    // 分類篩選：科目 / 題型 / 使用中。後端已把 kinds／in_use 帶在每本書上。
+    if (fSubject !== '') base = base.filter(b => String(b.subject_list_id ?? '') === String(fSubject));
+    if (fKind !== '') base = base.filter(b => (b.kinds || []).includes(fKind));
+    if (fUse === 'in') base = base.filter(b => b.in_use);
+    else if (fUse === 'out') base = base.filter(b => !b.in_use);
+    return base;
+  }, [scope, books, categories, fSubject, fKind, fUse]);
 
   // 這本書出現在哪些分類。用來說明「同一本書可以在多個分類」，
   // 避免學生以為那是兩本不同的教材。
@@ -171,6 +205,20 @@ export default function MaterialLibraryView({ goPlans = null, lists = [] }) {
   if (openBook != null) {
     const book = books.find(b => b.id === openBook);
     const inCats = catsOf(openBook);
+    // 增加目錄／匯入更多內容：走 AddMaterialFlow 的拍照／手動 → draft → 合併到這本書。
+    if (appendMode) {
+      return (
+        <div className="main">
+          <PageHeader title={`增加目錄 · ${tree?.book?.title || book?.title || ''}`}
+            back={<button className="page-back" onClick={() => setAppendMode(false)}>← 返回教材</button>} />
+          <div className="main-body ml-view">
+            <AddMaterialFlow lists={lists} appendToBook={{ id: openBook, title: tree?.book?.title || book?.title }}
+              onCancel={() => setAppendMode(false)}
+              onCreated={async () => { setAppendMode(false); setTree(await getBookTree(openBook)); await load(); }} />
+          </div>
+        </div>
+      );
+    }
     return (
       <div className="main">
         <PageHeader title={tree?.book?.title || book?.title || '教材'}
@@ -235,6 +283,50 @@ export default function MaterialLibraryView({ goPlans = null, lists = [] }) {
                 ))}
               </div>
             )}
+
+        {/* 教材管理動作：增加目錄（合併更多內容）、刪除教材（顯示影響、安全刪除）。 */}
+        {!editing && tree && (
+          <div className="row" style={{ gap: 8, marginTop: 'var(--sp-4)', flexWrap: 'wrap' }}>
+            <Button size="sm" variant="secondary" onClick={() => setAppendMode(true)}>增加目錄／匯入更多內容</Button>
+            <Button size="sm" variant="ghost" onClick={openDelete}>刪除教材</Button>
+          </div>
+        )}
+
+        {deleteState && (
+          <BottomSheet onClose={() => setDeleteState(null)} label="刪除教材">
+            {deleteState.loading ? <div className="mt-loading">讀取影響中…</div> : (
+              <div style={{ display: 'grid', gap: 10 }}>
+                <b>刪除「{tree?.book?.title || book?.title}」？</b>
+                <div className="ui-meta">刪除後不再出現在教材庫，但以下歷史一律保留、不會被刪：</div>
+                <ul className="ui-meta" style={{ margin: 0, paddingLeft: 18 }}>
+                  <li>完成度紀錄：{deleteState.impact.completion_records} 筆</li>
+                  <li>相關任務（Task）：{deleteState.impact.task_linkage} 筆</li>
+                  <li>讀書紀錄（StudySession）：{deleteState.impact.study_sessions} 筆</li>
+                  <li>排程區塊（歷史版本）：{deleteState.impact.scheduled_blocks} 筆</li>
+                  <li>計畫引用：{Object.entries(deleteState.impact.plans_by_status || {}).map(([s, n]) => `${s} ${n}`).join('、') || '無'}</li>
+                </ul>
+                {deleteState.impact.blocking_plans?.length > 0 ? (
+                  <>
+                    <div className="mt-warn">
+                      有使用中的計畫正在選用這本教材：
+                      {deleteState.impact.blocking_plans.map(p => `「${p.name}」`).join('、')}。
+                      刪除會先安全解除這些計畫的關聯（任務會安全退出排程，不會被硬刪）。
+                    </div>
+                    <div className="row" style={{ gap: 8 }}>
+                      <Button variant="primary" disabled={busy} onClick={() => doDelete({ unlink: true })}>解除關聯並刪除</Button>
+                      <Button variant="tertiary" disabled={busy} onClick={() => setDeleteState(null)}>取消</Button>
+                    </div>
+                  </>
+                ) : (
+                  <div className="row" style={{ gap: 8 }}>
+                    <Button variant="primary" disabled={busy} onClick={() => doDelete()}>確認刪除</Button>
+                    <Button variant="tertiary" disabled={busy} onClick={() => setDeleteState(null)}>取消</Button>
+                  </div>
+                )}
+              </div>
+            )}
+          </BottomSheet>
+        )}
         </div>
       </div>
     );
@@ -249,6 +341,26 @@ export default function MaterialLibraryView({ goPlans = null, lists = [] }) {
       <SegmentedControl ariaLabel="教材分類" block value={String(scope)} onChange={setScope}
         options={[{ value: 'all', label: '所有教材' },
           ...categories.map(c => ({ value: String(c.id), label: c.name }))]} />
+
+      {/* 分類篩選：科目 / 題型 / 使用中。 */}
+      <div className="ml-filters row" style={{ gap: 8, flexWrap: 'wrap', marginTop: 'var(--sp-2)' }}>
+        <select aria-label="依科目篩選" value={fSubject} onChange={e => setFSubject(e.target.value)}>
+          <option value="">全部科目</option>
+          {lists.map(l => <option key={l.id} value={l.id}>{l.name}</option>)}
+        </select>
+        <select aria-label="依題型篩選" value={fKind} onChange={e => setFKind(e.target.value)}>
+          <option value="">全部題型</option>
+          {Object.entries(ITEM_LABEL).map(([k, label]) => <option key={k} value={k}>{label}</option>)}
+        </select>
+        <select aria-label="依使用狀態篩選" value={fUse} onChange={e => setFUse(e.target.value)}>
+          <option value="">使用狀態（全部）</option>
+          <option value="in">使用中</option>
+          <option value="out">未使用</option>
+        </select>
+        {(fSubject || fKind || fUse) && (
+          <Button size="sm" variant="ghost" onClick={() => { setFSubject(''); setFKind(''); setFUse(''); }}>清除篩選</Button>
+        )}
+      </div>
 
       <div className="ml-addrow ml-addrow--book">
         <input value={adding} onChange={e => setAdding(e.target.value)} placeholder="新增教材名稱"

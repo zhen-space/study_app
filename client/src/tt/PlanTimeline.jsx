@@ -3,9 +3,11 @@ import { api } from '../api';
 import { md } from './plans';
 import { SurfaceCard, Button, EmptyState } from './ui';
 
-// 段考進度時間軸：讀後端 projection（/schedule/timeline/:planId），把「日期區間 → 應完成內容」
-// 直接呈現給學生，不必再開 Calendar。預設按日期區間排列、同區間按科目分組；點開才看每日安排。
-// 完全不自己重算排程，也不冒充完成——一切以後端投影的 CURRENT world 為準。
+// 排程摘要（確切安排 B 層的唯讀摘要）：讀後端 projection（/schedule/timeline/:planId），
+// 把「已排定的每日安排」按日期區間、科目分組直接呈現，不必再開 Calendar。
+// 這是「確切安排」的摘要，不是「段考進度」——段考進度（哪天以前讀完哪些範圍）由
+// ProgressPlan（plan_progress_segments）負責。這裡完全不自己重算排程，也不冒充
+// 完成，一切以後端投影的 CURRENT world 為準；沒有 active 排程就顯示空狀態。
 
 const RANGE_LABEL = (a, b) => (a === b ? md(a) : `${md(a)}–${md(b)}`);
 const dueLabel = it => (it.deadline_time ? `${md(it.deadline_date)} ${it.deadline_time} 前` : `${md(it.deadline_date)} 前`);
@@ -75,11 +77,11 @@ export default function PlanTimeline({ plan, onAddContent, onAdjust }) {
   if (!hasAnything) {
     return (
       <SurfaceCard style={{ marginTop: 'var(--sp-5)' }}>
-        <b>段考進度</b>
+        <b>排程摘要</b>
         <div style={{ marginTop: 8 }}>
           <EmptyState
-            title={t.no_active_schedule ? '這個計畫還沒有安排' : '目前沒有可顯示的進度'}
-            description="加入教材或作業，並排一次進度後，這裡會顯示每段日期要完成什麼。"
+            title={t.no_active_schedule ? '這個計畫還沒有確切安排' : '目前沒有可顯示的排程'}
+            description="加入教材或作業，並排一次確切安排後，這裡會顯示每天要做的具體項目。"
           />
           <div className="row" style={{ marginTop: 10, gap: 8 }}>
             {onAddContent && <Button size="sm" variant="primary" onClick={onAddContent}>加入內容</Button>}
@@ -93,8 +95,8 @@ export default function PlanTimeline({ plan, onAddContent, onAdjust }) {
   return (
     <SurfaceCard style={{ marginTop: 'var(--sp-5)' }}>
       <div className="row" style={{ alignItems: 'baseline' }}>
-        <b>段考進度</b>
-        <span className="ui-meta">從哪天到哪天、要讀完什麼</span>
+        <b>排程摘要</b>
+        <span className="ui-meta">已排定的每日安排（確切安排）</span>
         <Button size="sm" style={{ marginLeft: 'auto' }} onClick={() => setExpanded(v => !v)}>
           {expanded ? '收合每日安排' : '展開每日安排'}
         </Button>

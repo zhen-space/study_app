@@ -1,7 +1,8 @@
 import { useState } from 'react';
-import { importPreview, commitDraft } from './material';
+import { importPreview, commitDraft, nameCheck } from './material';
 import { fileToPayload } from './vocabImport';
 import MaterialDraftEditor, { emptyDraft } from './MaterialDraftEditor';
+import MergeReview from './MergeReview';
 import { Button } from './ui';
 
 // 「加入教材」。學生只要在兩件事之間選一個：拍照，或自己打。
@@ -12,13 +13,18 @@ import { Button } from './ui';
 //
 // 中途取消：什麼都不會建立。AI 讀完的階段也還沒寫任何東西。
 
-export default function AddMaterialFlow({ lists = [], onCancel, onCreated, onAddSubject = null }) {
+// appendToBook（可選）：{ id, title }。設了就是「增加目錄／匯入更多內容」模式——
+// 產生 draft 後直接走合併到這本書（略過同名偵測與另存），不建立新書。
+export default function AddMaterialFlow({ lists = [], onCancel, onCreated, onAddSubject = null, appendToBook = null }) {
   const [mode, setMode] = useState(null);      // null｜'photo'｜'manual'
   const [draft, setDraft] = useState(null);
   const [busy, setBusy] = useState(false);
   const [status, setStatus] = useState('');
   const [err, setErr] = useState('');
   const [problems, setProblems] = useState([]);
+  // 同名同科三選一：conflict＝偵測到的同名教材清單；mergeTarget＝使用者選擇合併的那本。
+  const [conflict, setConflict] = useState(null);   // null | { books: [...] }
+  const [mergeTarget, setMergeTarget] = useState(null);
 
   const pick = async e => {
     const files = [...(e.target.files || [])];
@@ -39,9 +45,14 @@ export default function AddMaterialFlow({ lists = [], onCancel, onCreated, onAdd
     finally { setBusy(false); }
   };
 
+  // 建立前先偵測同名同科：有衝突就要求三選一（合併／另存／取消），未選不 commit。
   const create = async () => {
+    // 增加目錄模式：直接合併到指定的書。
+    if (appendToBook) { setMergeTarget(appendToBook); return; }
     setBusy(true); setErr(''); setProblems([]);
     try {
+      const chk = await nameCheck(draft.book.title, draft.book.subject_list_id);
+      if (chk.has_conflict) { setConflict({ books: chk.same_name_books || [] }); setBusy(false); return; }
       const r = await commitDraft(draft);
       onCreated?.(r);
     } catch (e2) {
@@ -50,6 +61,56 @@ export default function AddMaterialFlow({ lists = [], onCancel, onCreated, onAdd
     } finally { setBusy(false); }
   };
 
+  // 三選一之「另存新教材」：照原本流程建立一本新書。
+  const saveAsNew = async () => {
+    setBusy(true); setErr(''); setProblems([]); setConflict(null);
+    try { onCreated?.(await commitDraft(draft)); }
+    catch (e2) { setErr(readable(e2)); setProblems(e2.payload?.problems || []); }
+    finally { setBusy(false); }
+  };
+
+  // 合併到選定的既有教材：交給 MergeReview 走 preview → 確認 → atomic apply。
+  if (mergeTarget) {
+    return (
+      <div className="am">
+        <MergeReview bookId={mergeTarget.id} draft={draft} title={`合併到「${mergeTarget.title}」`}
+          onDone={r => onCreated?.(r)}
+          onCancel={() => setMergeTarget(null)} />
+      </div>
+    );
+  }
+
+  // 同名同科三選一畫面。使用者未選之前，什麼都不寫。
+  if (conflict) {
+    return (
+      <div className="am">
+        <h3 className="am-title">已有同名同科目的教材</h3>
+        <p className="am-lead">「{draft.book.title}」已經存在。你要合併到現有教材，還是另存成新的？</p>
+        {err && <div className="mt-err" role="alert">{err}</div>}
+        <div style={{ display: 'grid', gap: 8, margin: '8px 0' }}>
+          {conflict.books.map(b => (
+            <button key={b.id} type="button" className="am-choice" disabled={busy}
+              onClick={() => setMergeTarget(b)}>
+              <span className="am-choice-icon" aria-hidden="true">🔀</span>
+              <span className="am-choice-main">
+                <span className="am-choice-title">合併到「{b.title}」</span>
+                <span className="am-choice-sub">保留既有完成度與計畫選取，只補上新內容</span>
+              </span>
+            </button>
+          ))}
+          <button type="button" className="am-choice" disabled={busy} onClick={saveAsNew}>
+            <span className="am-choice-icon" aria-hidden="true">➕</span>
+            <span className="am-choice-main">
+              <span className="am-choice-title">另存成新教材</span>
+              <span className="am-choice-sub">建立一本全新的教材，與現有的分開</span>
+            </span>
+          </button>
+        </div>
+        <div className="am-foot"><Button variant="tertiary" disabled={busy} onClick={() => setConflict(null)}>取消</Button></div>
+      </div>
+    );
+  }
+
   if (draft) {
     return (
       <div className="am">
@@ -57,7 +118,7 @@ export default function AddMaterialFlow({ lists = [], onCancel, onCreated, onAdd
         {mode === 'photo' && <p className="am-lead">有讀錯或漏掉的地方可以直接改。</p>}
         <MaterialDraftEditor value={draft} onChange={setDraft} lists={lists} onAddSubject={onAddSubject}
           busy={busy} error={err} problems={problems}
-          submitLabel="建立教材" onSubmit={create}
+          submitLabel={appendToBook ? '預覽合併' : '建立教材'} onSubmit={create}
           onCancel={() => { setDraft(null); setMode(null); setErr(''); setProblems([]); }} />
       </div>
     );

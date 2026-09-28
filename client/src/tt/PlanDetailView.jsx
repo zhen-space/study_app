@@ -13,6 +13,7 @@ import ExplainSheet from './ExplainSheet';
 import RollingExamSchedule from './RollingExamSchedule';
 import PlanContentPicker from './PlanContentPicker';
 import PlanTimeline from './PlanTimeline';
+import ProgressPlan from './ProgressPlan';
 import { Button, IconButton, PageHeader, SurfaceCard, ProgressBar, ListRow, BottomSheet, EmptyState } from './ui';
 
 // 單一計畫的內容。
@@ -71,7 +72,7 @@ function RetainPicker({ kind, value, onChange }) {
   );
 }
 
-export default function PlanDetailView({ planKey, tasks, lists, apiPlans = [], reload, onBack, goWizard, adjustPlan, goLocks }) {
+export default function PlanDetailView({ planKey, tasks, lists, apiPlans = [], reload, onBack, goWizard, adjustPlan, goLocks, goScheduleHistory }) {
   const plan = usePlans(tasks, lists, apiPlans).find(p => p.key === planKey);
   const [showDone, setShowDone] = useState(false);
   // 教材脈絡只用來顯示；identity 一律是 task.material_book_id，不從標題猜。
@@ -362,14 +363,28 @@ export default function PlanDetailView({ planKey, tasks, lists, apiPlans = [], r
           </div>
         </div>
 
-        {/* 段考進度時間軸：Progress 之後、任務清單之前。學生不必開 Calendar 就能理解每段日期要完成什麼。
-            現役計畫可「加入內容／調整」；歷史（非 active）計畫由 PlanTimeline 唯讀呈現、不給操作入口。 */}
+        {/* 段考進度（A 層）：哪一段日期以前要讀完哪些教材範圍。這是獨立於確切排程的
+            學習進度層，可以在沒有每日精確排程時就存在、被讀、被改。 */}
+        {isReal && <ProgressPlan plan={plan} lists={lists} />}
+
+        {/* 確切安排（B 層）：已排定的每日安排摘要。這裡不冒充段考進度——它只是把
+            排程投影成唯讀摘要；要看完整版本歷史走「排程紀錄」深連結。
+            現役計畫可「加入內容／調整」；歷史（非 active）計畫唯讀呈現、不給操作入口。 */}
         {isReal && (
-          <PlanTimeline
-            plan={plan}
-            onAddContent={plan.status === 'active' ? () => setShowRolling(true) : undefined}
-            onAdjust={plan.status === 'active' ? () => setShowRolling(true) : undefined}
-          />
+          <>
+            <PlanTimeline
+              plan={plan}
+              onAddContent={plan.status === 'active' ? () => setShowRolling(true) : undefined}
+              onAdjust={plan.status === 'active' ? () => setShowRolling(true) : undefined}
+            />
+            {goScheduleHistory && (
+              <div className="row" style={{ marginTop: 'var(--sp-2)' }}>
+                <Button size="sm" variant="ghost" onClick={goScheduleHistory}>
+                  <Icon name="calendar" size={14} /> 排程紀錄（版本歷史）
+                </Button>
+              </div>
+            )}
+          </>
         )}
 
         {/* 已結束：清楚標示歷史／唯讀，並給出唯一的回頭路 */}
@@ -420,6 +435,12 @@ export default function PlanDetailView({ planKey, tasks, lists, apiPlans = [], r
             </div>
             <Button size="sm" style={{ marginTop: 10 }} onClick={async () => { try { setLegacyPreview(await api('/legacy-migration/preview')); setSheet('legacy'); } catch (e) { setErr(e.message); } }}>查看安全轉換方式</Button>
           </SurfaceCard>
+        )}
+
+        {/* Plan 內容（第三區）：這個計畫選了哪些教材範圍、既有任務與學校作業。
+            跟「段考進度」（範圍目標）、「確切安排」（每日排程）分開，不混為一談。 */}
+        {isReal && plan.total > 0 && (
+          <div className="ui-section-title" style={{ marginTop: 'var(--sp-5)' }}>Plan 內容</div>
         )}
 
         {/* 尚未安排：在計畫裡 ≠ 已經排到日期，這是正式狀態 */}
