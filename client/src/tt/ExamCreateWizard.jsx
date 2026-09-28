@@ -90,41 +90,61 @@ export default function ExamCreateWizard({ lists = [], onDone, onCancel }) {
   const totalScope = subjects.reduce((n, s) => n + scopeCount(s.listId), 0);
 
   // ---- Step 3 排程預覽（每日/時段）----
+  // 預覽只是「讓使用者看一眼」——實際排程由**伺服器**用 CURRENT scope 自己算，
+  // 前端不送任何 blocks／task_creates（見後端 createExamPlanAtomic）。
   const buildItems = useCallback(() => {
-    const items = []; const meta = {};
+    const items = [];
     for (const s of subjects) {
       const sc = subjScope(s.listId);
       const dueEnd = s.examDate || end;
-      for (const [cid, it] of Object.entries(sc.items)) {
+      for (const it of Object.values(sc.items)) {
         const title = `${it.book_title ? it.book_title + '｜' : ''}${it.chapter ? it.chapter + '｜' : ''}${it.title}`;
         items.push({ subject_id: Number(s.listId), title, minutes: it.minutes || 30, spread: false, start: today(), end: dueEnd });
-        meta[`${s.listId}|${title}`] = { content_item_id: Number(cid), deadline: dueEnd };
       }
       for (const m of sc.manual) {
-        if (!m.est) continue; // 缺預估的手動範圍無法排入每日/時段（僅列為未排）
-        const title = m.label;
-        items.push({ subject_id: Number(s.listId), title, minutes: m.est, spread: false, start: today(), end: dueEnd });
-        meta[`${s.listId}|${title}`] = { deadline: dueEnd };
+        if (!m.est) continue; // 缺預估的手動範圍無法排入每日/時段（下方 scheduleGate 會擋住建立）
+        items.push({ subject_id: Number(s.listId), title: m.label, minutes: m.est, spread: false, start: today(), end: dueEnd });
       }
     }
-    return { items, meta };
+    return items;
   }, [subjects, scope, end]);
+
+  // 每日／時段需要每項都有預估時間，缺一律無法排入（跟後端 fail-closed 一致）。
+  const scheduleGate = useMemo(() => {
+    if (level === 'progress') return { ok: true, missing: [] };
+    const missing = [];
+    for (const s of subjects) {
+      const sc = subjScope(s.listId);
+      for (const it of Object.values(sc.items)) if (!(it.minutes > 0)) missing.push(`${nameOf(s.listId)}｜${it.title}`);
+      for (const m of sc.manual) if (!(m.est > 0)) missing.push(`${nameOf(s.listId)}｜${m.label}`);
+    }
+    return { ok: missing.length === 0, missing };
+  }, [level, subjects, scope]);
 
   const runPreview = useCallback(async () => {
     if (level === 'progress') { setPreview(null); return; }
-    const { items, meta } = buildItems();
-    if (!items.length) { setPreview({ blocks: [], unplaced: [], meta, empty: true }); return; }
+    const items = buildItems();
+    if (!items.length) { setPreview({ blocks: [], unplacedCount: 0, empty: true }); return; }
     setBusy(true); setErr('');
     try {
       const body = buildSchedulePreviewRequest({ items, startDate: today(), endDate: end, conditions: { timed: level === 'timed', pace: 'even' } });
       const r = await api('/schedule/preview', { method: 'POST', body });
-      setPreview({ blocks: r.blocks || [], unplaced: r.unplaced || [], meta });
-    } catch (e) { setErr(e.message || '預覽失敗'); setPreview(null); }
+      const unplacedCount = (r.unplaced_tasks || []).length || (r.unplaced ? 1 : 0);
+      setPreview({ blocks: r.blocks || [], unplacedCount, failed: false });
+    } catch (e) { setPreview({ blocks: [], unplacedCount: 0, failed: true, error: e.message || '預覽失敗' }); }
     finally { setBusy(false); }
   }, [level, end, buildItems]);
   useEffect(() => { if (step === 2) runPreview(); }, [step, level, runPreview]);
 
-  // ---- 確認建立（atomic）----
+  // daily／timed 只有在「有完整預估、預覽成功、有排出內容、且沒有排不下」時才可建立。
+  // 這是 P0-1 的前端防線；伺服器仍會再 fail-closed 一次（單一權威來源）。
+  const scheduleBlocked = level !== 'progress' && (
+    !scheduleGate.ok || busy || !preview || preview.failed || preview.empty
+    || preview.blocks.length === 0 || preview.unplacedCount > 0
+  );
+  const canConfirm = !busy && !scheduleBlocked;
+
+  // ---- 確認建立（atomic，server-authoritative）----
   const confirm = async () => {
     setBusy(true); setErr('');
     try {
@@ -137,29 +157,6 @@ export default function ExamCreateWizard({ lists = [], onDone, onCancel }) {
         subjects: subjects.map(s => ({ subject_list_id: Number(s.listId), exam_date: s.examDate || end })),
         material_scope, manual_scope,
       };
-      if (level !== 'progress' && preview && preview.blocks.length) {
-        const byKey = preview.meta || {};
-        const creates = []; const blocks = []; const seen = new Set();
-        preview.blocks.forEach((b, i) => {
-          const key = `${b.subject_id}|${b.title}`;
-          const m = byKey[key] || {};
-          const ck = `x${i}`;
-          if (!seen.has(key)) {
-            seen.add(key);
-            creates.push({
-              client_key: ck, title: b.title, list_id: b.subject_id,
-              deadline_date: m.deadline || null, estimated_minutes: b.minutes || null,
-              material_content_item_id: m.content_item_id ?? null, tags: ['讀書計劃'],
-            });
-            blocks.push({ client_key: ck, date: b.date, start_time: b.start_time || null, end_time: b.end_time || null, planned_minutes: b.minutes ?? null });
-          } else {
-            // 同一 Task 多個 block：後續 block 綁同一 client_key
-            const first = creates.find(c => c.title === b.title && c.list_id === b.subject_id);
-            blocks.push({ client_key: first.client_key, date: b.date, start_time: b.start_time || null, end_time: b.end_time || null, planned_minutes: b.minutes ?? null });
-          }
-        });
-        body.schedule = { task_creates: creates, blocks };
-      }
       const created = await api('/exam-plans', { method: 'POST', body });
       clearDraft();
       onDone?.(created.plan.id);
@@ -282,16 +279,37 @@ export default function ExamCreateWizard({ lists = [], onDone, onCancel }) {
                   </div>
                 );
               })}
-              {level !== 'progress' && preview && (
+              {level !== 'progress' && preview && !preview.failed && !preview.empty && (
                 <div style={{ marginTop: 10 }}>
                   <div className="ui-meta" style={{ fontWeight: 600 }}>每天要做的（預覽）</div>
                   <DailyPreview blocks={preview.blocks} />
-                  {preview.unplaced?.length > 0 && <div className="ui-meta" style={{ color: 'var(--warning,#b7791f)' }}>有 {preview.unplaced.length} 項排不下，可回上一步調整或改用「只分段」。</div>}
                 </div>
               )}
             </SurfaceCard>
 
-            <Button variant="primary" block disabled={busy} onClick={confirm}>{busy ? '建立中…' : '確認，建立段考計畫'}</Button>
+            {/* P0-1：daily／timed 排不下、缺預估、預覽失敗或空 → 不得建立可確認的計畫，給明確補救 */}
+            {scheduleBlocked && !busy && (
+              <SurfaceCard>
+                <b>還不能建立每天安排</b>
+                {!scheduleGate.ok ? (
+                  <div className="ui-meta" style={{ marginTop: 4 }}>
+                    這些範圍還沒有預估時間，無法排入每天安排：{scheduleGate.missing.slice(0, 6).join('、')}{scheduleGate.missing.length > 6 ? '…' : ''}
+                  </div>
+                ) : preview?.failed ? (
+                  <div className="ui-meta" style={{ marginTop: 4 }}>預覽失敗：{preview.error}</div>
+                ) : preview?.empty || preview?.blocks.length === 0 ? (
+                  <div className="ui-meta" style={{ marginTop: 4 }}>目前沒有可排入的內容。</div>
+                ) : preview?.unplacedCount > 0 ? (
+                  <div className="ui-meta" style={{ marginTop: 4 }}>有 {preview.unplacedCount} 項排不進去（日期不夠或範圍太多）。</div>
+                ) : null}
+                <div className="row" style={{ gap: 8, marginTop: 8, flexWrap: 'wrap' }}>
+                  <Button size="sm" variant="secondary" onClick={() => setStep(1)}>回上一步調整範圍／日期</Button>
+                  {level !== 'progress' && <Button size="sm" variant="ghost" onClick={() => setLevel('progress')}>改用「只告訴我每個日期前要讀完什麼」</Button>}
+                </div>
+              </SurfaceCard>
+            )}
+
+            <Button variant="primary" block disabled={!canConfirm} onClick={confirm}>{busy ? '建立中…' : '確認，建立段考計畫'}</Button>
           </div>
         )}
 

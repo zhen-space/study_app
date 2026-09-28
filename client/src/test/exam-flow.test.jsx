@@ -74,6 +74,42 @@ describe('ExamCreateWizard', () => {
     expect(document.activeElement).toBe(input);
   });
 
+  it('P0-1：daily 排不下時，確認鍵停用並提供補救（回上一步／改用只分段）', async () => {
+    api.mockImplementation((path, opts) => {
+      calls.push([path, opts]);
+      if (path === '/schedule/preview') return Promise.resolve({
+        blocks: [{ subject_id: 1, title: '講義第三章', date: '2099-10-01' }],
+        unplaced: true, unplaced_tasks: [{ task_id: 1 }],
+      });
+      if (path === '/exam-plans' && opts?.method === 'POST') return Promise.resolve({ plan: { id: 99 } });
+      return Promise.resolve({});
+    });
+    render(<ExamCreateWizard lists={LISTS} onDone={() => {}} onCancel={() => {}} />);
+    fireEvent.change(screen.getByLabelText('段考名稱'), { target: { value: '第二次段考' } });
+    fireEvent.change(screen.getByLabelText('段考結束日期'), { target: { value: '2099-10-02' } });
+    fireEvent.change(screen.getByLabelText('加入科目'), { target: { value: '1' } });
+    await waitFor(() => expect(screen.getByText('數學')).toBeTruthy());
+    await click(screen.getByText('下一步：加入各科範圍'));
+    // 手動範圍（帶預估時間，才不會被「缺估時」擋住，測的是「排不下」這條）
+    await click(screen.getByText('＋ 老師指定、教材庫沒有的範圍'));
+    fireEvent.change(screen.getByLabelText('老師指定範圍'), { target: { value: '講義第三章' } });
+    fireEvent.change(screen.getByLabelText('預估分鐘'), { target: { value: '60' } });
+    await click(screen.getByText('加入'));
+    await click(screen.getByText('下一步：選擇怎麼安排'));
+    // 選「每天」→ 觸發預覽（回傳 unplaced）
+    await waitFor(() => expect(screen.getByText('希望怎麼安排？')).toBeTruthy());
+    await click(screen.getAllByRole('radio')[1]);
+    await waitFor(() => expect(screen.getByText('還不能建立每天安排')).toBeTruthy());
+    const confirmBtn = screen.getByText('確認，建立段考計畫').closest('button');
+    expect(confirmBtn.disabled).toBe(true);
+    // 按下也不會 POST
+    await click(confirmBtn);
+    expect(posted('/exam-plans').length).toBe(0);
+    // 補救：改用「只分段」→ 變回可建立
+    await click(screen.getByText(/改用/));
+    await waitFor(() => expect(screen.getByText('確認，建立段考計畫').closest('button').disabled).toBe(false));
+  });
+
   it('返回/取消：取消不建立 Plan', async () => {
     const onCancel = vi.fn();
     render(<ExamCreateWizard lists={LISTS} onDone={() => {}} onCancel={onCancel} />);

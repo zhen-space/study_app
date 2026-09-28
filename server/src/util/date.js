@@ -17,6 +17,14 @@ export const addDays = (ds, n) => {
 };
 // 星期幾（0=日）
 export const dayOfWeek = ds => parseDay(ds).getUTCDay();
+
+// 正規（canonical）日期驗證：不只比對 'YYYY-MM-DD' 的字面格式，還要真的是存在的
+// 日期。純 regex 會放行 2026-02-30、2026-13-01 這種「格式對、日子不存在」的字串，
+// 排程時 parseDay 會被 JS 悄悄進位成別的日期（2/30→3/2），造成看不出來的錯位。
+// 這裡以同一支 UTC parser 解析後再輸出回字串，round-trip 相同才算合法。
+export const isValidDay = ds => typeof ds === 'string'
+  && /^\d{4}-\d\d-\d\d$/.test(ds)
+  && fmtDay(parseDay(ds)) === ds;
 // 台灣時區的今天
 export const todayTW = () => fmtDay(new Date(Date.now() + 8 * 3600e3));
 

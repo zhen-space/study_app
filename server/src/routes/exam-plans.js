@@ -1,8 +1,10 @@
 import { Router } from 'express';
 import { q } from '../db/init.js';
 import { requireAuth } from '../middleware/auth.js';
-import { applySchedule, SOURCE } from '../schedule/persistence.js';
+import { buildExamScope, createExamPlanAtomic, ExamPlanError } from '../schedule/persistence.js';
+import { runPreview } from './schedule.js';
 import { getPlanSelection } from '../material/service.js';
+import { todayTW } from '../util/date.js';
 
 // 段考計畫（Exam Plan）——不是第二套 Plan，就是既有 Plan 加兩個 additive 層：
 //   ・plan_exam_subjects：每一科自己的考試日（plan.target_date＝整個段考最後一天）。
@@ -11,25 +13,16 @@ import { getPlanSelection } from '../material/service.js';
 //   ・plan_manual_scope：老師指定、教材庫沒有的「範圍」＝first-class scope，
 //     不是 Task、不是 material selection、也不是完成。
 //
-// 建立是「使用者在三步精靈按下確認」時才發生的**單一原子動作**：先在一筆交易內
-// 建立 Plan＋各科考試日＋教材選取＋手動 scope；若選了每日/時段，再用既有
-// applySchedule 建立正式 ScheduleVersion（失敗則補償刪除剛建立的 Plan，不留半成品）。
-// 絕不先建空 Plan、也不把使用者丟到空白 Plan Detail。
+// 建立是「使用者在三步精靈按下確認」時才發生的**單一原子動作**（見
+// createExamPlanAtomic）：Plan＋各科考試日＋教材選取＋手動 scope＋（daily／timed）
+// Task＋ScheduleVersion＋blocks 全部在同一筆交易裡同生共死，任一步失敗整筆 rollback、
+// 對外零可見殘留。**排程由伺服器自己用 CURRENT scope 算**（runPreview 唯讀），
+// client 不送 schedule／blocks；deadline 一律以 CURRENT 該科考試日覆寫，不信 client。
 
 const router = Router();
 router.use(requireAuth);
 
 const LEVELS = ['progress', 'daily', 'timed'];
-const validDate = x => x == null || x === '' || /^\d{4}-\d\d-\d\d$/.test(x);
-const now = () => new Date().toISOString();
-
-// content item 擁有權（fail-closed）：全部必須屬於自己。
-async function ownedContentItems(userId, ids) {
-  if (!ids.length) return true;
-  const ph = ids.map(() => '?').join(',');
-  const rows = await q.all(`SELECT id FROM material_content_items WHERE user_id=? AND id IN (${ph})`, [userId, ...ids]);
-  return rows.length === ids.length;
-}
 
 // 段考範圍投影（Plan Detail 首屏用）：各科考試日 + 教材範圍（科目→教材→章）+ 手動 scope。
 async function examProjection(userId, planId) {
@@ -69,93 +62,71 @@ router.get('/plans/:id/exam', async (req, res) => {
   res.json(p);
 });
 
-// 驗證段考定義。回錯誤字串或 null。
-async function validateDef(userId, b) {
-  if (!String(b.name || '').trim()) return '請輸入段考名稱';
-  if (!b.end_date || !validDate(b.end_date)) return '請設定段考結束日期';
-  if (!validDate(b.start_date)) return '開始日期不正確';
-  if (b.start_date && b.end_date < b.start_date) return '結束日期不能早於開始日期';
-  if (b.level != null && !LEVELS.includes(b.level)) return '安排方式不正確';
-  const subjects = Array.isArray(b.subjects) ? b.subjects : [];
-  if (!subjects.length) return '請至少加入一個考試科目';
-  for (const s of subjects) {
-    const l = await q.get('SELECT id FROM lists WHERE id=? AND user_id=?', [s.subject_list_id, userId]);
-    if (!l) return '找不到其中一個科目';
-    if (s.exam_date != null && s.exam_date !== '' && !validDate(s.exam_date)) return '某一科的考試日期不正確';
-    if (s.exam_date && b.end_date && s.exam_date > b.end_date) return '單科考試日不能晚於段考結束日';
-  }
-  const mat = [...new Set((b.material_scope || []).map(Number).filter(Number.isInteger))];
-  if (!(await ownedContentItems(userId, mat))) return '教材範圍中有不存在或不屬於你的內容';
-  for (const m of (b.manual_scope || [])) {
-    if (!String(m.label || '').trim()) return '手動範圍必須有名稱';
-  }
-  return null;
-}
-
-// POST：原子建立段考計畫。
+// POST：原子建立段考計畫（server-authoritative，單一交易）。
 router.post('/exam-plans', async (req, res) => {
   const b = req.body || {};
-  const err = await validateDef(req.userId, b);
-  if (err) return res.status(400).json({ error: err });
   const userId = req.userId;
-  const endDate = b.end_date;
-  const subjects = b.subjects;
-  const materialIds = [...new Set((b.material_scope || []).map(Number).filter(Number.isInteger))];
-  const manual = (b.manual_scope || []).filter(m => String(m.label || '').trim());
+  if (!String(b.name || '').trim()) return res.status(400).json({ error: '請輸入段考名稱' });
+  if (b.level != null && !LEVELS.includes(b.level)) return res.status(400).json({ error: '安排方式不正確' });
   const level = LEVELS.includes(b.level) ? b.level : 'progress';
+  const endDate = b.end_date;
+  const startDate = b.start_date || null;
+  const scheduled = level === 'daily' || level === 'timed';
 
-  // tx1：Plan + 各科考試日 + 教材選取 + 手動 scope（原子）。
-  const planId = await q.tx(async tx => {
-    const r = await tx.run(
-      `INSERT INTO plans (user_id,name,description,primary_list_id,start_date,target_date,status,source,created_at,updated_at)
-       VALUES (?,?,?,?,?,?,?,?,?,?)`,
-      [userId, String(b.name).trim(), b.description || '', subjects[0]?.subject_list_id ?? null,
-        b.start_date || null, endDate, 'active', 'manual', now(), now()]);
-    const pid = Number(r.lastInsertRowid);
-    let oi = 0;
-    for (const s of subjects) {
-      await tx.run(
-        `INSERT INTO plan_exam_subjects (user_id,plan_id,subject_list_id,exam_date,order_index)
-         VALUES (?,?,?,?,?)`,
-        [userId, pid, s.subject_list_id, s.exam_date || endDate, oi++]);
-    }
-    for (const cid of materialIds) {
-      await tx.run(
-        `INSERT INTO plan_material_items (user_id,plan_id,content_item_id,selected,updated_at)
-         VALUES (?,?,?,1,CURRENT_TIMESTAMP)
-         ON CONFLICT(plan_id,content_item_id) DO UPDATE SET selected=1, removed_at=NULL, updated_at=CURRENT_TIMESTAMP`,
-        [userId, pid, cid]);
-    }
-    oi = 0;
-    for (const m of manual) {
-      await tx.run(
-        `INSERT INTO plan_manual_scope (user_id,plan_id,subject_list_id,label,estimated_minutes,order_index)
-         VALUES (?,?,?,?,?,?)`,
-        [userId, pid, m.subject_list_id ?? null, String(m.label).trim(),
-          Number.isInteger(m.estimated_minutes) && m.estimated_minutes > 0 ? m.estimated_minutes : null, oi++]);
-    }
-    return pid;
-  });
+  // ① 從 CURRENT 世界建立 scope（驗證＋擁有權＋歸屬＋估時）；同一支給交易內重讀共用。
+  let scope;
+  try {
+    scope = await buildExamScope(q, userId, {
+      endDate, startDate, level,
+      subjects: b.subjects || [], materialIds: b.material_scope || [], manual: b.manual_scope || [],
+    });
+  } catch (e) {
+    if (e instanceof ExamPlanError) return res.status(e.status || 400).json({ error: e.message, code: e.code || null });
+    throw e;
+  }
 
-  // 每日／時段：用既有 applySchedule 建立正式 ScheduleVersion（各科 deadline＝該科考試日）。
-  // 失敗補償：剛建立的 Plan 沒有任何歷史，整組刪除，不留半成品。
-  const sched = b.schedule || null;
-  if ((level === 'daily' || level === 'timed') && sched && Array.isArray(sched.blocks) && sched.blocks.length) {
+  // ② daily／timed：伺服器自己排（唯讀 runPreview），排不下一律 fail closed，不建計畫。
+  //    client 不送任何 blocks；unplaced／empty／失敗時禁止建立可確認的計畫。
+  let computedBlocks = [];
+  if (scheduled) {
+    if (!scope.scopeItems.length) {
+      return res.status(422).json({ error: '這個安排方式需要至少一項可排入的範圍', code: 'EXAM_SCOPE_EMPTY' });
+    }
+    const today = todayTW();
+    const items = scope.scopeItems.map(si => ({
+      subject_id: si.subjectId, title: si.title, minutes: si.minutes, spread: false, start: today, end: si.deadline,
+    }));
+    let pv;
     try {
-      await applySchedule(userId, {
-        planId, source: SOURCE.INITIAL,
-        taskCreates: sched.task_creates || [],
-        blocks: sched.blocks || [],
-      });
+      pv = await runPreview(userId, { items, timed: level === 'timed', startDate: today, endDate, pace: 'even' });
     } catch (e) {
-      await q.tx(async tx => {
-        await tx.run('DELETE FROM plan_manual_scope WHERE user_id=? AND plan_id=?', [userId, planId]);
-        await tx.run('DELETE FROM plan_material_items WHERE user_id=? AND plan_id=?', [userId, planId]);
-        await tx.run('DELETE FROM plan_exam_subjects WHERE user_id=? AND plan_id=?', [userId, planId]);
-        await tx.run('DELETE FROM plans WHERE user_id=? AND id=?', [userId, planId]);
-      }).catch(() => {});
-      return res.status(e.status || 400).json({ error: `已取消建立：排程失敗（${e.message}）`, code: e.code || null });
+      return res.status(e.status || 500).json({ error: e.message || '無法排出可行的安排', code: 'EXAM_SCHEDULE_ERROR' });
     }
+    if (pv.status !== 200) {
+      return res.status(422).json({ error: pv.body?.error || '無法排出可行的安排', code: pv.body?.code || 'EXAM_SCHEDULE_INFEASIBLE' });
+    }
+    if (pv.body.unplaced || (pv.body.unplaced_tasks && pv.body.unplaced_tasks.length)) {
+      return res.status(422).json({
+        error: pv.body.message || '有內容排不進去，請延長日期或減少範圍，或改用「只分段」',
+        code: 'EXAM_SCHEDULE_GAP',
+      });
+    }
+    computedBlocks = (pv.body.blocks || []).filter(x => !x._pinned && x.subject_id != null);
+  }
+
+  // ③ 單一交易建立（任一步失敗 → 整筆 rollback，零可見殘留）。
+  let planId;
+  try {
+    ({ planId } = await createExamPlanAtomic(userId, {
+      name: b.name, description: b.description || '', startDate, endDate, level,
+      subjects: b.subjects || [], materialIds: b.material_scope || [], manual: b.manual_scope || [],
+      computedBlocks, scopeSig: scope.sig,
+    }));
+  } catch (e) {
+    if (e instanceof ExamPlanError || e.status) {
+      return res.status(e.status || 400).json({ error: `已取消建立：${e.message}`, code: e.code || null });
+    }
+    throw e;
   }
 
   res.status(201).json(await examProjection(userId, planId));

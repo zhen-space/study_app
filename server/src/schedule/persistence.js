@@ -1,5 +1,5 @@
 import { q } from '../db/init.js';
-import { dayOfWeek, todayTW } from '../util/date.js';
+import { dayOfWeek, todayTW, isValidDay } from '../util/date.js';
 import { checkLocks } from './locks.js';
 import { calculateScheduleDiff } from './diff.js';
 import { classifyPlacement, findSelfCollisions, timedOverlap } from './feasibility.js';
@@ -1278,6 +1278,257 @@ export async function applySchedule(userId, {
       blocks: candidateBlocks,
     });
     return { ...version, created: [...created.entries()].map(([client_key, id]) => ({ client_key, id })) };
+  })));
+}
+
+/* ============================================================
+   段考計畫的原子建立（server-authoritative）
+   ============================================================ */
+
+// 段考錯誤：scope／排程不合格時 fail closed，不建立任何 Plan。
+export class ExamPlanError extends Error {
+  constructor(message, code = undefined, status = 400, extra = {}) {
+    super(message);
+    this.name = 'ExamPlanError';
+    this.status = status;
+    if (code) this.code = code;
+    Object.assign(this, extra);
+  }
+}
+
+// 從 CURRENT 世界建立段考 scope：科目／教材／手動範圍 → scheduler items ＋驗證 ＋指紋。
+//
+// runner 可為 q（route 預覽階段）或 tx（apply 交易內重讀，防 TOCTOU）。**兩處共用
+// 同一支**：確保 preview 依據的 scope 與 apply 實際落庫、實際排程的 scope 完全一致，
+// 這正是「candidate 精確對應 CURRENT 選取」的覆蓋證明來源——client 完全不送 blocks。
+//
+// 硬規則（scheduled = daily／timed 時 fail closed，不靜默略過）：
+//   ・科目：擁有權、不重複、考試日 canonical 且落在 [start,end]
+//   ・教材項目：CURRENT 重讀擁有權、所屬書的科目必須在本次考試科目內、未完成、
+//     （排程時）必須有 CURRENT 估計時間
+//   ・手動範圍：label 非空、（有指定科目時）科目必須在考試科目內；排程時必須有科目
+//     與估計時間，缺一律 fail closed（不像舊前端那樣 `if (!est) continue` 靜默丟掉）
+//   ・同一科的範圍名稱不可重複（排程時），否則 block↔task 對不回去
+export async function buildExamScope(runner, userId, {
+  endDate, startDate = null, level = 'progress',
+  subjects = [], materialIds = [], manual = [],
+}) {
+  const scheduled = level === 'daily' || level === 'timed';
+  if (!isValidDay(endDate)) throw new ExamPlanError('請設定段考結束日期', 'INVALID_END_DATE');
+  if (startDate != null && startDate !== '' && !isValidDay(startDate)) throw new ExamPlanError('開始日期不正確', 'INVALID_START_DATE');
+  if (startDate && endDate < startDate) throw new ExamPlanError('結束日期不能早於開始日期', 'END_BEFORE_START');
+  if (!Array.isArray(subjects) || !subjects.length) throw new ExamPlanError('請至少加入一個考試科目', 'NO_SUBJECT');
+
+  // ① 科目
+  const seen = new Set();
+  const examBySubject = new Map();
+  const orderedSubjects = [];
+  for (const s of subjects) {
+    const sid = Number(s.subject_list_id);
+    if (!Number.isInteger(sid)) throw new ExamPlanError('找不到其中一個科目', 'SUBJECT_NOT_FOUND');
+    if (seen.has(sid)) throw new ExamPlanError('同一個科目不能重複加入', 'DUPLICATE_SUBJECT');
+    seen.add(sid);
+    const l = await runner.get('SELECT id FROM lists WHERE id=? AND user_id=?', [sid, userId]);
+    if (!l) throw new ExamPlanError('找不到其中一個科目', 'SUBJECT_NOT_FOUND');
+    const exam = (s.exam_date == null || s.exam_date === '') ? endDate : s.exam_date;
+    if (!isValidDay(exam)) throw new ExamPlanError('某一科的考試日期不正確', 'INVALID_EXAM_DATE');
+    if (startDate && exam < startDate) throw new ExamPlanError('單科考試日不能早於開始日期', 'EXAM_BEFORE_START');
+    if (exam > endDate) throw new ExamPlanError('單科考試日不能晚於段考結束日', 'EXAM_AFTER_END');
+    examBySubject.set(sid, exam);
+    orderedSubjects.push({ subject_list_id: sid, exam_date: exam });
+  }
+
+  const scopeItems = [];        // { kind, subjectId, title, minutes, contentItemId, bookId, deadline, label }
+  const sigParts = [];
+  const uniqTitle = new Set();
+  const requireUniqueTitle = title => {
+    if (uniqTitle.has(title)) throw new ExamPlanError(`同一科出現重複的範圍名稱，無法區分：${title}`, 'DUPLICATE_SCOPE_TITLE');
+    uniqTitle.add(title);
+  };
+
+  // ② 教材項目（CURRENT 重讀）
+  const matIds = [...new Set((materialIds || []).map(Number).filter(Number.isInteger))];
+  for (const cid of matIds) {
+    const it = await runner.get(
+      `SELECT i.id, i.title, i.estimated_minutes, i.book_id, b.subject_list_id,
+              b.title AS book_title, COALESCE(ch.title, n.title) AS chapter_title,
+              COALESCE(p.completed,0) AS completed
+         FROM material_content_items i
+         JOIN material_books b ON b.id=i.book_id AND b.user_id=i.user_id
+         JOIN material_nodes n ON n.id=i.node_id AND n.user_id=i.user_id
+         LEFT JOIN material_nodes ch ON ch.id=n.parent_id AND ch.user_id=i.user_id
+         LEFT JOIN material_progress p ON p.content_item_id=i.id AND p.user_id=i.user_id
+        WHERE i.id=? AND i.user_id=?`, [cid, userId]);
+    if (!it) throw new ExamPlanError('教材範圍中有不存在或不屬於你的內容', 'MATERIAL_NOT_FOUND');
+    const sid = Number(it.subject_list_id);
+    if (!examBySubject.has(sid)) throw new ExamPlanError('教材範圍的科目不在本次考試科目內', 'MATERIAL_SUBJECT_NOT_IN_EXAM');
+    if (Number(it.completed) === 1) throw new ExamPlanError('已完成的教材不需要再排程', 'MATERIAL_COMPLETED');
+    const title = `${it.book_title ? it.book_title + '｜' : ''}${it.chapter_title ? it.chapter_title + '｜' : ''}${it.title}`;
+    const est = Number(it.estimated_minutes) > 0 ? Number(it.estimated_minutes) : null;
+    if (scheduled && est == null) throw new ExamPlanError(`教材項目缺少估計時間，無法排入每天安排：${title}`, 'MATERIAL_ESTIMATE_MISSING', 422);
+    if (scheduled) requireUniqueTitle(`${sid}\u0000${title}`);
+    scopeItems.push({ kind: 'material', subjectId: sid, title, minutes: est ?? 30, contentItemId: cid, bookId: it.book_id ?? null, deadline: examBySubject.get(sid), label: null });
+    sigParts.push(`m:${cid}:${est ?? ''}:${sid}:${title}`);
+  }
+
+  // ③ 手動範圍
+  const manualEntries = [];
+  for (const m of (manual || [])) {
+    const label = String(m.label || '').trim();
+    if (!label) throw new ExamPlanError('手動範圍必須有名稱', 'MANUAL_LABEL_MISSING');
+    const sid = (m.subject_list_id == null || m.subject_list_id === '') ? null : Number(m.subject_list_id);
+    if (sid != null && !examBySubject.has(sid)) throw new ExamPlanError('手動範圍的科目不在本次考試科目內', 'MANUAL_SUBJECT_NOT_IN_EXAM');
+    const est = Number.isInteger(m.estimated_minutes) && m.estimated_minutes > 0 ? m.estimated_minutes : null;
+    if (scheduled) {
+      // fail closed：daily／timed 下缺科目或缺估時的手動範圍**不得靜默略過**，
+      // 否則老師指定的範圍會憑空消失、使用者卻以為排進去了。
+      if (sid == null) throw new ExamPlanError(`手動範圍需要指定科目才能排入每天安排：${label}`, 'MANUAL_SUBJECT_REQUIRED', 422);
+      if (est == null) throw new ExamPlanError(`手動範圍缺少預估時間，無法排入每天安排：${label}`, 'MANUAL_ESTIMATE_MISSING', 422);
+      requireUniqueTitle(`${sid}\u0000${label}`);
+      scopeItems.push({ kind: 'manual', subjectId: sid, title: label, minutes: est, contentItemId: null, bookId: null, deadline: examBySubject.get(sid), label });
+      sigParts.push(`x:${sid}:${est}:${label}`);
+    }
+    manualEntries.push({ subject_list_id: sid, label, estimated_minutes: est });
+  }
+
+  const sig = sigParts.slice().sort().join('|');
+  return { orderedSubjects, examBySubject, scopeItems, manualEntries, materialIds: matIds, sig };
+}
+
+// 段考計畫的**單一交易**建立：Plan＋各科考試日＋教材選取＋手動 scope＋（daily／timed）
+// 每科 Task（deadline＝該科 CURRENT 考試日）＋ ScheduleVersion＋blocks，全部同生共死。
+//
+// 這支取代舊的「tx1 建 Plan、tx2 applySchedule、失敗補償刪除」——補償刪除不是原子性，
+// 任一步失敗都可能留下半成品。這裡一切都在一筆 q.tx 裡，任何 throw 直接整筆 rollback，
+// 對外零可見殘留（沒有 Plan、沒有 Task、沒有 version）。
+//
+// server-authoritative：blocks 由伺服器用 CURRENT scope 自己排（runPreview 在交易外唯讀
+// 算好後傳入），client 不送 task_creates／blocks；deadline 一律以 CURRENT 該科考試日覆寫，
+// 不信 client；scope 在交易內重讀並以指紋比對 preview 當時（TOCTOU／覆蓋證明）。
+export async function createExamPlanAtomic(userId, {
+  name, description = '', startDate = null, endDate,
+  level = 'progress', subjects = [], materialIds = [], manual = [],
+  computedBlocks = [], scopeSig = null,
+}) {
+  const scheduled = level === 'daily' || level === 'timed';
+  const at = new Date().toISOString();
+  return serializeWrite(() => withVersionNoRetry(() => q.tx(async tx => {
+    // ① 交易內重讀 CURRENT scope（TOCTOU）。
+    const scope = await buildExamScope(tx, userId, { endDate, startDate, level, subjects, materialIds, manual });
+    // 覆蓋證明／防 stale：CURRENT scope 指紋必須等於 preview 當時。
+    if (scheduled && scopeSig != null && scope.sig !== scopeSig) {
+      throw new ScheduleStalePreviewError(null);
+    }
+    if (scheduled && !scope.scopeItems.length) {
+      throw new ExamPlanError('這個安排方式需要至少一項可排入的範圍', 'EXAM_SCOPE_EMPTY', 422);
+    }
+
+    // ② Plan。daily／timed 需要 active 才能掛 Task／排程；progress 也建 active。
+    const r = await tx.run(
+      `INSERT INTO plans (user_id,name,description,primary_list_id,start_date,target_date,status,source,created_at,updated_at)
+       VALUES (?,?,?,?,?,?,?,?,?,?)`,
+      [userId, String(name).trim(), description || '', scope.orderedSubjects[0]?.subject_list_id ?? null,
+        startDate || null, endDate, 'active', 'manual', at, at]);
+    const planId = Number(r.lastInsertRowid);
+
+    // ③ 各科考試日
+    let oi = 0;
+    for (const s of scope.orderedSubjects) {
+      await tx.run(
+        `INSERT INTO plan_exam_subjects (user_id,plan_id,subject_list_id,exam_date,order_index)
+         VALUES (?,?,?,?,?)`, [userId, planId, s.subject_list_id, s.exam_date, oi++]);
+    }
+
+    // ④ Task（僅 daily／timed）＋教材選取＋手動 scope。deadline 一律用 CURRENT 該科考試日。
+    const taskIdByKey = new Map();          // `${subjectId}\u0000${title}` → task_id
+    const taskDeadline = new Map();         // task_id → deadline（考試日）
+    const materialTaskByCid = new Map();    // content_item_id → task_id
+    const manualTaskByKey = new Map();      // `${subjectId}\u0000${label}` → task_id
+    if (scheduled) {
+      for (const si of scope.scopeItems) {
+        const tr = await tx.run(
+          `INSERT INTO tasks (user_id,list_id,title,notes,priority,tags,subtasks,recurring,miss_policy,plan_id,deadline_date,estimated_minutes,material_content_item_id,material_book_id)
+           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+          [userId, si.subjectId, si.title, '', 0,
+            JSON.stringify(['讀書計劃']), JSON.stringify([]), null, 'keep',
+            planId, si.deadline, si.minutes, si.contentItemId, si.bookId]);
+        const tid = Number(tr.lastInsertRowid);
+        taskIdByKey.set(`${si.subjectId}\u0000${si.title}`, tid);
+        taskDeadline.set(tid, si.deadline);
+        if (si.kind === 'material') materialTaskByCid.set(Number(si.contentItemId), tid);
+        else manualTaskByKey.set(`${si.subjectId}\u0000${si.label}`, tid);
+      }
+    }
+
+    // 教材選取（plan_material_items）：selected=1，daily／timed 綁 task_id。
+    for (const cid of scope.materialIds) {
+      await tx.run(
+        `INSERT INTO plan_material_items (user_id,plan_id,content_item_id,selected,task_id,updated_at)
+         VALUES (?,?,?,1,?,CURRENT_TIMESTAMP)
+         ON CONFLICT(plan_id,content_item_id) DO UPDATE SET selected=1, removed_at=NULL, task_id=excluded.task_id, updated_at=CURRENT_TIMESTAMP`,
+        [userId, planId, cid, materialTaskByCid.get(Number(cid)) ?? null]);
+    }
+    // 手動 scope（plan_manual_scope）：first-class 範圍；progress 無 task，daily／timed 綁 task_id。
+    oi = 0;
+    for (const m of scope.manualEntries) {
+      const tid = (scheduled && m.subject_list_id != null)
+        ? (manualTaskByKey.get(`${Number(m.subject_list_id)}\u0000${m.label}`) ?? null) : null;
+      await tx.run(
+        `INSERT INTO plan_manual_scope (user_id,plan_id,subject_list_id,label,estimated_minutes,task_id,order_index)
+         VALUES (?,?,?,?,?,?,?)`,
+        [userId, planId, m.subject_list_id ?? null, m.label, m.estimated_minutes ?? null, tid, oi++]);
+    }
+
+    // ⑤ 排程（daily／timed）：把伺服器算好的 blocks 對回 Task，逐項驗覆蓋與 deadline。
+    if (scheduled) {
+      const resolved = [];
+      const coveredTasks = new Set();
+      const scheduledMinutes = new Map();
+      for (const b of computedBlocks) {
+        if (b._pinned) continue;                       // 其他 Plan 的 pin，由 carry-forward 帶
+        const key = `${b.subject_id}\u0000${b.title}`;
+        const tid = taskIdByKey.get(key);
+        if (tid == null) {
+          // block 對不到任何 CURRENT scope task ⇒ preview 依據的 scope 已與 CURRENT 不一致。
+          throw new ScheduleStalePreviewError(null);
+        }
+        // deadline 硬上限：一律以 CURRENT 該科考試日再驗，不信 client 算好的日期。
+        if (b.date > taskDeadline.get(tid)) {
+          throw new ScheduleDeadlineViolationError([{ task_id: tid, date: b.date, deadline_date: taskDeadline.get(tid) }]);
+        }
+        coveredTasks.add(tid);
+        const mins = (b.start_time && b.end_time)
+          ? (Number(b.end_time.slice(0, 2)) * 60 + Number(b.end_time.slice(3, 5))) - (Number(b.start_time.slice(0, 2)) * 60 + Number(b.start_time.slice(3, 5)))
+          : 0;
+        scheduledMinutes.set(tid, (scheduledMinutes.get(tid) || 0) + mins);
+        resolved.push({ task_id: tid, date: b.date, start_time: b.start_time || null, end_time: b.end_time || null });
+      }
+      // 覆蓋證明：每一個 scope task 都必須至少排入一格；沒有 → 任務會遺失 → fail closed。
+      for (const [key, tid] of taskIdByKey) {
+        if (!coveredTasks.has(tid)) throw new ExamPlanError('有內容排不進去，無法建立每天安排', 'EXAM_SCHEDULE_GAP', 422, { uncovered: key });
+      }
+      // timed：每個 Task 排定分鐘總和必須等於 CURRENT 估時（forge-proof，不信 client）。
+      if (level === 'timed') {
+        for (const [key, tid] of taskIdByKey) {
+          const want = scope.scopeItems.find(si => `${si.subjectId}\u0000${si.title}` === key)?.minutes ?? 0;
+          if ((scheduledMinutes.get(tid) || 0) !== Number(want)) throw new ScheduleStalePreviewError(null);
+        }
+      }
+
+      // 其他 Plan 的未來 block 原封不動 carry-forward（ScheduleVersion 是 user-level 全域 snapshot）。
+      const effFrom = todayTW();
+      const active = await tx.get('SELECT active_version_id FROM user_schedule_state WHERE user_id=?', [userId]);
+      const carry = await otherPlanCarryForwardBlocks(tx, userId, active?.active_version_id ?? null, planId, effFrom);
+      const candidate = [...carry, ...resolved];
+      validateTimedBlockOverlaps(candidate);
+      await assertCandidateLocks(tx, userId, active?.active_version_id ?? null, candidate);
+      await createScheduleVersionInTx(tx, userId, {
+        source: SOURCE.INITIAL, reason: `段考「${String(name).trim()}」建立`, effectiveFrom: effFrom,
+        parentVersionId: active?.active_version_id ?? null, blocks: candidate,
+      });
+    }
+
+    return { planId };
   })));
 }
 
