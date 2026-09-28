@@ -8,8 +8,8 @@
 // 綁 class 的測試在視覺重構時只會逼人改測試，守不到任何東西。
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import { render, screen, within } from '@testing-library/react';
-import { act } from 'react';
+import { render, screen, within, fireEvent } from '@testing-library/react';
+import { act, useState } from 'react';
 import * as fx from './fixtures';
 import { today, addDays } from '../tt/helpers';
 
@@ -17,6 +17,7 @@ vi.mock('../api', () => ({ api: vi.fn() }));
 const { api } = await import('../api');
 const Shell = (await import('../tt/Shell')).default;
 const { saveConfirmedConditions } = await import('../tt/schedulePreview');
+const { BottomSheet } = await import('../tt/ui');
 
 const iso = n => addDays(today(), n);
 const PLAN = { ...fx.plans[0], id: 12, name: '第二次段考', start_date: iso(-5), target_date: iso(10) };
@@ -167,6 +168,29 @@ describe('UI-R1：視覺重構後功能沒有退化', () => {
     await click(document.querySelector('.sheet-backdrop'));      // 背景
     expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
     noCrash();
+  });
+
+  it('9b. BottomSheet：中文組字造成 re-render 時不會搶走輸入焦點', () => {
+    function ImeHarness() {
+      const [value, setValue] = useState('');
+      // 故意使用每次 render 都是新 identity 的 inline onClose，重現正式畫面的用法。
+      return (
+        <BottomSheet label="中文輸入測試" onClose={() => {}}>
+          <input aria-label="中文名稱" value={value} onChange={e => setValue(e.target.value)} />
+        </BottomSheet>
+      );
+    }
+
+    render(<ImeHarness />);
+    const input = screen.getByRole('textbox', { name: '中文名稱' });
+    input.focus();
+    fireEvent.compositionStart(input);
+    fireEvent.change(input, { target: { value: 'ㄓ' } });
+
+    expect(screen.getByRole('textbox', { name: '中文名稱' })).toBe(input);
+    expect(document.activeElement).toBe(input);
+    expect(input).toHaveValue('ㄓ');
+    fireEvent.compositionEnd(input, { data: '中' });
   });
 
   it('10. 只有圖示的按鈕都有名字（螢幕閱讀器看得懂）', async () => {
