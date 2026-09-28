@@ -4,6 +4,7 @@ import * as material from '../material/service.js';
 import { MaterialInputError } from '../material/service.js';
 import { listStudyMaterials, listStudyMaterialShelf } from '../material/library.js';
 import { parseMaterialImage, toDraftInput } from '../material/parser.js';
+import { importPayloadError } from '../material/draft.js';
 import { toContentBlock, createFast, parseStructuredObj, aiError } from './import.js';
 
 // Material domain API。所有邏輯都在 material/service.js，這一層只負責
@@ -209,18 +210,20 @@ router.post('/plans/:id/material-books/:bookId', handle(async (req, res) => {
 // **完全不寫資料庫**：不建 Book、不建 Node、不建 ContentItem，也不碰 legacy
 // toc_items。這一步只是「AI 讀到了什麼，你要不要」。
 router.post('/material/import/preview', handle(async (req, res) => {
-  if (!process.env.ANTHROPIC_API_KEY) {
-    return res.status(500).json({ error: '伺服器尚未設定 AI 金鑰（ANTHROPIC_API_KEY）' });
-  }
   const b = req.body || {};
   const files = b.files?.length
     ? b.files
     : (b.data ? [{ filename: b.filename || '', mime: b.mime || '', data: b.data }] : []);
-  if (!files.length) return res.status(400).json({ error: '沒有收到檔案' });
-  if (files.length > 12) return res.status(400).json({ error: '一次最多 12 張照片' });
+  // 便宜的輸入驗證（張數／格式／大小）先做，且**不依賴 AI 金鑰**——壞輸入要能明確回報，
+  // 不是先卡在「尚未設定金鑰」也不是撞上 body parser 的通用 413。規則見 draft.js（純函式共用）。
+  const payloadErr = importPayloadError(files);
+  if (payloadErr) return res.status(400).json({ error: payloadErr });
   if (b.subject_list_id != null) {
     const l = await material.assertSubject(req.userId, b.subject_list_id);
     if (!l) return res.status(400).json({ error: '找不到這個科目' });
+  }
+  if (!process.env.ANTHROPIC_API_KEY) {
+    return res.status(500).json({ error: '伺服器尚未設定 AI 金鑰（ANTHROPIC_API_KEY）' });
   }
 
   const blocks = [];

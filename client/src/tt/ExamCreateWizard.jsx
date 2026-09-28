@@ -390,8 +390,16 @@ function SubjectMaterialPicker({ subjectId, subjectName, lists, selectedIds, onA
   };
 
   if (importing) {
-    return <AddMaterialFlow lists={lists} onCancel={() => setImporting(false)}
-      onCreated={async () => { setImporting(false); await loadBooks(); }} />;
+    // 從段考科目卡進來：預帶本卡科目（建立的教材一定屬於這一科），建立後自動刷新書單
+    // 並直接開啟新書，讓新教材立即可勾選；取消回到書單（段考草稿仍在 localStorage）。
+    return <AddMaterialFlow lists={lists} defaultSubjectId={subjectId}
+      onCancel={() => setImporting(false)}
+      onCreated={async (r) => {
+        setImporting(false);
+        await loadBooks();
+        const created = r?.book;
+        if (created?.id) await open({ material_book_id: created.id, title: created.title });
+      }} />;
   }
   if (openBook) {
     return (
