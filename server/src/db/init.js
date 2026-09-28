@@ -687,6 +687,42 @@ export async function initSchema() {
   // 段考進度安排（progress segments）。純 additive，不 backfill：舊 Plan 就是沒有
   // 任何 segment，投影時視為「尚未安排進度」，不會憑空生出區間。
   try { await client.execute("CREATE INDEX IF NOT EXISTS idx_plan_progress_segments ON plan_progress_segments(user_id, plan_id, order_index)"); } catch {}
+  // 段考：每一科可以有自己的考試日（plan.target_date 只代表整個段考最後一天）。
+  // 各科內容的有效完成上限＝該科考試日；排程時寫進該科 Task 的 deadline_date，
+  // 由既有排程器（effectiveDeadlineViolation）強制，不另做一套。additive、不 backfill。
+  try {
+    await client.execute(`CREATE TABLE IF NOT EXISTS plan_exam_subjects (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      user_id INTEGER NOT NULL,
+      plan_id INTEGER NOT NULL,
+      subject_list_id INTEGER NOT NULL,
+      exam_date TEXT,
+      order_index INTEGER DEFAULT 0,
+      created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+      updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+    )`);
+  } catch {}
+  try { await client.execute('CREATE UNIQUE INDEX IF NOT EXISTS idx_plan_exam_subject_one ON plan_exam_subjects(user_id, plan_id, subject_list_id)'); } catch {}
+  // 老師指定、但教材庫沒有的「範圍」＝first-class scope，不是 Task、不是 material selection、
+  // 也不是完成。label 是人類可讀範圍；estimated_minutes 有給才排得進每日/時段；
+  // task_id 是「選了要排程」時 materialize 出來的 Task（可為 NULL＝只當進度範圍追蹤）。
+  try {
+    await client.execute(`CREATE TABLE IF NOT EXISTS plan_manual_scope (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      user_id INTEGER NOT NULL,
+      plan_id INTEGER NOT NULL,
+      subject_list_id INTEGER,
+      label TEXT NOT NULL,
+      estimated_minutes INTEGER,
+      task_id INTEGER,
+      removed_at TEXT,
+      order_index INTEGER DEFAULT 0,
+      created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+      updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+    )`);
+  } catch {}
+  try { await client.execute('CREATE INDEX IF NOT EXISTS idx_plan_manual_scope ON plan_manual_scope(user_id, plan_id, order_index)'); } catch {}
+
   // 教材真正的 soft-delete：tombstone。刪除教材不能 cascade 掉 Task／StudySession／
   // ScheduleVersion／完成度（那些是歷史，必須保留）。deleted_at 讓教材從教材庫消失，
   // 但所有下游引用與歷史仍指向存在的列。這不是模糊的 Archive（archived 仍保留給既有
