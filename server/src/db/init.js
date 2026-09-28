@@ -687,6 +687,13 @@ export async function initSchema() {
   // 段考進度安排（progress segments）。純 additive，不 backfill：舊 Plan 就是沒有
   // 任何 segment，投影時視為「尚未安排進度」，不會憑空生出區間。
   try { await client.execute("CREATE INDEX IF NOT EXISTS idx_plan_progress_segments ON plan_progress_segments(user_id, plan_id, order_index)"); } catch {}
+  // 教材真正的 soft-delete：tombstone。刪除教材不能 cascade 掉 Task／StudySession／
+  // ScheduleVersion／完成度（那些是歷史，必須保留）。deleted_at 讓教材從教材庫消失，
+  // 但所有下游引用與歷史仍指向存在的列。這不是模糊的 Archive（archived 仍保留給既有
+  // 資料，語意是「收起來」；deleted_at 才是「刪除」）。
+  try { await client.execute("ALTER TABLE material_books ADD COLUMN deleted_at TEXT"); } catch {}
+  // 使用者可標記的「教材類型」（課本／講義／測驗卷…純顯示分類）。additive，預設空字串。
+  try { await client.execute("ALTER TABLE material_books ADD COLUMN book_type TEXT DEFAULT ''"); } catch {}
   // 同一列 legacy 來源只能被正式化一次。重複正式化會生出兩本內容相同、
   // 完成度各自獨立的教材，而且沒有任何入口能合併回去。
   try { await client.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_material_book_source_row ON material_book_sources(user_id, source_kind, source_row_id)"); } catch {}

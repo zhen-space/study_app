@@ -23,6 +23,9 @@ const handle = fn => async (req, res) => {
       if (e.problems) body.problems = e.problems;
       if (e.already_formalized_row_ids) body.already_formalized_row_ids = e.already_formalized_row_ids;
       if (e.stale) body.stale = true;
+      if (e.code) body.code = e.code;
+      if (e.preview) body.preview = e.preview;
+      if (e.impact) body.impact = e.impact;
       return res.status(e.status || 400).json(body);
     }
     console.error('[material]', e);
@@ -72,6 +75,22 @@ router.get('/material/books/:id/tree', handle(async (req, res) => {
 router.get('/material/books/:id/references', handle(async (req, res) => {
   const refs = await material.bookReferences(req.userId, req.params.id);
   res.json({ references: refs, can_hard_delete: Object.values(refs).every(n => n === 0) });
+}));
+
+// 合併／增補目錄 preview：把新 TOC 比對到既有書，回分類與是否需確認順序。不寫入。
+router.post('/material/books/:id/merge/preview', handle(async (req, res) => {
+  const b = req.body || {};
+  res.json(await material.previewBookMerge(req.userId, req.params.id, b.draft ?? b));
+}));
+
+// 合併／增補目錄 apply：單一交易併入既有書，保留完成度／選取／Task linkage。
+router.post('/material/books/:id/merge', handle(async (req, res) => {
+  const b = req.body || {};
+  res.status(201).json(await material.applyBookMerge(req.userId, req.params.id, b.draft ?? b, {
+    expectedFingerprint: b.expected_fingerprint ?? null,
+    confirmOrder: b.confirm_order === true,
+    confirmDuplicates: b.confirm_duplicates === true,
+  }));
 }));
 
 // 刪除的正常語意就是封存，所以 DELETE 預設走 archive。

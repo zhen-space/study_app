@@ -15,6 +15,8 @@ import {
   NODE_KINDS, ITEM_KINDS,
 } from './tree.js';
 import { validateDraft, draftSummary } from './draft.js';
+import { previewTocMerge, bookFingerprint, normTitle } from './merge.js';
+import { extractOrdinal } from './natural-order.js';
 import {
   legacyFormalizationDraft, formalizedSourceRowIds, readLegacyGroup,
   sourceFingerprint, LEGACY_SOURCE_KIND as LEGACY_KIND,
@@ -29,7 +31,7 @@ const now = () => new Date().toISOString();
 /* ---------- 取用（一律綁 user_id，避免跨帳號窺探） ---------- */
 
 export const getBook = (userId, id) =>
-  q.get('SELECT * FROM material_books WHERE id=? AND user_id=?', [id, userId]);
+  q.get('SELECT * FROM material_books WHERE id=? AND user_id=? AND deleted_at IS NULL', [id, userId]);
 
 const mustBook = async (userId, id) => {
   const b = await getBook(userId, id);
@@ -71,7 +73,7 @@ export const normalizeBookName = s => String(s || '').trim().replace(/\s+/g, ' '
 // plan_ids（目前有哪些計畫選了它）。這些都是 derived，不落地。
 export async function listBooks(userId, { includeArchived = false, filters = {} } = {}) {
   const rows = await q.all(
-    `SELECT * FROM material_books WHERE user_id=? ${includeArchived ? '' : 'AND COALESCE(archived,0)=0'}
+    `SELECT * FROM material_books WHERE user_id=? AND deleted_at IS NULL ${includeArchived ? '' : 'AND COALESCE(archived,0)=0'}
       ORDER BY COALESCE(archived,0), title, id`, [userId]);
   if (!rows.length) return [];
   // 進度一次算完，不要一本書打一次 DB。
@@ -141,7 +143,7 @@ export async function sameNameBooks(userId, title, subjectListId = null) {
   const norm = normalizeBookName(title);
   if (!norm) return [];
   const rows = await q.all(
-    'SELECT * FROM material_books WHERE user_id=? AND COALESCE(archived,0)=0', [userId]);
+    'SELECT * FROM material_books WHERE user_id=? AND COALESCE(archived,0)=0 AND deleted_at IS NULL', [userId]);
   return rows.filter(b =>
     normalizeBookName(b.title) === norm
     && (subjectListId == null || subjectListId === ''
@@ -784,6 +786,174 @@ export async function writeDraftTree(userId, draft, { sources = [], verifyInTx =
 export function previewMaterialDraft(input) {
   const { draft, problems } = validateDraft(input);
   return { ok: problems.length === 0, problems, draft, summary: draftSummary(draft) };
+}
+
+/* ---------- 合併 / 增補目錄（同一引擎；對應 blocker 2、3、4） ---------- */
+
+// 載入一本書 CURRENT 的節點與內容（合併比對／指紋用）。
+async function bookTreeRows(userId, bookId) {
+  const nodes = await q.all(
+    'SELECT id,parent_id,kind,title,order_index FROM material_nodes WHERE user_id=? AND book_id=?', [userId, bookId]);
+  const items = await q.all(
+    'SELECT id,node_id,kind,title,order_index FROM material_content_items WHERE user_id=? AND book_id=?', [userId, bookId]);
+  return { nodes, items };
+}
+
+// preview：把新 TOC 比對到既有書，回分類（新增/已存在/疑似重複/順序變更）與是否需
+// 人工確認順序，以及 fingerprint。**完全不寫**。
+export async function previewBookMerge(userId, bookId, input) {
+  const book = await mustBook(userId, bookId);
+  const { draft, problems } = validateDraft(input);
+  if (problems.length) {
+    const err = new MaterialInputError('教材內容有問題，尚未合併', 400);
+    err.problems = problems;
+    throw err;
+  }
+  const rows = await bookTreeRows(userId, bookId);
+  return { book, ...previewTocMerge(rows, draft), summary: draftSummary(draft) };
+}
+
+// apply：在**單一 transaction**內把新 TOC 併進既有書。
+//   ・保留 material_progress / plan selections / task linkage（完全不碰這三張表）
+//   ・不標任何東西完成、相同章節不重複建立（(parent, 正規化標題) 命中就重用）
+//   ・新內容掛到正確父節點；新章節依序數排入（不可靠且未確認 → ORDER_CONFIRMATION_REQUIRED）
+//   ・疑似重複預設 fail-closed（未確認 → DUPLICATE_CONFIRMATION_REQUIRED）
+//   ・apply 在交易內重讀 CURRENT、重算 fingerprint 比對 expected（stale → 409），
+//     重新驗 ownership；不信任 client 傳來的 completion／順序／linkage（draft 本就不帶）
+//   ・任一步失敗整筆 rollback
+export async function applyBookMerge(userId, bookId, input, opts = {}) {
+  const { expectedFingerprint = null, confirmOrder = false, confirmDuplicates = false } = opts;
+  const { draft, problems } = validateDraft(input);
+  if (problems.length) {
+    const err = new MaterialInputError('教材內容有問題，尚未合併', 400);
+    err.problems = problems;
+    throw err;
+  }
+
+  await q.tx(async tx => {
+    // 交易內重讀 CURRENT，確認 ownership 與未刪除（TOCTOU 防線）。
+    const book = await tx.get(
+      'SELECT * FROM material_books WHERE id=? AND user_id=? AND deleted_at IS NULL', [bookId, userId]);
+    if (!book) throw new MaterialInputError('找不到這本教材', 404);
+
+    const nodes = await tx.all(
+      'SELECT id,parent_id,kind,title,order_index FROM material_nodes WHERE user_id=? AND book_id=?', [userId, bookId]);
+    const items = await tx.all(
+      'SELECT id,node_id,kind,title,order_index FROM material_content_items WHERE user_id=? AND book_id=?', [userId, bookId]);
+
+    // stale 偵測：preview 當下的 fingerprint 必須與交易內 CURRENT 相同。
+    const fp = bookFingerprint(nodes, items);
+    if (expectedFingerprint != null && expectedFingerprint !== fp) {
+      throw new MaterialInputError('這本教材在你預覽之後有變動，請重新預覽再合併', 409);
+    }
+
+    const preview = previewTocMerge({ nodes, items }, draft);
+    if (preview.order_status === 'ORDER_CONFIRMATION_REQUIRED' && !confirmOrder) {
+      const err = new MaterialInputError('新章節與既有章節的順序無法可靠判定，請確認順序', 409);
+      err.code = 'ORDER_CONFIRMATION_REQUIRED';
+      throw err;
+    }
+    if (preview.has_suspected_duplicates && !confirmDuplicates) {
+      const err = new MaterialInputError('偵測到疑似重複的章節或內容，請確認要合併還是另建', 409);
+      err.code = 'DUPLICATE_CONFIRMATION_REQUIRED';
+      err.preview = preview;
+      throw err;
+    }
+
+    // ---- 索引既有樹 ----
+    const chapters = nodes.filter(n => n.parent_id == null && n.kind === 'chapter');
+    const chapterByNorm = new Map(chapters.map(c => [normTitle(c.title), c]));
+    const childrenByChapter = new Map();
+    for (const n of nodes) {
+      if (n.parent_id != null) {
+        if (!childrenByChapter.has(n.parent_id)) childrenByChapter.set(n.parent_id, []);
+        childrenByChapter.get(n.parent_id).push(n);
+      }
+    }
+    const itemsByNode = new Map();
+    for (const it of items) {
+      if (!itemsByNode.has(it.node_id)) itemsByNode.set(it.node_id, []);
+      itemsByNode.get(it.node_id).push(it);
+    }
+    const nextOrderIn = arr => (arr.length ? Math.max(...arr.map(x => x.order_index ?? 0)) + 1 : 0);
+
+    // 新內容掛到節點：命中既有 (kind, 正規化標題) 就跳過（保留），否則新增。
+    const addItems = async (nodeId, nodeKind, list) => {
+      const existing = itemsByNode.get(nodeId) || [];
+      let ord = nextOrderIn(existing);
+      for (const it of list) {
+        const hit = existing.find(e => e.kind === it.kind && normTitle(e.title) === normTitle(it.title));
+        if (hit) continue; // 已存在 → 保留，不重建
+        const problem = itemPlacementProblem(it.kind, nodeKind);
+        if (problem) throw new MaterialInputError(problem, 400);
+        const r = await tx.run(
+          `INSERT INTO material_content_items (user_id,book_id,node_id,kind,title,estimated_minutes,order_index)
+           VALUES (?,?,?,?,?,?,?)`,
+          [userId, bookId, nodeId, it.kind, it.title, it.estimated_minutes ?? null, ord++]);
+        existing.push({ id: Number(r.lastInsertRowid), kind: it.kind, title: it.title, order_index: ord });
+      }
+    };
+
+    // ---- 決定章的順序 ----
+    // 可靠（新舊序數皆可解析且不重複）→ 併集依序數重排 order_index；
+    // 不可靠但使用者確認 → 新章附在最後，既有順序不動。
+    const reliable = preview.order_status === 'ok';
+    let appendChapterOrder = nextOrderIn(chapters);
+
+    for (const ch of draft.chapters) {
+      let chapterId;
+      let matched = chapterByNorm.get(normTitle(ch.title));
+      if (matched) {
+        chapterId = matched.id;
+      } else {
+        const problem = nodePlacementProblem('chapter', null);
+        if (problem) throw new MaterialInputError(problem, 400);
+        const order = reliable
+          ? (extractOrdinal(ch.title) ?? appendChapterOrder++)
+          : appendChapterOrder++;
+        const c = await tx.run(
+          `INSERT INTO material_nodes (user_id,book_id,parent_id,kind,title,order_index)
+           VALUES (?,?,?,?,?,?)`,
+          [userId, bookId, null, 'chapter', ch.title, order]);
+        chapterId = Number(c.lastInsertRowid);
+        matched = { id: chapterId, title: ch.title, order_index: order };
+        chapters.push(matched);
+        chapterByNorm.set(normTitle(ch.title), matched);
+        childrenByChapter.set(chapterId, []);
+      }
+
+      await addItems(chapterId, 'chapter', ch.content_items);
+
+      const existChildren = childrenByChapter.get(chapterId) || [];
+      const childByKey = new Map(existChildren.map(c => [`${c.kind}|${normTitle(c.title)}`, c]));
+      let childOrder = nextOrderIn(existChildren);
+      for (const child of ch.children) {
+        const key = `${child.kind}|${normTitle(child.title)}`;
+        let cnode = childByKey.get(key);
+        if (!cnode) {
+          const problem = nodePlacementProblem(child.kind, 'chapter');
+          if (problem) throw new MaterialInputError(problem, 400);
+          const n = await tx.run(
+            `INSERT INTO material_nodes (user_id,book_id,parent_id,kind,title,order_index)
+             VALUES (?,?,?,?,?,?)`,
+            [userId, bookId, chapterId, child.kind, child.title, childOrder++]);
+          cnode = { id: Number(n.lastInsertRowid), kind: child.kind, title: child.title };
+          childByKey.set(key, cnode);
+          existChildren.push(cnode);
+          itemsByNode.set(cnode.id, []);
+        }
+        await addItems(cnode.id, child.kind, child.content_items);
+      }
+
+      // 可靠排序時，既有已命中章也依序數重排（新章插入後整體才正確）。
+      if (reliable) {
+        const ord = extractOrdinal(ch.title);
+        if (ord != null) await tx.run('UPDATE material_nodes SET order_index=? WHERE id=? AND user_id=?', [ord, chapterId, userId]);
+      }
+    }
+  });
+
+  return { book: await getBook(userId, bookId), tree: await getBookTree(userId, bookId) };
 }
 
 /* ---------- Just-in-time formalization ---------- */
