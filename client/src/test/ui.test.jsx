@@ -241,14 +241,14 @@ describe('UI-R2：Plans 與 Plan Detail', () => {
     noCrash();
   });
 
-  it('13. 建立計畫走 BottomSheet，問名稱與考試日期', async () => {
+  it('13. 建立計畫進入不中斷的段考精靈（不先建空 Plan）', async () => {
     await mountShell();
     await goPlans();
     await click(screen.getByRole('button', { name: '新增' }));
     await click(screen.getByRole('button', { name: '新增計畫' }));
-    const dlg = screen.getByRole('dialog');
-    expect(within(dlg).getByLabelText('段考名稱')).toBeTruthy();
-    expect(within(dlg).getByLabelText('考試日期')).toBeTruthy();
+    expect(screen.getByRole('heading', { name: '建立段考' })).toBeInTheDocument();
+    expect(screen.getByLabelText('段考名稱')).toBeTruthy();
+    expect(screen.getByLabelText('段考結束日期')).toBeTruthy();
     noCrash();
   });
 
@@ -257,7 +257,7 @@ describe('UI-R2：Plans 與 Plan Detail', () => {
     await goPlans();
     expect(screen.getByText('還沒有計畫')).toBeInTheDocument();
     expect(screen.getByText(/讓 AI 幫你把內容安排到每天/)).toBeInTheDocument();
-    expect(within(document.querySelector('.ui-empty')).getByRole('button', { name: '建立計畫' })).toBeInTheDocument();
+    expect(within(document.querySelector('.ui-empty')).getByRole('button', { name: '建立段考計畫' })).toBeInTheDocument();
     noCrash();
   });
 

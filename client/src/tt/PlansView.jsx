@@ -1,8 +1,7 @@
 import { useState, useEffect } from 'react';
-import { api } from '../api';
 import Icon from './Icons';
 import { usePlans, md } from './plans';
-import { Button, IconButton, PageHeader, SurfaceCard, ProgressBar, ListRow, BottomSheet, EmptyState } from './ui';
+import { Button, PageHeader, SurfaceCard, ProgressBar, EmptyState } from './ui';
 
 // 「計畫」＝計畫管理：回答「我要完成什麼計畫」。
 //
@@ -78,21 +77,15 @@ function SectionRow({ label, count, open, onToggle }) {
   );
 }
 
-export default function PlansView({ tasks, lists, apiPlans = [], openPlan, goWizard, goWizardMode, reload, createIntent = false, onCreateIntentHandled }) {
+export default function PlansView({ tasks, lists, apiPlans = [], openPlan, goExamWizard, createIntent = false, onCreateIntentHandled }) {
   const plans = usePlans(tasks, lists, apiPlans);
-  const [creating, setCreating] = useState(false);
-  // Global Add（§A）「計畫」導過來時，直接開「建立計畫」兩條路 sheet（AI 安排 / 空白計畫）。
+  // Global Add（＋ → 計畫）導過來時，直接進入「建立段考」三步精靈（不先建空 Plan）。
   useEffect(() => {
     if (!createIntent) return;
-    setCreating(true);
     onCreateIntentHandled?.();
+    goExamWizard?.();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [createIntent]);
-  // 建立段考：先給名稱與考試日期，建立後進明細再逐科加入範圍、最後選安排層級。
-  const [examName, setExamName] = useState('');
-  const [examDate, setExamDate] = useState('');
-  const [busy, setBusy] = useState(false);
-  const [err, setErr] = useState('');
   const [open, setOpen] = useState({});           // 哪幾個次要區塊被展開
 
   const real = plans.filter(p => !p.isLegacy);
@@ -117,24 +110,6 @@ export default function PlansView({ tasks, lists, apiPlans = [], openPlan, goWiz
   const other = real.filter(p => !KNOWN.includes(cat(p)));
   const legacy = plans.filter(p => p.isLegacy);
 
-  const closeSheet = () => { setCreating(false); setErr(''); };
-
-  // 建立段考計畫：名稱＋考試日期（target_date）。建立為進行中，帶去明細加入範圍。
-  async function createExam() {
-    const name = examName.trim() || '段考';
-    setBusy(true); setErr('');
-    try {
-      const plan = await api('/plans', {
-        method: 'POST',
-        body: { name, status: 'active', source: 'manual', target_date: examDate || null },
-      });
-      closeSheet(); setExamName(''); setExamDate('');
-      await reload();              // 讓新計畫進到清單，明細才讀得到
-      openPlan(`plan:${plan.id}`);
-    } catch (e) { setErr(e.message); }
-    setBusy(false);
-  }
-
   const toggle = k => setOpen(o => ({ ...o, [k]: !o[k] }));
 
   return (
@@ -149,7 +124,7 @@ export default function PlansView({ tasks, lists, apiPlans = [], openPlan, goWiz
           <EmptyState
             title="還沒有計畫"
             description="建立一個讀書計畫，讓 AI 幫你把內容安排到每天。"
-            action={<Button variant="primary" size="lg" onClick={() => setCreating(true)}>建立計畫</Button>}
+            action={<Button variant="primary" size="lg" onClick={() => goExamWizard?.()}>建立段考計畫</Button>}
           />
         )}
 
@@ -193,32 +168,6 @@ export default function PlansView({ tasks, lists, apiPlans = [], openPlan, goWiz
         </div>
       </div>
 
-      {creating && (
-        <BottomSheet onClose={closeSheet} label="建立段考計畫">
-          <div className="row">
-            <b style={{ fontSize: 17 }}>建立段考計畫</b>
-            <IconButton label="關閉" style={{ marginLeft: 'auto' }} onClick={closeSheet}><Icon name="x" size={16} /></IconButton>
-          </div>
-          <div style={{ marginTop: 'var(--sp-4)' }}>
-            <label className="ui-meta" htmlFor="exam-plan-name">這次是什麼考試？</label>
-            <input id="exam-plan-name" aria-label="段考名稱" value={examName} autoFocus
-              onChange={e => setExamName(e.target.value)} placeholder="例如：第二次段考"
-              style={{ width: '100%', marginTop: 'var(--sp-1)' }} />
-            <label className="ui-meta" htmlFor="exam-plan-date" style={{ display: 'block', marginTop: 'var(--sp-3)' }}>考試是哪一天？</label>
-            <input id="exam-plan-date" type="date" aria-label="考試日期" value={examDate}
-              onChange={e => setExamDate(e.target.value)}
-              style={{ width: '100%', marginTop: 'var(--sp-1)' }}
-              onKeyDown={e => e.key === 'Enter' && createExam()} />
-            <div className="ui-meta" style={{ marginTop: 'var(--sp-2)' }}>建立後就能一科一科加入要考的範圍，最後再選要幫你安排到什麼程度。</div>
-            <div className="row" style={{ marginTop: 'var(--sp-4)' }}>
-              <Button variant="primary" block disabled={busy} onClick={createExam}>
-                {busy ? '建立中…' : '建立，開始加入範圍'}
-              </Button>
-            </div>
-          </div>
-          {err && <div className="error" style={{ marginTop: 'var(--sp-3)' }}>{err}</div>}
-        </BottomSheet>
-      )}
     </div>
   );
 }

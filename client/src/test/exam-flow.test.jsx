@@ -1,74 +1,85 @@
-// 段考流程（實際使用者路徑 + 中文 IME / 手機）：
-//   建立段考（名稱＋考試日期）→ 進到 Plan 明細，首屏用白話問「要讀完的範圍」，
-//   並提供「加入要考的範圍」與「老師指定、教材庫沒有的範圍」入口。
-//   另驗證：建立段考的名稱輸入在注音組字（composition）期間不被 BottomSheet 搶焦點。
+// 段考建立三步精靈（ExamCreateWizard）：不中斷流程、確認前不建 Plan、確認才 atomic 建立；
+// 中文 IME 組字保持焦點；375px 手機操作。end-to-end 走「手動範圍」路徑（不需教材書櫃）。
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import { render, screen, within, waitFor, fireEvent, cleanup } from '@testing-library/react';
+import { render, screen, waitFor, cleanup, fireEvent } from '@testing-library/react';
 import { act } from 'react';
-import * as fx from './fixtures';
 
 vi.mock('../api', () => ({ api: vi.fn() }));
 const { api } = await import('../api');
-const Shell = (await import('../tt/Shell')).default;
+const ExamCreateWizard = (await import('../tt/ExamCreateWizard')).default;
 
-let created;
+const LISTS = [{ id: 1, name: '數學' }, { id: 2, name: '物理' }];
+let calls;
 const setApi = () => {
-  created = null;
-  api.mockImplementation((raw, opts) => {
-    const path = raw.startsWith('/plans?') ? '/plans' : raw.split('?')[0];
-    if (path === '/plans' && opts?.method === 'POST') {
-      created = { ...fx.emptyPlan, id: 99, name: opts.body.name, target_date: opts.body.target_date, status: 'active' };
-      return Promise.resolve(created);
-    }
-    if (path === '/plans') return Promise.resolve(created ? [...(fx.responses['/plans'] || []), created] : (fx.responses['/plans'] || []));
-    if (path === '/plans/99/material-items') return Promise.resolve([]);
-    if (path === '/plans/99/progress-segments') return Promise.resolve({ segments: [] });
-    if (path === '/schedule/timeline/99') return Promise.resolve({ segments: [], items: [], unscheduled: [] });
-    if (path in fx.responses) return Promise.resolve(fx.responses[path]);
-    if (path.startsWith('/tasks/')) return Promise.resolve({});
-    return Promise.resolve([]);
+  calls = [];
+  api.mockImplementation((path, opts) => {
+    calls.push([path, opts]);
+    if (path === '/exam-plans' && opts?.method === 'POST') return Promise.resolve({ plan: { id: 99 } });
+    if (path === '/schedule/preview') return Promise.resolve({ blocks: [], unplaced: [] });
+    return Promise.resolve({});
   });
 };
-beforeEach(() => { vi.spyOn(console, 'error').mockImplementation(() => {}); localStorage.clear(); setApi(); });
+const posted = p => calls.filter(([path, o]) => path === p && (o?.method === 'POST'));
+beforeEach(() => { localStorage.clear(); vi.spyOn(console, 'error').mockImplementation(() => {}); setApi(); });
 afterEach(() => { vi.restoreAllMocks(); cleanup(); });
 const click = el => act(async () => { el.click(); });
 
-async function openCreateSheet() {
-  render(<Shell onLogout={() => {}} />);
-  await screen.findByRole('heading', { name: '今天' });
-  await click(within(document.querySelector('.bottom-nav')).getByText('計畫').closest('button'));
-  await click(screen.getByRole('button', { name: '新增' }));
-  await click(screen.getByRole('button', { name: '新增計畫' }));
-  return screen.getByLabelText('段考名稱');
-}
+describe('ExamCreateWizard', () => {
+  it('三步走完（手動範圍）→ 確認才 POST /exam-plans；建立前不建任何 Plan', async () => {
+    const onDone = vi.fn();
+    render(<ExamCreateWizard lists={LISTS} onDone={onDone} onCancel={() => {}} />);
+    // Step 1：名稱 + 結束日 + 加入科目
+    fireEvent.change(screen.getByLabelText('段考名稱'), { target: { value: '第二次段考' } });
+    fireEvent.change(screen.getByLabelText('段考結束日期'), { target: { value: '2099-10-02' } });
+    fireEvent.change(screen.getByLabelText('加入科目'), { target: { value: '1' } });
+    await waitFor(() => expect(screen.getByText('數學')).toBeTruthy());
+    // 開精靈到這裡：完全沒有建立任何 Plan
+    expect(posted('/plans').length).toBe(0);
+    expect(posted('/exam-plans').length).toBe(0);
+    await click(screen.getByText('下一步：加入各科範圍'));
 
-describe('段考流程', () => {
-  it('建立段考 → 進 Plan 明細，首屏是白話的「要讀完的範圍」，有加入範圍與手動補充入口', async () => {
-    const nameInput = await openCreateSheet();
-    fireEvent.change(nameInput, { target: { value: '第二次段考' } });
-    fireEvent.change(screen.getByLabelText('考試日期'), { target: { value: '2099-10-02' } });
-    await click(screen.getByRole('button', { name: /建立，開始加入範圍/ }));
-    // 落在 Plan 明細，首屏白話講範圍（還沒加入 → 引導）
-    await waitFor(() => expect(screen.getByText('還沒加入要考的範圍')).toBeTruthy());
-    expect(screen.getByText(/考試 10\/2/)).toBeTruthy();
-    expect(screen.getByRole('button', { name: '加入要考的範圍' })).toBeTruthy();
-    // 沒有工程術語「段考進度／排程摘要」當標題
-    expect(screen.queryByText('段考進度')).toBeNull();
-    expect(screen.queryByText('排程摘要')).toBeNull();
+    // Step 2：手動範圍（老師指定、教材庫沒有）
+    await waitFor(() => expect(screen.getByText('選教材／勾課章')).toBeTruthy());
+    await click(screen.getByText('＋ 老師指定、教材庫沒有的範圍'));
+    fireEvent.change(screen.getByLabelText('老師指定範圍'), { target: { value: '講義第三章' } });
+    await click(screen.getByText('加入'));
+    await waitFor(() => expect(screen.getByText(/講義第三章/)).toBeTruthy());
+    await click(screen.getByText('下一步：選擇怎麼安排'));
+
+    // Step 3：預設 progress → 確認建立（atomic）
+    await waitFor(() => expect(screen.getByText('希望怎麼安排？')).toBeTruthy());
+    await click(screen.getByText('確認，建立段考計畫'));
+    await waitFor(() => expect(posted('/exam-plans').length).toBe(1));
+    const body = posted('/exam-plans')[0][1].body;
+    expect(body.name).toBe('第二次段考');
+    expect(body.end_date).toBe('2099-10-02');
+    expect(body.level).toBe('progress');
+    expect(body.subjects[0].subject_list_id).toBe(1);
+    expect(body.manual_scope[0].label).toBe('講義第三章');
+    await waitFor(() => expect(onDone).toHaveBeenCalledWith(99));
   });
 
-  it('中文 IME：建立段考名稱在組字期間保持焦點（不被 BottomSheet 搶回）', async () => {
-    const nameInput = await openCreateSheet();
-    nameInput.focus();
-    expect(document.activeElement).toBe(nameInput);
-    // 模擬注音組字：compositionstart → 逐鍵 input → 期間焦點必須留在 input
-    fireEvent.compositionStart(nameInput);
-    fireEvent.change(nameInput, { target: { value: 'ㄉ' } });
+  it('中文 IME：段考名稱在組字期間保持焦點', async () => {
+    render(<ExamCreateWizard lists={LISTS} onDone={() => {}} onCancel={() => {}} />);
+    const input = screen.getByLabelText('段考名稱');
+    input.focus();
+    expect(document.activeElement).toBe(input);
+    fireEvent.compositionStart(input);
+    fireEvent.change(input, { target: { value: 'ㄉ' } });
     await act(async () => { await Promise.resolve(); });
-    expect(document.activeElement).toBe(nameInput);
-    fireEvent.change(nameInput, { target: { value: '第' } });
-    fireEvent.compositionEnd(nameInput);
+    expect(document.activeElement).toBe(input);
+    fireEvent.change(input, { target: { value: '第' } });
+    fireEvent.compositionEnd(input);
     await act(async () => { await Promise.resolve(); });
-    expect(document.activeElement).toBe(nameInput);
+    expect(document.activeElement).toBe(input);
+  });
+
+  it('返回/取消：取消不建立 Plan', async () => {
+    const onCancel = vi.fn();
+    render(<ExamCreateWizard lists={LISTS} onDone={() => {}} onCancel={onCancel} />);
+    await click(screen.getByText(/取消/));
+    expect(onCancel).toHaveBeenCalled();
+    expect(posted('/exam-plans').length).toBe(0);
+    expect(posted('/plans').length).toBe(0);
   });
 });

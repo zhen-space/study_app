@@ -89,38 +89,21 @@ const sent = (method, pathPart) =>
   calls.filter(([p, o]) => p.includes(pathPart) && (o?.method || 'GET') === method);
 
 describe('建立計畫', () => {
-  it('「建立段考計畫」問名稱與考試日期（不先問排程模式）', async () => {
+  it('建立計畫 → 進入不中斷的段考三步精靈（step1：名稱／結束日／加入科目）', async () => {
     await goPlans();
     await openCreate();
+    expect(screen.getByRole('heading', { name: '建立段考' })).toBeInTheDocument();
     expect(screen.getByLabelText('段考名稱')).toBeInTheDocument();
-    expect(screen.getByLabelText('考試日期')).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: /建立，開始加入範圍/ })).toBeInTheDocument();
+    expect(screen.getByLabelText('段考結束日期')).toBeInTheDocument();
+    expect(screen.getByLabelText('加入科目')).toBeInTheDocument();
     noCrash();
   });
 
-  it('建立段考：POST /plans 帶名稱＋考試日期＋active，建完直接進明細，且不先建排程', async () => {
-    let created = null;
-    setApi({
-      '/plans': opts => {
-        if (opts?.method === 'POST') { created = { ...fx.emptyPlan, name: opts.body.name, target_date: opts.body.target_date }; return created; }
-        return created ? [...fx.plans, created] : fx.plans;
-      },
-      '/tasks': [...fx.tasks, ...fx.planTasks],
-    });
+  it('打開精靈時不先建立任何 Plan（沒有空 Plan）', async () => {
     await goPlans();
     await openCreate();
-    await type(screen.getByLabelText('段考名稱'), '第二次段考');
-    fireEvent.change(screen.getByLabelText('考試日期'), { target: { value: '2099-10-02' } });
-    await click(screen.getByRole('button', { name: /建立，開始加入範圍/ }));
-
-    const posts = sent('POST', '/plans');
-    expect(posts.length).toBe(1);
-    expect(posts[0][1].body.name).toBe('第二次段考');
-    expect(posts[0][1].body.target_date).toBe('2099-10-02');
-    expect(posts[0][1].body.status).toBe('active');
-    // 建立時不得直接建立排程（範圍與層級之後才在明細裡選）
-    expect(sent('POST', '/schedule/preview').length).toBe(0);
-    expect(within(main()).getByRole('heading', { name: '第二次段考' })).toBeInTheDocument();
+    expect(sent('POST', '/plans').length).toBe(0);
+    expect(sent('POST', '/exam-plans').length).toBe(0);
     noCrash();
   });
 

@@ -129,42 +129,6 @@ export default function PlanDetailView({ planKey, tasks, lists, apiPlans = [], r
 
   const close = () => { setSheet(null); setErr(''); setRetain(null); };
 
-  // 「只分段」：依已選教材的章／課順序，在「今天～考試日」之間平均切出幾段截止日，
-  // 產生 progress segments（哪天前讀完哪些），不建立任何 ScheduleVersion／每日排程。
-  // 已有分段就不重覆生成（避免重複），直接關閉。
-  const generateSegments = async () => {
-    setBusy(true); setErr('');
-    try {
-      const existing = await api(`/plans/${plan.planId}/progress-segments`).catch(() => null);
-      if (existing?.segments?.length) { close(); return; }
-      const rows = (await api(`/plans/${plan.planId}/material-items`)).filter(r => r.selected);
-      if (!rows.length) { setErr('請先加入要考的範圍'); setBusy(false); return; }
-      const end = raw?.target_date || plan.end;
-      if (!end) { setErr('請先設定考試日期（在「計畫選項 → 編輯計畫資訊」）'); setBusy(false); return; }
-      // 依 (科目, 章) 保序分組
-      const groups = []; const seen = new Map();
-      for (const r of rows) {
-        const key = `${r.subject_list_id ?? ''}|${r.chapter_title || ''}`;
-        if (!seen.has(key)) { seen.set(key, groups.length); groups.push({ subject_list_id: r.subject_list_id ?? null, title: r.chapter_title || '範圍', scope: [] }); }
-        groups[seen.get(key)].scope.push(r.content_item_id);
-      }
-      const startTs = Date.parse(today() + 'T00:00:00Z');
-      const endTs = Date.parse(end + 'T00:00:00Z');
-      const span = Math.max(1, Math.round((endTs - startTs) / 86400000));
-      const fmt = ts => new Date(ts).toISOString().slice(0, 10);
-      let prevStart = today();
-      for (let i = 0; i < groups.length; i++) {
-        const segEnd = fmt(startTs + Math.round(((i + 1) / groups.length) * span) * 86400000);
-        await api(`/plans/${plan.planId}/progress-segments`, {
-          method: 'POST',
-          body: { title: groups[i].title, subject_list_id: groups[i].subject_list_id, start_date: prevStart, end_date: segEnd, scope: groups[i].scope },
-        });
-        prevStart = segEnd;
-      }
-      close(); await reload();
-    } catch (e) { setErr(e.message); setBusy(false); }
-  };
-
   // 完成任務走既有的 PATCH /tasks/:id，沒有第二套完成邏輯
   const toggle = t =>
     api(`/tasks/${t.id}`, { method: 'PATCH', body: { completed: !t.completed } })
@@ -533,16 +497,13 @@ export default function PlanDetailView({ planKey, tasks, lists, apiPlans = [], r
       </div>
 
       {/* ---------- 管理：右上 ••• ---------- */}
-      {/* 選擇要幫你安排到什麼程度（白話，範圍加好後才選）。 */}
+      {/* 要不要幫你排出每天要做的（範圍加好後才選）。各科考試日已是「哪天前讀完」的
+          目標，所以這裡只提供每日/時段兩種；不做平均分段。 */}
       {sheet === 'arrange' && (
         <BottomSheet onClose={close} label="要幫你安排到什麼程度">
           <div style={{ display: 'grid', gap: 8 }}>
             <b style={{ fontSize: 16 }}>要幫你安排到什麼程度？</b>
-            <ListRow
-              title="只幫我分段" subtitle="告訴我哪天前要讀完哪些範圍，不排每天做什麼"
-              trailing={<Icon name="chevron" size={16} />}
-              role="button" tabIndex={0} style={{ cursor: 'pointer' }}
-              onClick={generateSegments} onKeyDown={e => { if (e.key === 'Enter') generateSegments(); }} />
+            <div className="ui-meta">各科考試日已經是「哪天前讀完」的目標了。要不要再幫你排出每天要做的？</div>
             <ListRow
               title="排出每天要讀什麼" subtitle="列出每天要做哪些內容，但不綁幾點"
               trailing={<Icon name="chevron" size={16} />}
