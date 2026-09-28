@@ -50,9 +50,12 @@ function ItemPills({ items, kinds, onAdd, onRemove, label }) {
 
 export default function MaterialDraftEditor({
   value, onChange, lists = [], busy = false, error = '', problems = [],
-  submitLabel = '建立教材', onSubmit, onCancel, onAddSubject = null,
+  submitLabel = '建立教材', onSubmit, onCancel, onAddSubject = null, lockSubjectId = null,
 }) {
   const d = value;
+  // 從某個科目情境進來（例如段考科目卡）時鎖定科目：避免使用者不小心改成別科，
+  // 建立的教材落到別科、回卡片找不到＝像「建立失敗」。伺服器仍會再驗一次 ownership。
+  const subjectLocked = lockSubjectId != null;
   // 剛註冊的帳號一個科目都沒有。沒有科目就選不了科目，選不了科目就排不進計畫——
   // 如果只能「請到別的頁面新增」，第一次使用的人就走進死路了。所以就地能加。
   const [newSubject, setNewSubject] = useState(null);   // null＝沒在新增
@@ -90,17 +93,18 @@ export default function MaterialDraftEditor({
         <label className="md-field">
           <span>科目</span>
           {/* 科目用的是既有科目的 id。名稱可以重複、可以改，不是身分。 */}
-          <select value={d.book.subject_list_id ?? ''} disabled={busy}
+          <select value={d.book.subject_list_id ?? ''} disabled={busy || subjectLocked}
             onChange={e => {
               if (e.target.value === '__new') { setNewSubject(''); return; }
               setBook({ subject_list_id: e.target.value === '' ? null : Number(e.target.value) });
             }}>
             <option value="">請選擇</option>
             {lists.map(l => <option key={l.id} value={l.id}>{l.name}</option>)}
-            {onAddSubject && <option value="__new">＋ 新增科目…</option>}
+            {onAddSubject && !subjectLocked && <option value="__new">＋ 新增科目…</option>}
           </select>
         </label>
-        {newSubject != null && (
+        {subjectLocked && <p className="md-hint">已鎖定為這次要加入的科目。</p>}
+        {!subjectLocked && newSubject != null && (
           <div className="md-newsubject">
             <input autoFocus value={newSubject} placeholder="科目名稱，例如：數學"
               aria-label="新科目名稱" disabled={busy}

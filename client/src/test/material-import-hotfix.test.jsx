@@ -88,11 +88,20 @@ describe('AddMaterialFlow hotfix', () => {
     await waitFor(() => expect(importPreview).toHaveBeenCalledTimes(1));
   });
 
-  it('defaultSubjectId：自己建立教材時科目已預帶', () => {
+  it('defaultSubjectId：自己建立教材時科目已預帶且鎖定（不可改成別科）', () => {
     render(<AddMaterialFlow lists={LISTS} defaultSubjectId={2} onCancel={() => {}} onCreated={() => {}} />);
     fireEvent.click(screen.getByText('自己建立教材'));
     const select = screen.getByDisplayValue('英文');
     expect(select.value).toBe('2');
+    expect(select.disabled).toBe(true);               // 鎖定：不能被改成別科
+    expect(screen.getByText(/已鎖定為這次要加入的科目/)).toBeTruthy();
+  });
+
+  it('無 defaultSubjectId（教材庫獨立建立）：科目可自由選擇，不鎖定', () => {
+    render(<AddMaterialFlow lists={LISTS} onCancel={() => {}} onCreated={() => {}} />);
+    fireEvent.click(screen.getByText('自己建立教材'));
+    const select = screen.getByRole('combobox');       // 科目 select
+    expect(select.disabled).toBe(false);
   });
 
   it('defaultSubjectId：AI 讀到的 draft 沒科目時，補上預帶科目', async () => {

@@ -137,6 +137,7 @@ export default function AddMaterialFlow({ lists = [], onCancel, onCreated, onAdd
           </ul>
         )}
         <MaterialDraftEditor value={draft} onChange={setDraft} lists={lists} onAddSubject={onAddSubject}
+          lockSubjectId={defaultSubjectId}
           busy={busy} error={err} problems={problems}
           submitLabel={appendToBook ? '預覽合併' : '建立教材'} onSubmit={create}
           onCancel={() => { setDraft(null); setMode(null); setErr(''); setProblems([]); setWarnings([]); }} />
