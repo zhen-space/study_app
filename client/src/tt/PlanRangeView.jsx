@@ -1,5 +1,6 @@
 import { useEffect, useState, useCallback } from 'react';
 import { api } from '../api';
+import { setItemCompletion } from './material';
 import { md } from './plans';
 import { today } from './helpers';
 import { SurfaceCard, Button, EmptyState } from './ui';
@@ -25,6 +26,8 @@ export default function PlanRangeView({ plan, lists = [], onAddRange, onArrange,
   const editable = plan?.status === 'active' || plan?.status === 'draft';
   const [exam, setExam] = useState(null);
   const [timeline, setTimeline] = useState(null);
+  const [saving, setSaving] = useState(() => new Set());   // 正在更新完成度的 content_item_id
+  const [markErr, setMarkErr] = useState('');
 
   const load = useCallback(async () => {
     if (planId == null) return;
@@ -36,6 +39,23 @@ export default function PlanRangeView({ plan, lists = [], onAddRange, onArrange,
     setTimeline(tl && Array.isArray(tl.segments) ? tl : null);
   }, [planId]);
   useEffect(() => { load(); }, [load]);
+
+  // 直接在首屏標記「這一項讀完了」——這是完成度（material_progress），不是 Plan 選取，
+  // 用既有的教材完成 API。標記後重讀投影，讓「範圍已完成 x／y」與勾記即時更新。
+  const toggleDone = useCallback(async r => {
+    const id = r.content_item_id;
+    if (id == null || saving.has(id)) return;
+    setMarkErr('');
+    setSaving(s => new Set(s).add(id));
+    try {
+      await setItemCompletion(id, !r.material_completed);
+      await load();
+    } catch (e) {
+      setMarkErr(e?.message || '更新失敗，請再試一次');
+    } finally {
+      setSaving(s => { const n = new Set(s); n.delete(id); return n; });
+    }
+  }, [saving, load]);
 
   if (planId == null || exam == null) return null;
 
@@ -86,6 +106,8 @@ export default function PlanRangeView({ plan, lists = [], onAddRange, onArrange,
             <b>要讀完的範圍</b>
             {editable && onAddRange && <Button size="sm" style={{ marginLeft: 'auto' }} onClick={onAddRange}>加入／修改範圍</Button>}
           </div>
+          <div className="ui-meta" style={{ marginTop: 2 }}>讀完一項就點一下打勾。</div>
+          {markErr && <div className="mt-err" role="alert" style={{ marginTop: 4 }}>{markErr}</div>}
           {[...rowsBySubject.values()].filter(g => g.books.size || g.manual.length).map((g, gi) => (
             <div key={gi} style={{ marginTop: 12 }}>
               <div className="row" style={{ gap: 6, alignItems: 'baseline' }}>
@@ -102,10 +124,15 @@ export default function PlanRangeView({ plan, lists = [], onAddRange, onArrange,
                         <span style={{ fontWeight: 500 }}>{ch || '（未分章）'}</span>
                       </div>
                       {rows.map(r => (
-                        <div key={r.content_item_id} className="row" style={{ gap: 6, marginLeft: 16, alignItems: 'baseline' }}>
+                        <button key={r.content_item_id} type="button"
+                          className="row" onClick={() => toggleDone(r)} disabled={saving.has(r.content_item_id)}
+                          aria-label={`${r.material_completed ? '取消完成' : '標記完成'}：${r.title}`}
+                          style={{ gap: 6, marginLeft: 16, alignItems: 'baseline', width: '100%', textAlign: 'left',
+                            background: 'none', border: 'none', padding: '3px 0', cursor: 'pointer',
+                            opacity: saving.has(r.content_item_id) ? 0.5 : 1 }}>
                           <Mark done={r.material_completed} />
                           <span className="ui-meta" style={{ textDecoration: r.material_completed ? 'line-through' : 'none' }}>{r.title}</span>
-                        </div>
+                        </button>
                       ))}
                     </div>
                   ))}
