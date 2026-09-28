@@ -56,14 +56,14 @@ describe('previewTocMerge', () => {
 
 /* ---------------- apply（HTTP） ---------------- */
 
-let S, base, H;
+let S, base, H, other;
 const call = async (path, opts = {}, headers = H) => {
   const r = await fetch(base + path, { ...opts, headers, body: opts.body ? JSON.stringify(opts.body) : undefined });
   return { status: r.status, body: await r.json().catch(() => ({})) };
 };
 const post = (p, b) => call(p, { method: 'POST', body: b ?? {} });
 const get = p => call(p);
-before(async () => { S = await startServer(); base = S.base; H = S.H; });
+before(async () => { S = await startServer(); base = S.base; H = S.H; other = (await S.secondUser()).H; });
 after(() => S?.stop());
 
 // 一本書：一章「第一課」+ 一個 reading。回傳 ids。
@@ -147,6 +147,17 @@ describe('applyBookMerge：保留與安全', () => {
     const ok = await post(`/material/books/${book.id}/merge`, { draft, expected_fingerprint: pv.body.fingerprint, confirm_duplicates: true, confirm_order: true });
     assert.equal(ok.status, 201, JSON.stringify(ok.body));
     assert.equal((await get(`/material/books/${book.id}/tree`)).body.nodes.length, 2);
+  });
+
+  test('MG9 跨使用者：別人不能 preview／merge 我的教材（ownership / IDOR）', async () => {
+    const { book } = await seedBook();
+    const draft = draftOf([{ title: '第九課', content_items: [{ title: 'x', kind: 'reading' }], children: [] }]);
+    const pv = await call(`/material/books/${book.id}/merge/preview`, { method: 'POST', body: { draft } }, other);
+    assert.equal(pv.status, 404);
+    const ap = await call(`/material/books/${book.id}/merge`, { method: 'POST', body: { draft, confirm_order: true } }, other);
+    assert.equal(ap.status, 404);
+    // 我的書沒有被動到
+    assert.equal((await get(`/material/books/${book.id}/tree`)).body.nodes.length, 1);
   });
 
   test('MG8 不可靠順序未確認 → 409 ORDER_CONFIRMATION_REQUIRED', async () => {

@@ -914,9 +914,11 @@ export async function applyBookMerge(userId, bookId, input, opts = {}) {
     err.problems = problems;
     throw err;
   }
+  // Ownership fail-fast：不是自己的（或已刪除的）教材，連交易都不開（IDOR 防線 1）。
+  await mustBook(userId, bookId);
 
   await q.tx(async tx => {
-    // 交易內重讀 CURRENT，確認 ownership 與未刪除（TOCTOU 防線）。
+    // 交易內重讀 CURRENT，再次確認 ownership 與未刪除（TOCTOU 防線 2）。
     const book = await tx.get(
       'SELECT * FROM material_books WHERE id=? AND user_id=? AND deleted_at IS NULL', [bookId, userId]);
     if (!book) throw new MaterialInputError('找不到這本教材', 404);
