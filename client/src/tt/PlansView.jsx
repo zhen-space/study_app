@@ -1,8 +1,7 @@
 import { useState, useEffect } from 'react';
-import { api } from '../api';
 import Icon from './Icons';
 import { usePlans, md } from './plans';
-import { Button, IconButton, PageHeader, SurfaceCard, ProgressBar, ListRow, BottomSheet, EmptyState } from './ui';
+import { Button, PageHeader, SurfaceCard, ProgressBar, EmptyState } from './ui';
 
 // 「計畫」＝計畫管理：回答「我要完成什麼計畫」。
 //
@@ -78,20 +77,15 @@ function SectionRow({ label, count, open, onToggle }) {
   );
 }
 
-export default function PlansView({ tasks, lists, apiPlans = [], openPlan, goWizard, goWizardMode, reload, createIntent = false, onCreateIntentHandled }) {
+export default function PlansView({ tasks, lists, apiPlans = [], openPlan, goExamWizard, createGeneralPlan, createIntent = false, onCreateIntentHandled }) {
   const plans = usePlans(tasks, lists, apiPlans);
-  const [creating, setCreating] = useState(false);
-  // Global Add（§A）「計畫」導過來時，直接開「建立計畫」兩條路 sheet（AI 安排 / 空白計畫）。
+  // Global Add（＋ → 計畫）導過來時，直接進入「建立段考」三步精靈（不先建空 Plan）。
   useEffect(() => {
     if (!createIntent) return;
-    setCreating(true);
     onCreateIntentHandled?.();
+    goExamWizard?.();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [createIntent]);
-  const [blankName, setBlankName] = useState('');
-  const [showBlank, setShowBlank] = useState(false);
-  const [busy, setBusy] = useState(false);
-  const [err, setErr] = useState('');
   const [open, setOpen] = useState({});           // 哪幾個次要區塊被展開
 
   const real = plans.filter(p => !p.isLegacy);
@@ -116,20 +110,6 @@ export default function PlansView({ tasks, lists, apiPlans = [], openPlan, goWiz
   const other = real.filter(p => !KNOWN.includes(cat(p)));
   const legacy = plans.filter(p => p.isLegacy);
 
-  const closeSheet = () => { setCreating(false); setShowBlank(false); setErr(''); };
-
-  async function createBlank() {
-    const name = blankName.trim() || '新的計畫';
-    setBusy(true); setErr('');
-    try {
-      const plan = await api('/plans', { method: 'POST', body: { name, status: 'active', source: 'manual' } });
-      closeSheet(); setBlankName('');
-      await reload();              // 讓新計畫進到清單，明細才讀得到
-      openPlan(`plan:${plan.id}`);
-    } catch (e) { setErr(e.message); }
-    setBusy(false);
-  }
-
   const toggle = k => setOpen(o => ({ ...o, [k]: !o[k] }));
 
   return (
@@ -143,9 +123,15 @@ export default function PlansView({ tasks, lists, apiPlans = [], openPlan, goWiz
         {plans.length === 0 && (
           <EmptyState
             title="還沒有計畫"
-            description="建立一個讀書計畫，讓 AI 幫你把內容安排到每天。"
-            action={<Button variant="primary" size="lg" onClick={() => setCreating(true)}>建立計畫</Button>}
+            description="建立段考計畫，一科一科加入範圍；或建立一般計畫自己安排。"
+            action={<Button variant="primary" size="lg" onClick={() => goExamWizard?.()}>建立段考計畫</Button>}
           />
+        )}
+        {/* 保留一般／空白計畫能力（非段考）：低調的次要入口，不干擾段考主流程。 */}
+        {createGeneralPlan && (
+          <div className="row" style={{ marginTop: 'var(--sp-3)', justifyContent: 'center' }}>
+            <Button size="sm" variant="ghost" onClick={() => createGeneralPlan()}>建立一般計畫（非段考）</Button>
+          </div>
         )}
 
         {live.map(p => <PlanCard key={p.key} p={p} onOpen={openPlan} />)}
@@ -188,56 +174,6 @@ export default function PlansView({ tasks, lists, apiPlans = [], openPlan, goWiz
         </div>
       </div>
 
-      {creating && (
-        <BottomSheet onClose={closeSheet} label="建立計畫">
-          <div className="row">
-            <b style={{ fontSize: 17 }}>建立計畫</b>
-            <IconButton label="關閉" style={{ marginLeft: 'auto' }} onClick={closeSheet}><Icon name="x" size={16} /></IconButton>
-          </div>
-          {!showBlank ? (
-            <div style={{ marginTop: 'var(--sp-4)' }}>
-              {/* B6：段考計畫三種模式，明確選擇要不要建立確切安排。 */}
-              <div className="ui-meta" style={{ marginBottom: 'var(--sp-2)' }}>要怎麼安排這個段考計畫？</div>
-              <ListRow
-                title="只安排進度" subtitle="設定段考範圍與期限，先不排每日時間（之後可再升級排程）"
-                trailing={<Icon name="chevron" size={16} />}
-                role="button" tabIndex={0} style={{ cursor: 'pointer' }}
-                onClick={() => setShowBlank(true)}
-                onKeyDown={e => { if (e.key === 'Enter') setShowBlank(true); }}
-              />
-              <ListRow
-                title="進度 ＋ 每天要做的" subtitle="AI 排出每天要做哪些內容，但不指定時段"
-                trailing={<Icon name="chevron" size={16} />}
-                role="button" tabIndex={0} style={{ cursor: 'pointer', marginTop: 'var(--sp-2)' }}
-                onClick={() => (goWizardMode || goWizard)('daily')}
-                onKeyDown={e => { if (e.key === 'Enter') (goWizardMode || goWizard)('daily'); }}
-              />
-              <ListRow
-                title="進度 ＋ 具體時段" subtitle="AI 依可用時間與行事曆，排到每天的時段"
-                trailing={<Icon name="chevron" size={16} />}
-                role="button" tabIndex={0} style={{ cursor: 'pointer', marginTop: 'var(--sp-2)' }}
-                onClick={() => (goWizardMode || goWizard)('timed')}
-                onKeyDown={e => { if (e.key === 'Enter') (goWizardMode || goWizard)('timed'); }}
-              />
-            </div>
-          ) : (
-            <div style={{ marginTop: 'var(--sp-4)' }}>
-              <label className="ui-meta" htmlFor="blank-plan-name">計畫名稱</label>
-              <input id="blank-plan-name" aria-label="計畫名稱" value={blankName} autoFocus
-                onChange={e => setBlankName(e.target.value)} placeholder="例如：第二次段考準備"
-                style={{ width: '100%', marginTop: 'var(--sp-1)' }}
-                onKeyDown={e => e.key === 'Enter' && createBlank()} />
-              <div className="row" style={{ marginTop: 'var(--sp-4)' }}>
-                <Button onClick={() => setShowBlank(false)}>返回</Button>
-                <Button variant="primary" style={{ marginLeft: 'auto' }} disabled={busy} onClick={createBlank}>
-                  {busy ? '建立中…' : '建立'}
-                </Button>
-              </div>
-            </div>
-          )}
-          {err && <div className="error" style={{ marginTop: 'var(--sp-3)' }}>{err}</div>}
-        </BottomSheet>
-      )}
     </div>
   );
 }

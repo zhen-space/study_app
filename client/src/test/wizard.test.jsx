@@ -97,9 +97,9 @@ async function toResult() {
 }
 
 describe('三步驟結構', () => {
-  it('1. 精靈只有三步，一開始停在「讀什麼」', async () => {
+  it('1. 精靈只有三步，一開始停在「要考哪些範圍」', async () => {
     await mountWizard();
-    expect(screen.getByText('步驟 1／3：讀什麼')).toBeInTheDocument();
+    expect(screen.getByText('步驟 1／3：要考哪些範圍')).toBeInTheDocument();
     expect(document.querySelectorAll('.step-dot').length).toBe(3);
     noCrash();
   });
@@ -116,10 +116,10 @@ describe('三步驟結構', () => {
     noCrash();
   });
 
-  it('3. 勾了內容才進得了第 2 步「怎麼安排」', async () => {
+  it('3. 勾了內容才進得了第 2 步「要怎麼安排」', async () => {
     await mountWizard();
     await toStep2();
-    expect(screen.getByText('步驟 2／3：怎麼安排')).toBeInTheDocument();
+    expect(screen.getByText('步驟 2／3：要怎麼安排')).toBeInTheDocument();
     noCrash();
   });
 
@@ -191,10 +191,10 @@ describe('三步驟結構', () => {
     noCrash();
   });
 
-  it('8. 產生排程後進入第 3 步「AI 排程結果」', async () => {
+  it('8. 產生排程後進入第 3 步「你的讀書計畫」', async () => {
     await mountWizard();
     await toResult();
-    expect(screen.getByText('步驟 3／3：AI 排程結果')).toBeInTheDocument();
+    expect(screen.getByText('步驟 3／3：你的讀書計畫')).toBeInTheDocument();
     expect(sent('/schedule/preview', 'POST').length).toBe(1);
     noCrash();
   });
@@ -384,7 +384,7 @@ describe('Edit Mode', () => {
     setApi({ '/schedule/preview': editPreview });
     await mountEdit();
     expect(screen.getByRole('heading', { name: '調整「第二次段考準備」' })).toBeInTheDocument();
-    expect(screen.getByText('步驟 2／3：怎麼安排')).toBeInTheDocument();
+    expect(screen.getByText('步驟 2／3：要怎麼安排')).toBeInTheDocument();
     noCrash();
   });
 

@@ -26,6 +26,24 @@ async function seedBook(title = '課本', subjectId = null) {
   return { book, ch, it };
 }
 
+describe('段考範圍投影所需欄位', () => {
+  test('EX getPlanSelection 帶 book_title / chapter_title / subject', async () => {
+    const s = (await post('/lists', { name: '數學' })).body;
+    const book = (await post('/material/books', { title: '數學課本', subject_list_id: s.id })).body;
+    const ch = (await post('/material/nodes', { book_id: book.id, kind: 'chapter', title: '第一課 力學' })).body;
+    const sec = (await post('/material/nodes', { book_id: book.id, parent_id: ch.id, kind: 'section', title: '1-1 位移' })).body;
+    const it = (await post('/material/content-items', { node_id: sec.id, kind: 'reading', title: '內文' })).body;
+    const plan = (await post('/plans', { name: 'P', status: 'active' })).body;
+    await post(`/plans/${plan.id}/material-items`, { content_item_ids: [it.id], selected: true });
+    const rows = (await get(`/plans/${plan.id}/material-items`)).body;
+    const row = rows.find(r => r.content_item_id === it.id);
+    assert.equal(row.book_title, '數學課本');
+    assert.equal(Number(row.subject_list_id), Number(s.id));
+    assert.equal(row.chapter_title, '第一課 力學'); // 節往上取父章
+    assert.equal(row.node_title, '1-1 位移');
+  });
+});
+
 describe('教材 CRUD', () => {
   test('CRUD1 rename / 改科目 / 改教材類型', async () => {
     const s1 = (await post('/lists', { name: '數學' })).body;

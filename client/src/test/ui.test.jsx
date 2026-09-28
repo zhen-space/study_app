@@ -241,16 +241,14 @@ describe('UI-R2：Plans 與 Plan Detail', () => {
     noCrash();
   });
 
-  it('13. 建立計畫走 BottomSheet，提供段考三種模式', async () => {
+  it('13. 建立計畫進入不中斷的段考精靈（不先建空 Plan）', async () => {
     await mountShell();
     await goPlans();
     await click(screen.getByRole('button', { name: '新增' }));
     await click(screen.getByRole('button', { name: '新增計畫' }));
-    const dlg = screen.getByRole('dialog');
-    // 三種模式各是一個 ListRow 入口
-    expect(within(dlg).getByText('只安排進度').closest('.ui-row')).toBeTruthy();
-    expect(within(dlg).getByText('進度 ＋ 每天要做的').closest('.ui-row')).toBeTruthy();
-    expect(within(dlg).getByText('進度 ＋ 具體時段').closest('.ui-row')).toBeTruthy();
+    expect(screen.getByRole('heading', { name: '建立段考' })).toBeInTheDocument();
+    expect(screen.getByLabelText('段考名稱')).toBeTruthy();
+    expect(screen.getByLabelText('段考結束日期')).toBeTruthy();
     noCrash();
   });
 
@@ -258,17 +256,18 @@ describe('UI-R2：Plans 與 Plan Detail', () => {
     await mountShell({ '/tasks': [], '/plans': [] });
     await goPlans();
     expect(screen.getByText('還沒有計畫')).toBeInTheDocument();
-    expect(screen.getByText(/讓 AI 幫你把內容安排到每天/)).toBeInTheDocument();
-    expect(within(document.querySelector('.ui-empty')).getByRole('button', { name: '建立計畫' })).toBeInTheDocument();
+    expect(screen.getByText(/一科一科加入範圍/)).toBeInTheDocument();
+    expect(within(document.querySelector('.ui-empty')).getByRole('button', { name: '建立段考計畫' })).toBeInTheDocument();
     noCrash();
   });
 
-  it('15. Plan Detail：進度是主角，管理收在右上', async () => {
+  it('15. Plan Detail：首屏用白話講範圍（不先顯示抽象儀表板），管理收在右上', async () => {
     await mountShell();
     await goPlans();
     await click(cardByName('第二次段考'));
     expect(within(document.querySelector('.main')).getByRole('heading', { name: '第二次段考' })).toBeInTheDocument();
-    expect(screen.getByRole('progressbar')).toBeInTheDocument();
+    // 首屏是「要讀完的範圍」的具體呈現（有範圍→標題；無範圍→引導加入），不是進度條頭條
+    expect(screen.getByText(/要讀完的範圍|還沒加入要考的範圍/)).toBeInTheDocument();
     expect(screen.getByRole('button', { name: '計畫選項' })).toBeInTheDocument();
     // 舊版那一排 tile／btn 已經不在
     expect(document.querySelectorAll('.main .tile').length).toBe(0);

@@ -618,11 +618,19 @@ const SELECTABLE_PLAN_STATUS = ['draft', 'active'];
 
 export async function getPlanSelection(userId, planId) {
   await mustPlan(userId, planId);
+  // 一併帶出「這是哪本教材的哪一課／章」路徑，讓 Plan Detail 能用白話說清楚範圍，
+  // 前端不必為每本書再打一次 tree。ch＝該項所屬的「章」（節／主題往上取父章）。
   const rows = await q.all(
     `SELECT pmi.*, i.book_id, i.node_id, i.kind, i.title,
+            b.title AS book_title, b.subject_list_id AS subject_list_id,
+            n.title AS node_title, n.kind AS node_kind,
+            COALESCE(ch.title, n.title) AS chapter_title,
             COALESCE(p.completed,0) AS material_completed
        FROM plan_material_items pmi
        JOIN material_content_items i ON i.id=pmi.content_item_id AND i.user_id=pmi.user_id
+       JOIN material_books b ON b.id=i.book_id AND b.user_id=pmi.user_id
+       JOIN material_nodes n ON n.id=i.node_id AND n.user_id=pmi.user_id
+       LEFT JOIN material_nodes ch ON ch.id=n.parent_id AND ch.user_id=pmi.user_id
        LEFT JOIN material_progress p ON p.content_item_id=i.id AND p.user_id=pmi.user_id
       WHERE pmi.user_id=? AND pmi.plan_id=? ORDER BY i.book_id, i.order_index, i.id`, [userId, planId]);
   return rows.map(r => ({ ...r, selected: !!r.selected, material_completed: !!r.material_completed }));

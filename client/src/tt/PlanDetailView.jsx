@@ -12,8 +12,7 @@ import ConstraintSheet from './ConstraintSheet';
 import ExplainSheet from './ExplainSheet';
 import RollingExamSchedule from './RollingExamSchedule';
 import PlanContentPicker from './PlanContentPicker';
-import PlanTimeline from './PlanTimeline';
-import ProgressPlan from './ProgressPlan';
+import PlanRangeView from './PlanRangeView';
 import { Button, IconButton, PageHeader, SurfaceCard, ProgressBar, ListRow, BottomSheet, EmptyState } from './ui';
 
 // 單一計畫的內容。
@@ -346,45 +345,34 @@ export default function PlanDetailView({ planKey, tasks, lists, apiPlans = [], r
             onApplied={async () => { await reload(); }} />
         )}
 
-        {/* 首屏：進度就是主角，不做成儀表板 */}
-        <div style={{ marginTop: 'var(--sp-5)' }}>
-          <div className="row" style={{ alignItems: 'baseline' }}>
-            <span style={{ fontSize: 30, fontWeight: 700, letterSpacing: '-.03em' }}>{pct}%</span>
-            <span className="ui-meta">{plan.done} / {plan.total} 已完成</span>
+        {/* 首屏：用白話直接回答「考試哪天、要讀完哪些範圍（哪科→哪本→哪課）、
+            以及（若已安排）每天要做的」。不先顯示百分比儀表板或工程術語。 */}
+        {isReal ? (
+          <PlanRangeView
+            plan={plan} lists={lists}
+            onAddRange={plan.status === 'active' ? () => setSheet('addContent') : undefined}
+            onArrange={plan.status === 'active' ? () => setSheet('arrange') : undefined}
+            onAddManual={plan.status === 'active' ? () => setSheet('add') : undefined}
+            onAdjust={plan.status === 'active' ? () => setShowRolling(true) : undefined}
+          />
+        ) : (
+          /* 舊資料／歷史計畫：沒有正式 planId，維持簡單進度呈現 */
+          <div style={{ marginTop: 'var(--sp-5)' }}>
+            <div className="row" style={{ alignItems: 'baseline' }}>
+              <span style={{ fontSize: 30, fontWeight: 700, letterSpacing: '-.03em' }}>{pct}%</span>
+              <span className="ui-meta">{plan.done} / {plan.total} 已完成</span>
+            </div>
+            <div style={{ marginTop: 'var(--sp-2)' }}>
+              <ProgressBar value={plan.done} max={plan.total} label={`${plan.name}：${plan.total} 項中已完成 ${plan.done} 項`} />
+            </div>
           </div>
-          <div style={{ marginTop: 'var(--sp-2)' }}>
-            <ProgressBar value={plan.done} max={plan.total} label={`${plan.name}：${plan.total} 項中已完成 ${plan.done} 項`} />
+        )}
+        {isReal && goScheduleHistory && (
+          <div className="row" style={{ marginTop: 'var(--sp-3)' }}>
+            <Button size="sm" variant="ghost" onClick={goScheduleHistory}>
+              <Icon name="calendar" size={14} /> 排程紀錄（版本歷史）
+            </Button>
           </div>
-          <div className="row" style={{ marginTop: 'var(--sp-2)' }}>
-            {plan.end && <span className="ui-meta">目標 {md(plan.end)}</span>}
-            {plan.subjects.length > 1 && <span className="ui-meta">{plan.subjects.length} 個科目</span>}
-            {/* §M：計畫任務是 AI 排的每日進度，過了原定日是「未完成進度」，不是「逾期」（deadline） */}
-            {plan.overdue > 0 && <span className="ui-meta" style={{ color: 'var(--warning, #b7791f)' }}>未完成進度 {plan.overdue} 項</span>}
-          </div>
-        </div>
-
-        {/* 段考進度（A 層）：哪一段日期以前要讀完哪些教材範圍。這是獨立於確切排程的
-            學習進度層，可以在沒有每日精確排程時就存在、被讀、被改。 */}
-        {isReal && <ProgressPlan plan={plan} lists={lists} />}
-
-        {/* 確切安排（B 層）：已排定的每日安排摘要。這裡不冒充段考進度——它只是把
-            排程投影成唯讀摘要；要看完整版本歷史走「排程紀錄」深連結。
-            現役計畫可「加入內容／調整」；歷史（非 active）計畫唯讀呈現、不給操作入口。 */}
-        {isReal && (
-          <>
-            <PlanTimeline
-              plan={plan}
-              onAddContent={plan.status === 'active' ? () => setShowRolling(true) : undefined}
-              onAdjust={plan.status === 'active' ? () => setShowRolling(true) : undefined}
-            />
-            {goScheduleHistory && (
-              <div className="row" style={{ marginTop: 'var(--sp-2)' }}>
-                <Button size="sm" variant="ghost" onClick={goScheduleHistory}>
-                  <Icon name="calendar" size={14} /> 排程紀錄（版本歷史）
-                </Button>
-              </div>
-            )}
-          </>
         )}
 
         {/* 已結束：清楚標示歷史／唯讀，並給出唯一的回頭路 */}
@@ -509,6 +497,30 @@ export default function PlanDetailView({ planKey, tasks, lists, apiPlans = [], r
       </div>
 
       {/* ---------- 管理：右上 ••• ---------- */}
+      {/* 要不要幫你排出每天要做的（範圍加好後才選）。各科考試日已是「哪天前讀完」的
+          目標，所以這裡只提供每日/時段兩種；不做平均分段。 */}
+      {sheet === 'arrange' && (
+        <BottomSheet onClose={close} label="要幫你安排到什麼程度">
+          <div style={{ display: 'grid', gap: 8 }}>
+            <b style={{ fontSize: 16 }}>要幫你安排到什麼程度？</b>
+            <div className="ui-meta">各科考試日已經是「哪天前讀完」的目標了。要不要再幫你排出每天要做的？</div>
+            <ListRow
+              title="排出每天要讀什麼" subtitle="列出每天要做哪些內容，但不綁幾點"
+              trailing={<Icon name="chevron" size={16} />}
+              role="button" tabIndex={0} style={{ cursor: 'pointer' }}
+              onClick={() => { close(); adjustPlan?.(plan.planId, 'all', 'daily'); }}
+              onKeyDown={e => { if (e.key === 'Enter') { close(); adjustPlan?.(plan.planId, 'all', 'daily'); } }} />
+            <ListRow
+              title="連每天的時段都排好" subtitle="依你的可用時間與行事曆，排到幾點到幾點"
+              trailing={<Icon name="chevron" size={16} />}
+              role="button" tabIndex={0} style={{ cursor: 'pointer' }}
+              onClick={() => { close(); adjustPlan?.(plan.planId, 'all', 'timed'); }}
+              onKeyDown={e => { if (e.key === 'Enter') { close(); adjustPlan?.(plan.planId, 'all', 'timed'); } }} />
+            {err && <div className="error">{err}</div>}
+          </div>
+        </BottomSheet>
+      )}
+
       {sheet === 'manage' && (
         <BottomSheet onClose={close} label="計畫選項">
           <b style={{ fontSize: 17 }}>計畫選項</b>

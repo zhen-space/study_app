@@ -12,6 +12,7 @@ import HabitsView from './HabitsView';
 import StatsView from './StatsView';
 import PetView from './PetView';
 import WizardView from './WizardView';
+import ExamCreateWizard from './ExamCreateWizard';
 import VocabView from './VocabView';
 import MemoView from './MemoView';
 import ScheduleHistoryView from './ScheduleHistoryView';
@@ -171,11 +172,21 @@ export default function Shell({ onLogout }) {
         : view.type === 'plans' ? <PlansView tasks={tasks} lists={lists} apiPlans={apiPlans} reload={reload}
             openPlan={k => setView({ type: 'plan', key: k })} goWizard={() => setView({ type: 'wizard' })}
             createIntent={planCreateIntent} onCreateIntentHandled={() => setPlanCreateIntent(false)}
+            goExamWizard={() => setView({ type: 'exam-wizard' })}
+            createGeneralPlan={async () => {
+              // 保留「一般／空白計畫」能力（非段考）：建立空白計畫並進明細。
+              const p = await api('/plans', { method: 'POST', body: { name: '新的計畫', status: 'active', source: 'manual' } });
+              await reload();
+              setView({ type: 'plan', key: `plan:${p.id}` });
+            }}
             goWizardMode={m => setView({ type: 'wizard', scheduleMode: m })} />
+        : view.type === 'exam-wizard' ? <ExamCreateWizard key="exam-wizard" lists={lists}
+            onCancel={() => setView({ type: 'plans' })}
+            onDone={async pid => { await reload(); setView({ type: 'plan', key: `plan:${pid}` }); }} />
         : view.type === 'plan' ? <PlanDetailView planKey={view.key} tasks={tasks} lists={lists} apiPlans={apiPlans} reload={reload}
             onBack={() => setView({ type: 'plans' })} goWizard={() => setView({ type: 'wizard' })}
             // 「調整計畫」＝Edit Mode：帶著這個計畫進精靈，不會建立新計畫
-            adjustPlan={(planId, section) => setView({ type: 'wizard', mode: 'edit', planId, section, from: view.key })}
+            adjustPlan={(planId, section, scheduleMode) => setView({ type: 'wizard', mode: 'edit', planId, section, scheduleMode, from: view.key })}
             goLocks={() => setView({ type: 'locks' })}
             goScheduleHistory={() => setView({ type: 'schedule-history' })} />
         : view.type === 'study' || view.type === 'pomo' ? <StudyView tasks={tasks.filter(t => !t.deleted)} goPlans={() => setView({ type: 'plans' })} />
@@ -214,7 +225,7 @@ export default function Shell({ onLogout }) {
           Study / Wizard / Plan 明細 / 設定等操作或表單狀態不顯示。 */}
       {(['today', 'plans', 'calendar'].includes(view.type) || TASK_VIEWS.includes(view.type)) && (
         <GlobalAdd lists={lists} reload={reload} defaultReminderTime={saReminderTime}
-          onPlan={() => { setPlanCreateIntent(true); setViewRaw({ type: 'plans' }); }}
+          onPlan={() => setViewRaw({ type: 'exam-wizard' })}
           onCalendarAdd={kind => { setCalAddIntent(kind); setViewRaw({ type: 'calendar' }); }} />
       )}
 
