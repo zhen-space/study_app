@@ -1,4 +1,4 @@
-// 新版第 1 步「讀什麼」。
+// 新版第 1 步「要考哪些範圍」。
 //
 // 這一支守的是產品面的界線，每一條壞掉學生就會看不懂或被騙：
 //   ・第 1 步只問兩件事：這次要準備什麼、要讀哪些內容
@@ -843,12 +843,12 @@ describe('下一步的啟用條件', () => {
   it('「完成選擇」只回到所有教材，不會直接進第 2 步', async () => {
     await mountWizard();
     await pickChapter();
-    expect(screen.getByText('步驟 1／3：讀什麼')).toBeTruthy();
+    expect(screen.getByText('步驟 1／3：要考哪些範圍')).toBeTruthy();
     expect(screen.getByText('選擇要讀的內容')).toBeTruthy();
     // 回到書櫃之後才有真正的下一步
     await click(btn(/^下一步$/));
     await flush();
-    expect(screen.getByText('步驟 2／3：怎麼安排')).toBeTruthy();
+    expect(screen.getByText('步驟 2／3：要怎麼安排')).toBeTruthy();
     noCrash();
   });
 

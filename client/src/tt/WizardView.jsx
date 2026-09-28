@@ -46,7 +46,7 @@ function Help({ children }) {
 }
 
 // 三個步驟：讀什麼 → 怎麼安排 → AI 排程結果。沒有第四步。
-const STEPS = ['讀什麼', '怎麼安排', 'AI 排程結果'];
+const STEPS = ['要考哪些範圍', '要怎麼安排', '你的讀書計畫'];
 // 從「調整計畫」底部選單進來時，要直接跳到哪一段
 const SECTION_STEP = { content: 0, all: 0, time: 1, cond: 1, deadline: 1 };
 

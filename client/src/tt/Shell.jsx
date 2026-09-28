@@ -175,7 +175,7 @@ export default function Shell({ onLogout }) {
         : view.type === 'plan' ? <PlanDetailView planKey={view.key} tasks={tasks} lists={lists} apiPlans={apiPlans} reload={reload}
             onBack={() => setView({ type: 'plans' })} goWizard={() => setView({ type: 'wizard' })}
             // 「調整計畫」＝Edit Mode：帶著這個計畫進精靈，不會建立新計畫
-            adjustPlan={(planId, section) => setView({ type: 'wizard', mode: 'edit', planId, section, from: view.key })}
+            adjustPlan={(planId, section, scheduleMode) => setView({ type: 'wizard', mode: 'edit', planId, section, scheduleMode, from: view.key })}
             goLocks={() => setView({ type: 'locks' })}
             goScheduleHistory={() => setView({ type: 'schedule-history' })} />
         : view.type === 'study' || view.type === 'pomo' ? <StudyView tasks={tasks.filter(t => !t.deleted)} goPlans={() => setView({ type: 'plans' })} />

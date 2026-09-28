@@ -2,7 +2,7 @@
 // 釘住：固定順序 5 項、第一層不直接進 Quick Task、學校作業/任務走同一顆 ＋、
 // Study 等操作頁不顯示 ＋。
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import { render, screen, within } from '@testing-library/react';
+import { render, screen, within, waitFor } from '@testing-library/react';
 import { act } from 'react';
 import * as fx from './fixtures';
 
@@ -78,12 +78,6 @@ describe('Global Add', () => {
     expect(screen.getByRole('button', { name: '新增' })).toBeInTheDocument();
     // 操作／表單頁：沒有 ＋
     await click(within(bottomNav()).getByLabelText('開始讀書'));           // Study
-    expect(screen.queryByRole('button', { name: '新增' })).toBeNull();
-    // Wizard（§K：排程精靈已移出側欄，改由 計畫 → 建立計畫 → AI 幫我安排 進入）
-    await click(within(bottomNav()).getByText('計畫').closest('button'));
-    await click(screen.getByRole('button', { name: '新增' }));
-    await click(screen.getByRole('button', { name: '新增計畫' }));
-    await click((await screen.findByText('進度 ＋ 具體時段')).closest('.ui-row'));
     expect(screen.queryByRole('button', { name: '新增' })).toBeNull();
     await click(within(side).getByText('設定'));                          // Settings
     expect(screen.queryByRole('button', { name: '新增' })).toBeNull();

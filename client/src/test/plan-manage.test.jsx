@@ -8,7 +8,7 @@
 //   - 「在計畫裡」不等於「已排到日期」→ 尚未安排要看得見
 //   - legacy 計畫不能出現正式管理操作
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import { render, screen, within } from '@testing-library/react';
+import { render, screen, within, fireEvent } from '@testing-library/react';
 import { act } from 'react';
 import * as fx from './fixtures';
 
@@ -89,53 +89,38 @@ const sent = (method, pathPart) =>
   calls.filter(([p, o]) => p.includes(pathPart) && (o?.method || 'GET') === method);
 
 describe('建立計畫', () => {
-  it('「建立計畫」提供段考三種模式', async () => {
+  it('「建立段考計畫」問名稱與考試日期（不先問排程模式）', async () => {
     await goPlans();
     await openCreate();
-    expect(screen.getByText('只安排進度')).toBeInTheDocument();
-    expect(screen.getByText('進度 ＋ 每天要做的')).toBeInTheDocument();
-    expect(screen.getByText('進度 ＋ 具體時段')).toBeInTheDocument();
+    expect(screen.getByLabelText('段考名稱')).toBeInTheDocument();
+    expect(screen.getByLabelText('考試日期')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /建立，開始加入範圍/ })).toBeInTheDocument();
     noCrash();
   });
 
-  it('選「進度 ＋ 具體時段」接到既有排程流程（標題為「建立計畫」）', async () => {
-    await goPlans();
-    await openCreate();
-    await click(screen.getByText('進度 ＋ 具體時段').closest('.ui-row'));
-    expect(screen.getByRole('heading', { name: '建立計畫' })).toBeInTheDocument();
-    noCrash();
-  });
-
-  it('只安排進度：走 POST /plans，建完直接進明細', async () => {
+  it('建立段考：POST /plans 帶名稱＋考試日期＋active，建完直接進明細，且不先建排程', async () => {
     let created = null;
     setApi({
       '/plans': opts => {
-        if (opts?.method === 'POST') { created = { ...fx.emptyPlan, name: opts.body.name }; return created; }
+        if (opts?.method === 'POST') { created = { ...fx.emptyPlan, name: opts.body.name, target_date: opts.body.target_date }; return created; }
         return created ? [...fx.plans, created] : fx.plans;
       },
       '/tasks': [...fx.tasks, ...fx.planTasks],
     });
     await goPlans();
     await openCreate();
-    await click(screen.getByText('只安排進度').closest('.ui-row'));
-    await type(screen.getByPlaceholderText(/第二次段考準備/), '暑假數學講義');
-    await click(screen.getByRole('button', { name: '建立' }));
+    await type(screen.getByLabelText('段考名稱'), '第二次段考');
+    fireEvent.change(screen.getByLabelText('考試日期'), { target: { value: '2099-10-02' } });
+    await click(screen.getByRole('button', { name: /建立，開始加入範圍/ }));
 
     const posts = sent('POST', '/plans');
     expect(posts.length).toBe(1);
-    expect(posts[0][1].body.name).toBe('暑假數學講義');
-    // 模式一「只安排進度」：不得建立任何排程（ScheduleVersion/Block）
+    expect(posts[0][1].body.name).toBe('第二次段考');
+    expect(posts[0][1].body.target_date).toBe('2099-10-02');
+    expect(posts[0][1].body.status).toBe('active');
+    // 建立時不得直接建立排程（範圍與層級之後才在明細裡選）
     expect(sent('POST', '/schedule/preview').length).toBe(0);
-    // 建完應該已經在明細頁
-    expect(within(main()).getByRole('heading', { name: '暑假數學講義' })).toBeInTheDocument();
-    noCrash();
-  });
-
-  it('選「進度 ＋ 每天要做的」也進到排程精靈（模式二）', async () => {
-    await goPlans();
-    await openCreate();
-    await click(screen.getByText('進度 ＋ 每天要做的').closest('.ui-row'));
-    expect(screen.getByRole('heading', { name: '建立計畫' })).toBeInTheDocument();
+    expect(within(main()).getByRole('heading', { name: '第二次段考' })).toBeInTheDocument();
     noCrash();
   });
 

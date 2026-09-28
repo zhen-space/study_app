@@ -426,7 +426,7 @@ describe('排不下時的解法入口（deep-link 進既有 Edit Mode）', () =>
     await click(screen.getByRole('button', { name: '延後期限' }));
     await flush();
     expect(screen.getByRole('heading', { name: '調整「第二次段考」' })).toBeInTheDocument();
-    expect(screen.getByText('步驟 2／3：怎麼安排')).toBeInTheDocument();
+    expect(screen.getByText('步驟 2／3：要怎麼安排')).toBeInTheDocument();
     expect(screen.getByText('完成期限').closest('details')).toHaveAttribute('open');
     noCrash();
   });
@@ -435,16 +435,16 @@ describe('排不下時的解法入口（deep-link 進既有 Edit Mode）', () =>
     await openUnplaced();
     await click(screen.getByRole('button', { name: '調整可用時間' }));
     await flush();
-    expect(screen.getByText('步驟 2／3：怎麼安排')).toBeInTheDocument();
+    expect(screen.getByText('步驟 2／3：要怎麼安排')).toBeInTheDocument();
     expect(screen.getByText('可用時間').closest('details')).toHaveAttribute('open');
     noCrash();
   });
 
-  it('20. 「減少學習內容」進到第 1 步「讀什麼」', async () => {
+  it('20. 「減少學習內容」進到第 1 步「要考哪些範圍」', async () => {
     await openUnplaced();
     await click(screen.getByRole('button', { name: '減少學習內容' }));
     await flush();
-    expect(screen.getByText('步驟 1／3：讀什麼')).toBeInTheDocument();
+    expect(screen.getByText('步驟 1／3：要考哪些範圍')).toBeInTheDocument();
     noCrash();
   });
 
