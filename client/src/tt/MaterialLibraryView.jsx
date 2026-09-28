@@ -2,11 +2,12 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   listCategories, listBooks, getBookTree, setItemCompletion, createCategory, createBook,
   addBookToCategory, updateBook, bookNeedsSubject, ITEM_LABEL, CHAPTER_LEVEL_KINDS,
-  collectBlocked, collectCancelled,
+  collectBlocked, collectCancelled, bookImpact, deleteBook,
 } from './material';
-import { Button, EmptyState, PageHeader, SegmentedControl, ProgressBar } from './ui';
+import { Button, EmptyState, PageHeader, SegmentedControl, ProgressBar, BottomSheet } from './ui';
 import BlockedNotice from './BlockedNotice';
 import MaterialBookEditor from './MaterialBookEditor';
+import AddMaterialFlow from './AddMaterialFlow';
 
 // 教材庫：長期教材 identity、目錄與完成度的正式入口。
 //
@@ -103,6 +104,8 @@ export default function MaterialLibraryView({ goPlans = null, lists = [] }) {
   const [editing, setEditing] = useState(false);
   const [adding, setAdding] = useState('');
   const [addSubject, setAddSubject] = useState('');
+  const [appendMode, setAppendMode] = useState(false);   // 增加目錄／匯入更多內容
+  const [deleteState, setDeleteState] = useState(null);   // null | { loading } | { impact }
 
   const load = useCallback(async () => {
     const [c, b] = await Promise.all([listCategories(), listBooks()]);
@@ -140,6 +143,25 @@ export default function MaterialLibraryView({ goPlans = null, lists = [] }) {
       await load();
     } catch (e) { setErr(e.message); }
     finally { setBusy(false); }
+  };
+
+  // 刪除教材：先讀 CURRENT 影響，再讓使用者確認（被 active/paused 計畫使用時提供解除關聯）。
+  const openDelete = async () => {
+    setDeleteState({ loading: true });
+    try { setDeleteState({ impact: await bookImpact(openBook) }); }
+    catch (e) { setErr(e.message); setDeleteState(null); }
+  };
+  const doDelete = async ({ unlink = false } = {}) => {
+    setBusy(true); setErr('');
+    try {
+      await deleteBook(openBook, { unlink });
+      setDeleteState(null); setOpenBook(null); setTree(null); setEditing(false);
+      await load();
+    } catch (e) {
+      // 仍被使用中：把 impact 帶回讓使用者選擇解除關聯。
+      if (e.payload?.code === 'IN_USE_BY_ACTIVE_PLAN') setDeleteState({ impact: e.payload.impact, blocked: true });
+      else setErr(e.message);
+    } finally { setBusy(false); }
   };
 
   const visibleBooks = useMemo(() => {
@@ -183,6 +205,20 @@ export default function MaterialLibraryView({ goPlans = null, lists = [] }) {
   if (openBook != null) {
     const book = books.find(b => b.id === openBook);
     const inCats = catsOf(openBook);
+    // 增加目錄／匯入更多內容：走 AddMaterialFlow 的拍照／手動 → draft → 合併到這本書。
+    if (appendMode) {
+      return (
+        <div className="main">
+          <PageHeader title={`增加目錄 · ${tree?.book?.title || book?.title || ''}`}
+            back={<button className="page-back" onClick={() => setAppendMode(false)}>← 返回教材</button>} />
+          <div className="main-body ml-view">
+            <AddMaterialFlow lists={lists} appendToBook={{ id: openBook, title: tree?.book?.title || book?.title }}
+              onCancel={() => setAppendMode(false)}
+              onCreated={async () => { setAppendMode(false); setTree(await getBookTree(openBook)); await load(); }} />
+          </div>
+        </div>
+      );
+    }
     return (
       <div className="main">
         <PageHeader title={tree?.book?.title || book?.title || '教材'}
@@ -247,6 +283,50 @@ export default function MaterialLibraryView({ goPlans = null, lists = [] }) {
                 ))}
               </div>
             )}
+
+        {/* 教材管理動作：增加目錄（合併更多內容）、刪除教材（顯示影響、安全刪除）。 */}
+        {!editing && tree && (
+          <div className="row" style={{ gap: 8, marginTop: 'var(--sp-4)', flexWrap: 'wrap' }}>
+            <Button size="sm" variant="secondary" onClick={() => setAppendMode(true)}>增加目錄／匯入更多內容</Button>
+            <Button size="sm" variant="ghost" onClick={openDelete}>刪除教材</Button>
+          </div>
+        )}
+
+        {deleteState && (
+          <BottomSheet onClose={() => setDeleteState(null)} label="刪除教材">
+            {deleteState.loading ? <div className="mt-loading">讀取影響中…</div> : (
+              <div style={{ display: 'grid', gap: 10 }}>
+                <b>刪除「{tree?.book?.title || book?.title}」？</b>
+                <div className="ui-meta">刪除後不再出現在教材庫，但以下歷史一律保留、不會被刪：</div>
+                <ul className="ui-meta" style={{ margin: 0, paddingLeft: 18 }}>
+                  <li>完成度紀錄：{deleteState.impact.completion_records} 筆</li>
+                  <li>相關任務（Task）：{deleteState.impact.task_linkage} 筆</li>
+                  <li>讀書紀錄（StudySession）：{deleteState.impact.study_sessions} 筆</li>
+                  <li>排程區塊（歷史版本）：{deleteState.impact.scheduled_blocks} 筆</li>
+                  <li>計畫引用：{Object.entries(deleteState.impact.plans_by_status || {}).map(([s, n]) => `${s} ${n}`).join('、') || '無'}</li>
+                </ul>
+                {deleteState.impact.blocking_plans?.length > 0 ? (
+                  <>
+                    <div className="mt-warn">
+                      有使用中的計畫正在選用這本教材：
+                      {deleteState.impact.blocking_plans.map(p => `「${p.name}」`).join('、')}。
+                      刪除會先安全解除這些計畫的關聯（任務會安全退出排程，不會被硬刪）。
+                    </div>
+                    <div className="row" style={{ gap: 8 }}>
+                      <Button variant="primary" disabled={busy} onClick={() => doDelete({ unlink: true })}>解除關聯並刪除</Button>
+                      <Button variant="tertiary" disabled={busy} onClick={() => setDeleteState(null)}>取消</Button>
+                    </div>
+                  </>
+                ) : (
+                  <div className="row" style={{ gap: 8 }}>
+                    <Button variant="primary" disabled={busy} onClick={() => doDelete()}>確認刪除</Button>
+                    <Button variant="tertiary" disabled={busy} onClick={() => setDeleteState(null)}>取消</Button>
+                  </div>
+                )}
+              </div>
+            )}
+          </BottomSheet>
+        )}
         </div>
       </div>
     );

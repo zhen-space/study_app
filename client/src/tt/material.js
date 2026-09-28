@@ -13,8 +13,15 @@ import { api } from '../api';
 
 /* ---------- 讀取 ---------- */
 
-export const listBooks = ({ archived = false } = {}) =>
-  api('/material/books' + (archived ? '?archived=1' : ''));
+export const listBooks = ({ archived = false, subjectListId = null, kind = null, inUse = null, planId = null } = {}) => {
+  const qs = [];
+  if (archived) qs.push('archived=1');
+  if (subjectListId != null && subjectListId !== '') qs.push(`subject_list_id=${subjectListId}`);
+  if (kind) qs.push(`kind=${kind}`);
+  if (inUse === true) qs.push('in_use=1'); else if (inUse === false) qs.push('in_use=0');
+  if (planId != null && planId !== '') qs.push(`plan_id=${planId}`);
+  return api('/material/books' + (qs.length ? `?${qs.join('&')}` : ''));
+};
 
 export const listCategories = () => api('/material/categories');
 
@@ -54,6 +61,27 @@ export const importPreview = ({ files, subjectListId = null, title = '' }) =>
 // 確認之後整本一次建立（全成功或全不做）。手動建立教材走的是同一支——
 // 前端也不維護第二套「建立整本教材」的路徑。
 export const commitDraft = draft => api('/material/import/commit', { method: 'POST', body: { draft } });
+
+/* ---------- 同名偵測 + 合併／增補目錄 ---------- */
+
+// 匯入／新增前偵測同名（正規化後同名＋同科目）。回 { same_name_books, has_conflict }。不寫入。
+export const nameCheck = (title, subjectListId = null) => {
+  const qs = [`title=${encodeURIComponent(title || '')}`];
+  if (subjectListId != null && subjectListId !== '') qs.push(`subject_list_id=${subjectListId}`);
+  return api(`/material/name-check?${qs.join('&')}`);
+};
+
+// 合併／增補目錄 preview：把新 TOC 比對既有書，回分類與是否需確認順序 + fingerprint。不寫入。
+export const mergePreview = (bookId, draft) =>
+  api(`/material/books/${bookId}/merge/preview`, { method: 'POST', body: { draft } });
+
+// 合併／增補目錄 apply：單一交易併入既有書，保留完成度／選取／Task linkage。
+// 409 code：STALE（見畫面文案）、ORDER_CONFIRMATION_REQUIRED、DUPLICATE_CONFIRMATION_REQUIRED。
+export const mergeApply = (bookId, draft, { expectedFingerprint = null, confirmOrder = false, confirmDuplicates = false } = {}) =>
+  api(`/material/books/${bookId}/merge`, {
+    method: 'POST',
+    body: { draft, expected_fingerprint: expectedFingerprint, confirm_order: confirmOrder, confirm_duplicates: confirmDuplicates },
+  });
 
 /* ---------- 寫入 ---------- */
 
@@ -112,6 +140,14 @@ export const updateBook = (bookId, body) =>
   api(`/material/books/${bookId}`, { method: 'PATCH', body });
 export const addBookToCategory = (categoryId, bookId) =>
   api(`/material/categories/${categoryId}/books/${bookId}`, { method: 'PUT' });
+
+// 刪除前的 CURRENT 影響（唯讀）。
+export const bookImpact = bookId => api(`/material/books/${bookId}/impact`);
+
+// 教材 soft-delete（tombstone）。active／paused 計畫使用中會回 409 IN_USE_BY_ACTIVE_PLAN；
+// unlink=true 先安全解除關聯再刪。歷史一律保留、不 cascade。
+export const deleteBook = (bookId, { unlink = false } = {}) =>
+  api(`/material/books/${bookId}` + (unlink ? '?unlink=1' : ''), { method: 'DELETE' });
 
 /* ---------- 純函式：只做「呈現」需要的整理，不重算 truth ---------- */
 

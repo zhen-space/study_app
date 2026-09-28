@@ -170,7 +170,8 @@ export default function Shell({ onLogout }) {
             goWizardEdit={(planId, section) => setView({ type: 'wizard', mode: 'edit', planId, section, from: `plan:${planId}` })} />
         : view.type === 'plans' ? <PlansView tasks={tasks} lists={lists} apiPlans={apiPlans} reload={reload}
             openPlan={k => setView({ type: 'plan', key: k })} goWizard={() => setView({ type: 'wizard' })}
-            createIntent={planCreateIntent} onCreateIntentHandled={() => setPlanCreateIntent(false)} />
+            createIntent={planCreateIntent} onCreateIntentHandled={() => setPlanCreateIntent(false)}
+            goWizardMode={m => setView({ type: 'wizard', scheduleMode: m })} />
         : view.type === 'plan' ? <PlanDetailView planKey={view.key} tasks={tasks} lists={lists} apiPlans={apiPlans} reload={reload}
             onBack={() => setView({ type: 'plans' })} goWizard={() => setView({ type: 'wizard' })}
             // 「調整計畫」＝Edit Mode：帶著這個計畫進精靈，不會建立新計畫
@@ -196,6 +197,7 @@ export default function Shell({ onLogout }) {
         : view.type === 'wizard' ? <WizardView key={`wz:${view.mode || 'create'}:${view.planId ?? 'new'}:${view.section || ''}`} lists={lists} tasks={tasks} reload={reload}
             goTasks={() => setView({ type: 'today' })} goCalendar={() => setView({ type: 'calendar' })}
             mode={view.mode || 'create'} planId={view.planId ?? null} initialSection={view.section || ''}
+            scheduleMode={view.scheduleMode || 'timed'}
             planTitle={apiPlans.find(p => p.id === view.planId)?.name || ''}
             planTasks={view.planId != null ? tasks.filter(t => t.plan_id === view.planId) : []}
             onDone={() => setView({ type: 'plan', key: view.from || `plan:${view.planId}` })} />

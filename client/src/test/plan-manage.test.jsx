@@ -89,23 +89,24 @@ const sent = (method, pathPart) =>
   calls.filter(([p, o]) => p.includes(pathPart) && (o?.method || 'GET') === method);
 
 describe('建立計畫', () => {
-  it('「建立計畫」提供 AI 安排與空白計畫兩條路', async () => {
+  it('「建立計畫」提供段考三種模式', async () => {
     await goPlans();
     await openCreate();
-    expect(screen.getByRole('button', { name: /AI 幫我安排/ })).toBeInTheDocument();
-    expect(screen.getByText('建立空白計畫')).toBeInTheDocument();
+    expect(screen.getByText('只安排進度')).toBeInTheDocument();
+    expect(screen.getByText('進度 ＋ 每天要做的')).toBeInTheDocument();
+    expect(screen.getByText('進度 ＋ 具體時段')).toBeInTheDocument();
     noCrash();
   });
 
-  it('AI 安排接到既有排程流程（§L：標題為「建立計畫」）', async () => {
+  it('選「進度 ＋ 具體時段」接到既有排程流程（標題為「建立計畫」）', async () => {
     await goPlans();
     await openCreate();
-    await click(screen.getByRole('button', { name: /AI 幫我安排/ }));
+    await click(screen.getByText('進度 ＋ 具體時段').closest('.ui-row'));
     expect(screen.getByRole('heading', { name: '建立計畫' })).toBeInTheDocument();
     noCrash();
   });
 
-  it('建立空白計畫：走 POST /plans，建完直接進明細', async () => {
+  it('只安排進度：走 POST /plans，建完直接進明細', async () => {
     let created = null;
     setApi({
       '/plans': opts => {
@@ -116,7 +117,7 @@ describe('建立計畫', () => {
     });
     await goPlans();
     await openCreate();
-    await click(screen.getByText('建立空白計畫').closest('.ui-row'));
+    await click(screen.getByText('只安排進度').closest('.ui-row'));
     await type(screen.getByPlaceholderText(/第二次段考準備/), '暑假數學講義');
     await click(screen.getByRole('button', { name: '建立' }));
 

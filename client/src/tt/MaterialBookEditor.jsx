@@ -154,6 +154,14 @@ export default function MaterialBookEditor({ book, tree, lists = [], onChanged, 
               if (v !== (book.publisher || '')) run(() => updateBook(book.id, { publisher: v }));
             }} />
         </label>
+        <label className="md-field">
+          <span>教材類型</span>
+          <select value={book?.book_type ?? ''} disabled={busy}
+            onChange={e => run(() => updateBook(book.id, { book_type: e.target.value }))}>
+            <option value="">未分類</option>
+            {['課本', '講義', '測驗卷', '參考書', '自訂'].map(t => <option key={t} value={t}>{t}</option>)}
+          </select>
+        </label>
       </div>
 
       {(tree?.nodes || []).map(ch => {

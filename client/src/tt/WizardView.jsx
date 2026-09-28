@@ -54,6 +54,9 @@ export default function WizardView({
   lists, tasks = [], reload, goTasks, goCalendar,
   // Edit Mode：從計畫明細的「調整計畫」進來，帶著要調整的那個計畫
   mode = 'create', planId = null, planTitle = '', planTasks = [], initialSection = '', onDone,
+  // 段考三種模式（B6）：'daily'＝排每天要做的（不指定時段）；'timed'＝排到具體時段。
+  // 'progress'（只安排進度、不排程）不進 Wizard，由 PlansView 直接建立空白計畫處理。
+  scheduleMode = 'timed',
 }) {
   const isEdit = mode === 'edit' && planId != null;
   const [step, setStep] = useState(SECTION_STEP[initialSection] ?? 0);
@@ -76,7 +79,7 @@ export default function WizardView({
   const [exDates, setExDates] = useState([]);         // 不排的日期
   const [exDateInput, setExDateInput] = useState(today());
   const [busyHours, setBusyHours] = useState(0);      // 既定行程超過幾小時就不排（0=不限）
-  const [timed, setTimed] = useState(true);           // 是否計算時間
+  const [timed, setTimed] = useState(scheduleMode !== 'daily'); // 是否計算時間（daily 模式＝false）
   const [limitPerDay, setLimitPerDay] = useState(false); // 不計時模式是否限制每天數量
   const [perDay, setPerDay] = useState(3);            // 每天幾項
   const [pace, setPace] = useState('even');           // even=平均分配 front=盡早排完（前面多排）
