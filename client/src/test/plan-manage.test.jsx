@@ -124,8 +124,18 @@ describe('建立計畫', () => {
     const posts = sent('POST', '/plans');
     expect(posts.length).toBe(1);
     expect(posts[0][1].body.name).toBe('暑假數學講義');
+    // 模式一「只安排進度」：不得建立任何排程（ScheduleVersion/Block）
+    expect(sent('POST', '/schedule/preview').length).toBe(0);
     // 建完應該已經在明細頁
     expect(within(main()).getByRole('heading', { name: '暑假數學講義' })).toBeInTheDocument();
+    noCrash();
+  });
+
+  it('選「進度 ＋ 每天要做的」也進到排程精靈（模式二）', async () => {
+    await goPlans();
+    await openCreate();
+    await click(screen.getByText('進度 ＋ 每天要做的').closest('.ui-row'));
+    expect(screen.getByRole('heading', { name: '建立計畫' })).toBeInTheDocument();
     noCrash();
   });
 
