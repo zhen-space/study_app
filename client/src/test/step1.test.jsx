@@ -469,13 +469,17 @@ describe('加入教材', () => {
       },
     });
     await openAdd();
-    // 用 PDF：圖片會先走瀏覽器的解碼／轉正，那條路在 jsdom 裡沒有實作。
-    // 兩者之後走的是同一個 handler。
+    // 拍照／匯入 → 先進 PhotoQueue（多張佇列）。用 PDF：圖片會先走瀏覽器的解碼／轉正，
+    // 那條路在 jsdom 裡沒有實作；兩者之後走同一個 handler。
+    await click(btn(/拍照／匯入教材目錄/));
+    await flush();
     const file = new File([new Uint8Array([37, 80, 68, 70])], 'toc.pdf', { type: 'application/pdf' });
-    const input = document.querySelector('input[type=file]');
-    // jsdom 的 file input 不能直接指派 files，要自己掛上去
+    const input = screen.getByLabelText('選多張照片');
     Object.defineProperty(input, 'files', { value: [file], configurable: true });
     await act(async () => { fireEvent.change(input); });
+    await flush();
+    // 確認送出才會呼叫解析（此案例會回 500 → 轉成學生看得懂的話）
+    await act(async () => { fireEvent.click(screen.getByRole('button', { name: /確認送出/ })); });
     await waitFor(() => expect(screen.queryByRole('alert')).toBeTruthy());
     const msg = screen.getByRole('alert').textContent;
     expect(msg).toContain('自己建立教材');

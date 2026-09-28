@@ -135,6 +135,26 @@ export function validateDraft(input) {
   };
 }
 
+// 匯入 payload 的便宜驗證（張數／格式／大小）——**純函式**，不依賴 AI 金鑰、不碰 DB，
+// 讓 route 與測試共用同一份規則。回錯誤字串或 null。base64 長度 × 3/4 ≈ 解碼位元組。
+export function importPayloadError(files, { maxCount = 12, maxFileBytes = 10 * 1024 * 1024, maxTotalBytes = 45 * 1024 * 1024 } = {}) {
+  if (!Array.isArray(files) || !files.length) return '沒有收到檔案';
+  if (files.length > maxCount) return `一次最多 ${maxCount} 張照片`;
+  const bytesOf = s => Math.floor((String(s || '').length * 3) / 4);
+  let total = 0;
+  for (let i = 0; i < files.length; i++) {
+    const f = files[i] || {};
+    if (!f.data || !/^image\/|^application\/pdf$/.test(String(f.mime || ''))) {
+      return `第 ${i + 1} 張檔案格式不支援或內容為空（請用照片或 PDF）`;
+    }
+    const size = bytesOf(f.data);
+    if (size > maxFileBytes) return `第 ${i + 1} 張超過單張 ${Math.round(maxFileBytes / 1024 / 1024)}MB 上限，請重拍或縮小`;
+    total += size;
+  }
+  if (total > maxTotalBytes) return `全部照片合計超過 ${Math.round(maxTotalBytes / 1024 / 1024)}MB 上限，請減少張數或縮小`;
+  return null;
+}
+
 // 統計數字，給 preview 讓使用者確認「AI 讀到多少東西」。
 export function draftSummary(draft) {
   const byKind = Object.fromEntries(ITEM_KINDS.map(k => [k, 0]));

@@ -876,9 +876,29 @@ export async function writeDraftTree(userId, draft, { sources = [], verifyInTx =
 }
 
 // preview 用：只驗證與統計，**完全不寫資料庫**。
+// warnings＝非阻擋性、但需要使用者確認的情況（多頁合併常見的重複章節）。刻意不自動
+// 合併或覆蓋——那可能把兩個真的不同的章併成一個；也絕不碰完成度（新書根本還沒有完成度）。
 export function previewMaterialDraft(input) {
   const { draft, problems } = validateDraft(input);
-  return { ok: problems.length === 0, problems, draft, summary: draftSummary(draft) };
+  return { ok: problems.length === 0, problems, draft, summary: draftSummary(draft), warnings: draftWarnings(draft) };
+}
+
+// 目前只偵測「同一份 draft 內重複的章節標題」——多頁拍攝時最容易出現（同一章被拍到兩頁）。
+export function draftWarnings(draft) {
+  const warnings = [];
+  const seen = new Map();
+  for (const ch of draft.chapters || []) {
+    const key = normTitle(ch.title);
+    if (!key) continue;
+    seen.set(key, (seen.get(key) || 0) + 1);
+  }
+  for (const [, count] of seen) if (count > 1) { /* count 檢查在下方統一列出標題 */ }
+  const dups = [...seen.entries()].filter(([, n]) => n > 1);
+  for (const [key] of dups) {
+    const title = (draft.chapters.find(c => normTitle(c.title) === key) || {}).title || key;
+    warnings.push({ type: 'duplicate_chapter', message: `有重複的章節「${title}」，請確認是不是同一章（多拍到的可以移除）` });
+  }
+  return warnings;
 }
 
 /* ---------- 合併 / 增補目錄（同一引擎；對應 blocker 2、3、4） ---------- */
