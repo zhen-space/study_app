@@ -77,7 +77,7 @@ function SectionRow({ label, count, open, onToggle }) {
   );
 }
 
-export default function PlansView({ tasks, lists, apiPlans = [], openPlan, goExamWizard, createIntent = false, onCreateIntentHandled }) {
+export default function PlansView({ tasks, lists, apiPlans = [], openPlan, goExamWizard, createGeneralPlan, createIntent = false, onCreateIntentHandled }) {
   const plans = usePlans(tasks, lists, apiPlans);
   // Global Add（＋ → 計畫）導過來時，直接進入「建立段考」三步精靈（不先建空 Plan）。
   useEffect(() => {
@@ -123,9 +123,15 @@ export default function PlansView({ tasks, lists, apiPlans = [], openPlan, goExa
         {plans.length === 0 && (
           <EmptyState
             title="還沒有計畫"
-            description="建立一個讀書計畫，讓 AI 幫你把內容安排到每天。"
+            description="建立段考計畫，一科一科加入範圍；或建立一般計畫自己安排。"
             action={<Button variant="primary" size="lg" onClick={() => goExamWizard?.()}>建立段考計畫</Button>}
           />
+        )}
+        {/* 保留一般／空白計畫能力（非段考）：低調的次要入口，不干擾段考主流程。 */}
+        {createGeneralPlan && (
+          <div className="row" style={{ marginTop: 'var(--sp-3)', justifyContent: 'center' }}>
+            <Button size="sm" variant="ghost" onClick={() => createGeneralPlan()}>建立一般計畫（非段考）</Button>
+          </div>
         )}
 
         {live.map(p => <PlanCard key={p.key} p={p} onOpen={openPlan} />)}

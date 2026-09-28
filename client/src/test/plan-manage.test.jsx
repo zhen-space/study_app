@@ -107,6 +107,22 @@ describe('建立計畫', () => {
     noCrash();
   });
 
+  it('保留一般計畫能力：建立一般計畫（非段考）走 POST /plans 並進明細', async () => {
+    let created = null;
+    setApi({
+      '/plans': opts => {
+        if (opts?.method === 'POST') { created = { ...fx.emptyPlan, name: opts.body.name }; return created; }
+        return created ? [...fx.plans, created] : fx.plans;
+      },
+      '/tasks': [...fx.tasks, ...fx.planTasks],
+    });
+    await goPlans();
+    await click(screen.getByRole('button', { name: '建立一般計畫（非段考）' }));
+    expect(sent('POST', '/plans').length).toBe(1);
+    expect(within(main()).getByRole('heading', { name: '新的計畫' })).toBeInTheDocument();
+    noCrash();
+  });
+
   it('空白計畫（沒有任何任務）render 不 crash，並說明是空的', async () => {
     setApi({ '/plans': [fx.emptyPlan], '/tasks': fx.tasks });
     await goPlans();

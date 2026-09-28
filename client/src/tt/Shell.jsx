@@ -173,6 +173,12 @@ export default function Shell({ onLogout }) {
             openPlan={k => setView({ type: 'plan', key: k })} goWizard={() => setView({ type: 'wizard' })}
             createIntent={planCreateIntent} onCreateIntentHandled={() => setPlanCreateIntent(false)}
             goExamWizard={() => setView({ type: 'exam-wizard' })}
+            createGeneralPlan={async () => {
+              // 保留「一般／空白計畫」能力（非段考）：建立空白計畫並進明細。
+              const p = await api('/plans', { method: 'POST', body: { name: '新的計畫', status: 'active', source: 'manual' } });
+              await reload();
+              setView({ type: 'plan', key: `plan:${p.id}` });
+            }}
             goWizardMode={m => setView({ type: 'wizard', scheduleMode: m })} />
         : view.type === 'exam-wizard' ? <ExamCreateWizard key="exam-wizard" lists={lists}
             onCancel={() => setView({ type: 'plans' })}

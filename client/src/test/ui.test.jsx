@@ -256,7 +256,7 @@ describe('UI-R2：Plans 與 Plan Detail', () => {
     await mountShell({ '/tasks': [], '/plans': [] });
     await goPlans();
     expect(screen.getByText('還沒有計畫')).toBeInTheDocument();
-    expect(screen.getByText(/讓 AI 幫你把內容安排到每天/)).toBeInTheDocument();
+    expect(screen.getByText(/一科一科加入範圍/)).toBeInTheDocument();
     expect(within(document.querySelector('.ui-empty')).getByRole('button', { name: '建立段考計畫' })).toBeInTheDocument();
     noCrash();
   });
