@@ -9,6 +9,7 @@ import {
   TASK_KINDS, DEFAULT_TASK_KIND, REMINDER_DAYS_BEFORE,
   validateSchoolAssignment, validateReminder,
 } from '../school/assignment.js';
+import { matchingSubjects, subjectMergeImpact, mergeSubjects } from '../subjects/merge.js';
 
 const router = Router();
 // 僅供 server-side migration/cutover 呼叫；一般 JWT client 不能靠 body 欄位繞過。
@@ -114,9 +115,25 @@ async function canTouch(uid, t) {
 }
 router.post('/lists', async (req, res) => {
   const { name, color } = req.body;
-  if (!name) return res.status(400).json({ error: '請輸入名稱' });
-  const r = await q.run('INSERT INTO lists (user_id,name,color) VALUES (?,?,?)', [req.userId, name, color || '#0086CC']);
+  const cleanName = String(name || '').trim();
+  if (!cleanName) return res.status(400).json({ error: '請輸入名稱' });
+  const matches = await matchingSubjects(q, req.userId, cleanName);
+  if (matches.length && req.body.allow_duplicate !== true) {
+    const merge_preview = matches.length > 1 ? await subjectMergeImpact(q, req.userId, matches[0].id, matches.slice(1).map(x => x.id)) : null;
+    return res.status(409).json({ code: 'duplicate_subject_name', error: '已有同名科目，請選擇合併既有、另建同名或取消', existing: matches, merge_preview });
+  }
+  const r = await q.run('INSERT INTO lists (user_id,name,color) VALUES (?,?,?)', [req.userId, cleanName, color || '#0086CC']);
   res.json({ id: r.lastInsertRowid });
+});
+router.post('/lists/merge-preview', async (req, res) => {
+  try { res.json(await subjectMergeImpact(q, req.userId, req.body.target_id, req.body.source_ids)); }
+  catch (e) { res.status(e.status || 400).json({ error: e.message }); }
+});
+router.post('/lists/merge', async (req, res) => {
+  try {
+    const impact = await q.tx(tx => mergeSubjects(tx, req.userId, req.body.target_id, req.body.source_ids, req.body.preview_fingerprint));
+    res.json({ ok: true, target_id: Number(req.body.target_id), impact });
+  } catch (e) { res.status(e.status || 400).json({ error: e.message, code: e.code, impact: e.impact }); }
 });
 router.patch('/lists/:id', async (req, res) => {
   const { name, color, icon } = req.body;
