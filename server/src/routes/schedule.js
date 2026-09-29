@@ -10,6 +10,7 @@ import { loadGoogleBusy, GoogleCalendarError } from '../integrations/google-cale
 import { validateIntervals, normalizeIntervals, mergeBusyIntervals, busyByDay, combineDayMaps } from '../schedule/busy.js';
 import { freezeWindow, parseRollingPolicy, normalizeOverride, partitionFreeze, effectiveDeadlineViolation } from '../schedule/rolling.js';
 import { signMaterialSnapshotToken } from '../schedule/material-token.js';
+import { signExamSubjectToken } from '../schedule/exam-subject-token.js';
 import { buildPlanTimeline } from '../schedule/timeline.js';
 import { calculateScheduleDiff } from '../schedule/diff.js';
 
@@ -1250,9 +1251,11 @@ export async function runRollingPreview(userId, body) {
   // 否則沒有新增內容的 draft rolling replan 會被誤判成 attachment 而被 PLAN_NOT_ACTIVE_FOR_ATTACH 擋掉。
   const isPositiveIntId = v => v != null && v !== '' && Number.isInteger(Number(v)) && Number(v) > 0;
   const triggerIsAddition = isPositiveIntId(body.trigger_task_id);
+  const pendingSubject = body.exam_subject || null;
   const hasAdditions = triggerIsAddition
     || (Array.isArray(body.add_task_ids) && body.add_task_ids.length > 0)
-    || (Array.isArray(body.material_selections) && body.material_selections.length > 0);
+    || (Array.isArray(body.material_selections) && body.material_selections.length > 0)
+    || pendingSubject != null;
   if (hasAdditions && plan.status !== 'active') {
     return { status: 409, body: { error: '只有進行中的計畫可以加入內容', code: 'PLAN_NOT_ACTIVE_FOR_ATTACH', plan_status: plan.status } };
   }
@@ -1265,6 +1268,18 @@ export async function runRollingPreview(userId, body) {
   const override = normalizeOverride(body.freeze);
 
   const { versionId: baseVersionId, blocks: activeBlocks } = await loadActivePlanBlocks(userId);
+  let examSubject = null;
+  if (pendingSubject != null) {
+    const subjectId = Number(pendingSubject.subject_list_id);
+    const examDate = String(pendingSubject.exam_date || '');
+    if (!Number.isInteger(subjectId) || subjectId <= 0 || !/^\d{4}-\d{2}-\d{2}$/.test(examDate)) return { status: 400, body: { error: '請選擇科目與考試日期', code: 'INVALID_EXAM_SUBJECT' } };
+    const owned = await q.get('SELECT id,name FROM lists WHERE id=? AND user_id=?', [subjectId, userId]);
+    if (!owned) return { status: 404, body: { error: '找不到科目', code: 'EXAM_SUBJECT_NOT_FOUND' } };
+    if (plan.target_date && examDate > plan.target_date) return { status: 422, body: { error: '科目考試日不能晚於這次段考的結束日', code: 'EXAM_DATE_AFTER_PLAN' } };
+    const duplicate = await q.get('SELECT 1 FROM plan_exam_subjects WHERE user_id=? AND plan_id=? AND subject_list_id=?', [userId, planId, subjectId]);
+    if (duplicate) return { status: 409, body: { error: '這個科目已在段考計畫中', code: 'EXAM_SUBJECT_EXISTS' } };
+    examSubject = { subject_list_id: subjectId, subject_name: owned.name, exam_date: examDate };
+  }
   const { frozen, movable } = partitionFreeze(activeBlocks, planId, win, override);
 
   // tail 的來源＝CURRENT DB WORLD 的 current-plan 未完成 Task（不信前端傳的 Task list，§5）。
@@ -1623,7 +1638,9 @@ export async function runRollingPreview(userId, body) {
     pending_changes: {
       attach_task_ids: virtualPlanTaskIds,
       material_selections: materialCreates.map(m => ({ client_key: m.client_key, content_item_id: m.content_item_id })),
+      exam_subject: examSubject,
     },
+    exam_subject: examSubject ? { ...examSubject, token: signExamSubjectToken({ user_id: userId, plan_id: planId, base_version_id: baseVersionId ?? null, ...examSubject }) } : null,
     virtual_task_identities: virtualIdentities,   // client_key → {content_item_id,title,estimated_minutes,list_id}
     diff,
     unplaced: !!pre?.body?.unplaced,
@@ -1659,6 +1676,7 @@ router.post('/rolling/apply', async (req, res) => {
       freezeBlocks: b.freeze_blocks || null,
       enforceDeadlines: true,
       rollingStrict: true,                 // §Phase2：rolling apply 一律開啟嚴格驗證
+      examSubject: b.exam_subject || null,
     }));
   } catch (e) {
     res.status(e.status || 500).json({ error: e.message, code: e.code, violations: e.violations, conflicts: e.conflicts, active_version_id: e.active_version_id });

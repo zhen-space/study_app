@@ -7,6 +7,7 @@ import { canonicalizeBlockTiming, timingProblem } from './timing.js';
 import { planTaskDisposition, lockReleaseReason } from './plan-cleanup.js';
 import { samePlacement, effectiveDeadlineViolation } from './rolling.js';
 import { verifyMaterialSnapshotToken } from './material-token.js';
+import { verifyExamSubjectToken } from './exam-subject-token.js';
 
 // 手動調整的說法：使用者是「現在正要放」，不是「想恢復舊安排」。
 const MANUAL_MESSAGES = {
@@ -979,6 +980,7 @@ export async function applySchedule(userId, {
   //   ・拒絕重複 Material selection；驗證每個 attach/create 都實際出現在 candidate blocks
   //   既有 Wizard/Replan（rollingStrict=false）行為完全不變。
   rollingStrict = false,
+  examSubject = null,
 }) {
   if (!Number.isInteger(Number(planId))) throw new ScheduleInputError('缺少有效的計畫 id');
   if (![SOURCE.INITIAL, SOURCE.AI_REPLAN, SOURCE.MANUAL].includes(source)) {
@@ -990,7 +992,7 @@ export async function applySchedule(userId, {
     if (!['draft', 'active'].includes(plan.status)) throw new ScheduleInputError('目前未執行的計畫不能重新排程');
     // §Phase2 blocker5：只要 request 含任何新增內容（attach / material create），CURRENT Plan
     // 必須是 active。draft/paused/completed/ended/deleted 一律拒絕新增；不含新增的 rolling 不受影響。
-    if (rollingStrict && (attachTaskIds.length || taskCreates.length) && plan.status !== 'active') {
+    if (rollingStrict && (attachTaskIds.length || taskCreates.length || examSubject) && plan.status !== 'active') {
       throw new ScheduleInputError('只有進行中的計畫可以加入內容', 'PLAN_NOT_ACTIVE_FOR_ATTACH');
     }
 
@@ -1001,6 +1003,27 @@ export async function applySchedule(userId, {
       if (Number(st?.active_version_id ?? -1) !== Number(expectedBaseVersionId ?? -1)) {
         throw new ScheduleStalePreviewError(st?.active_version_id ?? null);
       }
+    }
+
+    if (examSubject) {
+      const snap = verifyExamSubjectToken(examSubject.token);
+      const sid = Number(examSubject.subject_list_id);
+      const date = String(examSubject.exam_date || '');
+      if (!snap || Number(snap.user_id) !== Number(userId) || Number(snap.plan_id) !== Number(planId)
+        || Number(snap.base_version_id ?? -1) !== Number(expectedBaseVersionId ?? -1)
+        || Number(snap.subject_list_id) !== sid || snap.exam_date !== date) {
+        throw new ScheduleInputError('新增科目的預覽已失效，請重新預覽', 'EXAM_SUBJECT_STALE');
+      }
+      const owned = await tx.get('SELECT id FROM lists WHERE id=? AND user_id=?', [sid, userId]);
+      if (!owned) throw new ScheduleInputError('找不到科目', 'EXAM_SUBJECT_NOT_FOUND');
+      const currentPlan = await tx.get('SELECT target_date FROM plans WHERE id=? AND user_id=?', [planId, userId]);
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(date) || (currentPlan.target_date && date > currentPlan.target_date)) {
+        throw new ScheduleInputError('科目考試日不能晚於這次段考的結束日', 'INVALID_EXAM_DATE');
+      }
+      const duplicate = await tx.get('SELECT 1 FROM plan_exam_subjects WHERE user_id=? AND plan_id=? AND subject_list_id=?', [userId, planId, sid]);
+      if (duplicate) throw new ScheduleInputError('這個科目已在段考計畫中', 'EXAM_SUBJECT_EXISTS');
+      const order = await tx.get('SELECT COALESCE(MAX(order_index),-1)+1 n FROM plan_exam_subjects WHERE user_id=? AND plan_id=?', [userId, planId]);
+      await tx.run('INSERT INTO plan_exam_subjects (user_id,plan_id,subject_list_id,exam_date,order_index) VALUES (?,?,?,?,?)', [userId, planId, sid, date, order.n]);
     }
 
     // §9 pending attachment：把 plan_id=NULL 的既有 Task 原子掛進本計畫（在同一筆

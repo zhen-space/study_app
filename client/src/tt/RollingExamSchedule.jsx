@@ -13,6 +13,7 @@ const EMPTY = [];
 // 不能直接 apply；前端不直接建立 ScheduledBlock，一律走 /rolling/apply。
 export default function RollingExamSchedule({
   planId, triggerTaskId = null, addTaskIds = EMPTY, materialSelections = EMPTY,
+  examSubject = null,
   scheduleEnd = null, tasks = EMPTY, onClose, onApplied,
 }) {
   const [preview, setPreview] = useState(null);
@@ -29,6 +30,7 @@ export default function RollingExamSchedule({
       if (triggerTaskId != null) body.trigger_task_id = triggerTaskId;
       if (addTaskIds.length) body.add_task_ids = addTaskIds;
       if (materialSelections.length) body.material_selections = materialSelections;
+      if (examSubject) body.exam_subject = examSubject;
       if (freeze) body.freeze = freeze;
       // 裝置行事曆（Apple/EventKit）：原生層＋已授權＋有選行事曆才帶進來；web/PWA no-op。
       // 範圍＝今天到這個計畫的目標日（涵蓋 rolling 後天起實際會排的 tail）；沒有目標日就略過。
@@ -41,7 +43,7 @@ export default function RollingExamSchedule({
     } catch (e) {
       setError(e.message || '預覽失敗'); setPreview(null);
     } finally { setLoading(false); }
-  }, [planId, triggerTaskId, addTaskIds, materialSelections, scheduleEnd]);
+  }, [planId, triggerTaskId, addTaskIds, materialSelections, examSubject, scheduleEnd]);
 
   useEffect(() => { doPreview(null); }, [doPreview]);
 
@@ -87,7 +89,8 @@ export default function RollingExamSchedule({
     <BottomSheet onClose={onClose} label="段考滾動重排">
       <div className="rolling">
         <h3 style={{ margin: '0 0 var(--sp-3)' }}>
-          {addTaskIds.length || materialSelections.length ? '加入內容並重新安排' : '這次段考安排・滾動重排'}
+          {examSubject ? `加入${examSubject.subject_name || '科目'}並重新安排`
+            : addTaskIds.length || materialSelections.length ? '加入內容並重新安排' : '這次段考安排・滾動重排'}
         </h3>
         {error && <div className="ui-card ui-card--warning" role="alert" style={{ marginBottom: 'var(--sp-3)' }}>{error}</div>}
         {loading && <div className="ui-meta">預覽中…</div>}
