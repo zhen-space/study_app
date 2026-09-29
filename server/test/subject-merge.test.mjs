@@ -67,7 +67,10 @@ describe('同名科目偵測與安全合併', () => {
     const shares = await db.execute({ sql: 'SELECT list_id FROM list_shares WHERE owner_id=? AND member_id=?', args: [userId,otherUser] });
     assert.deepEqual(shares.rows.map(r => Number(r[0])), [target]);
     const keptTask = await db.execute({ sql: 'SELECT completed,deadline_date FROM tasks WHERE id=?', args: [task] });
-    assert.deepEqual([...keptTask.rows[0]], [0,'2030-06-20']);
+    assert.deepEqual(
+      [Number(keptTask.rows[0].completed), keptTask.rows[0].deadline_date],
+      [0, '2030-06-20'],
+    );
     assert.equal((await db.execute({ sql: 'SELECT COUNT(*) FROM study_sessions WHERE task_id=?', args: [task] })).rows[0][0], 1);
   });
 
