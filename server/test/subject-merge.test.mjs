@@ -59,7 +59,11 @@ describe('同名科目偵測與安全合併', () => {
       assert.ok(rows.rows.every(r => Number(r[0]) !== source), `${table} 不再引用來源科目`);
     }
     const exam = await db.execute({ sql: 'SELECT subject_list_id,exam_date,order_index FROM plan_exam_subjects WHERE user_id=? AND plan_id=?', args: [userId,plan] });
-    assert.equal(exam.rows.length, 1); assert.deepEqual([...exam.rows[0]], [target,'2030-06-20',1]);
+    assert.equal(exam.rows.length, 1);
+    assert.deepEqual(
+      [Number(exam.rows[0].subject_list_id), exam.rows[0].exam_date, Number(exam.rows[0].order_index)],
+      [target, '2030-06-20', 1],
+    );
     const shares = await db.execute({ sql: 'SELECT list_id FROM list_shares WHERE owner_id=? AND member_id=?', args: [userId,otherUser] });
     assert.deepEqual(shares.rows.map(r => Number(r[0])), [target]);
     const keptTask = await db.execute({ sql: 'SELECT completed,deadline_date FROM tasks WHERE id=?', args: [task] });

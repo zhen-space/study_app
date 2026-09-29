@@ -1,8 +1,9 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createClient } from '@libsql/client';
-import { randomUUID } from 'node:crypto';
-import { unlinkSync } from 'node:fs';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import path from 'node:path';
 import { normalizeSubjectName, matchingSubjects, subjectMergeImpact, mergeSubjects } from '../src/subjects/merge.js';
 
 const objectify = r => r.rows.map(row => Object.fromEntries(r.columns.map((c, i) => [c, row[i]])));
@@ -13,7 +14,8 @@ const wrap = client => ({
 });
 
 async function fixture() {
-  const file = "/private/tmp/subject-merge-" + randomUUID() + ".sqlite";
+  const dir = mkdtempSync(path.join(tmpdir(), 'subject-merge-'));
+  const file = path.join(dir, 'db.sqlite');
   const c = createClient({ url: 'file:' + file });
   for (const sql of [
     'CREATE TABLE lists(id INTEGER PRIMARY KEY,user_id INTEGER,name TEXT,color TEXT,order_index INTEGER)',
@@ -28,7 +30,7 @@ async function fixture() {
     'CREATE TABLE list_shares(id INTEGER PRIMARY KEY,list_id INTEGER,owner_id INTEGER,member_id INTEGER)',
     'CREATE TABLE study_sessions(id INTEGER PRIMARY KEY,user_id INTEGER,task_id INTEGER,actual_minutes INTEGER)',
   ]) await c.execute(sql);
-  return { c, db: wrap(c), close: () => { c.close(); try { unlinkSync(file); } catch {} } };
+  return { c, db: wrap(c), close: () => { c.close(); rmSync(dir, { recursive: true, force: true }); } };
 }
 
 test('subject normalization detects full-width, case and repeated whitespace', async () => {
