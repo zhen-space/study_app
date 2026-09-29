@@ -88,7 +88,8 @@ export default function MaterialDraftEditor({
         <label className="md-field">
           <span>教材名稱</span>
           <input value={d.book.title} placeholder="例如：新大滿貫數學 2"
-            onChange={e => setBook({ title: e.target.value })} />
+            onChange={e => setBook({ title: e.target.value })}
+            onCompositionEnd={e => setBook({ title: e.currentTarget.value })} />
         </label>
         <label className="md-field">
           <span>科目</span>
@@ -109,7 +110,7 @@ export default function MaterialDraftEditor({
             <input autoFocus value={newSubject} placeholder="科目名稱，例如：數學"
               aria-label="新科目名稱" disabled={busy}
               onChange={e => setNewSubject(e.target.value)}
-              onKeyDown={e => { if (e.key === 'Enter') { e.preventDefault(); addSubject(); } }} />
+              onKeyDown={e => { if (e.key === 'Enter' && !e.nativeEvent.isComposing) { e.preventDefault(); addSubject(); } }} />
             <Button size="sm" onClick={addSubject} disabled={busy || !newSubject.trim()}>新增</Button>
             <Button size="sm" variant="tertiary" onClick={() => setNewSubject(null)} disabled={busy}>取消</Button>
           </div>
@@ -136,7 +137,8 @@ export default function MaterialDraftEditor({
           <div className="md-chapter-head">
             <input className="md-chapter-title" value={ch.title} placeholder={`第 ${ci + 1} 章`}
               aria-label={`第 ${ci + 1} 章名稱`}
-              onChange={e => at(ci, { title: e.target.value })} />
+              onChange={e => at(ci, { title: e.target.value })}
+              onCompositionEnd={e => at(ci, { title: e.currentTarget.value })} />
             {d.chapters.length > 1 && (
               <button type="button" className="md-x" aria-label={`刪除第 ${ci + 1} 章`}
                 onClick={() => setChapters(cs => cs.filter((_, i) => i !== ci))}>✕</button>
@@ -153,7 +155,8 @@ export default function MaterialDraftEditor({
                   <option value="topic">主題</option>
                 </select>
                 <input value={c.title} placeholder="名稱" aria-label={`第 ${si + 1} 項名稱`}
-                  onChange={e => atChild(ci, si, { title: e.target.value })} />
+                  onChange={e => atChild(ci, si, { title: e.target.value })}
+                  onCompositionEnd={e => atChild(ci, si, { title: e.currentTarget.value })} />
                 <button type="button" className="md-x" aria-label={`刪除 ${c.title || '這一項'}`}
                   onClick={() => at(ci, { children: ch.children.filter((_, i) => i !== si) })}>✕</button>
               </div>
