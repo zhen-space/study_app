@@ -1,7 +1,7 @@
 import { Router } from 'express';
 import { q } from '../db/init.js';
 import { requireAuth } from '../middleware/auth.js';
-import { addDays, dayOfWeek, todayTW } from '../util/date.js';
+import { addDays, dayOfWeek, todayTW, isValidDay } from '../util/date.js';
 import * as sched from '../schedule/persistence.js';
 import { feasibilityGap } from '../schedule/feasibility-gap.js';
 import { explainSchedule, explainSentences } from '../schedule/explain.js';
@@ -1272,7 +1272,7 @@ export async function runRollingPreview(userId, body) {
   if (pendingSubject != null) {
     const subjectId = Number(pendingSubject.subject_list_id);
     const examDate = String(pendingSubject.exam_date || '');
-    if (!Number.isInteger(subjectId) || subjectId <= 0 || !/^\d{4}-\d{2}-\d{2}$/.test(examDate)) return { status: 400, body: { error: '請選擇科目與考試日期', code: 'INVALID_EXAM_SUBJECT' } };
+    if (!Number.isInteger(subjectId) || subjectId <= 0 || !isValidDay(examDate)) return { status: 400, body: { error: '請選擇科目與正確的考試日期', code: 'INVALID_EXAM_SUBJECT' } };
     const owned = await q.get('SELECT id,name FROM lists WHERE id=? AND user_id=?', [subjectId, userId]);
     if (!owned) return { status: 404, body: { error: '找不到科目', code: 'EXAM_SUBJECT_NOT_FOUND' } };
     if (plan.target_date && examDate > plan.target_date) return { status: 422, body: { error: '科目考試日不能晚於這次段考的結束日', code: 'EXAM_DATE_AFTER_PLAN' } };

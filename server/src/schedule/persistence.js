@@ -1017,7 +1017,7 @@ export async function applySchedule(userId, {
       const owned = await tx.get('SELECT id FROM lists WHERE id=? AND user_id=?', [sid, userId]);
       if (!owned) throw new ScheduleInputError('找不到科目', 'EXAM_SUBJECT_NOT_FOUND');
       const currentPlan = await tx.get('SELECT target_date FROM plans WHERE id=? AND user_id=?', [planId, userId]);
-      if (!/^\d{4}-\d{2}-\d{2}$/.test(date) || (currentPlan.target_date && date > currentPlan.target_date)) {
+      if (!isValidDay(date) || (currentPlan.target_date && date > currentPlan.target_date)) {
         throw new ScheduleInputError('科目考試日不能晚於這次段考的結束日', 'INVALID_EXAM_DATE');
       }
       const duplicate = await tx.get('SELECT 1 FROM plan_exam_subjects WHERE user_id=? AND plan_id=? AND subject_list_id=?', [userId, planId, sid]);

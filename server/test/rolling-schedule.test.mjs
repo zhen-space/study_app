@@ -115,6 +115,33 @@ describe('active 段考加入科目：preview → transactional apply', () => {
     const stopped = await runRollingPreview(owner, { plan_id: paused, exam_subject: { subject_list_id: own, exam_date: D(10) } });
     assert.equal(stopped.status, 409);
   });
+
+  test('stale／竄改 token／假日期全部零寫入', async () => {
+    const u = nextUser(); await mkUser(u);
+    const planId = await mkPlan(u, 'active', D(30));
+    const existing = await mkList(u, '自然'); const added = await mkList(u, '社會');
+    const task = await mkTask(u, planId, existing, { est: 60 });
+    await seedVersion(u, [{ task_id: task, date: D(4), start_time: '19:00', end_time: '20:00', planned_minutes: 60 }]);
+    const invalid = await runRollingPreview(u, { plan_id: planId, exam_subject: { subject_list_id: added, exam_date: '2030-02-31' } });
+    assert.equal(invalid.status, 400);
+    const preview = await runRollingPreview(u, { plan_id: planId, exam_subject: { subject_list_id: added, exam_date: D(20) } });
+    const before = (await q.get('SELECT COUNT(*) c FROM schedule_versions WHERE user_id=?', [u])).c;
+    await assert.rejects(() => sched.applySchedule(u, {
+      planId, source: sched.SOURCE.AI_REPLAN, blocks: preview.body.blocks,
+      expectedBaseVersionId: preview.body.base_version_id, rollingStrict: true,
+      examSubject: { ...preview.body.exam_subject, exam_date: D(19) },
+    }), e => e.code === 'EXAM_SUBJECT_STALE');
+    assert.equal(await q.get('SELECT 1 ok FROM plan_exam_subjects WHERE user_id=? AND plan_id=? AND subject_list_id=?', [u, planId, added]), undefined);
+    assert.equal((await q.get('SELECT COUNT(*) c FROM schedule_versions WHERE user_id=?', [u])).c, before);
+
+    await sched.createScheduleVersion(u, { source: sched.SOURCE.MANUAL, effectiveFrom: D(0), blocks: [{ task_id: task, date: D(5), planned_minutes: 60 }] });
+    await assert.rejects(() => sched.applySchedule(u, {
+      planId, source: sched.SOURCE.AI_REPLAN, blocks: preview.body.blocks,
+      expectedBaseVersionId: preview.body.base_version_id, rollingStrict: true,
+      examSubject: preview.body.exam_subject,
+    }), e => e.code === 'STALE_SCHEDULE_PREVIEW');
+    assert.equal(await q.get('SELECT 1 ok FROM plan_exam_subjects WHERE user_id=? AND plan_id=? AND subject_list_id=?', [u, planId, added]), undefined);
+  });
 });
 
 /* ================= A. Freeze ================= */

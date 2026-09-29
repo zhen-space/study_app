@@ -83,6 +83,7 @@ export default function PlanDetailView({ planKey, tasks, lists, apiPlans = [], r
   const [showRolling, setShowRolling] = useState(false);   // 段考滾動重排
   const [rollingAdditions, setRollingAdditions] = useState(null);
   const [newSubject, setNewSubject] = useState({ subject_list_id: '', exam_date: '' });
+  const [examSubjectIds, setExamSubjectIds] = useState(() => new Set());
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState('');
   const [replan, setReplan] = useState(false);
@@ -97,6 +98,14 @@ export default function PlanDetailView({ planKey, tasks, lists, apiPlans = [], r
   const sched = useActiveSchedule();
   // 必須在早退前呼叫，避免資料刷新瞬間找不到 Plan 時違反 React Hook 順序。
   const health = usePlanScheduleHealth(plan, apiPlans.find(p => p.id === plan?.planId));
+  const refreshExamSubjects = async planId => {
+    if (planId == null) return;
+    try {
+      const projection = await api(`/plans/${planId}/exam`);
+      setExamSubjectIds(new Set((projection.subjects || []).map(s => Number(s.subject_list_id))));
+    } catch { /* 非段考或暫時離線時仍由後端 apply fail closed */ }
+  };
+  useEffect(() => { refreshExamSubjects(plan?.planId); }, [plan?.planId]);
 
   if (!plan) {
     return (
@@ -354,7 +363,7 @@ export default function PlanDetailView({ planKey, tasks, lists, apiPlans = [], r
             scheduleEnd={raw?.target_date
               || plan.items.reduce((m, t) => (t.deadline_date && t.deadline_date > m ? t.deadline_date : m), '')
               || null}
-            onApplied={async () => { await reload(); }} />
+            onApplied={async () => { await reload(); await refreshExamSubjects(plan.planId); }} />
         )}
 
         {/* 首屏：用白話直接回答「考試哪天、要讀完哪些範圍（哪科→哪本→哪課）、
@@ -727,7 +736,8 @@ export default function PlanDetailView({ planKey, tasks, lists, apiPlans = [], r
           <select id="exam-new-subject" value={newSubject.subject_list_id} style={{ width: '100%', marginTop: 'var(--sp-1)' }}
             onChange={e => setNewSubject(s => ({ ...s, subject_list_id: e.target.value }))}>
             <option value="">請選擇科目</option>
-            {lists.filter(l => !l.shared_in).map(l => <option key={l.id} value={l.id}>{l.name}</option>)}
+            {lists.filter(l => !l.shared_in && !examSubjectIds.has(Number(l.id)))
+              .map(l => <option key={l.id} value={l.id}>{l.name}</option>)}
           </select>
           <label className="ui-meta" htmlFor="exam-new-date" style={{ display: 'block', marginTop: 'var(--sp-3)' }}>考試日期</label>
           <input id="exam-new-date" type="date" value={newSubject.exam_date} max={raw?.target_date || undefined}
