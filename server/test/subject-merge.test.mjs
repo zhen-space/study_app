@@ -26,6 +26,11 @@ describe('同名科目偵測與安全合併', () => {
     assert.equal(conflict.body.existing[0].id, first.body.id);
     const explicit = await api('/lists', 'POST', { name: 'math a', allow_duplicate: true });
     assert.equal(explicit.status, 200);
+    const rename = await api(`/lists/${explicit.body.id}`, 'PATCH', { name: '  ＭＡＴＨ   A  ' });
+    assert.equal(rename.status, 409, '改名不可繞過 normalized-name check');
+    assert.equal(rename.body.code, 'duplicate_subject_name');
+    const unchanged = await db.execute({ sql: 'SELECT name FROM lists WHERE id=?', args: [explicit.body.id] });
+    assert.equal(unchanged.rows[0].name, 'math a', '拒絕改名必須零寫入');
   });
 
   test('preview 零寫入；apply 原子轉移所有 refs、dedupe 並保留歷史', async () => {

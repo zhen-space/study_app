@@ -22,6 +22,7 @@ function SubjectManager({ lists = [], reload }) {
   const [duplicate, setDuplicate] = useState(null);
   const [busy, setBusy] = useState(false);
   const [addErr, setAddErr] = useState('');
+  const [subjectErr, setSubjectErr] = useState('');
   const closeAdd = () => { setAdding(false); setName(''); setDuplicate(null); setAddErr(''); };
   const create = async allowDuplicate => {
     if (!name.trim() || busy) return;
@@ -54,11 +55,21 @@ function SubjectManager({ lists = [], reload }) {
       }
     } finally { setBusy(false); }
   };
-  const patch = async (l, body) => { await api(`/lists/${l.id}`, { method: 'PATCH', body }); reload?.(); };
+  const patch = async (l, body) => {
+    setSubjectErr('');
+    try { await api(`/lists/${l.id}`, { method: 'PATCH', body }); reload?.(); return true; }
+    catch (e) { setSubjectErr(e.message); return false; }
+  };
+  const rename = async (l, input) => {
+    const next = input.value.trim();
+    if (!next || next === l.name) { input.value = l.name; return; }
+    if (!await patch(l, { name: next })) input.value = l.name;
+  };
   const del = async l => { if (!confirm(`刪除科目「${l.name}」？（任務會移到願望清單）`)) return; await api(`/lists/${l.id}`, { method: 'DELETE' }); reload?.(); };
   return (
     <section className="ui-section">
       <div className="ui-section-title">科目</div>
+      {subjectErr && <div role="alert" className="ui-meta" style={{ color: 'var(--danger)', marginBottom: 8 }}>{subjectErr}</div>}
       <SurfaceCard>
         {own.length === 0 && <div className="ui-meta" style={{ marginBottom: 'var(--sp-2)' }}>還沒有科目。新增後可用於任務分類與學校作業。</div>}
         {own.map(l => (
@@ -66,7 +77,7 @@ function SubjectManager({ lists = [], reload }) {
             <span className="dot" style={{ background: l.color, width: 10, height: 10, marginRight: 8 }} />
             <div className="ui-row-main">
               <input aria-label={`科目名稱 ${l.name}`} defaultValue={l.name}
-                onBlur={e => e.target.value.trim() && e.target.value.trim() !== l.name && patch(l, { name: e.target.value.trim() })}
+                onBlur={e => rename(l, e.target)}
                 onKeyDown={e => e.key === 'Enter' && e.target.blur()}
                 style={{ border: 'none', background: 'none', fontSize: 15, width: '100%' }} />
               {editing === l.id && (

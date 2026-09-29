@@ -137,8 +137,20 @@ router.post('/lists/merge', async (req, res) => {
 });
 router.patch('/lists/:id', async (req, res) => {
   const { name, color, icon } = req.body;
+  const current = await q.get('SELECT id,name FROM lists WHERE id=? AND user_id=?', [req.params.id, req.userId]);
+  if (!current) return res.status(404).json({ error: '找不到科目' });
+  let cleanName = null;
+  if (name !== undefined) {
+    cleanName = String(name).trim();
+    if (!cleanName) return res.status(400).json({ error: '請輸入名稱' });
+    const matches = (await matchingSubjects(q, req.userId, cleanName))
+      .filter(row => Number(row.id) !== Number(current.id));
+    if (matches.length) return res.status(409).json({
+      code: 'duplicate_subject_name', error: '已有同名科目，請改用其他名稱或從新增科目流程合併', existing: matches,
+    });
+  }
   await q.run('UPDATE lists SET name=COALESCE(?,name), color=COALESCE(?,color), icon=COALESCE(?,icon) WHERE id=? AND user_id=?',
-    [name ?? null, color ?? null, icon ?? null, req.params.id, req.userId]);
+    [cleanName, color ?? null, icon ?? null, req.params.id, req.userId]);
   res.json({ ok: true });
 });
 router.delete('/lists/:id', async (req, res) => {
