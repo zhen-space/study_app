@@ -65,6 +65,7 @@ export class ScheduleRestoreStaleError extends Error {
     super('目前生效的排程已更新，請重新檢視恢復內容');
     this.name = 'ScheduleRestoreStaleError';
     this.status = 409;
+    this.code = 'STALE_SCHEDULE_PREVIEW';
   }
 }
 

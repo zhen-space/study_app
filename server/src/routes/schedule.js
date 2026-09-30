@@ -1885,7 +1885,7 @@ router.post('/versions/:id/restore', async (req, res) => {
       confirmPartial: b.confirm_partial === true,
     }));
   } catch (e) {
-    res.status(e.status || 500).json({ error: e.message });
+    res.status(e.status || 500).json({ error: e.message, ...(e.code ? { code: e.code } : {}) });
   }
 });
 
