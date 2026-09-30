@@ -76,6 +76,74 @@ describe('freeze window（Asia/Taipei 今天／明天）', () => {
   });
 });
 
+describe('active 段考加入科目：preview → transactional apply', () => {
+  test('preview 零寫入；確認後才同交易加入科目並建立新版', async () => {
+    const u = nextUser(); await mkUser(u);
+    const planId = await mkPlan(u, 'active', D(30));
+    const existing = await mkList(u, '數學');
+    const added = await mkList(u, '國文');
+    const task = await mkTask(u, planId, existing, { est: 60 });
+    await seedVersion(u, [{ task_id: task, date: D(3), start_time: '19:00', end_time: '20:00', planned_minutes: 60 }]);
+    const beforeVersions = (await q.get('SELECT COUNT(*) c FROM schedule_versions WHERE user_id=?', [u])).c;
+
+    const preview = await runRollingPreview(u, { plan_id: planId, exam_subject: { subject_list_id: added, exam_date: D(20) } });
+    assert.equal(preview.status, 200);
+    assert.equal(preview.body.exam_subject.subject_list_id, added);
+    assert.ok(preview.body.exam_subject.token);
+    assert.equal(await q.get('SELECT 1 ok FROM plan_exam_subjects WHERE user_id=? AND plan_id=? AND subject_list_id=?', [u, planId, added]), undefined);
+    assert.equal((await q.get('SELECT COUNT(*) c FROM schedule_versions WHERE user_id=?', [u])).c, beforeVersions);
+
+    await sched.applySchedule(u, {
+      planId, source: sched.SOURCE.AI_REPLAN, effectiveFrom: preview.body.window.freeze_start,
+      blocks: preview.body.blocks, expectedBaseVersionId: preview.body.base_version_id,
+      freezeBlocks: preview.body.frozen, enforceDeadlines: true, rollingStrict: true,
+      examSubject: preview.body.exam_subject,
+    });
+    const row = await q.get('SELECT exam_date FROM plan_exam_subjects WHERE user_id=? AND plan_id=? AND subject_list_id=?', [u, planId, added]);
+    assert.equal(row.exam_date, D(20));
+    assert.equal((await q.get('SELECT COUNT(*) c FROM schedule_versions WHERE user_id=?', [u])).c, Number(beforeVersions) + 1);
+  });
+
+  test('非擁有科目與非 active Plan fail closed', async () => {
+    const owner = nextUser(); const stranger = nextUser(); await mkUser(owner); await mkUser(stranger);
+    const foreign = await mkList(stranger, '別人的科目');
+    const active = await mkPlan(owner, 'active', D(20));
+    const hidden = await runRollingPreview(owner, { plan_id: active, exam_subject: { subject_list_id: foreign, exam_date: D(10) } });
+    assert.equal(hidden.status, 404);
+    const paused = await mkPlan(owner, 'paused', D(20));
+    const own = await mkList(owner, '英文');
+    const stopped = await runRollingPreview(owner, { plan_id: paused, exam_subject: { subject_list_id: own, exam_date: D(10) } });
+    assert.equal(stopped.status, 409);
+  });
+
+  test('stale／竄改 token／假日期全部零寫入', async () => {
+    const u = nextUser(); await mkUser(u);
+    const planId = await mkPlan(u, 'active', D(30));
+    const existing = await mkList(u, '自然'); const added = await mkList(u, '社會');
+    const task = await mkTask(u, planId, existing, { est: 60 });
+    await seedVersion(u, [{ task_id: task, date: D(4), start_time: '19:00', end_time: '20:00', planned_minutes: 60 }]);
+    const invalid = await runRollingPreview(u, { plan_id: planId, exam_subject: { subject_list_id: added, exam_date: '2030-02-31' } });
+    assert.equal(invalid.status, 400);
+    const preview = await runRollingPreview(u, { plan_id: planId, exam_subject: { subject_list_id: added, exam_date: D(20) } });
+    const before = (await q.get('SELECT COUNT(*) c FROM schedule_versions WHERE user_id=?', [u])).c;
+    await assert.rejects(() => sched.applySchedule(u, {
+      planId, source: sched.SOURCE.AI_REPLAN, blocks: preview.body.blocks,
+      expectedBaseVersionId: preview.body.base_version_id, rollingStrict: true,
+      examSubject: { ...preview.body.exam_subject, exam_date: D(19) },
+    }), e => e.code === 'EXAM_SUBJECT_STALE');
+    assert.equal(await q.get('SELECT 1 ok FROM plan_exam_subjects WHERE user_id=? AND plan_id=? AND subject_list_id=?', [u, planId, added]), undefined);
+    assert.equal((await q.get('SELECT COUNT(*) c FROM schedule_versions WHERE user_id=?', [u])).c, before);
+
+    await sched.createScheduleVersion(u, { source: sched.SOURCE.MANUAL, effectiveFrom: D(0), blocks: [{ task_id: task, date: D(5), planned_minutes: 60 }] });
+    await assert.rejects(() => sched.applySchedule(u, {
+      planId, source: sched.SOURCE.AI_REPLAN, blocks: preview.body.blocks,
+      expectedBaseVersionId: preview.body.base_version_id, rollingStrict: true,
+      examSubject: preview.body.exam_subject,
+    }), e => e.code === 'STALE_SCHEDULE_PREVIEW');
+    assert.equal(await q.get('SELECT 1 ok FROM plan_exam_subjects WHERE user_id=? AND plan_id=? AND subject_list_id=?', [u, planId, added]), undefined);
+  });
+});
+
 /* ================= A. Freeze ================= */
 describe('A. Freeze horizon', () => {
   test('今天／明天 exact unchanged；後天可重排；tail 不插進 freeze', async () => {

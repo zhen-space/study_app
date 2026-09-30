@@ -82,6 +82,8 @@ export default function PlanDetailView({ planKey, tasks, lists, apiPlans = [], r
   const [sheet, setSheet] = useState(null);   // manage | edit | add | adjust | cannotComplete | confirmEnd
   const [showRolling, setShowRolling] = useState(false);   // 段考滾動重排
   const [rollingAdditions, setRollingAdditions] = useState(null);
+  const [newSubject, setNewSubject] = useState({ subject_list_id: '', exam_date: '' });
+  const [examSubjectIds, setExamSubjectIds] = useState(() => new Set());
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState('');
   const [replan, setReplan] = useState(false);
@@ -96,6 +98,14 @@ export default function PlanDetailView({ planKey, tasks, lists, apiPlans = [], r
   const sched = useActiveSchedule();
   // 必須在早退前呼叫，避免資料刷新瞬間找不到 Plan 時違反 React Hook 順序。
   const health = usePlanScheduleHealth(plan, apiPlans.find(p => p.id === plan?.planId));
+  const refreshExamSubjects = async planId => {
+    if (planId == null) return;
+    try {
+      const projection = await api(`/plans/${planId}/exam`);
+      setExamSubjectIds(new Set((projection.subjects || []).map(s => Number(s.subject_list_id))));
+    } catch { /* 非段考或暫時離線時仍由後端 apply fail closed */ }
+  };
+  useEffect(() => { refreshExamSubjects(plan?.planId); }, [plan?.planId]);
 
   if (!plan) {
     return (
@@ -128,6 +138,13 @@ export default function PlanDetailView({ planKey, tasks, lists, apiPlans = [], r
   const pct = plan.total ? Math.round(plan.done / plan.total * 100) : 0;
 
   const close = () => { setSheet(null); setErr(''); setRetain(null); };
+  const previewSubject = () => {
+    const selected = lists.find(l => Number(l.id) === Number(newSubject.subject_list_id));
+    if (!selected || !newSubject.exam_date) return;
+    close();
+    setRollingAdditions({ examSubject: { subject_list_id: Number(selected.id), subject_name: selected.name, exam_date: newSubject.exam_date } });
+    setShowRolling(true);
+  };
 
   // 完成任務走既有的 PATCH /tasks/:id，沒有第二套完成邏輯
   const toggle = t =>
@@ -327,6 +344,9 @@ export default function PlanDetailView({ planKey, tasks, lists, apiPlans = [], r
             <Button size="sm" variant="primary" onClick={() => setSheet('addContent')}>
               <Icon name="plus" size={14} /> 加入內容
             </Button>
+            <Button size="sm" variant="secondary" onClick={() => setSheet('addSubject')}>
+              <Icon name="plus" size={14} /> 加入科目
+            </Button>
             <Button size="sm" variant="secondary" onClick={() => setShowRolling(true)}>
               <Icon name="calendar" size={14} /> 段考滾動重排
             </Button>
@@ -338,11 +358,12 @@ export default function PlanDetailView({ planKey, tasks, lists, apiPlans = [], r
             tasks={tasks}
             addTaskIds={rollingAdditions?.addTaskIds || EMPTY_ADDITIONS}
             materialSelections={rollingAdditions?.materialSelections || EMPTY_ADDITIONS}
+            examSubject={rollingAdditions?.examSubject || null}
             onClose={() => { setShowRolling(false); setRollingAdditions(null); }}
             scheduleEnd={raw?.target_date
               || plan.items.reduce((m, t) => (t.deadline_date && t.deadline_date > m ? t.deadline_date : m), '')
               || null}
-            onApplied={async () => { await reload(); }} />
+            onApplied={async () => { await reload(); await refreshExamSubjects(plan.planId); }} />
         )}
 
         {/* 首屏：用白話直接回答「考試哪天、要讀完哪些範圍（哪科→哪本→哪課）、
@@ -705,6 +726,28 @@ export default function PlanDetailView({ planKey, tasks, lists, apiPlans = [], r
       {sheet === 'addContent' && (
         <PlanContentPicker planId={plan.planId} tasks={tasks} lists={lists} onClose={close}
           onPreview={additions => { close(); setRollingAdditions(additions); setShowRolling(true); }} />
+      )}
+
+      {sheet === 'addSubject' && (
+        <BottomSheet onClose={close} label="加入科目">
+          <b style={{ fontSize: 18 }}>加入段考科目</b>
+          <div className="ui-meta" style={{ marginTop: 2 }}>先預覽新版安排；確認前不會加入科目或變更行事曆。</div>
+          <label className="ui-meta" htmlFor="exam-new-subject" style={{ display: 'block', marginTop: 'var(--sp-4)' }}>科目</label>
+          <select id="exam-new-subject" value={newSubject.subject_list_id} style={{ width: '100%', marginTop: 'var(--sp-1)' }}
+            onChange={e => setNewSubject(s => ({ ...s, subject_list_id: e.target.value }))}>
+            <option value="">請選擇科目</option>
+            {lists.filter(l => !l.shared_in && !examSubjectIds.has(Number(l.id)))
+              .map(l => <option key={l.id} value={l.id}>{l.name}</option>)}
+          </select>
+          <label className="ui-meta" htmlFor="exam-new-date" style={{ display: 'block', marginTop: 'var(--sp-3)' }}>考試日期</label>
+          <input id="exam-new-date" type="date" value={newSubject.exam_date} max={raw?.target_date || undefined}
+            style={{ width: '100%', marginTop: 'var(--sp-1)' }} onChange={e => setNewSubject(s => ({ ...s, exam_date: e.target.value }))} />
+          <div className="row" style={{ marginTop: 'var(--sp-4)' }}>
+            <Button variant="tertiary" onClick={close}>取消</Button>
+            <Button variant="primary" style={{ marginLeft: 'auto' }} disabled={!newSubject.subject_list_id || !newSubject.exam_date}
+              onClick={previewSubject}>預覽安排</Button>
+          </div>
+        </BottomSheet>
       )}
 
       {/* ---------- 新增任務 ---------- */}

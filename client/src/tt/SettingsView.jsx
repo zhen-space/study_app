@@ -17,17 +17,59 @@ const HHMM = /^([01]\d|2[0-3]):[0-5]\d$/;
 function SubjectManager({ lists = [], reload }) {
   const own = lists.filter(l => !l.shared_in);
   const [editing, setEditing] = useState(null);
-  const add = async () => {
-    const name = prompt('科目名稱：');
-    if (!name?.trim()) return;
-    await api('/lists', { method: 'POST', body: { name: name.trim(), color: LIST_COLORS[own.length % LIST_COLORS.length] } });
-    reload?.();
+  const [adding, setAdding] = useState(false);
+  const [name, setName] = useState('');
+  const [duplicate, setDuplicate] = useState(null);
+  const [busy, setBusy] = useState(false);
+  const [addErr, setAddErr] = useState('');
+  const [subjectErr, setSubjectErr] = useState('');
+  const closeAdd = () => { setAdding(false); setName(''); setDuplicate(null); setAddErr(''); };
+  const create = async allowDuplicate => {
+    if (!name.trim() || busy) return;
+    setBusy(true); setAddErr('');
+    try {
+      await api('/lists', { method: 'POST', body: { name: name.trim(), color: LIST_COLORS[own.length % LIST_COLORS.length], allow_duplicate: allowDuplicate } });
+      closeAdd(); reload?.();
+    } catch (e) {
+      if (e.payload?.code === 'duplicate_subject_name') setDuplicate(e.payload);
+      else setAddErr(e.message);
+    } finally { setBusy(false); }
   };
-  const patch = async (l, body) => { await api(`/lists/${l.id}`, { method: 'PATCH', body }); reload?.(); };
+  const mergeExisting = async () => {
+    if (busy || !duplicate?.existing?.length) return;
+    // 只有一個既有科目時，「合併」就是沿用它，零寫入；已有多個舊重複時才套用預覽。
+    if (!duplicate.merge_preview) { closeAdd(); reload?.(); return; }
+    setBusy(true); setAddErr('');
+    try {
+      const p = duplicate.merge_preview;
+      await api('/lists/merge', { method: 'POST', body: { target_id: p.target.id, source_ids: p.sources.map(s => s.id), preview_fingerprint: p.fingerprint } });
+      closeAdd(); reload?.();
+    } catch (e) {
+      setAddErr(e.message);
+      if (e.payload?.code === 'merge_preview_stale' && duplicate.existing.length > 1) {
+        try {
+          const target_id = duplicate.existing[0].id, source_ids = duplicate.existing.slice(1).map(s => s.id);
+          const p = await api('/lists/merge-preview', { method: 'POST', body: { target_id, source_ids } });
+          setDuplicate(d => ({ ...d, merge_preview: p }));
+        } catch { /* 保留原錯誤，讓使用者重新送出或取消 */ }
+      }
+    } finally { setBusy(false); }
+  };
+  const patch = async (l, body) => {
+    setSubjectErr('');
+    try { await api(`/lists/${l.id}`, { method: 'PATCH', body }); reload?.(); return true; }
+    catch (e) { setSubjectErr(e.message); return false; }
+  };
+  const rename = async (l, input) => {
+    const next = input.value.trim();
+    if (!next || next === l.name) { input.value = l.name; return; }
+    if (!await patch(l, { name: next })) input.value = l.name;
+  };
   const del = async l => { if (!confirm(`刪除科目「${l.name}」？（任務會移到願望清單）`)) return; await api(`/lists/${l.id}`, { method: 'DELETE' }); reload?.(); };
   return (
     <section className="ui-section">
       <div className="ui-section-title">科目</div>
+      {subjectErr && <div role="alert" className="ui-meta" style={{ color: 'var(--danger)', marginBottom: 8 }}>{subjectErr}</div>}
       <SurfaceCard>
         {own.length === 0 && <div className="ui-meta" style={{ marginBottom: 'var(--sp-2)' }}>還沒有科目。新增後可用於任務分類與學校作業。</div>}
         {own.map(l => (
@@ -35,7 +77,7 @@ function SubjectManager({ lists = [], reload }) {
             <span className="dot" style={{ background: l.color, width: 10, height: 10, marginRight: 8 }} />
             <div className="ui-row-main">
               <input aria-label={`科目名稱 ${l.name}`} defaultValue={l.name}
-                onBlur={e => e.target.value.trim() && e.target.value.trim() !== l.name && patch(l, { name: e.target.value.trim() })}
+                onBlur={e => rename(l, e.target)}
                 onKeyDown={e => e.key === 'Enter' && e.target.blur()}
                 style={{ border: 'none', background: 'none', fontSize: 15, width: '100%' }} />
               {editing === l.id && (
@@ -51,8 +93,38 @@ function SubjectManager({ lists = [], reload }) {
             <button className="ui-iconbtn" aria-label={`刪除 ${l.name}`} onClick={() => del(l)} style={{ color: 'var(--danger)' }}><Icon name="trash" size={16} /></button>
           </div>
         ))}
-        <Button size="sm" style={{ marginTop: 'var(--sp-2)' }} onClick={add}>＋ 新增科目</Button>
+        <Button size="sm" style={{ marginTop: 'var(--sp-2)' }} onClick={() => setAdding(true)}>＋ 新增科目</Button>
       </SurfaceCard>
+      {adding && (
+        <div className="cal-modal-back" onClick={closeAdd}>
+          <SurfaceCard className="cal-modal" role="dialog" aria-modal="true" aria-label="新增科目" onClick={e => e.stopPropagation()}>
+            <div className="ui-section-title">新增科目</div>
+            {!duplicate ? <>
+              <label htmlFor="new-subject-name" className="ui-meta">科目名稱</label>
+              <input id="new-subject-name" autoFocus value={name} onChange={e => setName(e.target.value)}
+                onCompositionStart={e => { e.currentTarget.dataset.composing = '1'; }}
+                onCompositionEnd={e => { delete e.currentTarget.dataset.composing; }} style={{ width: '100%', marginTop: 6 }} />
+              {addErr && <div role="alert" className="ui-meta" style={{ color: 'var(--danger)', marginTop: 8 }}>{addErr}</div>}
+              <div className="row" style={{ justifyContent: 'flex-end', gap: 8, marginTop: 16 }}>
+                <Button variant="tertiary" onClick={closeAdd}>取消</Button>
+                <Button variant="primary" disabled={busy || !name.trim()} onClick={() => create(false)}>{busy ? '檢查中…' : '新增'}</Button>
+              </div>
+            </> : <>
+              <div>已經有「{duplicate.existing[0]?.name}」科目。</div>
+              {duplicate.merge_preview && <div className="ui-meta" style={{ marginTop: 8 }}>
+                合併會保留既有任務、作業、教材、計畫、範圍與進度；將整併 {duplicate.merge_preview.sources.length} 個重複科目、
+                {Object.values(duplicate.merge_preview.counts).reduce((a, b) => a + Number(b || 0), 0)} 筆關聯資料。
+              </div>}
+              {addErr && <div role="alert" className="ui-meta" style={{ color: 'var(--danger)', marginTop: 8 }}>{addErr}</div>}
+              <div style={{ display: 'grid', gap: 8, marginTop: 16 }}>
+                <Button variant="primary" disabled={busy} onClick={mergeExisting}>合併既有</Button>
+                <Button disabled={busy} onClick={() => create(true)}>另建同名</Button>
+                <Button variant="tertiary" disabled={busy} onClick={closeAdd}>取消</Button>
+              </div>
+            </>}
+          </SurfaceCard>
+        </div>
+      )}
     </section>
   );
 }

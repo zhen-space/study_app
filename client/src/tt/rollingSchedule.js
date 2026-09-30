@@ -61,10 +61,16 @@ export function applyPayload(preview) {
       end_time: b.end_time || null, planned_minutes: b.planned_minutes ?? null,
     })),
     freeze_start: preview.window?.freeze_start,
+    exam_subject: preview.exam_subject ? {
+      subject_list_id: preview.exam_subject.subject_list_id,
+      exam_date: preview.exam_subject.exam_date,
+      token: preview.exam_subject.token,
+    } : null,
   };
 }
 
 // 是否可以直接確認套用（沒有 infeasible、frozen 完整、且有東西可套）。
 export function canConfirm(preview) {
-  return !!preview && !preview.infeasible && frozenIntact(preview) && (preview.blocks || []).length > 0;
+  return !!preview && !preview.infeasible && frozenIntact(preview)
+    && ((preview.blocks || []).length > 0 || !!preview.exam_subject);
 }

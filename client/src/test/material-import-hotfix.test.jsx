@@ -114,4 +114,43 @@ describe('AddMaterialFlow hotfix', () => {
     await waitFor(() => expect(screen.getByDisplayValue('數學')).toBeTruthy());
     expect(screen.getByDisplayValue('數學').value).toBe('1');
   });
+
+  it('OCR 只有目錄 leaf：計入內容；中文書名修正舊錯誤後可送出 canonical payload', async () => {
+    const { importPreview, commitDraft, nameCheck } = await import('../tt/material');
+    importPreview.mockResolvedValueOnce({
+      draft: {
+        book: { title: '', publisher: '龍騰', subject_list_id: null },
+        chapters: [
+          { title: 'L1', content_items: [], children: [] },
+          { title: '複習 R3', content_items: [], children: [] },
+        ],
+      },
+      problems: [{ path: 'book.title', message: '請填教材名稱' }], warnings: [],
+    });
+    nameCheck.mockResolvedValueOnce({ has_conflict: false, same_name_books: [] });
+    commitDraft.mockResolvedValueOnce({ book: { id: 88, title: '課本3' } });
+
+    render(<AddMaterialFlow lists={LISTS} defaultSubjectId={2} onCancel={() => {}} onCreated={() => {}} />);
+    fireEvent.click(screen.getByText('拍照／匯入教材目錄'));
+    setFiles(screen.getByLabelText('選多張照片'), [file('toc.pdf', 4, 'application/pdf')]);
+    await act(async () => { fireEvent.click(screen.getByRole('button', { name: /確認送出/ })); });
+    await waitFor(() => expect(screen.getByText('共 2 項內容')).toBeTruthy());
+
+    const title = screen.getByLabelText('教材名稱');
+    fireEvent.compositionStart(title);
+    fireEvent.change(title, { target: { value: '課本3' } });
+    fireEvent.compositionEnd(title, { data: '3' });
+    expect(screen.queryByText('請填教材名稱')).toBeNull();
+    const submit = screen.getByRole('button', { name: '建立教材' });
+    expect(submit.disabled).toBe(false);
+    await act(async () => { fireEvent.click(submit); });
+
+    await waitFor(() => expect(commitDraft).toHaveBeenCalled());
+    const payload = commitDraft.mock.calls.at(-1)[0];
+    expect(payload.book).toEqual({ title: '課本3', publisher: '龍騰', subject_list_id: 2 });
+    expect(payload.chapters.map(c => c.content_items[0])).toEqual([
+      { kind: 'reading', title: 'L1' },
+      { kind: 'reading', title: '複習 R3' },
+    ]);
+  });
 });

@@ -33,6 +33,12 @@ export default function AddMaterialFlow({ lists = [], onCancel, onCreated, onAdd
   const withDefaultSubject = d => (defaultSubjectId != null && d?.book && d.book.subject_list_id == null
     ? { ...d, book: { ...d.book, subject_list_id: Number(defaultSubjectId) } } : d);
 
+  const editDraft = next => {
+    setDraft(next);
+    setErr('');
+    setProblems([]);
+  };
+
   // PhotoQueue 確認後：逐張正向＋壓縮 → 一次送 AI 解析。部分頁沒讀到內容會如實標示，不假裝全部成功。
   const parsePhotos = async files => {
     setBusy(true); setErr(''); setProblems([]); setWarnings([]);
@@ -136,7 +142,7 @@ export default function AddMaterialFlow({ lists = [], onCancel, onCreated, onAdd
             {warnings.map((w, i) => <li key={i}>⚠️ {typeof w === 'string' ? w : w.message}</li>)}
           </ul>
         )}
-        <MaterialDraftEditor value={draft} onChange={setDraft} lists={lists} onAddSubject={onAddSubject}
+        <MaterialDraftEditor value={draft} onChange={editDraft} lists={lists} onAddSubject={onAddSubject}
           lockSubjectId={defaultSubjectId}
           busy={busy} error={err} problems={problems}
           submitLabel={appendToBook ? '預覽合併' : '建立教材'} onSubmit={create}
@@ -187,19 +193,29 @@ function readable(e) {
 // parser 回來的 draft 已經是正式形狀，這裡只補齊編輯器需要的欄位，
 // 不做任何結構重組——重組就等於在前端複製一份 hierarchy 契約。
 function normalize(d) {
+  const content = (items, fallbackTitle = '') => {
+    const out = (items || []).map(i => ({
+      kind: i.kind, title: i.title,
+      ...(i.estimated_minutes != null ? { estimated_minutes: i.estimated_minutes } : {}),
+    }));
+    return out.length || !fallbackTitle.trim() ? out : [{ kind: 'reading', title: fallbackTitle.trim() }];
+  };
   return {
     book: {
       title: d?.book?.title || '',
       publisher: d?.book?.publisher || '',
       subject_list_id: d?.book?.subject_list_id ?? null,
     },
-    chapters: (d?.chapters || []).map(c => ({
-      title: c.title || '',
-      content_items: (c.content_items || []).map(i => ({ kind: i.kind, title: i.title })),
-      children: (c.children || []).map(s => ({
+    chapters: (d?.chapters || []).map(c => {
+      const children = (c.children || []).map(s => ({
         kind: s.kind, title: s.title || '',
-        content_items: (s.content_items || []).map(i => ({ kind: i.kind, title: i.title })),
-      })),
-    })),
+        content_items: content(s.content_items, s.title || ''),
+      }));
+      return {
+        title: c.title || '',
+        content_items: content(c.content_items, children.length ? '' : (c.title || '')),
+        children,
+      };
+    }),
   };
 }
