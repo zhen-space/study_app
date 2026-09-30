@@ -30,8 +30,18 @@ export default function AddMaterialFlow({ lists = [], onCancel, onCreated, onAdd
   const [conflict, setConflict] = useState(null);   // null | { books: [...] }
   const [mergeTarget, setMergeTarget] = useState(null);
 
-  const withDefaultSubject = d => (defaultSubjectId != null && d?.book && d.book.subject_list_id == null
-    ? { ...d, book: { ...d.book, subject_list_id: Number(defaultSubjectId) } } : d);
+  const withContext = d => {
+    if (!d?.book) return d;
+    const subjectId = defaultSubjectId ?? appendToBook?.subject_list_id ?? null;
+    return {
+      ...d,
+      book: {
+        ...d.book,
+        title: d.book.title?.trim() ? d.book.title : (appendToBook?.title || ''),
+        subject_list_id: d.book.subject_list_id ?? (subjectId == null ? null : Number(subjectId)),
+      },
+    };
+  };
 
   const editDraft = next => {
     setDraft(next);
@@ -46,9 +56,20 @@ export default function AddMaterialFlow({ lists = [], onCancel, onCreated, onAdd
     try {
       const payload = [];
       for (const f of files) payload.push(await fileToPayload(f));
-      const r = await importPreview({ files: payload, subjectListId: defaultSubjectId ?? null });
-      setDraft(withDefaultSubject(normalize(r.draft)));
-      setProblems(r.problems || []);
+      const r = await importPreview({
+        files: payload,
+        subjectListId: defaultSubjectId ?? appendToBook?.subject_list_id ?? null,
+        title: appendToBook?.title || '',
+      });
+      const next = withContext(normalize(r.draft));
+      setDraft(next);
+      const itemCount = next.chapters.reduce((n, c) =>
+        n + c.content_items.length + c.children.reduce((m, child) => m + child.content_items.length, 0), 0);
+      setProblems((r.problems || []).filter(p => {
+        if (p.path === 'book.title' && next.book.title.trim()) return false;
+        if (p.path === 'chapters' && itemCount > 0 && /沒有任何內容項目/.test(p.message || '')) return false;
+        return true;
+      }));
       setWarnings(r.warnings || []);
       setStatus('');
     } catch (e2) { setErr(readable(e2)); setProblems(e2.payload?.problems || []); setStatus(''); }
@@ -165,7 +186,7 @@ export default function AddMaterialFlow({ lists = [], onCancel, onCreated, onAdd
           </span>
         </button>
         <button type="button" className="am-choice" disabled={busy}
-          onClick={() => { setMode('manual'); setDraft(withDefaultSubject(emptyDraft())); }}>
+          onClick={() => { setMode('manual'); setDraft(withContext(emptyDraft())); }}>
           <span className="am-choice-icon" aria-hidden="true">✏️</span>
           <span className="am-choice-main">
             <span className="am-choice-title">自己建立教材</span>
