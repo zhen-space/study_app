@@ -1,4 +1,4 @@
-import { useEffect, useState, useCallback } from 'react';
+import { useEffect, useRef, useState, useCallback } from 'react';
 import { mergePreview, mergeApply } from './material';
 import { Button } from './ui';
 
@@ -28,6 +28,8 @@ export default function MergeReview({ bookId, draft, title = '合併目錄', onD
   const [confirmDup, setConfirmDup] = useState(false);
   const [busy, setBusy] = useState(false);
   const [applyErr, setApplyErr] = useState('');
+  const [applied, setApplied] = useState(null);
+  const operationBusy = useRef(false);
 
   const load = useCallback(async () => {
     setState({ loading: true, preview: null, error: '' });
@@ -40,20 +42,50 @@ export default function MergeReview({ bookId, draft, title = '合併目錄', onD
 
   const apply = async () => {
     const p = state.preview;
-    if (!p) return;
+    if (!p || operationBusy.current) return;
+    operationBusy.current = true;
     setBusy(true); setApplyErr('');
     try {
       const r = await mergeApply(bookId, draft, {
         expectedFingerprint: p.fingerprint, confirmOrder, confirmDuplicates: confirmDup,
       });
-      onDone?.(r);
+      setApplied(r);
+      try { await onDone?.(r); }
+      catch { setApplyErr('目錄已合併，但畫面暫時無法更新。請重新載入，請勿再次合併。'); }
     } catch (e) {
       // stale → 重新預覽；其餘顯示訊息
       if (e.status === 409 && !e.payload?.code) { setApplyErr('教材在預覽後有變動，已重新載入，請再確認一次。'); await load(); }
       else setApplyErr(e.message || '合併失敗');
+    } finally {
+      operationBusy.current = false;
       setBusy(false);
     }
   };
+
+  const retryDone = async () => {
+    if (!applied || operationBusy.current) return;
+    operationBusy.current = true;
+    setBusy(true); setApplyErr('');
+    try { await onDone?.(applied); }
+    catch { setApplyErr('目錄已合併，但仍無法更新畫面。請稍後再試。'); }
+    finally { operationBusy.current = false; setBusy(false); }
+  };
+
+  if (applied) {
+    return (
+      <div className="am">
+        <h3 className="am-title">目錄已合併</h3>
+        <p className="am-lead">新內容已安全加入既有教材，不需要再次合併。</p>
+        {applyErr && <div className="mt-err" role="alert">{applyErr}</div>}
+        <div className="am-foot" style={{ gap: 8 }}>
+          <Button variant="tertiary" disabled={busy} onClick={onCancel}>返回</Button>
+          {applyErr && <Button variant="primary" disabled={busy} onClick={retryDone}>
+            {busy ? '重新載入中…' : '重新載入'}
+          </Button>}
+        </div>
+      </div>
+    );
+  }
 
   if (state.loading) return <div className="am"><div className="am-status" role="status">預覽合併內容中…</div></div>;
   if (state.error) {
