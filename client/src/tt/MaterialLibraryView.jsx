@@ -212,7 +212,11 @@ export default function MaterialLibraryView({ goPlans = null, lists = [] }) {
           <PageHeader title={`增加目錄 · ${tree?.book?.title || book?.title || ''}`}
             back={<button className="page-back" onClick={() => setAppendMode(false)}>← 返回教材</button>} />
           <div className="main-body ml-view">
-            <AddMaterialFlow lists={lists} appendToBook={{ id: openBook, title: tree?.book?.title || book?.title }}
+            <AddMaterialFlow lists={lists} appendToBook={{
+              id: openBook,
+              title: tree?.book?.title || book?.title,
+              subject_list_id: tree?.book?.subject_list_id ?? book?.subject_list_id ?? null,
+            }}
               onCancel={() => setAppendMode(false)}
               onCreated={async () => { setAppendMode(false); setTree(await getBookTree(openBook)); await load(); }} />
           </div>

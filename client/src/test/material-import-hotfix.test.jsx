@@ -125,7 +125,10 @@ describe('AddMaterialFlow hotfix', () => {
           { title: '複習 R3', content_items: [], children: [] },
         ],
       },
-      problems: [{ path: 'book.title', message: '請填教材名稱' }], warnings: [],
+      problems: [
+        { path: 'book.title', message: '請填教材名稱' },
+        { path: 'chapters', message: '整本教材沒有任何內容項目' },
+      ], warnings: [],
     });
     nameCheck.mockResolvedValueOnce({ has_conflict: false, same_name_books: [] });
     commitDraft.mockResolvedValueOnce({ book: { id: 88, title: '課本3' } });
@@ -152,5 +155,44 @@ describe('AddMaterialFlow hotfix', () => {
       { kind: 'reading', title: 'L1' },
       { kind: 'reading', title: '複習 R3' },
     ]);
+  });
+
+  it('增補目錄手動建立：沿用既有教材名稱與科目，不要求重填 Book metadata', () => {
+    render(<AddMaterialFlow lists={LISTS}
+      appendToBook={{ id: 77, title: '既有英文課本', subject_list_id: 2 }}
+      onCancel={() => {}} onCreated={() => {}} />);
+    fireEvent.click(screen.getByText('自己建立教材'));
+    expect(screen.getByLabelText('教材名稱').value).toBe('既有英文課本');
+    expect(screen.getByLabelText('科目').value).toBe('2');
+    expect(screen.getByRole('button', { name: '預覽合併' }).disabled).toBe(true);
+  });
+
+  it('增補目錄照片／PDF：preview 帶既有書名與科目，並消除已由 context 修正的缺名錯誤', async () => {
+    const { importPreview } = await import('../tt/material');
+    importPreview.mockResolvedValueOnce({
+      draft: {
+        book: { title: '', publisher: '', subject_list_id: null },
+        chapters: [{ title: 'L10', content_items: [], children: [] }],
+      },
+      problems: [
+        { path: 'book.title', message: '請填教材名稱' },
+        { path: 'chapters', message: '整本教材沒有任何內容項目' },
+      ], warnings: [],
+    });
+    render(<AddMaterialFlow lists={LISTS}
+      appendToBook={{ id: 77, title: '既有英文課本', subject_list_id: 2 }}
+      onCancel={() => {}} onCreated={() => {}} />);
+    fireEvent.click(screen.getByText('拍照／匯入教材目錄'));
+    setFiles(screen.getByLabelText('選多張照片'), [file('toc.pdf', 4, 'application/pdf')]);
+    await act(async () => { fireEvent.click(screen.getByRole('button', { name: /確認送出/ })); });
+    await waitFor(() => expect(screen.getByText('共 1 項內容')).toBeTruthy());
+    expect(importPreview.mock.calls.at(-1)[0]).toMatchObject({
+      subjectListId: 2,
+      title: '既有英文課本',
+    });
+    expect(screen.getByLabelText('教材名稱').value).toBe('既有英文課本');
+    expect(screen.queryByText('請填教材名稱')).toBeNull();
+    expect(screen.queryByText('整本教材沒有任何內容項目')).toBeNull();
+    expect(screen.getByRole('button', { name: '預覽合併' }).disabled).toBe(false);
   });
 });
