@@ -124,6 +124,27 @@ export async function ensureStudySessionLiveIndex() {
   }
 }
 
+// Lock live identity migration：歷史列永遠保留；只有同一 canonical identity 的
+// 重複 live rows 會被 soft-release。最早 id 是 survivor，其餘留下 cleanup provenance。
+export async function ensureScheduleLockLiveIndexes() {
+  return q.tx(async tx => {
+    const r = await tx.run(`UPDATE schedule_locks AS duplicate
+      SET released_at=CURRENT_TIMESTAMP, release_reason='duplicate_cleanup'
+      WHERE duplicate.released_at IS NULL AND EXISTS (
+        SELECT 1 FROM schedule_locks AS survivor
+        WHERE survivor.user_id=duplicate.user_id AND survivor.type=duplicate.type
+          AND survivor.released_at IS NULL AND survivor.id<duplicate.id
+          AND ((duplicate.type='task' AND survivor.task_id=duplicate.task_id)
+            OR (duplicate.type='day' AND survivor.date=duplicate.date)
+            OR (duplicate.type='time' AND survivor.date=duplicate.date
+              AND survivor.start_time=duplicate.start_time AND survivor.end_time=duplicate.end_time)))`);
+    await tx.run("CREATE UNIQUE INDEX IF NOT EXISTS idx_locks_task_one ON schedule_locks(user_id,task_id) WHERE type='task' AND released_at IS NULL");
+    await tx.run("CREATE UNIQUE INDEX IF NOT EXISTS idx_locks_day_one ON schedule_locks(user_id,date) WHERE type='day' AND released_at IS NULL");
+    await tx.run("CREATE UNIQUE INDEX IF NOT EXISTS idx_locks_time_one ON schedule_locks(user_id,date,start_time,end_time) WHERE type='time' AND released_at IS NULL");
+    return { status: 'ok', cleaned: r.changes || 0 };
+  });
+}
+
 const SCHEMA = `
 CREATE TABLE IF NOT EXISTS users (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -659,7 +680,7 @@ export async function initSchema() {
   try { await client.execute("ALTER TABLE schedule_locks ADD COLUMN release_reason TEXT"); } catch {}
   try { await client.execute("CREATE INDEX IF NOT EXISTS idx_locks_user_live ON schedule_locks(user_id, released_at)"); } catch {}
   try { await client.execute("CREATE INDEX IF NOT EXISTS idx_locks_task ON schedule_locks(task_id)"); } catch {}
-  try { await client.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_locks_task_one ON schedule_locks(user_id, task_id) WHERE type='task' AND released_at IS NULL"); } catch {}
+  await ensureScheduleLockLiveIndexes();
   try { await client.execute("CREATE INDEX IF NOT EXISTS idx_plans_user ON plans(user_id, status)"); } catch {}
   try { await client.execute("CREATE INDEX IF NOT EXISTS idx_goals_user ON goals(user_id, target_date)"); } catch {}
   try { await client.execute("CREATE INDEX IF NOT EXISTS idx_plan_constraints_user ON plan_constraints(user_id)"); } catch {}

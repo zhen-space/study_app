@@ -13,6 +13,7 @@ import { signMaterialSnapshotToken } from '../schedule/material-token.js';
 import { signExamSubjectToken } from '../schedule/exam-subject-token.js';
 import { buildPlanTimeline } from '../schedule/timeline.js';
 import { calculateScheduleDiff } from '../schedule/diff.js';
+import { createScheduleLock } from '../schedule/lock-store.js';
 
 const router = Router();
 router.use(requireAuth);
@@ -1854,20 +1855,8 @@ router.get('/locks', async (req, res) => {
 });
 router.post('/locks', async (req, res) => {
   try {
-    const b = req.body || {}; const type = b.type;
-    if (!['task','day','time'].includes(type)) throw new sched.ScheduleInputError('鎖定類型不正確');
-    if (type === 'task') {
-      if (!Number.isInteger(Number(b.task_id)) || b.date || b.start_time || b.end_time) throw new sched.ScheduleInputError('Task Lock 只能指定 task_id');
-      const active = await sched.getActiveVersionId(req.userId);
-      const task = await q.get('SELECT id,deleted,completed FROM tasks WHERE id=? AND user_id=?', [b.task_id, req.userId]);
-      const block = active == null ? null : await q.get('SELECT 1 FROM scheduled_blocks WHERE schedule_version_id=? AND task_id=?', [active, b.task_id]);
-      if (!task || task.deleted || task.completed || !block) throw new sched.ScheduleInputError('這個任務尚未排入時間，請先安排後再鎖定');
-      const r = await q.run('INSERT INTO schedule_locks (user_id,type,task_id) VALUES (?,?,?)', [req.userId,type,b.task_id]); return res.status(201).json({ id:r.lastInsertRowid, type, task_id:Number(b.task_id) });
-    }
-    if (!/^\d{4}-\d{2}-\d{2}$/.test(b.date || '')) throw new sched.ScheduleInputError('請指定日期');
-    if (type === 'day') { if (b.task_id || b.start_time || b.end_time) throw new sched.ScheduleInputError('Day Lock 只能指定日期'); const r=await q.run('INSERT INTO schedule_locks (user_id,type,date) VALUES (?,?,?)',[req.userId,type,b.date]); return res.status(201).json({id:r.lastInsertRowid,type,date:b.date}); }
-    if (b.task_id || !/^\d\d:\d\d$/.test(b.start_time||'') || !/^\d\d:\d\d$/.test(b.end_time||'') || b.start_time >= b.end_time) throw new sched.ScheduleInputError('Time Lock 需要有效的開始與結束時間');
-    const r=await q.run('INSERT INTO schedule_locks (user_id,type,date,start_time,end_time) VALUES (?,?,?,?,?)',[req.userId,type,b.date,b.start_time,b.end_time]); res.status(201).json({id:r.lastInsertRowid,type,date:b.date,start_time:b.start_time,end_time:b.end_time});
+    const result = await createScheduleLock(req.userId, req.body || {});
+    res.status(result.created ? 201 : 200).json({ ...result.lock, existing: !result.created });
   } catch(e) { res.status(e.status || 500).json({ error:e.message, conflicts:e.conflicts }); }
 });
 router.delete('/locks/:id', async (req,res) => { const r=await q.run("UPDATE schedule_locks SET released_at=CURRENT_TIMESTAMP, release_reason='user' WHERE id=? AND user_id=? AND released_at IS NULL",[req.params.id,req.userId]); if(!r.changes)return res.status(404).json({error:'找不到這個鎖定'}); res.json({ok:true}); });
