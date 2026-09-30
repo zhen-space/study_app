@@ -647,7 +647,7 @@ export default function Tasks({ view, tasks, lists, filters, habits = [], reload
           <div className="row" style={{ gap: 'var(--sp-2)', alignItems: 'center' }}>
             <form className="quick-add" style={{ flex: 1 }} onSubmit={quickAdd}>
               <input placeholder="＋ 新增任務，按 Enter 儲存" value={quick}
-                onChange={e => { setQuick(e.target.value); if (quickErr) setQuickErr('); }}
+                onChange={e => { setQuick(e.target.value); if (quickErr) setQuickErr(null); }}
                 onCompositionStart={() => { quickComposing.current = true; }}
                 onCompositionEnd={() => { quickComposing.current = false; }}
                 onKeyDown={e => { if (e.key === 'Enter' && (e.isComposing || e.nativeEvent?.isComposing)) e.preventDefault(); }}
