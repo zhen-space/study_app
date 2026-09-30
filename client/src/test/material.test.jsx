@@ -668,6 +668,52 @@ describe('教材庫分類篩選', () => {
   });
 });
 
+describe('既有教材的分類管理', () => {
+  it('可加入與移出分類，使用正式 book/category id 且不建立教材複本', async () => {
+    let categories = CATEGORIES.map(c => ({ ...c, books: [...c.books] }));
+    setApi({
+      '/material/categories': () => categories,
+      '/material/categories/7/books/1': opts => {
+        if (opts?.method === 'DELETE') categories = categories.map(c => c.id === 7 ? { ...c, books: [] } : c);
+        return { linked: false };
+      },
+    });
+    render(<MaterialLibraryView lists={LISTS} />);
+    await click(await screen.findByRole('button', { name: /新大滿貫/ }));
+    const category = await screen.findByRole('checkbox', { name: '第一次段考' });
+    expect(category.checked).toBe(true);
+    await click(category);
+    await waitFor(() => expect(screen.getByRole('checkbox', { name: '第一次段考' }).checked).toBe(false));
+    expect(sent('/material/categories/7/books/1', 'DELETE').length).toBe(1);
+    expect(sent('/material/books', 'POST')).toEqual([]);
+    expect(screen.getByText('新大滿貫')).toBeTruthy();
+  });
+
+  it('API 失敗不翻轉勾選，顯示錯誤後可重試', async () => {
+    let attempts = 0;
+    let categories = [{ id: 9, name: '考前衝刺', books: [] }];
+    setApi({
+      '/material/categories': () => categories,
+      '/material/categories/9/books/1': () => {
+        attempts += 1;
+        if (attempts === 1) return Promise.reject(new Error('暫時無法更新分類'));
+        categories = [{ ...categories[0], books: [{ id: 1, title: '新大滿貫' }] }];
+        return { linked: true };
+      },
+    });
+    render(<MaterialLibraryView lists={LISTS} />);
+    await click(await screen.findByRole('button', { name: /新大滿貫/ }));
+    let category = await screen.findByRole('checkbox', { name: '考前衝刺' });
+    expect(category.checked).toBe(false);
+    await click(category);
+    expect(await screen.findByRole('alert')).toHaveTextContent('暫時無法更新分類');
+    expect(screen.getByRole('checkbox', { name: '考前衝刺' }).checked).toBe(false);
+    await click(screen.getByRole('checkbox', { name: '考前衝刺' }));
+    await waitFor(() => expect(screen.getByRole('checkbox', { name: '考前衝刺' }).checked).toBe(true));
+    expect(attempts).toBe(2);
+  });
+});
+
 /* ============ 刪除教材：顯示影響、安全刪除 ============ */
 
 describe('教材刪除（影響 + 安全刪除）', () => {
