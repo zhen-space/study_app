@@ -35,6 +35,7 @@ export default function SchoolAssignmentForm({ lists = [], task = null, defaultR
 
   async function submit(e) {
     e.preventDefault();
+    if (busy) return;
     setErr('');
     if (!f.title.trim()) return setErr('請輸入標題');
     if (!f.list_id) return setErr('請選擇科目');
@@ -56,21 +57,26 @@ export default function SchoolAssignmentForm({ lists = [], task = null, defaultR
       ...rem,
     };
     setBusy(true);
+    let saved;
     try {
-      if (editing) await api(`/tasks/${task.id}`, { method: 'PATCH', body });
-      else await api('/tasks', { method: 'POST', body });
-      await onSaved?.();
-      onClose?.();
+      saved = editing
+        ? await api(`/tasks/${task.id}`, { method: 'PATCH', body })
+        : await api('/tasks', { method: 'POST', body });
     } catch (e2) {
       setErr(e2.message || '儲存失敗');
       setBusy(false);
+      return;
     }
+    // 寫入成功和重新整理是兩個不同邊界。reload 失敗不代表 POST/PATCH 失敗；
+    // 若把兩者放在同一 catch，表單會留下並鼓勵重試，新增路徑就會建立重複作業。
+    try { await onSaved?.(saved); } catch { /* 資料已寫入；下次 reload 仍會讀回 */ }
+    onClose?.();
   }
 
   const deadlineLabel = deadlineLabelText(f);
 
   return (
-    <BottomSheet onClose={onClose} label={editing ? '編輯學校作業' : '新增學校作業'}>
+    <BottomSheet onClose={busy ? undefined : onClose} label={editing ? '編輯學校作業' : '新增學校作業'}>
       {/* §G2：鍵盤導覽與送出分離——在文字/日期/時間/數字欄位按 Enter 只是換行/移動，
           不會意外送出整張表單；只有明確按「新增作業／儲存」才送出（textarea/select 不受影響）。 */}
       <form onSubmit={submit} className="sa-form"
@@ -144,7 +150,7 @@ export default function SchoolAssignmentForm({ lists = [], task = null, defaultR
         </label>
 
         <div className="row" style={{ marginTop: 'var(--sp-3)', gap: 'var(--sp-2)' }}>
-          <Button type="button" variant="tertiary" onClick={onClose}>取消</Button>
+          <Button type="button" variant="tertiary" disabled={busy} onClick={onClose}>取消</Button>
           <Button type="submit" variant="primary" style={{ marginLeft: 'auto' }} disabled={busy}>
             {busy ? '儲存中…' : (editing ? '儲存' : '新增作業')}
           </Button>
