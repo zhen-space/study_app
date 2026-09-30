@@ -24,6 +24,9 @@ export const listBooks = ({ archived = false, subjectListId = null, kind = null,
 };
 
 export const listCategories = () => api('/material/categories');
+export const listDeletedBooks = () => api('/material/books/deleted');
+export const restoreDeletedBook = bookId =>
+  api(`/material/books/${bookId}/restore`, { method: 'POST', body: {} });
 
 // plan_id 存在時，後端會一併回傳這個 Plan 的 tri-state selection。
 export const getBookTree = (bookId, { planId = null } = {}) =>

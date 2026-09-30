@@ -281,6 +281,24 @@ export async function softDeleteBook(userId, id, { unlink = false } = {}) {
   return { deleted: true, soft: true, unlinked_plans: impact.blocking_plans.map(p => p.id) };
 }
 
+export async function listDeletedBooks(userId) {
+  return q.all(
+    `SELECT id,title,publisher,subject_list_id,book_type,source,deleted_at,created_at,updated_at
+       FROM material_books
+      WHERE user_id=? AND deleted_at IS NOT NULL
+      ORDER BY deleted_at DESC,id DESC LIMIT 50`, [userId]);
+}
+
+export async function restoreDeletedBook(userId, id) {
+  const book = await q.get(
+    `SELECT id FROM material_books WHERE id=? AND user_id=? AND deleted_at IS NOT NULL`, [id, userId]);
+  if (!book) throw new MaterialInputError('找不到已刪除的教材', 404);
+  await q.run(
+    `UPDATE material_books SET deleted_at=NULL,updated_at=CURRENT_TIMESTAMP
+      WHERE id=? AND user_id=? AND deleted_at IS NOT NULL`, [id, userId]);
+  return getBook(userId, id);
+}
+
 export async function archiveBook(userId, id, archived = true) {
   await mustBook(userId, id);
   await q.run(

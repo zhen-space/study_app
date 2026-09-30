@@ -94,6 +94,15 @@ router.post('/material/books/:id/merge', handle(async (req, res) => {
   }));
 }));
 
+// 最近刪除：只看得到自己的 tombstone。復原只清 deleted_at，不重選 Plan 內容。
+router.get('/material/books/deleted', handle(async (req, res) => {
+  res.json(await material.listDeletedBooks(req.userId));
+}));
+
+router.post('/material/books/:id/restore', handle(async (req, res) => {
+  res.json(await material.restoreDeletedBook(req.userId, req.params.id));
+}));
+
 // 刪除的正常語意是「真正的 soft-delete（tombstone）」：教材從教材庫消失，但完成度／
 // StudySession／ScheduleVersion／ScheduledBlock 等歷史一律保留、不 cascade。
 // active／paused Plan 正在選用時擋下（409 IN_USE_BY_ACTIVE_PLAN），帶 ?unlink=1 先安全

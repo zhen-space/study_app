@@ -107,4 +107,43 @@ describe('教材刪除影響與安全刪除', () => {
     const row = sel.find(r => r.content_item_id === it.id);
     assert.ok(row && row.selected === false, 'unlink 後選取應為 false（但列保留）');
   });
+
+  test('CRUD5 tombstone 可列出並原 identity 復原；selection 不會被重新選取', async () => {
+    const { book, ch, it } = await seedBook('可復原教材');
+    const completed = (await post('/material/content-items',
+      { node_id: ch.id, kind: 'reading', title: '已完成內容' })).body;
+    await call(`/material/content-items/${completed.id}/completion`, { method: 'PUT', body: { completed: true } });
+    const plan = (await post('/plans', { name: '復原測試', status: 'active' })).body;
+    await post(`/plans/${plan.id}/material-items`, { content_item_ids: [it.id], selected: true });
+    await del(`/material/books/${book.id}?unlink=1`);
+
+    const deleted = (await get('/material/books/deleted')).body;
+    assert.equal(deleted.some(b => b.id === book.id && b.title === '可復原教材'), true);
+    const restored = await post(`/material/books/${book.id}/restore`);
+    assert.equal(restored.status, 200);
+    assert.equal(restored.body.id, book.id, '復原必須保留原 Book identity');
+    assert.equal(restored.body.deleted_at, null);
+    assert.equal((await get('/material/books/deleted')).body.some(b => b.id === book.id), false);
+
+    const tree = (await get(`/material/books/${book.id}/tree`)).body;
+    assert.equal(tree.book.id, book.id);
+    assert.equal(tree.progress.completed_items, 1, '完成度與 tree 必須保留');
+    const selection = (await get(`/plans/${plan.id}/material-items`)).body
+      .find(r => r.content_item_id === it.id);
+    assert.equal(selection.selected, false, '復原不得偷偷重新選取 Plan 內容');
+  });
+
+  test('CRUD6 deleted list/restore owner scoped，別人看不到也不能復原', async () => {
+    const { book } = await seedBook('私有已刪教材');
+    await del(`/material/books/${book.id}`);
+    const reg = await (await fetch(base + '/auth/register', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ email: `restore${Date.now()}@test.local`, password: '12345678', name: '別人' }),
+    })).json();
+    const H2 = { 'Content-Type': 'application/json', Authorization: 'Bearer ' + reg.token };
+    assert.equal((await call('/material/books/deleted', {}, H2)).body.some(b => b.id === book.id), false);
+    assert.equal((await call(`/material/books/${book.id}/restore`, { method: 'POST', body: {} }, H2)).status, 404);
+    assert.equal((await get('/material/books/deleted')).body.some(b => b.id === book.id), true,
+      '別人的 restore 嘗試不能改變 owner tombstone');
+  });
 });

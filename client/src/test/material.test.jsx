@@ -95,6 +95,7 @@ const setApi = (over = {}) => {
     if (hit !== undefined) return Promise.resolve(typeof hit === 'function' ? hit(opts, raw) : hit);
     if (path === '/study-materials') return Promise.resolve(SHELF);
     if (path === '/material/categories') return Promise.resolve(CATEGORIES);
+    if (path === '/material/books/deleted') return Promise.resolve([]);
     if (path === '/material/books') return Promise.resolve(BOOKS);
     if (path === '/material/books/1/tree') return Promise.resolve(treeResponse());
     return Promise.resolve({});
@@ -708,6 +709,34 @@ describe('教材刪除（影響 + 安全刪除）', () => {
     await click(screen.getByRole('button', { name: '刪除教材' }));
     await waitFor(() => expect(screen.getByText('解除關聯並刪除')).toBeTruthy());
     expect(screen.getByText(/「段考A」/)).toBeTruthy();
+  });
+
+  it('最近刪除可復原；API 失敗保留項目並可重試', async () => {
+    let attempts = 0;
+    const deleted = { id: 9, title: '誤刪講義', deleted_at: '2026-09-30T00:00:00Z' };
+    setApi({
+      '/material/books/deleted': () => attempts >= 2 ? [] : [deleted],
+      '/material/books/9/restore': () => {
+        attempts++;
+        if (attempts === 1) return Promise.reject(new Error('暫時無法復原'));
+        return { ...deleted, deleted_at: null };
+      },
+      '/material/books': () => attempts >= 2
+        ? [...BOOKS, { ...deleted, deleted_at: null, progress: prog(0, 0) }] : BOOKS,
+    });
+    render(<MaterialLibraryView lists={LISTS} />);
+    await waitFor(() => expect(screen.getByText('最近刪除（1）')).toBeTruthy());
+    expect(screen.getByText('誤刪講義')).toBeTruthy();
+
+    await click(screen.getByRole('button', { name: '復原' }));
+    await waitFor(() => expect(screen.getByRole('alert').textContent).toContain('暫時無法復原'));
+    expect(screen.getByText('誤刪講義')).toBeTruthy();
+    expect(screen.getByRole('button', { name: '復原' }).disabled).toBe(false);
+
+    await click(screen.getByRole('button', { name: '復原' }));
+    await waitFor(() => expect(screen.queryByText('最近刪除（1）')).toBeNull());
+    expect(screen.getByRole('button', { name: /誤刪講義/ })).toBeTruthy();
+    expect(sent('/material/books/9/restore', 'POST').length).toBe(2);
   });
 });
 
