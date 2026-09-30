@@ -64,6 +64,8 @@ export function applyPayload(preview) {
     exam_subject: preview.exam_subject ? {
       subject_list_id: preview.exam_subject.subject_list_id,
       exam_date: preview.exam_subject.exam_date,
+      operation: preview.exam_subject.operation,
+      previous_exam_date: preview.exam_subject.previous_exam_date,
       token: preview.exam_subject.token,
     } : null,
   };

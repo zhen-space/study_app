@@ -144,6 +144,45 @@ describe('active 段考加入科目：preview → transactional apply', () => {
   });
 });
 
+describe('既有段考修改單科考試日', () => {
+  test('preview 零寫入；confirm 原子更新 exam date、scope Task deadline 與 ScheduleVersion', async () => {
+    const u = nextUser(); await mkUser(u);
+    const planId = await mkPlan(u, 'active', D(30)); const list = await mkList(u, '歷史');
+    await q.run('UPDATE plans SET start_date=? WHERE id=? AND user_id=?', [D(0), planId, u]);
+    await q.run('INSERT INTO plan_exam_subjects (user_id,plan_id,subject_list_id,exam_date,order_index) VALUES (?,?,?,?,0)', [u, planId, list, D(20)]);
+    const task = await mkTask(u, planId, list, { title: '範圍', est: 60, deadline_date: D(20) });
+    await q.run('INSERT INTO plan_manual_scope (user_id,plan_id,subject_list_id,label,estimated_minutes,task_id,order_index) VALUES (?,?,?,?,?,?,0)', [u, planId, list, '範圍', 60, task]);
+    await seedVersion(u, [{ task_id: task, date: D(10), start_time: '19:00', end_time: '20:00', planned_minutes: 60 }]);
+    const before = (await q.get('SELECT COUNT(*) c FROM schedule_versions WHERE user_id=?', [u])).c;
+    const preview = await runRollingPreview(u, { plan_id: planId, exam_subject: { operation: 'update', subject_list_id: list, exam_date: D(15) } });
+    assert.equal(preview.status, 200); assert.equal(preview.body.exam_subject.previous_exam_date, D(20));
+    assert.equal((await q.get('SELECT exam_date FROM plan_exam_subjects WHERE user_id=? AND plan_id=? AND subject_list_id=?', [u, planId, list])).exam_date, D(20));
+    assert.equal((await q.get('SELECT deadline_date FROM tasks WHERE id=? AND user_id=?', [task, u])).deadline_date, D(20));
+    await sched.applySchedule(u, { planId, source: sched.SOURCE.AI_REPLAN, effectiveFrom: preview.body.window.freeze_start,
+      blocks: preview.body.blocks, expectedBaseVersionId: preview.body.base_version_id, freezeBlocks: preview.body.frozen,
+      enforceDeadlines: true, rollingStrict: true, examSubject: preview.body.exam_subject });
+    assert.equal((await q.get('SELECT exam_date FROM plan_exam_subjects WHERE user_id=? AND plan_id=? AND subject_list_id=?', [u, planId, list])).exam_date, D(15));
+    assert.equal((await q.get('SELECT deadline_date FROM tasks WHERE id=? AND user_id=?', [task, u])).deadline_date, D(15));
+    assert.equal((await q.get('SELECT COUNT(*) c FROM schedule_versions WHERE user_id=?', [u])).c, Number(before) + 1);
+  });
+
+  test('stale subject date 與區間外日期 fail closed', async () => {
+    const u = nextUser(); await mkUser(u);
+    const planId = await mkPlan(u, 'active', D(20)); const list = await mkList(u, '地理');
+    await q.run('UPDATE plans SET start_date=? WHERE id=? AND user_id=?', [D(5), planId, u]);
+    await q.run('INSERT INTO plan_exam_subjects (user_id,plan_id,subject_list_id,exam_date,order_index) VALUES (?,?,?,?,0)', [u, planId, list, D(15)]);
+    const early = await runRollingPreview(u, { plan_id: planId, exam_subject: { operation: 'update', subject_list_id: list, exam_date: D(4) } });
+    assert.equal(early.status, 422);
+    const preview = await runRollingPreview(u, { plan_id: planId, exam_subject: { operation: 'update', subject_list_id: list, exam_date: D(16) } });
+    await q.run('UPDATE plan_exam_subjects SET exam_date=? WHERE user_id=? AND plan_id=? AND subject_list_id=?', [D(14), u, planId, list]);
+    const versions = (await q.get('SELECT COUNT(*) c FROM schedule_versions WHERE user_id=?', [u])).c;
+    await assert.rejects(() => sched.applySchedule(u, { planId, source: sched.SOURCE.AI_REPLAN, blocks: preview.body.blocks,
+      expectedBaseVersionId: preview.body.base_version_id, rollingStrict: true, examSubject: preview.body.exam_subject }), e => e.code === 'EXAM_SUBJECT_STALE');
+    assert.equal((await q.get('SELECT exam_date FROM plan_exam_subjects WHERE user_id=? AND plan_id=? AND subject_list_id=?', [u, planId, list])).exam_date, D(14));
+    assert.equal((await q.get('SELECT COUNT(*) c FROM schedule_versions WHERE user_id=?', [u])).c, versions);
+  });
+});
+
 /* ================= A. Freeze ================= */
 describe('A. Freeze horizon', () => {
   test('今天／明天 exact unchanged；後天可重排；tail 不插進 freeze', async () => {

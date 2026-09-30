@@ -1,7 +1,7 @@
 import { createHmac, timingSafeEqual } from 'node:crypto';
 
 const secret = () => process.env.JWT_SECRET || 'dev-secret-change-me';
-const fields = ['user_id', 'plan_id', 'base_version_id', 'subject_list_id', 'exam_date'];
+const fields = ['user_id', 'plan_id', 'base_version_id', 'subject_list_id', 'exam_date', 'operation', 'previous_exam_date'];
 const canonical = value => JSON.stringify(Object.fromEntries(fields.map(k => [k, value[k] ?? null])));
 
 export function signExamSubjectToken(value) {

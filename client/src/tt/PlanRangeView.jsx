@@ -20,7 +20,7 @@ const Mark = ({ done }) => (done
   ? <span title="已完成" style={{ color: 'var(--success, #2f855a)' }}>✓</span>
   : <span title="尚未完成" style={{ color: 'var(--muted, #a0aec0)' }}>○</span>);
 
-export default function PlanRangeView({ plan, lists = [], onAddRange, onArrange, onAdjust, onAddManual }) {
+export default function PlanRangeView({ plan, lists = [], onAddRange, onArrange, onAdjust, onAddManual, onEditSubject, refreshKey = 0 }) {
   const planId = plan?.planId;
   const editable = plan?.status === 'active' || plan?.status === 'draft';
   const [exam, setExam] = useState(null);
@@ -35,7 +35,7 @@ export default function PlanRangeView({ plan, lists = [], onAddRange, onArrange,
     setExam(ex && Array.isArray(ex.subjects) ? ex : { subjects: [], material: [], manual_scope: [], plan: {} });
     setTimeline(tl && Array.isArray(tl.segments) ? tl : null);
   }, [planId]);
-  useEffect(() => { load(); }, [load]);
+  useEffect(() => { load(); }, [load, refreshKey]);
 
   if (planId == null || exam == null) return null;
 
@@ -73,6 +73,19 @@ export default function PlanRangeView({ plan, lists = [], onAddRange, onArrange,
         {dl != null && <span className="ui-meta">{dl > 0 ? `剩 ${dl} 天` : dl === 0 ? '就是今天' : '已過'}</span>}
         {total > 0 && <span className="ui-meta" style={{ marginLeft: 'auto' }}>範圍已完成 {done}／{total}</span>}
       </div>
+
+      {subjects.length > 0 && (
+        <SurfaceCard style={{ marginTop: 'var(--sp-3)' }}>
+          <b>考試科目與日期</b>
+          {subjects.map(s => (
+            <div key={s.subject_list_id} className="row" style={{ marginTop: 'var(--sp-2)' }}>
+              <span>{s.subject_name || '未命名科目'}</span>
+              <span className="ui-meta">考試 {md(s.exam_date)}</span>
+              {editable && onEditSubject && <Button size="sm" variant="ghost" style={{ marginLeft: 'auto' }} onClick={() => onEditSubject(s)}>修改日期</Button>}
+            </div>
+          ))}
+        </SurfaceCard>
+      )}
 
       {total === 0 ? (
         <SurfaceCard style={{ marginTop: 'var(--sp-3)' }}>
