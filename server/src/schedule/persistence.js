@@ -8,6 +8,7 @@ import { planTaskDisposition, lockReleaseReason } from './plan-cleanup.js';
 import { samePlacement, effectiveDeadlineViolation } from './rolling.js';
 import { verifyMaterialSnapshotToken } from './material-token.js';
 import { verifyExamSubjectToken } from './exam-subject-token.js';
+import { signMaterialScopeRemovalToken, verifyMaterialScopeRemovalToken } from './material-scope-removal-token.js';
 
 // 手動調整的說法：使用者是「現在正要放」，不是「想恢復舊安排」。
 const MANUAL_MESSAGES = {
@@ -85,6 +86,101 @@ export class ScheduleVersionNotFoundError extends Error {
 
 export class ScheduleLockConflictError extends Error {
   constructor(conflicts) { super('因鎖定無法重排，請先解鎖後再試'); this.name = 'ScheduleLockConflictError'; this.status = 409; this.conflicts = conflicts; }
+}
+
+export class MaterialScopeRemovalError extends Error {
+  constructor(message, status = 409, code = 'MATERIAL_SCOPE_REMOVAL_FAILED') {
+    super(message); this.name = 'MaterialScopeRemovalError'; this.status = status; this.code = code;
+  }
+}
+
+const removalSnapshot = (userId, planId, contentItemId, activeVersionId, selection, task) => ({
+  user_id: Number(userId), plan_id: Number(planId), content_item_id: Number(contentItemId),
+  selection_id: Number(selection.id), selection_updated_at: selection.updated_at,
+  linked_task_id: task?.id == null ? null : Number(task.id),
+  task_completed: task == null ? null : Number(task.completed || 0),
+  task_cancelled: task == null ? null : Number(task.cancelled || 0),
+  task_deleted: task == null ? null : Number(task.deleted || 0),
+  base_version_id: activeVersionId == null ? null : Number(activeVersionId),
+});
+
+async function materialScopeRemovalCurrent(db, userId, planId, contentItemId) {
+  const plan = await db.get('SELECT id,status FROM plans WHERE id=? AND user_id=?', [planId, userId]);
+  if (!plan) throw new MaterialScopeRemovalError('找不到這個計畫', 404, 'PLAN_NOT_FOUND');
+  if (plan.status !== 'active') throw new MaterialScopeRemovalError('只有進行中的計畫可以移除教材範圍', 409, 'PLAN_NOT_ACTIVE');
+  const selection = await db.get(
+    `SELECT pmi.*,i.title FROM plan_material_items pmi
+       JOIN material_content_items i ON i.id=pmi.content_item_id AND i.user_id=pmi.user_id
+      WHERE pmi.user_id=? AND pmi.plan_id=? AND pmi.content_item_id=? AND pmi.selected=1`,
+    [userId, planId, contentItemId]);
+  if (!selection) throw new MaterialScopeRemovalError('這項教材已不在目前段考範圍，請重新整理', 409, 'MATERIAL_SCOPE_STALE');
+  const state = await db.get('SELECT active_version_id FROM user_schedule_state WHERE user_id=?', [userId]);
+  const task = selection.task_id == null ? null : await db.get(
+    'SELECT id,completed,cancelled,deleted,title FROM tasks WHERE id=? AND user_id=? AND plan_id=? AND material_content_item_id=?',
+    [selection.task_id, userId, planId, contentItemId]);
+  if (selection.task_id != null && !task) throw new MaterialScopeRemovalError('教材連結任務已變更，請重新整理', 409, 'MATERIAL_SCOPE_STALE');
+  return { selection, task, activeVersionId: state?.active_version_id ?? null };
+}
+
+async function removalCandidate(db, userId, activeVersionId, task) {
+  if (activeVersionId == null) return [];
+  const cancelTaskId = task && !task.completed && !task.cancelled && !task.deleted ? Number(task.id) : null;
+  const rows = await db.all(
+    `SELECT b.task_id,b.date,b.start_time,b.end_time,b.planned_minutes
+       FROM scheduled_blocks b JOIN tasks t ON t.id=b.task_id AND t.user_id=b.user_id
+       JOIN plans p ON p.id=t.plan_id AND p.user_id=t.user_id
+      WHERE b.user_id=? AND b.schedule_version_id=? AND (? IS NULL OR b.task_id<>?)
+        AND COALESCE(t.deleted,0)=0 AND t.completed=0 AND COALESCE(t.cancelled,0)=0
+        AND p.status IN ('draft','active') ORDER BY b.date,COALESCE(b.start_time,''),b.id`,
+    [userId, activeVersionId, cancelTaskId, cancelTaskId]);
+  return rows.map(canonicalizeBlockTiming);
+}
+
+export async function previewMaterialScopeRemoval(userId, { planId, contentItemId }) {
+  const cur = await materialScopeRemovalCurrent(q, userId, Number(planId), Number(contentItemId));
+  const candidate = await removalCandidate(q, userId, cur.activeVersionId, cur.task);
+  await assertCandidateLocks(q, userId, cur.activeVersionId, candidate);
+  const snap = removalSnapshot(userId, planId, contentItemId, cur.activeVersionId, cur.selection, cur.task);
+  const removedBlocks = cur.activeVersionId == null || cur.task == null ? 0 : Number((await q.get(
+    'SELECT COUNT(*) c FROM scheduled_blocks WHERE user_id=? AND schedule_version_id=? AND task_id=?',
+    [userId, cur.activeVersionId, cur.task.id])).c || 0);
+  return { plan_id: Number(planId), content_item_id: Number(contentItemId), title: cur.selection.title,
+    base_version_id: cur.activeVersionId, linked_task_id: cur.task?.id ?? null,
+    will_cancel_task: !!(cur.task && !cur.task.completed && !cur.task.cancelled && !cur.task.deleted),
+    removed_block_count: removedBlocks, token: signMaterialScopeRemovalToken(snap) };
+}
+
+export async function applyMaterialScopeRemoval(userId, { planId, contentItemId, baseVersionId, token }) {
+  const signed = verifyMaterialScopeRemovalToken(token);
+  if (!signed || Number(signed.user_id) !== Number(userId) || Number(signed.plan_id) !== Number(planId)
+      || Number(signed.content_item_id) !== Number(contentItemId)) {
+    throw new MaterialScopeRemovalError('確認資料無效，請重新預覽', 409, 'MATERIAL_SCOPE_STALE');
+  }
+  return serializeWrite(() => withVersionNoRetry(() => q.tx(async tx => {
+    const cur = await materialScopeRemovalCurrent(tx, userId, Number(planId), Number(contentItemId));
+    const snap = removalSnapshot(userId, planId, contentItemId, cur.activeVersionId, cur.selection, cur.task);
+    if (Number(baseVersionId ?? -1) !== Number(cur.activeVersionId ?? -1)
+        || JSON.stringify(snap) !== JSON.stringify(signed)) {
+      throw new MaterialScopeRemovalError('教材範圍或排程已更新，請重新預覽', 409, 'MATERIAL_SCOPE_STALE');
+    }
+    const candidate = await removalCandidate(tx, userId, cur.activeVersionId, cur.task);
+    await assertCandidateLocks(tx, userId, cur.activeVersionId, candidate);
+    await tx.run(`UPDATE plan_material_items SET selected=0,removed_at=CURRENT_TIMESTAMP,updated_at=CURRENT_TIMESTAMP
+                   WHERE id=? AND user_id=? AND selected=1`, [cur.selection.id, userId]);
+    const shouldCancel = cur.task && !cur.task.completed && !cur.task.cancelled && !cur.task.deleted;
+    if (shouldCancel) await tx.run(
+      `UPDATE tasks SET cancelled=1,cancelled_at=CURRENT_TIMESTAMP,updated_at=CURRENT_TIMESTAMP
+        WHERE id=? AND user_id=? AND completed=0 AND COALESCE(cancelled,0)=0 AND COALESCE(deleted,0)=0`, [cur.task.id, userId]);
+    // 尚未有任何版本的使用者也要能以 null 作 optimistic base；先在同一交易內
+    // 建立空 state row，後面的 conditional swap 才能辨認「仍然沒有 active」。
+    if (cur.activeVersionId == null) await tx.run(
+      'INSERT INTO user_schedule_state (user_id,active_version_id) VALUES (?,NULL) ON CONFLICT(user_id) DO NOTHING', [userId]);
+    const version = await createScheduleVersionInTx(tx, userId, {
+      source: SOURCE.LIFECYCLE, reason: `移除教材範圍「${cur.selection.title}」`,
+      parentVersionId: cur.activeVersionId, expectedActiveVersionId: cur.activeVersionId, blocks: candidate,
+    });
+    return { removed: true, cancelled_task_id: shouldCancel ? cur.task.id : null, version };
+  })));
 }
 
 // Rolling（段考滾動排程）的 apply 期 defence-in-depth。preview 是 UX 防線，

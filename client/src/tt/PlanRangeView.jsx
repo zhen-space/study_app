@@ -2,7 +2,7 @@ import { useEffect, useState, useCallback } from 'react';
 import { api } from '../api';
 import { md } from './plans';
 import { today } from './helpers';
-import { SurfaceCard, Button, EmptyState } from './ui';
+import { SurfaceCard, Button, EmptyState, BottomSheet } from './ui';
 
 // 段考計畫 Plan Detail 的「首屏」——白話回答學生真正想知道的：
 //   1. 每一科考試哪一天（各科可不同；整個段考最後一天＝plan.target_date）
@@ -25,6 +25,9 @@ export default function PlanRangeView({ plan, lists = [], onAddRange, onArrange,
   const editable = plan?.status === 'active' || plan?.status === 'draft';
   const [exam, setExam] = useState(null);
   const [timeline, setTimeline] = useState(null);
+  const [removal, setRemoval] = useState(null);
+  const [removeBusy, setRemoveBusy] = useState(false);
+  const [removeError, setRemoveError] = useState('');
 
   const load = useCallback(async () => {
     if (planId == null) return;
@@ -36,6 +39,29 @@ export default function PlanRangeView({ plan, lists = [], onAddRange, onArrange,
     setTimeline(tl && Array.isArray(tl.segments) ? tl : null);
   }, [planId]);
   useEffect(() => { load(); }, [load, refreshKey]);
+
+  async function previewRemoval(row) {
+    setRemoveBusy(true); setRemoveError('');
+    try {
+      setRemoval(await api('/schedule/material-scope/remove/preview', {
+        method: 'POST', body: { plan_id: planId, content_item_id: row.content_item_id },
+      }));
+    } catch (e) { setRemoveError(e.message); }
+    setRemoveBusy(false);
+  }
+
+  async function confirmRemoval() {
+    if (!removal) return;
+    setRemoveBusy(true); setRemoveError('');
+    try {
+      await api('/schedule/material-scope/remove/apply', { method: 'POST', body: {
+        plan_id: planId, content_item_id: removal.content_item_id,
+        base_version_id: removal.base_version_id, token: removal.token,
+      } });
+      setRemoval(null); await load();
+    } catch (e) { setRemoveError(e.message); }
+    setRemoveBusy(false);
+  }
 
   if (planId == null || exam == null) return null;
 
@@ -118,6 +144,8 @@ export default function PlanRangeView({ plan, lists = [], onAddRange, onArrange,
                         <div key={r.content_item_id} className="row" style={{ gap: 6, marginLeft: 16, alignItems: 'baseline' }}>
                           <Mark done={r.material_completed} />
                           <span className="ui-meta" style={{ textDecoration: r.material_completed ? 'line-through' : 'none' }}>{r.title}</span>
+                          {plan.status === 'active' && <Button size="sm" variant="ghost" style={{ marginLeft: 'auto' }}
+                            disabled={removeBusy} onClick={() => previewRemoval(r)}>移除</Button>}
                         </div>
                       ))}
                     </div>
@@ -153,6 +181,21 @@ export default function PlanRangeView({ plan, lists = [], onAddRange, onArrange,
           <DailyList timeline={timeline} />
         </SurfaceCard>
       )}
+      {removal && <BottomSheet onClose={() => { if (!removeBusy) { setRemoval(null); setRemoveError(''); } }} label="移除教材範圍">
+        <b>要移除「{removal.title}」嗎？</b>
+        <div className="ui-meta" style={{ marginTop: 8 }}>
+          這只會取消本次段考的選取{removal.will_cancel_task ? '與尚未完成的連結任務' : ''}；完成紀錄、讀書紀錄與歷史排程都會保留。
+          {removal.removed_block_count > 0 && ` 目前排程中的 ${removal.removed_block_count} 個安排會移出，確認後建立新版排程。`}
+        </div>
+        {removeError && <div role="alert" style={{ color: 'var(--danger)', marginTop: 8 }}>{removeError}</div>}
+        <div className="row" style={{ marginTop: 16, gap: 8 }}>
+          <Button disabled={removeBusy} onClick={() => { setRemoval(null); setRemoveError(''); }}>取消</Button>
+          <Button variant="primary" disabled={removeBusy} style={{ marginLeft: 'auto' }} onClick={confirmRemoval}>
+            {removeBusy ? '處理中…' : '確認移除'}
+          </Button>
+        </div>
+      </BottomSheet>}
+      {!removal && removeError && <div role="alert" style={{ color: 'var(--danger)', marginTop: 8 }}>{removeError}</div>}
     </div>
   );
 }
