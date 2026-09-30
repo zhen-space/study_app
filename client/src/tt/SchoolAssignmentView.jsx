@@ -14,13 +14,15 @@ import {
 export function SARow({ t, list, now, onEdit, onAddPlan, reload, showSubject = true }) {
   const [menu, setMenu] = useState(false);
   const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState('');
   const done = !!t.completed;
   const cancelled = !!t.cancelled;
   const overdue = isOverdue(t, now);
 
   async function patch(body) {
-    setBusy(true); setMenu(false);
+    setBusy(true); setMenu(false); setErr('');
     try { await api(`/tasks/${t.id}`, { method: 'PATCH', body }); await reload('tasks'); }
+    catch (e) { setErr(e.message || '更新作業失敗，請稍後再試'); }
     finally { setBusy(false); }
   }
   async function del() {
@@ -49,6 +51,7 @@ export function SARow({ t, list, now, onEdit, onAddPlan, reload, showSubject = t
           </span>
           {statusText && <span style={{ color: statusColor, fontWeight: 500 }}>· {statusText}</span>}
         </div>
+        {err && <div className="ui-meta" role="alert" style={{ color: 'var(--danger)', marginTop: 4 }}>{err}</div>}
       </button>
       <div className="sa-row-actions">
         <button className="ui-iconbtn" aria-label="更多" onClick={() => setMenu(m => !m)} disabled={busy}>⋯</button>
