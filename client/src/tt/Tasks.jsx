@@ -396,6 +396,9 @@ export function Detail({ task, lists, onSave, onDelete, onClose }) {
 export default function Tasks({ view, tasks, lists, filters, habits = [], reload, title, subtitle = '', listLabel = '', goVocab, goMemo, topSlot = null, onNav }) {
   const [selId, setSelId] = useState(null);
   const [quick, setQuick] = useState('');
+  const [quickErr, setQuickErr] = useState('');
+  const [quickBusy, setQuickBusy] = useState(false);
+  const quickComposing = useRef(false);
   // §E 第一層 filters（只在「任務」總表出現）：全部／今天／逾期／未排程。記在 localStorage。
   const [taskFilter, setTaskFilter] = useState(() => {
     try { return localStorage.getItem('taskFilter') || 'all'; } catch { return 'all'; }
@@ -525,14 +528,21 @@ export default function Tasks({ view, tasks, lists, filters, habits = [], reload
   }
   async function quickAdd(e) {
     e.preventDefault();
-    if (!quick.trim()) return;
+    if (quickComposing.current || !quick.trim() || quickBusy) return;
     const body = { title: quick.trim() };
     if (view.type === 'list') body.list_id = view.id;
     if (view.type === 'today') body.due_date = today();
     if (view.type === 'tag') body.tags = [view.tag];
-    await api('/tasks', { method: 'POST', body });
-    setQuick('');
-    reload('tasks');
+    setQuickBusy(true); setQuickErr('');
+    try {
+      await api('/tasks', { method: 'POST', body });
+      setQuick('');
+      await reload('tasks');
+    } catch (err) {
+      setQuickErr(err.message || '新增任務失敗');
+    } finally {
+      setQuickBusy(false);
+    }
   }
   // 儲存去抖動：不再每敲一個字就打 API＋全量重載（造成又慢又容易出錯）
   const saveTimer = useRef(null);
@@ -636,7 +646,13 @@ export default function Tasks({ view, tasks, lists, filters, habits = [], reload
         {!['completed', 'trash', 'search'].includes(view.type) && (
           <div className="row" style={{ gap: 'var(--sp-2)', alignItems: 'center' }}>
             <form className="quick-add" style={{ flex: 1 }} onSubmit={quickAdd}>
-              <input placeholder="＋ 新增任務，按 Enter 儲存" value={quick} onChange={e => setQuick(e.target.value)} />
+              <input placeholder="＋ 新增任務，按 Enter 儲存" value={quick}
+                onChange={e => { setQuick(e.target.value); if (quickErr) setQuickErr(null); }}
+                onCompositionStart={() => { quickComposing.current = true; }}
+                onCompositionEnd={() => { quickComposing.current = false; }}
+                onKeyDown={e => { if (e.key === 'Enter' && (e.isComposing || e.nativeEvent?.isComposing)) e.preventDefault(); }}
+                aria-invalid={quickErr ? 'true' : undefined} disabled={quickBusy} />
+              {quickErr && <div role="alert" className="ui-error" style={{ marginTop: 6 }}>{quickErr}</div>}
             </form>
           </div>
         )}
