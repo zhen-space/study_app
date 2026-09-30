@@ -28,6 +28,43 @@ beforeEach(() => { api.mockReset(); });
 afterEach(() => cleanup());
 
 describe('ProgressPlan', () => {
+  const oneSegment = () => proj({ empty: false, segments: [{
+    id: 5, title: '數學第一課', kind: 'study', start_date: null, end_date: '2026-10-02',
+    scope: [], total: 0, completed_count: 0, percent: 0, status: 'upcoming',
+  }] });
+
+  it('刪除需 App 內確認；取消零寫入', async () => {
+    mockApi({ segments: oneSegment() });
+    render(<ProgressPlan plan={activePlan} lists={[]} />);
+    fireEvent.click(await screen.findByRole('button', { name: '刪除' }));
+    expect(await screen.findByText('刪除「數學第一課」？')).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: '取消' }));
+    expect(screen.queryByText('刪除「數學第一課」？')).toBeNull();
+    expect(api.mock.calls.filter(([path, opts]) => path.endsWith('/5') && opts?.method === 'DELETE')).toHaveLength(0);
+  });
+
+  it('刪除 API 失敗保留原段落與確認 sheet，可直接重試成功', async () => {
+    let attempts = 0;
+    api.mockImplementation(async (path, opts) => {
+      if (path.includes('/material-items')) return [];
+      if (opts?.method === 'DELETE') {
+        attempts += 1;
+        if (attempts === 1) throw new Error('排程資料已更新');
+        return proj({ empty: true, segments: [] });
+      }
+      return oneSegment();
+    });
+    render(<ProgressPlan plan={activePlan} lists={[]} />);
+    fireEvent.click(await screen.findByRole('button', { name: '刪除' }));
+    fireEvent.click(screen.getByRole('button', { name: '確認刪除' }));
+    expect(await screen.findByRole('alert')).toHaveTextContent('排程資料已更新');
+    expect(screen.getByText('數學第一課')).toBeTruthy();
+    expect(screen.getByRole('button', { name: '確認刪除' }).disabled).toBe(false);
+    fireEvent.click(screen.getByRole('button', { name: '確認刪除' }));
+    await waitFor(() => expect(screen.queryByText('刪除「數學第一課」？')).toBeNull());
+    expect(attempts).toBe(2);
+    expect(screen.getByText('還沒有安排段考進度')).toBeTruthy();
+  });
   it('顯示每段：日期區間、科目、完成度與落後狀態', async () => {
     mockApi({ segments: proj({
       empty: false,

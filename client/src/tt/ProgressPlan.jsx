@@ -173,6 +173,9 @@ export default function ProgressPlan({ plan, lists }) {
   const [state, setState] = useState({ loading: true, data: null });
   const [selection, setSelection] = useState([]);
   const [sheet, setSheet] = useState(null); // null | {} (new) | seg (edit)
+  const [deleteTarget, setDeleteTarget] = useState(null);
+  const [deleteBusy, setDeleteBusy] = useState(false);
+  const [deleteError, setDeleteError] = useState('');
 
   const load = useCallback(async () => {
     if (planId == null) { setState({ loading: false, data: null }); return; }
@@ -192,10 +195,22 @@ export default function ProgressPlan({ plan, lists }) {
   const data = state.data || { segments: [], summary: {}, empty: true };
   const segments = data.segments || [];
 
-  const del = async seg => {
-    // eslint-disable-next-line no-alert
-    if (!window.confirm(`刪除「${seg.title}」這一段進度安排？（不影響已記錄的完成度）`)) return;
-    try { const d = await api(`/plans/${planId}/progress-segments/${seg.id}`, { method: 'DELETE' }); setState({ loading: false, data: d }); } catch {}
+  const openDelete = seg => { setDeleteTarget(seg); setDeleteError(''); };
+  const closeDelete = () => {
+    if (deleteBusy) return;
+    setDeleteTarget(null); setDeleteError('');
+  };
+  const confirmDelete = async () => {
+    if (!deleteTarget) return;
+    setDeleteBusy(true); setDeleteError('');
+    try {
+      const d = await api(`/plans/${planId}/progress-segments/${deleteTarget.id}`, { method: 'DELETE' });
+      setState({ loading: false, data: d });
+      setDeleteTarget(null);
+    } catch (e) {
+      // 保留確認 sheet 與原投影；網路／stale 失敗後可直接重試，不假裝已刪除。
+      setDeleteError(e.message || '刪除失敗，請再試一次');
+    } finally { setDeleteBusy(false); }
   };
 
   return (
@@ -226,7 +241,7 @@ export default function ProgressPlan({ plan, lists }) {
         </div>
       ) : (
         segments.map(seg => (
-          <SegmentRow key={seg.id} seg={seg} editable={editable} onEdit={s => setSheet(s)} onDelete={del} />
+          <SegmentRow key={seg.id} seg={seg} editable={editable} onEdit={s => setSheet(s)} onDelete={openDelete} />
         ))
       )}
 
@@ -237,6 +252,21 @@ export default function ProgressPlan({ plan, lists }) {
           onClose={() => setSheet(null)}
           onSaved={d => { setState({ loading: false, data: d }); setSheet(null); }}
         />
+      )}
+      {deleteTarget && (
+        <BottomSheet onClose={closeDelete} label="刪除進度段">
+          <b>刪除「{deleteTarget.title}」？</b>
+          <div className="ui-meta" style={{ marginTop: 8 }}>
+            只會刪除這一段日期與範圍目標；教材完成度與讀書紀錄不會受影響。
+          </div>
+          {deleteError && <div role="alert" style={{ color: 'var(--danger, #c53030)', marginTop: 8 }}>{deleteError}</div>}
+          <div className="row" style={{ marginTop: 16, gap: 8 }}>
+            <Button variant="tertiary" disabled={deleteBusy} onClick={closeDelete}>取消</Button>
+            <Button variant="primary" disabled={deleteBusy} style={{ marginLeft: 'auto' }} onClick={confirmDelete}>
+              {deleteBusy ? '刪除中…' : '確認刪除'}
+            </Button>
+          </div>
+        </BottomSheet>
       )}
     </SurfaceCard>
   );
