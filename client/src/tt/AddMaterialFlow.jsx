@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useRef, useState } from 'react';
 import { importPreview, commitDraft, nameCheck } from './material';
 import { fileToPayload } from './vocabImport';
 import MaterialDraftEditor, { emptyDraft } from './MaterialDraftEditor';
@@ -29,6 +29,8 @@ export default function AddMaterialFlow({ lists = [], onCancel, onCreated, onAdd
   // 同名同科三選一：conflict＝偵測到的同名教材清單；mergeTarget＝使用者選擇合併的那本。
   const [conflict, setConflict] = useState(null);   // null | { books: [...] }
   const [mergeTarget, setMergeTarget] = useState(null);
+  const [created, setCreated] = useState(null);
+  const operationBusy = useRef(false);
 
   const withContext = d => {
     if (!d?.book) return d;
@@ -78,25 +80,69 @@ export default function AddMaterialFlow({ lists = [], onCancel, onCreated, onAdd
 
   // 建立前先偵測同名同科：有衝突就要求三選一（合併／另存／取消），未選不 commit。
   const create = async () => {
-    if (appendToBook) { setMergeTarget(appendToBook); return; }
+    if (operationBusy.current) return;
+    operationBusy.current = true;
+    if (appendToBook) { setMergeTarget(appendToBook); operationBusy.current = false; return; }
     setBusy(true); setErr(''); setProblems([]);
     try {
       const chk = await nameCheck(draft.book.title, draft.book.subject_list_id);
-      if (chk.has_conflict) { setConflict({ books: chk.same_name_books || [] }); setBusy(false); return; }
+      if (chk.has_conflict) {
+        setConflict({ books: chk.same_name_books || [] });
+        operationBusy.current = false;
+        setBusy(false);
+        return;
+      }
       const r = await commitDraft(draft);
-      onCreated?.(r);
+      setCreated(r);
+      try { await onCreated?.(r); }
+      catch { setErr('教材已建立，但畫面暫時無法更新。請重新載入，請勿再次建立。'); }
     } catch (e2) {
       setErr(readable(e2));
       setProblems(e2.payload?.problems || []);
-    } finally { setBusy(false); }
+    } finally {
+      operationBusy.current = false;
+      setBusy(false);
+    }
   };
 
   const saveAsNew = async () => {
+    if (operationBusy.current) return;
+    operationBusy.current = true;
     setBusy(true); setErr(''); setProblems([]); setConflict(null);
-    try { onCreated?.(await commitDraft(draft)); }
+    try {
+      const r = await commitDraft(draft);
+      setCreated(r);
+      try { await onCreated?.(r); }
+      catch { setErr('教材已建立，但畫面暫時無法更新。請重新載入，請勿再次建立。'); }
+    }
     catch (e2) { setErr(readable(e2)); setProblems(e2.payload?.problems || []); }
-    finally { setBusy(false); }
+    finally { operationBusy.current = false; setBusy(false); }
   };
+
+  const retryCreated = async () => {
+    if (operationBusy.current || !created) return;
+    operationBusy.current = true;
+    setBusy(true); setErr('');
+    try { await onCreated?.(created); }
+    catch { setErr('教材已建立，但仍無法更新畫面。請稍後再試。'); }
+    finally { operationBusy.current = false; setBusy(false); }
+  };
+
+  if (created) {
+    return (
+      <div className="am">
+        <h3 className="am-title">教材已建立</h3>
+        <p className="am-lead">「{created.book?.title || draft?.book?.title || '新教材'}」已安全儲存，不需要再次建立。</p>
+        {err && <div className="mt-err" role="alert">{err}</div>}
+        <div className="am-foot">
+          <Button variant="tertiary" disabled={busy} onClick={onCancel}>返回</Button>
+          {err && <Button variant="primary" disabled={busy} onClick={retryCreated}>
+            {busy ? '重新載入中…' : '重新載入'}
+          </Button>}
+        </div>
+      </div>
+    );
+  }
 
   // 合併到選定的既有教材：交給 MergeReview 走 preview → 確認 → atomic apply。
   if (mergeTarget) {
