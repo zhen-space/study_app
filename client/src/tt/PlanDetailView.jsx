@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { api } from '../api';
 import Icon from './Icons';
 import { today } from './helpers';
@@ -26,6 +26,7 @@ import { Button, IconButton, PageHeader, SurfaceCard, ProgressBar, ListRow, Bott
 
 const STATUS_LABEL = { draft: '草稿', active: '進行中', paused: '已暫停', completed: '已完成', ended: '已結束', archived: '已封存' };
 const EMPTY_ADDITIONS = [];
+const NO_COMMIT = Symbol('no-commit');
 
 // 暫停／刪除都必須明確選「未完成的任務怎麼辦」。刻意不給預設值：
 // 猜錯的兩個方向都很痛（以為留著結果被刪、以為清掉結果還在），
@@ -88,6 +89,8 @@ export default function PlanDetailView({ planKey, tasks, lists, apiPlans = [], r
   const [editSubject, setEditSubject] = useState(null);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState('');
+  const [refreshStale, setRefreshStale] = useState(false);
+  const mutationBusy = useRef(false);
   const [replan, setReplan] = useState(false);
   const [unresolved, setUnresolved] = useState(0);
   const [nt, setNt] = useState({ title: '', list_id: '', deadline_date: '', estimated_minutes: '' });
@@ -109,6 +112,21 @@ export default function PlanDetailView({ planKey, tasks, lists, apiPlans = [], r
   };
   useEffect(() => { refreshExamSubjects(plan?.planId); }, [plan?.planId]);
 
+  const retryRefresh = async () => {
+    if (mutationBusy.current) return;
+    mutationBusy.current = true;
+    setBusy(true); setErr('');
+    try {
+      await reload();
+      setRefreshStale(false);
+    } catch (e) {
+      setErr(e.message || '仍然無法重新載入，請稍後再試。');
+    } finally {
+      mutationBusy.current = false;
+      setBusy(false);
+    }
+  };
+
   if (!plan) {
     return (
       <div className="main">
@@ -116,6 +134,29 @@ export default function PlanDetailView({ planKey, tasks, lists, apiPlans = [], r
         <div className="main-body">
           <Button onClick={onBack}>← 回計畫列表</Button>
           <div className="ui-meta" style={{ marginTop: 'var(--sp-5)' }}>找不到這個計畫（可能已經全部刪除了）</div>
+        </div>
+      </div>
+    );
+  }
+
+  if (refreshStale) {
+    return (
+      <div className="main">
+        <PageHeader back={<button className="page-back" onClick={onBack}>← 計畫列表</button>} title={plan.name} />
+        <div className="main-body">
+          <SurfaceCard tone="accent">
+            <div role="alert"><b>變更已儲存，但畫面暫時無法更新</b></div>
+            <div className="ui-meta" style={{ marginTop: 'var(--sp-2)' }}>
+              為避免重複新增任務或重送計畫動作，請先重新載入最新資料。
+            </div>
+            {err && <div className="error" role="alert" style={{ marginTop: 'var(--sp-3)' }}>{err}</div>}
+            <div className="row" style={{ marginTop: 'var(--sp-4)' }}>
+              <Button onClick={onBack}>回計畫列表</Button>
+              <Button variant="primary" style={{ marginLeft: 'auto' }} disabled={busy} onClick={retryRefresh}>
+                {busy ? '重新載入中…' : '重新載入'}
+              </Button>
+            </div>
+          </SurfaceCard>
         </div>
       </div>
     );
@@ -162,9 +203,33 @@ export default function PlanDetailView({ planKey, tasks, lists, apiPlans = [], r
 
   // 以下全部走 Phase 2A 已有的 /plans API，前端不另外存一份計畫狀態
   const run = async (fn, afterReload) => {
+    if (mutationBusy.current) return;
+    mutationBusy.current = true;
     setBusy(true); setErr('');
-    try { await fn(); await reload(); afterReload?.(); } catch (e) { setErr(e.message); }
-    setBusy(false);
+    let result;
+    try {
+      result = await fn();
+    } catch (e) {
+      setErr(e.message);
+      mutationBusy.current = false;
+      setBusy(false);
+      return;
+    }
+    if (result === NO_COMMIT) {
+      mutationBusy.current = false;
+      setBusy(false);
+      return;
+    }
+    try {
+      await reload();
+      afterReload?.();
+    } catch (e) {
+      setRefreshStale(true);
+      setErr(e.message || '重新載入失敗');
+    } finally {
+      mutationBusy.current = false;
+      setBusy(false);
+    }
   };
   const hasPending = tasks.some(t => Number(t.plan_id) === Number(plan.planId)
     && !t.completed && !t.cancelled && !t.deleted);
@@ -175,8 +240,8 @@ export default function PlanDetailView({ planKey, tasks, lists, apiPlans = [], r
   // 成功了，計畫還停在 completed。lifecycle 轉換必須走專用端點，才會一併處理
   // 允許的狀態轉換、新的 ScheduleVersion 與 lock。
   const restart = () => run(async () => {
-    await api(`/plans/${plan.planId}/restart`, { method: 'POST', body: {} }); close();
-  });
+    await api(`/plans/${plan.planId}/restart`, { method: 'POST', body: {} });
+  }, close);
 
   // §C：以此（已結束／完成）計畫建立一個新計畫，並複製「未完成」的教材內容。
   // 不 reopen／不 mutate 舊計畫：讀舊計畫未完成任務的 material_content_item_id →
@@ -187,7 +252,7 @@ export default function PlanDetailView({ planKey, tasks, lists, apiPlans = [], r
       .filter(t => Number(t.plan_id) === Number(plan.planId) && !t.completed && !t.deleted && t.material_content_item_id != null)
       .map(t => t.material_content_item_id))];
     // 沒有可複製的教材內容（例如純手動計畫）就走一般建立流程，不建立空的草稿計畫。
-    if (!itemIds.length || !adjustPlan) { close(); goWizard?.(); return; }
+    if (!itemIds.length || !adjustPlan) { close(); goWizard?.(); return NO_COMMIT; }
     const np = await api('/plans', { method: 'POST', body: { name: `${plan.name}（新一輪）`, status: 'draft', source: 'manual' } });
     await selectItems(np.id, itemIds, true).catch(() => {});
     close();
@@ -198,15 +263,13 @@ export default function PlanDetailView({ planKey, tasks, lists, apiPlans = [], r
   // 暫停／刪除：retain 沒選之前不會送出，後端也會再擋一次（缺 boolean 一律 400）。
   const pausePlan = () => run(async () => {
     await api(`/plans/${plan.planId}/pause`, { method: 'POST', body: { retain_incomplete_tasks: retain } });
-    close();
-  });
+  }, close);
   const resumePlan = () => run(async () => {
-    await api(`/plans/${plan.planId}/resume`, { method: 'POST', body: {} }); close();
-  }, () => { if (hasPending) setReplan(true); });
+    await api(`/plans/${plan.planId}/resume`, { method: 'POST', body: {} });
+  }, () => { close(); if (hasPending) setReplan(true); });
   const deletePlan = () => run(async () => {
     await api(`/plans/${plan.planId}/delete`, { method: 'POST', body: {} });
-    close(); onBack();
-  });
+  }, () => { close(); onBack(); });
 
   // 走既有的 POST /tasks，自動帶上目前的 plan_id——使用者不用再選一次計畫。
   // 不給 due_date：加進計畫不等於已經排好時間，所以它會出現在「尚未安排」。
@@ -223,6 +286,7 @@ export default function PlanDetailView({ planKey, tasks, lists, apiPlans = [], r
         estimated_minutes: nt.estimated_minutes ? Number(nt.estimated_minutes) : null,
       },
     });
+  }, () => {
     setNt({ title: '', list_id: nt.list_id, deadline_date: '', estimated_minutes: '' });   // 科目留著，連續加同一科比較順
     close();
   });
@@ -236,32 +300,30 @@ export default function PlanDetailView({ planKey, tasks, lists, apiPlans = [], r
   const complete = () => run(async () => {
     try {
       await api(`/plans/${plan.planId}/complete`, { method: 'POST', body: {} });
-      close();
     } catch (e) {
       if (e.status === 409 && e.payload?.code === 'unresolved_tasks') {
         setUnresolved(e.payload.unresolved?.length ?? 0);
         setSheet('cannotComplete');
-        return;                     // 這是預期中的結果，不是錯誤訊息
+        return NO_COMMIT;           // 這是預期中的結果，不是錯誤訊息
       }
       throw e;
     }
-  });
+  }, close);
 
   // 結束計畫：保留未完成任務，計畫退出排程，但不算完成。
   // 後端在有未完成任務時會先要求明確確認（409 end_confirmation_required）。
   const endPlan = (confirm = false) => run(async () => {
     try {
       await api(`/plans/${plan.planId}/end`, { method: 'POST', body: confirm ? { confirm: true } : {} });
-      close();
     } catch (e) {
       if (!confirm && e.status === 409 && e.payload?.code === 'end_confirmation_required') {
         setUnresolved(e.payload.unresolved?.length ?? 0);
         setSheet('confirmEnd');
-        return;
+        return NO_COMMIT;
       }
       throw e;
     }
-  });
+  }, close);
 
   const saveInfo = () => run(async () => {
     const body = {};
@@ -270,9 +332,9 @@ export default function PlanDetailView({ planKey, tasks, lists, apiPlans = [], r
     if ((edit.start_date || null) !== (raw?.start_date || null)) body.start_date = edit.start_date || null;
     if ((edit.target_date || null) !== (raw?.target_date || null)) body.target_date = edit.target_date || null;
     if ((edit.description || '') !== (raw?.description || '')) body.description = edit.description || '';
-    if (Object.keys(body).length) await api(`/plans/${plan.planId}`, { method: 'PATCH', body });
-    close();
-  });
+    if (!Object.keys(body).length) { close(); return NO_COMMIT; }
+    await api(`/plans/${plan.planId}`, { method: 'PATCH', body });
+  }, close);
 
   // 依科目分組；同一科有多本書時再分小段。
   // 尚未安排的已經有自己的區塊，這裡要排除掉，否則同一筆會出現兩次。
