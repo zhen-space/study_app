@@ -205,6 +205,60 @@ describe('新增／編輯表單', () => {
     expect(api).not.toHaveBeenCalled();
     expect(screen.getByRole('alert')).toBeInTheDocument();
   });
+
+  it('Task API 失敗保留完整輸入並可直接重試', async () => {
+    api.mockRejectedValueOnce(new Error('網路中斷')).mockResolvedValueOnce({ id: 88 });
+    const onClose = vi.fn();
+    render(<SchoolAssignmentForm lists={lists} onClose={onClose} onSaved={vi.fn()} />);
+    await fillMinimum();
+    fireEvent.change(screen.getByPlaceholderText(/第 3 章習題/), { target: { value: '英文講義第 2 課' } });
+    fireEvent.click(screen.getByRole('button', { name: '新增作業' }));
+    expect(await screen.findByRole('alert')).toHaveTextContent('網路中斷');
+    expect(screen.getByDisplayValue('英文講義第 2 課')).toBeInTheDocument();
+    expect(screen.getByLabelText(/截止日期/)).toHaveValue('2026-09-20');
+    expect(onClose).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole('button', { name: '新增作業' }));
+    await waitFor(() => expect(api).toHaveBeenCalledTimes(2));
+  });
+
+  it('Task 已建立但 refresh 失敗時仍關閉，不誤報失敗或鼓勵重複 POST', async () => {
+    api.mockResolvedValueOnce({ id: 89 });
+    const onSaved = vi.fn().mockRejectedValue(new Error('重新整理失敗'));
+    const onClose = vi.fn();
+    render(<SchoolAssignmentForm lists={lists} onClose={onClose} onSaved={onSaved} />);
+    await fillMinimum();
+    fireEvent.click(screen.getByRole('button', { name: '新增作業' }));
+    await waitFor(() => expect(onClose).toHaveBeenCalledTimes(1));
+    expect(onSaved).toHaveBeenCalledWith({ id: 89 });
+    expect(api).toHaveBeenCalledTimes(1);
+    expect(screen.queryByRole('alert')).toBeNull();
+  });
+
+  it('送出中阻止取消、backdrop close 與重複 submit', async () => {
+    let resolveMutation;
+    api.mockImplementation(() => new Promise(resolve => { resolveMutation = resolve; }));
+    const onClose = vi.fn();
+    render(<SchoolAssignmentForm lists={lists} onClose={onClose} onSaved={vi.fn()} />);
+    await fillMinimum();
+    const form = document.querySelector('.sa-form');
+    fireEvent.click(screen.getByRole('button', { name: '新增作業' }));
+    expect(screen.getByRole('button', { name: '儲存中…' })).toBeDisabled();
+    expect(screen.getByRole('button', { name: '取消' })).toBeDisabled();
+    fireEvent.submit(form);
+    fireEvent.click(document.querySelector('.sheet-backdrop'));
+    expect(api).toHaveBeenCalledTimes(1);
+    expect(onClose).not.toHaveBeenCalled();
+    resolveMutation({ id: 90 });
+    await waitFor(() => expect(onClose).toHaveBeenCalledTimes(1));
+  });
+
+  it('送出前取消為零寫入', () => {
+    const onClose = vi.fn();
+    render(<SchoolAssignmentForm lists={lists} onClose={onClose} onSaved={vi.fn()} />);
+    fireEvent.click(screen.getByRole('button', { name: '取消' }));
+    expect(onClose).toHaveBeenCalledTimes(1);
+    expect(api).not.toHaveBeenCalled();
+  });
 });
 
 /* ==================== 串接：生命週期（沿用 Task API） ==================== */
