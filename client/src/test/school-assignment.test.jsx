@@ -250,6 +250,20 @@ describe('生命週期沿用既有 Task API', () => {
     fireEvent.click(screen.getByRole('menuitem', { name: '重新開啟' }));
     await waitFor(() => expect(api).toHaveBeenCalledWith('/tasks/10', { method: 'PATCH', body: { completed: false, cancelled: false } }));
   });
+  it('API 失敗不 reload、不假裝完成，row 顯示錯誤後可重試成功', async () => {
+    api.mockRejectedValueOnce(new Error('網路暫時中斷')).mockResolvedValueOnce({});
+    render(<SARow t={sa({ id: 11 })} list={{ id: 1, name: '數學' }} now={NOW} onEdit={() => {}} reload={reload} />);
+    const check = screen.getByRole('checkbox');
+    fireEvent.click(check);
+    expect(await screen.findByRole('alert')).toHaveTextContent('網路暫時中斷');
+    expect(reload).not.toHaveBeenCalled();
+    expect(check).not.toBeChecked();
+
+    fireEvent.click(check);
+    await waitFor(() => expect(reload).toHaveBeenCalledWith('tasks'));
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument();
+    expect(api).toHaveBeenCalledTimes(2);
+  });
 });
 
 /* ==================== 串接：Calendar 投影（顯示 deadline，不建 block） ==================== */
