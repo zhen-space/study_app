@@ -113,6 +113,32 @@ describe('••• 選單', () => {
     noCrash();
   });
 
+  it('繼續有未完成任務的計畫後立即進入重排確認，但不直接套用排程', async () => {
+    let resumed = false;
+    setApi({
+      '/plans': () => [{ ...fx.plans[0], status: resumed ? 'active' : 'paused' }],
+      '/tasks': [...fx.tasks, ...fx.planTasks],
+      '/plans/12/resume': () => { resumed = true; return {}; },
+      '/plans/12/health': { status: 'needs_replan', pending: 3, needsAdjustment: true, reasons: [{ type: 'overdue', count: 3, message: '有 3 項尚未安排' }] },
+    });
+    await openManage('第二次段考準備', '已暫停');
+    await click(sheetRow('繼續計畫'));
+    expect(await screen.findByText('重新安排「第二次段考準備」')).toBeInTheDocument();
+    expect(sent('POST', '/plans/12/resume')).toHaveLength(1);
+    expect(sent('POST', '/schedule/apply')).toHaveLength(0);
+    noCrash();
+  });
+
+  it('繼續 API 失敗時不開重排，也不假裝已恢復', async () => {
+    setApi({ '/plans': [{ ...fx.plans[0], status: 'paused' }], '/tasks': [...fx.tasks, ...fx.planTasks],
+      '/plans/12/resume': () => Promise.reject(new Error('恢復失敗')) });
+    await openManage('第二次段考準備', '已暫停');
+    await click(sheetRow('繼續計畫'));
+    expect(await within(sheet()).findByText('恢復失敗')).toBeInTheDocument();
+    expect(screen.queryByText('重新安排「第二次段考準備」')).not.toBeInTheDocument();
+    noCrash();
+  });
+
   it('暫停的計畫不顯示排程／新增任務入口——那些按下去必定失敗', async () => {
     withPlan({}, { ...fx.plans[0], status: 'paused' });
     await openPlan('第二次段考準備', '已暫停');
