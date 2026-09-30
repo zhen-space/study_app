@@ -1011,19 +1011,31 @@ export async function applySchedule(userId, {
       const date = String(examSubject.exam_date || '');
       if (!snap || Number(snap.user_id) !== Number(userId) || Number(snap.plan_id) !== Number(planId)
         || Number(snap.base_version_id ?? -1) !== Number(expectedBaseVersionId ?? -1)
-        || Number(snap.subject_list_id) !== sid || snap.exam_date !== date) {
+        || Number(snap.subject_list_id) !== sid || snap.exam_date !== date
+        || (snap.operation || 'add') !== (examSubject.operation || 'add')
+        || (snap.previous_exam_date ?? null) !== (examSubject.previous_exam_date ?? null)) {
         throw new ScheduleInputError('新增科目的預覽已失效，請重新預覽', 'EXAM_SUBJECT_STALE');
       }
       const owned = await tx.get('SELECT id FROM lists WHERE id=? AND user_id=?', [sid, userId]);
       if (!owned) throw new ScheduleInputError('找不到科目', 'EXAM_SUBJECT_NOT_FOUND');
-      const currentPlan = await tx.get('SELECT target_date FROM plans WHERE id=? AND user_id=?', [planId, userId]);
-      if (!isValidDay(date) || (currentPlan.target_date && date > currentPlan.target_date)) {
+      const currentPlan = await tx.get('SELECT start_date,target_date FROM plans WHERE id=? AND user_id=?', [planId, userId]);
+      if (!isValidDay(date) || (currentPlan.start_date && date < currentPlan.start_date) || (currentPlan.target_date && date > currentPlan.target_date)) {
         throw new ScheduleInputError('科目考試日不能晚於這次段考的結束日', 'INVALID_EXAM_DATE');
       }
-      const duplicate = await tx.get('SELECT 1 FROM plan_exam_subjects WHERE user_id=? AND plan_id=? AND subject_list_id=?', [userId, planId, sid]);
-      if (duplicate) throw new ScheduleInputError('這個科目已在段考計畫中', 'EXAM_SUBJECT_EXISTS');
-      const order = await tx.get('SELECT COALESCE(MAX(order_index),-1)+1 n FROM plan_exam_subjects WHERE user_id=? AND plan_id=?', [userId, planId]);
-      await tx.run('INSERT INTO plan_exam_subjects (user_id,plan_id,subject_list_id,exam_date,order_index) VALUES (?,?,?,?,?)', [userId, planId, sid, date, order.n]);
+      const current = await tx.get('SELECT id,exam_date FROM plan_exam_subjects WHERE user_id=? AND plan_id=? AND subject_list_id=?', [userId, planId, sid]);
+      if ((examSubject.operation || 'add') === 'update') {
+        if (!current || (current.exam_date ?? null) !== (examSubject.previous_exam_date ?? null)) throw new ScheduleInputError('科目考試日已變更，請重新預覽', 'EXAM_SUBJECT_STALE');
+        await tx.run('UPDATE plan_exam_subjects SET exam_date=?,updated_at=CURRENT_TIMESTAMP WHERE id=? AND user_id=?', [date, current.id, userId]);
+        await tx.run(`UPDATE tasks SET deadline_date=?,updated_at=CURRENT_TIMESTAMP
+          WHERE user_id=? AND plan_id=? AND list_id=? AND COALESCE(deleted,0)=0 AND completed=0 AND COALESCE(cancelled,0)=0
+            AND (material_content_item_id IS NOT NULL OR EXISTS
+              (SELECT 1 FROM plan_manual_scope s WHERE s.user_id=tasks.user_id AND s.plan_id=tasks.plan_id AND s.task_id=tasks.id AND s.removed_at IS NULL))`,
+        [date, userId, planId, sid]);
+      } else {
+        if (current) throw new ScheduleInputError('這個科目已在段考計畫中', 'EXAM_SUBJECT_EXISTS');
+        const order = await tx.get('SELECT COALESCE(MAX(order_index),-1)+1 n FROM plan_exam_subjects WHERE user_id=? AND plan_id=?', [userId, planId]);
+        await tx.run('INSERT INTO plan_exam_subjects (user_id,plan_id,subject_list_id,exam_date,order_index) VALUES (?,?,?,?,?)', [userId, planId, sid, date, order.n]);
+      }
     }
 
     // §9 pending attachment：把 plan_id=NULL 的既有 Task 原子掛進本計畫（在同一筆

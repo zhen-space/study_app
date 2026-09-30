@@ -627,6 +627,21 @@ describe('Plan Detail', () => {
     expect(screen.getByText('買參考書')).toBeTruthy();
     noCrash();
   });
+
+  it('active 段考可修改單科考試日，取消不送 mutation', async () => {
+    setApi({
+      '/plans': [PLAN], '/tasks': TASKS,
+      '/plans/70/exam': { plan: PLAN, subjects: [{ subject_list_id: 1, subject_name: '數學', exam_date: fx.TODAY }], material: [], manual_scope: [] },
+      '/schedule/timeline/70': { segments: [], unscheduled: [] },
+    });
+    render(<PlanDetailView planKey="plan:70" tasks={TASKS} lists={fx.lists} apiPlans={[PLAN]}
+      reload={() => {}} onBack={() => {}} goWizard={() => {}} adjustPlan={() => {}} />);
+    await waitFor(() => expect(screen.getByText('考試科目與日期')).toBeTruthy());
+    fireEvent.click(screen.getByRole('button', { name: '修改日期' }));
+    expect(screen.getByLabelText('考試日期')).toHaveValue(fx.TODAY);
+    fireEvent.click(screen.getByRole('button', { name: '取消' }));
+    expect(calls.some(([path, opts]) => path === '/schedule/rolling/apply' && opts?.method === 'POST')).toBe(false);
+  });
 });
 
 /* ============ 7. 互動不能等 server round-trip ============ */

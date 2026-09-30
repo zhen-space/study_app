@@ -1237,7 +1237,7 @@ async function loadActivePlanBlocks(userId) {
 export async function runRollingPreview(userId, body) {
   const planId = Number(body.plan_id);
   if (!Number.isInteger(planId)) return { status: 400, body: { error: '缺少有效的計畫 id' } };
-  const plan = await q.get('SELECT id,status,target_date FROM plans WHERE id=? AND user_id=?', [planId, userId]);
+  const plan = await q.get('SELECT id,status,start_date,target_date FROM plans WHERE id=? AND user_id=?', [planId, userId]);
   if (!plan) return { status: 404, body: { error: '找不到這個計畫' } };
   // §16：只有 draft/active 計畫能滾動重排；paused/ended/completed/deleted 一律拒絕。
   if (!['draft', 'active'].includes(plan.status)) {
@@ -1275,17 +1275,24 @@ export async function runRollingPreview(userId, body) {
     if (!Number.isInteger(subjectId) || subjectId <= 0 || !isValidDay(examDate)) return { status: 400, body: { error: '請選擇科目與正確的考試日期', code: 'INVALID_EXAM_SUBJECT' } };
     const owned = await q.get('SELECT id,name FROM lists WHERE id=? AND user_id=?', [subjectId, userId]);
     if (!owned) return { status: 404, body: { error: '找不到科目', code: 'EXAM_SUBJECT_NOT_FOUND' } };
+    if (plan.start_date && examDate < plan.start_date) return { status: 422, body: { error: '科目考試日不能早於計畫開始日', code: 'EXAM_DATE_BEFORE_PLAN' } };
     if (plan.target_date && examDate > plan.target_date) return { status: 422, body: { error: '科目考試日不能晚於這次段考的結束日', code: 'EXAM_DATE_AFTER_PLAN' } };
-    const duplicate = await q.get('SELECT 1 FROM plan_exam_subjects WHERE user_id=? AND plan_id=? AND subject_list_id=?', [userId, planId, subjectId]);
-    if (duplicate) return { status: 409, body: { error: '這個科目已在段考計畫中', code: 'EXAM_SUBJECT_EXISTS' } };
-    examSubject = { subject_list_id: subjectId, subject_name: owned.name, exam_date: examDate };
+    const currentSubject = await q.get('SELECT exam_date FROM plan_exam_subjects WHERE user_id=? AND plan_id=? AND subject_list_id=?', [userId, planId, subjectId]);
+    const operation = pendingSubject.operation === 'update' ? 'update' : 'add';
+    if (operation === 'add' && currentSubject) return { status: 409, body: { error: '這個科目已在段考計畫中', code: 'EXAM_SUBJECT_EXISTS' } };
+    if (operation === 'update' && !currentSubject) return { status: 404, body: { error: '找不到計畫內的這個科目', code: 'EXAM_SUBJECT_NOT_FOUND' } };
+    examSubject = { subject_list_id: subjectId, subject_name: owned.name, exam_date: examDate,
+      operation, previous_exam_date: operation === 'update' ? currentSubject.exam_date : null };
   }
   const { frozen, movable } = partitionFreeze(activeBlocks, planId, win, override);
 
   // tail 的來源＝CURRENT DB WORLD 的 current-plan 未完成 Task（不信前端傳的 Task list，§5）。
   const planTasks = await q.all(
-    `SELECT id,list_id,title,estimated_minutes,deadline_date,deadline_time
-       FROM tasks WHERE user_id=? AND plan_id=? AND COALESCE(deleted,0)=0 AND completed=0 AND COALESCE(cancelled,0)=0`,
+    `SELECT t.id,t.list_id,t.title,t.estimated_minutes,t.deadline_date,t.deadline_time,
+            CASE WHEN t.material_content_item_id IS NOT NULL OR EXISTS
+              (SELECT 1 FROM plan_manual_scope s WHERE s.user_id=t.user_id AND s.plan_id=t.plan_id AND s.task_id=t.id AND s.removed_at IS NULL)
+              THEN 1 ELSE 0 END AS exam_scope_owned
+       FROM tasks t WHERE t.user_id=? AND t.plan_id=? AND COALESCE(t.deleted,0)=0 AND t.completed=0 AND COALESCE(t.cancelled,0)=0`,
     [userId, planId]);
   const frozenMinByTask = new Map();
   for (const b of frozen) frozenMinByTask.set(Number(b.task_id), (frozenMinByTask.get(Number(b.task_id)) || 0) + (Number(b.planned_minutes) || 0));
@@ -1330,7 +1337,9 @@ export async function runRollingPreview(userId, body) {
     const frozenMin = frozenMinByTask.get(Number(t.id)) || 0;
     const remaining = Math.max(0, est - frozenMin);   // 已凍結部分不再重排
     if (remaining <= 0) continue;
-    addItem(t, remaining, t.deadline_date);
+    const previewDeadline = examSubject?.operation === 'update' && Number(t.list_id) === Number(examSubject.subject_list_id)
+      && Number(t.exam_scope_owned) === 1 ? examSubject.exam_date : t.deadline_date;
+    addItem(t, remaining, previewDeadline);
   }
 
   // §9 trigger task：可能是 pending plan_id=NULL 的新作業（virtual membership，零 DB mutation）。
@@ -1515,6 +1524,12 @@ export async function runRollingPreview(userId, body) {
          FROM tasks t LEFT JOIN plans p ON p.id=t.plan_id AND p.user_id=t.user_id
         WHERE t.user_id=? AND t.id IN (${allTaskIds.map(() => '?').join(',')})`, [userId, ...allTaskIds]);
     for (const r of rows) deadlineById.set(Number(r.id), { deadline_date: r.deadline_date, deadline_time: r.deadline_time, plan_target_date: r.plan_target_date });
+  }
+  if (examSubject?.operation === 'update') {
+    for (const t of planTasks) if (Number(t.list_id) === Number(examSubject.subject_list_id) && Number(t.exam_scope_owned) === 1) {
+      const current = deadlineById.get(Number(t.id)) || {};
+      deadlineById.set(Number(t.id), { ...current, deadline_date: examSubject.exam_date });
+    }
   }
   // current Plan candidate（含虛擬掛入的 trigger）一律以「CURRENT Plan target_date」為 Plan 上限，
   // 不用 join 出來的值（trigger 的 plan_id 還是 NULL、join 不到），也不信 client。

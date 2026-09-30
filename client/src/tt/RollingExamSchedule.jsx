@@ -89,7 +89,7 @@ export default function RollingExamSchedule({
     <BottomSheet onClose={onClose} label="段考滾動重排">
       <div className="rolling">
         <h3 style={{ margin: '0 0 var(--sp-3)' }}>
-          {examSubject ? `加入${examSubject.subject_name || '科目'}並重新安排`
+          {examSubject ? `${examSubject.operation === 'update' ? '修改' : '加入'}${examSubject.subject_name || '科目'}並重新安排`
             : addTaskIds.length || materialSelections.length ? '加入內容並重新安排' : '這次段考安排・滾動重排'}
         </h3>
         {error && <div className="ui-card ui-card--warning" role="alert" style={{ marginBottom: 'var(--sp-3)' }}>{error}</div>}

@@ -84,6 +84,8 @@ export default function PlanDetailView({ planKey, tasks, lists, apiPlans = [], r
   const [rollingAdditions, setRollingAdditions] = useState(null);
   const [newSubject, setNewSubject] = useState({ subject_list_id: '', exam_date: '' });
   const [examSubjectIds, setExamSubjectIds] = useState(() => new Set());
+  const [examRefreshKey, setExamRefreshKey] = useState(0);
+  const [editSubject, setEditSubject] = useState(null);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState('');
   const [replan, setReplan] = useState(false);
@@ -143,6 +145,13 @@ export default function PlanDetailView({ planKey, tasks, lists, apiPlans = [], r
     if (!selected || !newSubject.exam_date) return;
     close();
     setRollingAdditions({ examSubject: { subject_list_id: Number(selected.id), subject_name: selected.name, exam_date: newSubject.exam_date } });
+    setShowRolling(true);
+  };
+  const previewSubjectDate = () => {
+    if (!editSubject?.exam_date) return;
+    close();
+    setRollingAdditions({ examSubject: { subject_list_id: Number(editSubject.subject_list_id), subject_name: editSubject.subject_name,
+      exam_date: editSubject.exam_date, operation: 'update' } });
     setShowRolling(true);
   };
 
@@ -363,18 +372,19 @@ export default function PlanDetailView({ planKey, tasks, lists, apiPlans = [], r
             scheduleEnd={raw?.target_date
               || plan.items.reduce((m, t) => (t.deadline_date && t.deadline_date > m ? t.deadline_date : m), '')
               || null}
-            onApplied={async () => { await reload(); await refreshExamSubjects(plan.planId); }} />
+            onApplied={async () => { await reload(); await refreshExamSubjects(plan.planId); setExamRefreshKey(k => k + 1); }} />
         )}
 
         {/* 首屏：用白話直接回答「考試哪天、要讀完哪些範圍（哪科→哪本→哪課）、
             以及（若已安排）每天要做的」。不先顯示百分比儀表板或工程術語。 */}
         {isReal ? (
           <PlanRangeView
-            plan={plan} lists={lists}
+            plan={plan} lists={lists} refreshKey={examRefreshKey}
             onAddRange={plan.status === 'active' ? () => setSheet('addContent') : undefined}
             onArrange={plan.status === 'active' ? () => setSheet('arrange') : undefined}
             onAddManual={plan.status === 'active' ? () => setSheet('add') : undefined}
             onAdjust={plan.status === 'active' ? () => setShowRolling(true) : undefined}
+            onEditSubject={plan.status === 'active' ? s => { setEditSubject({ ...s }); setSheet('editSubjectDate'); } : undefined}
           />
         ) : (
           /* 舊資料／歷史計畫：沒有正式 planId，維持簡單進度呈現 */
@@ -746,6 +756,20 @@ export default function PlanDetailView({ planKey, tasks, lists, apiPlans = [], r
             <Button variant="tertiary" onClick={close}>取消</Button>
             <Button variant="primary" style={{ marginLeft: 'auto' }} disabled={!newSubject.subject_list_id || !newSubject.exam_date}
               onClick={previewSubject}>預覽安排</Button>
+          </div>
+        </BottomSheet>
+      )}
+
+      {sheet === 'editSubjectDate' && editSubject && (
+        <BottomSheet onClose={close} label="修改科目考試日">
+          <b style={{ fontSize: 18 }}>{editSubject.subject_name}的考試日</b>
+          <div className="ui-meta" style={{ marginTop: 2 }}>先預覽新版安排；確認前不會改動日期或行事曆。</div>
+          <label className="ui-meta" htmlFor="exam-edit-date" style={{ display: 'block', marginTop: 'var(--sp-4)' }}>考試日期</label>
+          <input id="exam-edit-date" type="date" value={editSubject.exam_date || ''} min={raw?.start_date || undefined} max={raw?.target_date || undefined}
+            style={{ width: '100%', marginTop: 'var(--sp-1)' }} onChange={e => setEditSubject(s => ({ ...s, exam_date: e.target.value }))} />
+          <div className="row" style={{ marginTop: 'var(--sp-4)' }}>
+            <Button variant="tertiary" onClick={close}>取消</Button>
+            <Button variant="primary" style={{ marginLeft: 'auto' }} disabled={!editSubject.exam_date} onClick={previewSubjectDate}>預覽安排</Button>
           </div>
         </BottomSheet>
       )}
