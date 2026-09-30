@@ -1,7 +1,7 @@
 // Plan Detail 首屏（PlanRangeView）：白話呈現「各科考試哪天 → 要讀完哪些範圍
 // （科目→教材→課/章＋手動範圍）→（有排程才顯示）每天要做的」。資料來自 /plans/:id/exam。
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import { render, screen, waitFor, cleanup } from '@testing-library/react';
+import { render, screen, waitFor, cleanup, fireEvent } from '@testing-library/react';
 
 vi.mock('../api', () => ({ api: vi.fn() }));
 const { api } = await import('../api');
@@ -23,6 +23,37 @@ beforeEach(() => api.mockReset());
 afterEach(() => cleanup());
 
 describe('PlanRangeView', () => {
+  it('active 計畫先預覽再移除；失敗保留確認視窗並可重試', async () => {
+    const exam = { plan: {}, subjects: [{ subject_list_id: 1, subject_name: '數學' }],
+      material: [mat({ content_item_id: 11, subject_list_id: 1, book_id: 5, book_title: '課本', chapter_title: '第一章', title: '第一課' })], manual_scope: [] };
+    let applies = 0;
+    api.mockImplementation(async (path = '') => {
+      if (path.includes('/exam')) return exam;
+      if (path.includes('/timeline')) return { segments: [], items: [], unscheduled: [] };
+      if (path.endsWith('/preview')) return { content_item_id: 11, title: '第一課', base_version_id: 3,
+        token: 'signed', will_cancel_task: true, removed_block_count: 1 };
+      if (path.endsWith('/apply')) { applies += 1; if (applies === 1) throw new Error('暫時失敗'); return {}; }
+      return {};
+    });
+    render(<PlanRangeView plan={plan} lists={LISTS} />);
+    fireEvent.click(await screen.findByRole('button', { name: '移除' }));
+    expect(await screen.findByText(/完成紀錄、讀書紀錄與歷史排程都會保留/)).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: '確認移除' }));
+    expect(await screen.findByRole('alert')).toHaveTextContent('暫時失敗');
+    fireEvent.click(screen.getByRole('button', { name: '確認移除' }));
+    await waitFor(() => expect(applies).toBe(2));
+    expect(api).toHaveBeenCalledWith('/schedule/material-scope/remove/apply', expect.objectContaining({
+      body: { plan_id: 1, content_item_id: 11, base_version_id: 3, token: 'signed' },
+    }));
+  });
+
+  it('非 active 計畫不顯示移除入口', async () => {
+    mockApi({ exam: { plan: {}, subjects: [{ subject_list_id: 1, subject_name: '數學' }],
+      material: [mat({ content_item_id: 11, subject_list_id: 1, book_id: 5, book_title: '課本', chapter_title: '第一章', title: '第一課' })], manual_scope: [] } });
+    render(<PlanRangeView plan={{ ...plan, status: 'completed' }} lists={LISTS} />);
+    await screen.findByText('第一課');
+    expect(screen.queryByRole('button', { name: '移除' })).toBeNull();
+  });
   it('顯示各科考試日與科目→教材→課的具體範圍＋手動範圍', async () => {
     mockApi({ exam: {
       plan: { target_date: '2099-10-02' },

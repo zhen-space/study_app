@@ -1698,6 +1698,23 @@ router.post('/rolling/apply', async (req, res) => {
   }
 });
 
+router.post('/material-scope/remove/preview', async (req, res) => {
+  try {
+    const b = req.body || {};
+    res.json(await sched.previewMaterialScopeRemoval(req.userId, { planId: b.plan_id, contentItemId: b.content_item_id }));
+  } catch (e) { res.status(e.status || 500).json({ error: e.message, code: e.code, conflicts: e.conflicts }); }
+});
+
+router.post('/material-scope/remove/apply', async (req, res) => {
+  try {
+    const b = req.body || {};
+    res.json(await sched.applyMaterialScopeRemoval(req.userId, {
+      planId: b.plan_id, contentItemId: b.content_item_id,
+      baseVersionId: b.base_version_id, token: b.token,
+    }));
+  } catch (e) { res.status(e.status || 500).json({ error: e.message, code: e.code, conflicts: e.conflicts }); }
+});
+
 /* ============================================================
    Phase 2C-P1：排程持久化的讀取端
    ------------------------------------------------------------
