@@ -740,7 +740,10 @@ describe('P3 Restore：版本是 template，套用永遠建立新版本', () => 
     const preview = await sched.getRestorePreview(userId, source.version_id);
     await sched.createScheduleVersion(userId, { source: sched.SOURCE.MANUAL, effectiveFrom: '2099-01-01', parentVersionId: source.version_id, blocks: [{ task_id: task.lastInsertRowid, date: '2099-04-02' }] });
     const before = await countsFor(userId);
-    await assert.rejects(() => sched.applyRestore(userId, source.version_id, { baseVersionId: preview.base_version_id }), err => err.status === 409);
+    await assert.rejects(
+      () => sched.applyRestore(userId, source.version_id, { baseVersionId: preview.base_version_id }),
+      err => err.status === 409 && err.code === 'STALE_SCHEDULE_PREVIEW',
+    );
     assert.deepEqual(await countsFor(userId), before, '★ stale 不得重試或另建 restore version');
     assert.equal((await q.get('SELECT due_date FROM tasks WHERE id=?', [task.lastInsertRowid])).due_date, '2099-04-02');
   });

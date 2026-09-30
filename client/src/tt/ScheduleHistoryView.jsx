@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { api } from '../api';
 import Icon from './Icons';
 import { BottomSheet, Button, EmptyState, PageHeader, SurfaceCard } from './ui';
@@ -58,42 +58,59 @@ export default function ScheduleHistoryView({ onRestored }) {
   const [preview, setPreview] = useState(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
+  const [restoreError, setRestoreError] = useState('');
+  const detailRequest = useRef(0);
   const load = async () => {
     try { setVersions(await api('/schedule/versions')); } catch (e) { setError(e.message); }
   };
   useEffect(() => { load(); }, []);
   async function openVersion(id) {
+    const request = ++detailRequest.current;
     setError('');
     try {
       const [version, versionDiff] = await Promise.all([
         api(`/schedule/versions/${id}`), api(`/schedule/versions/${id}/diff?include_unchanged=0`),
       ]);
+      if (request !== detailRequest.current) return;
       setSelected(version); setDiff(versionDiff);
-    } catch (e) { setError(e.message); }
+    } catch (e) {
+      if (request === detailRequest.current) setError(e.message);
+    }
   }
   async function openRestore() {
-    if (!selected) return;
+    if (!selected || busy) return;
     setBusy(true); setError('');
+    setRestoreError('');
     try { setPreview(await api(`/schedule/versions/${selected.version.id}/restore-preview`)); }
     catch (e) { setError(e.message); }
     setBusy(false);
   }
   async function applyRestore() {
-    if (!preview) return;
+    if (!preview || busy) return;
     setBusy(true); setError('');
+    setRestoreError('');
     try {
       const r = await api(`/schedule/versions/${preview.source_version.id}/restore`, {
         method: 'POST', body: { base_version_id: preview.base_version_id, confirm_partial: preview.status === 'partial' },
       });
       if (r.applied) { setPreview(null); await load(); await onRestored?.(); await openVersion(r.version.version_id); }
-    } catch (e) { setError(e.message); }
+    } catch (e) {
+      if (e.status === 409 && e.payload?.code === 'STALE_SCHEDULE_PREVIEW') {
+        setPreview(null);
+        setError('排程已更新，請重新預覽後再恢復。');
+      } else {
+        // 一般網路/API 失敗保留使用者確認中的 preview；錯誤要出現在 sheet 內，
+        // 才不會被 modal 遮住，並且能直接重試同一份尚未過期的提案。
+        setRestoreError(e.message);
+      }
+    }
     setBusy(false);
   }
   return (
     <div className="main">
       <PageHeader title="排程紀錄" subtitle="查看舊版安排，必要時恢復可行的部分" />
       <div className="main-body">
-        {error && <SurfaceCard tone="warning" style={{ marginBottom: 'var(--sp-3)' }}>{error}</SurfaceCard>}
+        {error && <div role="alert"><SurfaceCard tone="warning" style={{ marginBottom: 'var(--sp-3)' }}>{error}</SurfaceCard></div>}
         {!versions.length && <EmptyState title="還沒有排程紀錄" description="建立第一份正式排程後，版本會出現在這裡。" />}
         {versions.map(v => <SurfaceCard key={v.id} style={{ marginBottom: 'var(--sp-2)', cursor: 'pointer' }}
           role="button" tabIndex={0} onClick={() => openVersion(v.id)} onKeyDown={e => e.key === 'Enter' && openVersion(v.id)}>
@@ -104,8 +121,8 @@ export default function ScheduleHistoryView({ onRestored }) {
         <VersionDiff diff={diff} />
         {selected && <Button variant="primary" block size="lg" style={{ marginTop: 'var(--sp-4)' }} onClick={openRestore} disabled={busy}>恢復這個版本</Button>}
       </div>
-      {preview && <BottomSheet onClose={() => setPreview(null)} label="恢復排程版本">
-        <div className="row"><b style={{ fontSize: 17 }}>恢復 V{preview.source_version.version_no}</b><button className="icon-btn" style={{ marginLeft: 'auto' }} onClick={() => setPreview(null)} aria-label="關閉">×</button></div>
+      {preview && <BottomSheet onClose={busy ? undefined : () => { setPreview(null); setRestoreError(''); }} label="恢復排程版本">
+        <div className="row"><b style={{ fontSize: 17 }}>恢復 V{preview.source_version.version_no}</b><button className="icon-btn" style={{ marginLeft: 'auto' }} disabled={busy} onClick={() => { setPreview(null); setRestoreError(''); }} aria-label="關閉">×</button></div>
         <p className="ui-meta" style={{ marginTop: 'var(--sp-3)' }}>
           {preview.status === 'full' ? '所有仍有效的安排都可以恢復。'
             : preview.status === 'partial' ? '部分安排無法恢復；其餘安排可以套用。'
@@ -115,8 +132,9 @@ export default function ScheduleHistoryView({ onRestored }) {
           <b>{c.block?.task_title_snapshot || `任務 #${c.task_id}`}</b><div className="ui-meta">{c.message || REASON[c.type] || c.type}</div>
         </SurfaceCard>)}
         {preview.unplaced_task_ids.length > 0 && <div className="ui-meta" style={{ marginTop: 'var(--sp-3)' }}>套用後將有 {preview.unplaced_task_ids.length} 項任務尚未安排。</div>}
+        {restoreError && <div role="alert" className="error" style={{ marginTop: 'var(--sp-3)' }}>{restoreError}</div>}
         {(preview.status === 'full' || preview.status === 'partial') && <Button variant="primary" block size="lg" style={{ marginTop: 'var(--sp-4)' }} disabled={busy} onClick={applyRestore}>
-          {preview.status === 'partial' ? '恢復可行的部分' : '確認恢復'}
+          {busy ? '恢復中…' : preview.status === 'partial' ? '恢復可行的部分' : '確認恢復'}
         </Button>}
       </BottomSheet>}
     </div>
