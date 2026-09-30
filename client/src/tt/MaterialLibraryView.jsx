@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   listCategories, listBooks, getBookTree, setItemCompletion, createCategory, createBook,
   addBookToCategory, updateBook, bookNeedsSubject, ITEM_LABEL, CHAPTER_LEVEL_KINDS,
-  collectBlocked, collectCancelled, bookImpact, deleteBook,
+  collectBlocked, collectCancelled, bookImpact, deleteBook, listDeletedBooks, restoreDeletedBook,
 } from './material';
 import { Button, EmptyState, PageHeader, SegmentedControl, ProgressBar, BottomSheet } from './ui';
 import BlockedNotice from './BlockedNotice';
@@ -106,10 +106,15 @@ export default function MaterialLibraryView({ goPlans = null, lists = [] }) {
   const [addSubject, setAddSubject] = useState('');
   const [appendMode, setAppendMode] = useState(false);   // 增加目錄／匯入更多內容
   const [deleteState, setDeleteState] = useState(null);   // null | { loading } | { impact }
+  const [deletedBooks, setDeletedBooks] = useState([]);
+  const [restoringId, setRestoringId] = useState(null);
 
   const load = useCallback(async () => {
-    const [c, b] = await Promise.all([listCategories(), listBooks()]);
-    setCategories(c); setBooks(b);
+    const [c, b, deleted] = await Promise.all([
+      listCategories(), listBooks(),
+      listDeletedBooks().catch(e => { setErr(e.message || '最近刪除讀取失敗'); return []; }),
+    ]);
+    setCategories(c); setBooks(b); setDeletedBooks(deleted);
   }, []);
 
   useEffect(() => { load().catch(e => setErr(e.message)); }, [load]);
@@ -162,6 +167,13 @@ export default function MaterialLibraryView({ goPlans = null, lists = [] }) {
       if (e.payload?.code === 'IN_USE_BY_ACTIVE_PLAN') setDeleteState({ impact: e.payload.impact, blocked: true });
       else setErr(e.message);
     } finally { setBusy(false); }
+  };
+
+  const restoreBook = async id => {
+    setRestoringId(id); setErr('');
+    try { await restoreDeletedBook(id); await load(); }
+    catch (e) { setErr(e.message || '復原教材失敗'); }
+    finally { setRestoringId(null); }
   };
 
   const visibleBooks = useMemo(() => {
@@ -407,6 +419,23 @@ export default function MaterialLibraryView({ goPlans = null, lists = [] }) {
             );
           })}
         </div>
+      )}
+
+      {deletedBooks.length > 0 && (
+        <details className="ml-deleted" style={{ marginTop: 'var(--sp-4)' }}>
+          <summary style={{ cursor: 'pointer', fontWeight: 600 }}>最近刪除（{deletedBooks.length}）</summary>
+          <div style={{ display: 'grid', gap: 8, marginTop: 8 }}>
+            {deletedBooks.map(b => (
+              <div key={b.id} className="row" style={{ gap: 8, flexWrap: 'wrap' }}>
+                <span style={{ flex: 1, minWidth: 0 }}>{b.title}</span>
+                <Button size="sm" variant="secondary" disabled={restoringId != null}
+                  onClick={() => restoreBook(b.id)}>
+                  {restoringId === b.id ? '復原中…' : '復原'}
+                </Button>
+              </div>
+            ))}
+          </div>
+        </details>
       )}
 
       <CategoryAdder onAdd={async name => { await createCategory(name); await load(); }} />
