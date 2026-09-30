@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   listCategories, listBooks, getBookTree, setItemCompletion, createCategory, createBook,
-  addBookToCategory, updateBook, bookNeedsSubject, ITEM_LABEL, CHAPTER_LEVEL_KINDS,
+  addBookToCategory, removeBookFromCategory, updateBook, bookNeedsSubject, ITEM_LABEL, CHAPTER_LEVEL_KINDS,
   collectBlocked, collectCancelled, bookImpact, deleteBook, listDeletedBooks, restoreDeletedBook,
 } from './material';
 import { Button, EmptyState, PageHeader, SegmentedControl, ProgressBar, BottomSheet } from './ui';
@@ -150,6 +150,18 @@ export default function MaterialLibraryView({ goPlans = null, lists = [] }) {
     finally { setBusy(false); }
   };
 
+  // Category 只是 Book reference。既有教材可以隨時加入／移出，成功後以
+  // server 回傳的分類清單刷新；失敗時不改本地勾選，讓使用者可直接重試。
+  const toggleCategory = async (categoryId, linked) => {
+    setBusy(true); setErr('');
+    try {
+      if (linked) await removeBookFromCategory(categoryId, openBook);
+      else await addBookToCategory(categoryId, openBook);
+      await load();
+    } catch (e) { setErr(e.message || '分類更新失敗，請再試一次'); }
+    finally { setBusy(false); }
+  };
+
   // 刪除教材：先讀 CURRENT 影響，再讓使用者確認（被 active/paused 計畫使用時提供解除關聯）。
   const openDelete = async () => {
     setDeleteState({ loading: true });
@@ -270,6 +282,22 @@ export default function MaterialLibraryView({ goPlans = null, lists = [] }) {
             這本教材同時列在 {inCats.map(n => `「${n}」`).join('、')}，
             但只有一份目錄與一份完成度。
           </div>
+        )}
+        {!editing && categories.length > 0 && (
+          <fieldset className="ml-categories" disabled={busy}>
+            <legend>整理到分類</legend>
+            <div className="ui-meta">只調整書架分類，不會複製或刪除教材、進度與任務。</div>
+            <div className="ml-category-options">
+              {categories.map(category => {
+                const linked = (category.books || []).some(b => Number(b.id) === Number(openBook));
+                return <label key={category.id}>
+                  <input type="checkbox" checked={linked}
+                    onChange={() => toggleCategory(category.id, linked)} />
+                  <span>{category.name}</span>
+                </label>;
+              })}
+            </div>
+          </fieldset>
         )}
         {editing && tree && (
           <MaterialBookEditor book={book} tree={tree} lists={lists}

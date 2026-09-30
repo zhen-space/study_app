@@ -143,6 +143,8 @@ export const updateBook = (bookId, body) =>
   api(`/material/books/${bookId}`, { method: 'PATCH', body });
 export const addBookToCategory = (categoryId, bookId) =>
   api(`/material/categories/${categoryId}/books/${bookId}`, { method: 'PUT' });
+export const removeBookFromCategory = (categoryId, bookId) =>
+  api(`/material/categories/${categoryId}/books/${bookId}`, { method: 'DELETE' });
 
 // 刪除前的 CURRENT 影響（唯讀）。
 export const bookImpact = bookId => api(`/material/books/${bookId}/impact`);
