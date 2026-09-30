@@ -161,11 +161,13 @@ export default function PlanDetailView({ planKey, tasks, lists, apiPlans = [], r
       .then(() => reload('tasks')).catch(() => reload('tasks'));
 
   // 以下全部走 Phase 2A 已有的 /plans API，前端不另外存一份計畫狀態
-  const run = async (fn) => {
+  const run = async (fn, afterReload) => {
     setBusy(true); setErr('');
-    try { await fn(); await reload(); } catch (e) { setErr(e.message); }
+    try { await fn(); await reload(); afterReload?.(); } catch (e) { setErr(e.message); }
     setBusy(false);
   };
+  const hasPending = tasks.some(t => Number(t.plan_id) === Number(plan.planId)
+    && !t.completed && !t.cancelled && !t.deleted);
   // 封存功能已從產品移除——沒有 archive／restore 動作。既有 archived 舊資料仍
   // 讀得到（唯讀），依 archived_from_status 投影回已完成／已結束。
   // 重新開始走正式 lifecycle endpoint。以前是 PATCH /plans/:id { status:'active' }，
@@ -200,7 +202,7 @@ export default function PlanDetailView({ planKey, tasks, lists, apiPlans = [], r
   });
   const resumePlan = () => run(async () => {
     await api(`/plans/${plan.planId}/resume`, { method: 'POST', body: {} }); close();
-  });
+  }, () => { if (hasPending) setReplan(true); });
   const deletePlan = () => run(async () => {
     await api(`/plans/${plan.planId}/delete`, { method: 'POST', body: {} });
     close(); onBack();
