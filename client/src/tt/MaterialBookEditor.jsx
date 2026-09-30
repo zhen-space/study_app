@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useRef, useState } from 'react';
 import {
   updateBook, updateNode, updateContentItem, deleteNode, deleteContentItem,
   createNode, createContentItem, ITEM_LABEL, CHAPTER_LEVEL_KINDS,
@@ -55,6 +55,8 @@ function NodeRow({ node, label, value, busy, onChange, onBlur, onDelete }) {
 export default function MaterialBookEditor({ book, tree, lists = [], onChanged, onDone }) {
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState('');
+  const [refreshStale, setRefreshStale] = useState(false);
+  const mutationBusy = useRef(false);
   // 打字當下不送出：每敲一個字打一次 API 會讓游標跳掉，也會塞爆網路。
   // 只把改過的值先放在這裡，離開欄位（blur）才存。
   const [draft, setDraft] = useState({});
@@ -64,8 +66,11 @@ export default function MaterialBookEditor({ book, tree, lists = [], onChanged, 
   const setLocal = (type, id, v) => setDraft(d => ({ ...d, [key(type, id)]: v }));
 
   const run = async (fn) => {
+    if (mutationBusy.current || refreshStale) return;
+    mutationBusy.current = true;
     setBusy(true); setErr('');
-    try { await fn(); await onChanged?.(); }
+    let saved;
+    try { saved = await fn(); }
     catch (e) {
       // 後端擋下刪除時會一起回 references，把「為什麼不能刪」講出來。
       const r = e.payload?.references;
@@ -75,8 +80,25 @@ export default function MaterialBookEditor({ book, tree, lists = [], onChanged, 
         r.tasks ? '已經排進任務' : '',
       ].filter(Boolean).join('、') : '';
       setErr(why ? `${e.message}：${why}。` : e.message);
-    } finally { setBusy(false); }
+      mutationBusy.current = false;
+      setBusy(false);
+      return;
+    }
+    try {
+      await onChanged?.(saved);
+    } catch {
+      // createNode/createContentItem 已成功，refresh 失敗不能再顯示成「建立失敗」；
+      // 否則同一顆按鈕重試會再 POST 一筆，製造重複範圍。鎖住這份 stale tree，
+      // 讓使用者離開後重新載入 server-authoritative 結構。
+      setRefreshStale(true);
+      setErr('變更已儲存，但畫面暫時無法更新。請完成編輯後重新開啟教材。');
+    } finally {
+      mutationBusy.current = false;
+      setBusy(false);
+    }
   };
+
+  const locked = busy || refreshStale;
 
   const saveNode = (node, title) => {
     const t = String(title).trim();
@@ -92,7 +114,7 @@ export default function MaterialBookEditor({ book, tree, lists = [], onChanged, 
 
   const itemProps = item => ({
     item: { ...item, title: valueOf('i', item.id, item.title) },
-    busy,
+    busy: locked,
     onRename: v => setLocal('i', item.id, v),
     onKind: v => saveItem(item, { kind: v }),
     onDelete: () => run(() => deleteContentItem(item.id)),
@@ -110,7 +132,7 @@ export default function MaterialBookEditor({ book, tree, lists = [], onChanged, 
   }));
 
   const nodeProps = (node, label) => ({
-    node, label, busy,
+    node, label, busy: locked,
     value: valueOf('n', node.id, node.title),
     onChange: v => setLocal('n', node.id, v),
     onBlur: () => saveNode(node, valueOf('n', node.id, node.title)),
@@ -128,7 +150,7 @@ export default function MaterialBookEditor({ book, tree, lists = [], onChanged, 
       <div className="me-book">
         <label className="md-field">
           <span>教材名稱</span>
-          <input value={valueOf('b', 'title', book?.title ?? '')} disabled={busy}
+          <input value={valueOf('b', 'title', book?.title ?? '')} disabled={locked}
             onChange={e => setLocal('b', 'title', e.target.value)}
             onBlur={e => {
               const t = e.target.value.trim();
@@ -137,7 +159,7 @@ export default function MaterialBookEditor({ book, tree, lists = [], onChanged, 
         </label>
         <label className="md-field">
           <span>科目</span>
-          <select value={book?.subject_list_id ?? ''} disabled={busy}
+          <select value={book?.subject_list_id ?? ''} disabled={locked}
             onChange={e => run(() => updateBook(book.id, {
               subject_list_id: e.target.value === '' ? null : Number(e.target.value),
             }))}>
@@ -147,7 +169,7 @@ export default function MaterialBookEditor({ book, tree, lists = [], onChanged, 
         </label>
         <label className="md-field">
           <span>出版社</span>
-          <input value={valueOf('b', 'pub', book?.publisher ?? '')} disabled={busy}
+          <input value={valueOf('b', 'pub', book?.publisher ?? '')} disabled={locked}
             onChange={e => setLocal('b', 'pub', e.target.value)}
             onBlur={e => {
               const v = e.target.value.trim();
@@ -156,7 +178,7 @@ export default function MaterialBookEditor({ book, tree, lists = [], onChanged, 
         </label>
         <label className="md-field">
           <span>教材類型</span>
-          <select value={book?.book_type ?? ''} disabled={busy}
+          <select value={book?.book_type ?? ''} disabled={locked}
             onChange={e => run(() => updateBook(book.id, { book_type: e.target.value }))}>
             <option value="">未分類</option>
             {['課本', '講義', '測驗卷', '參考書', '自訂'].map(t => <option key={t} value={t}>{t}</option>)}
@@ -182,7 +204,7 @@ export default function MaterialBookEditor({ book, tree, lists = [], onChanged, 
                 ))}
                 <div className="me-add-row">
                   {CHILD_KINDS.map(k => (
-                    <button key={k} type="button" className="md-add-pill" disabled={busy}
+                    <button key={k} type="button" className="md-add-pill" disabled={locked}
                       aria-label={`${c.title}：加入${ITEM_LABEL[k]}`}
                       onClick={() => addItem(c, k)}>＋{ITEM_LABEL[k]}</button>
                   ))}
@@ -190,9 +212,9 @@ export default function MaterialBookEditor({ book, tree, lists = [], onChanged, 
               </div>
             ))}
             <div className="me-add-row">
-              <button type="button" className="md-add-pill" disabled={busy}
+              <button type="button" className="md-add-pill" disabled={locked}
                 aria-label={`${ch.title}：加一節`} onClick={() => addChild(ch, 'section')}>＋ 加一節</button>
-              <button type="button" className="md-add-pill" disabled={busy}
+              <button type="button" className="md-add-pill" disabled={locked}
                 aria-label={`${ch.title}：加一主題`} onClick={() => addChild(ch, 'topic')}>＋ 加一主題</button>
             </div>
             {/* 單元練習與歷屆試題直接屬於這一章，不為它們造一個假的節 */}
@@ -203,7 +225,7 @@ export default function MaterialBookEditor({ book, tree, lists = [], onChanged, 
               ))}
               <div className="me-add-row">
                 {CHAPTER_LEVEL_KINDS.map(k => (
-                  <button key={k} type="button" className="md-add-pill" disabled={busy}
+                  <button key={k} type="button" className="md-add-pill" disabled={locked}
                     aria-label={`${ch.title}：加入${ITEM_LABEL[k]}`}
                     onClick={() => addItem(ch, k)}>＋{ITEM_LABEL[k]}</button>
                 ))}
