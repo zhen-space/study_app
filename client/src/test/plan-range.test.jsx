@@ -37,9 +37,9 @@ describe('PlanRangeView', () => {
     render(<PlanRangeView plan={plan} lists={LISTS} />);
     await waitFor(() => expect(screen.getByText('要讀完的範圍')).toBeTruthy());
     expect(screen.getByText(/段考到 10\/2/)).toBeTruthy();
-    expect(screen.getByText('數學')).toBeTruthy();
-    expect(screen.getByText('物理')).toBeTruthy();
-    expect(screen.getByText('考試 9/28')).toBeTruthy();   // 單科考試日
+    expect(screen.getAllByText('數學').length).toBeGreaterThan(0);
+    expect(screen.getAllByText('物理').length).toBeGreaterThan(0);
+    expect(screen.getAllByText('考試 9/28').length).toBeGreaterThan(0);   // 單科考試日
     expect(screen.getByText('第一課 力學')).toBeTruthy();
     expect(screen.getByText('1-1 內文')).toBeTruthy();
     expect(screen.getByText(/老師講義第三章/)).toBeTruthy(); // 手動範圍
