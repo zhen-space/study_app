@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { api } from '../api';
 import Icon from './Icons';
 import { shortTitle, md } from './plans';
@@ -29,7 +29,10 @@ export default function AdjustBlockSheet({ block, task, lists = [], versionId, r
   const [conflicts, setConflicts] = useState([]);
   const [checking, setChecking] = useState(false);
   const [saving, setSaving] = useState(false);
+  const [committed, setCommitted] = useState(null);
+  const saveBusy = useRef(false);
   const [err, setErr] = useState('');
+  const [writeFailed, setWriteFailed] = useState(false);
   // §N：鎖定改成「就地的 context action」——在調整這一項時直接鎖／解鎖，
   // 不必跑去獨立的排程鎖定頁。鎖定與「儲存新安排（manual move）」分開，語意不混。
   const [taskLock, setTaskLock] = useState(null);
@@ -82,20 +85,45 @@ export default function AdjustBlockSheet({ block, task, lists = [], versionId, r
   }, [date, timed, start, end, changed, versionId]);
 
   async function save() {
-    setSaving(true); setErr('');
+    if (saveBusy.current || committed) return;
+    saveBusy.current = true;
+    setSaving(true); setErr(''); setWriteFailed(false);
+    let saved;
     try {
-      await api('/schedule/manual', {
+      saved = await api('/schedule/manual', {
         method: 'POST',
         body: { base_version_id: versionId, moves: [move()] },
       });
     } catch (e) {
       setConflicts(e.conflicts || []);
       setErr(e.conflicts?.length ? '' : e.message);
+      setWriteFailed(!e.conflicts?.length);
       setSaving(false);
+      saveBusy.current = false;
       return;
     }
-    await reload();
-    onClose();
+    setCommitted(saved || { applied: true });
+    try {
+      await reload();
+      onClose();
+    } catch (e) {
+      setErr(e.message || '重新載入失敗');
+      setSaving(false);
+      saveBusy.current = false;
+    }
+  }
+  async function retryReload() {
+    if (saveBusy.current || !committed) return;
+    saveBusy.current = true;
+    setSaving(true); setErr('');
+    try {
+      await reload();
+      onClose();
+    } catch (e) {
+      setErr(e.message || '重新載入失敗');
+      setSaving(false);
+      saveBusy.current = false;
+    }
   }
   async function startStudy() {
     setSaving(true); setErr('');
@@ -105,17 +133,28 @@ export default function AdjustBlockSheet({ block, task, lists = [], versionId, r
     } catch (e) { setErr(e.message); setSaving(false); }
   }
 
-  const blocked = conflicts.length > 0 || !!err;
+  const blocked = conflicts.length > 0 || (!!err && !writeFailed);
 
   return (
-    <BottomSheet onClose={onClose} label="調整這一項">
+    <BottomSheet onClose={saving ? undefined : onClose} label="調整這一項">
       <div className="row">
         <b>調整這一項</b>
-        <button className="icon-btn" style={{ marginLeft: 'auto' }} aria-label="關閉" onClick={onClose}>
+        <button className="icon-btn" style={{ marginLeft: 'auto' }} aria-label="關閉" disabled={saving} onClick={saving ? undefined : onClose}>
           <Icon name="x" size={14} />
         </button>
       </div>
 
+      {committed && <div style={{ display: 'grid', gap: 'var(--sp-3)', marginTop: 'var(--sp-3)' }}>
+        <b>新安排已儲存</b>
+        <div className="ui-meta">畫面尚未更新，請勿再次儲存。你可以只重試載入最新安排。</div>
+        {err && <SurfaceCard tone="warning" role="alert">新安排已儲存，但畫面暫時無法更新。{err}</SurfaceCard>}
+        <div className="row" style={{ gap: 'var(--sp-2)' }}>
+          <Button variant="tertiary" disabled={saving} onClick={onClose}>先關閉</Button>
+          <Button variant="primary" disabled={saving} onClick={retryReload}>{saving ? '載入中…' : '重新載入'}</Button>
+        </div>
+      </div>}
+
+      {!committed && <>
       <div style={{ marginTop: 'var(--sp-3)', fontWeight: 600 }}>{shortTitle(task?.title || '')}</div>
       <div className="ui-meta">
         {/* 全 App 的日期都用 md（8/18），這裡不要突然冒出 ISO 格式 */}
@@ -153,6 +192,8 @@ export default function AdjustBlockSheet({ block, task, lists = [], versionId, r
 
       {/* 放不下的原因照後端回的講。這裡刻意不提供「還是要放」——
           讓使用者繞過去，等於讓 App 產生一份它自己知道做不到的計畫。 */}
+      {writeFailed && err && <SurfaceCard tone="warning" role="alert" style={{ marginTop: 'var(--sp-4)' }}>{err}</SurfaceCard>}
+
       {blocked && (
         <SurfaceCard tone="warning" style={{ marginTop: 'var(--sp-4)' }}>
           <b style={{ color: 'var(--warning)' }}>這個時間放不下</b>
@@ -174,6 +215,7 @@ export default function AdjustBlockSheet({ block, task, lists = [], versionId, r
           {saving ? '儲存中…' : checking ? '確認中…' : '儲存新安排'}
         </Button>
       </div>
+      </>}
     </BottomSheet>
   );
 }
