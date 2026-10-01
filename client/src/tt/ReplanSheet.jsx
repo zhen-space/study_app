@@ -124,14 +124,15 @@ export default function ReplanSheet({ plan, health, raw, lists = [], reload, onC
   const Head = ({ title }) => (
     <div className="row">
       <b>{title}</b>
-      <button className="icon-btn" style={{ marginLeft: 'auto' }} aria-label="關閉" onClick={onClose}>
+      <button className="icon-btn" style={{ marginLeft: 'auto' }} aria-label="關閉"
+        disabled={stage === 'saving'} onClick={stage === 'saving' ? undefined : onClose}>
         <Icon name="x" size={14} />
       </button>
     </div>
   );
 
   return (
-    <BottomSheet onClose={onClose}>
+    <BottomSheet onClose={stage === 'saving' ? undefined : onClose}>
       <>
         {applied ? (
           <>

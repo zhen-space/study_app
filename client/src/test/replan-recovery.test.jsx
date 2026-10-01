@@ -26,12 +26,39 @@ async function openPreview() {
   return screen.getByRole('button', { name: '套用新版安排' });
 }
 beforeEach(() => {
+  Object.defineProperty(window, 'innerWidth', { configurable: true, value: 375 });
   api.mockReset(); applyWizardSchedule.mockReset();
   api.mockImplementation(path => path === '/schedule/preview' ? Promise.resolve(structuredClone(preview)) : Promise.resolve({}));
 });
 afterEach(cleanup);
 
 describe('ReplanSheet 套用後恢復', () => {
+  it('套用尚未完成時 backdrop 與關閉都不能卸載，成功後才可關閉', async () => {
+    let finishApply;
+    const pendingApply = new Promise(resolve => { finishApply = resolve; });
+    const onClose = vi.fn();
+    applyWizardSchedule.mockReturnValue(pendingApply);
+    const reload = vi.fn(() => new Promise(() => {}));
+    mount(reload, onClose);
+    const apply = await openPreview();
+    fireEvent.click(apply);
+
+    const close = screen.getByRole('button', { name: '關閉' });
+    expect(close).toBeDisabled();
+    fireEvent.click(close);
+    fireEvent.click(document.querySelector('.sheet-backdrop'));
+    fireEvent.click(apply);
+    expect(onClose).not.toHaveBeenCalled();
+    expect(applyWizardSchedule).toHaveBeenCalledOnce();
+
+    finishApply({ planId: 7 });
+    expect(await screen.findByText('新版安排已套用')).toBeInTheDocument();
+    const safeClose = screen.getByRole('button', { name: '先關閉' });
+    expect(safeClose).toBeEnabled();
+    fireEvent.click(safeClose);
+    expect(onClose).toHaveBeenCalledOnce();
+  });
+
   it('寫入成功後立刻不可重送，即使 reload 還在等待', async () => {
     let finish;
     const reload = vi.fn(() => new Promise(resolve => { finish = resolve; }));
