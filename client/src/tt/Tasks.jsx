@@ -250,7 +250,7 @@ function TaskRow({ t, lists, sel, onSel, onToggle, onDragStart, onDropOn, onSwip
 // §F 任務明細：分成「任務資訊／安排／實際讀書／其他」四區，不再是一長條扁平表單。
 // 刪除收進右上「•••」（不再一顆紅按鈕擺在最下面誤觸）；標籤改 chips（非開發者式逗號字串）；
 // 多出一個「實際讀書」摘要（讀了多久），把 generic 的「日期」歸到「安排」語意底下。
-export function Detail({ task, lists, onSave, onDelete, onClose }) {
+export function Detail({ task, lists, onSave, onDelete, onClose, saveBusy = false, saveError = '' }) {
   const [t, setT] = useState(task);
   const up = patch => { const nt = { ...t, ...patch }; setT(nt); onSave(nt); };
   const [newSub, setNewSub] = useState('');
@@ -292,11 +292,13 @@ export function Detail({ task, lists, onSave, onDelete, onClose }) {
     setTimeout(() => URL.revokeObjectURL(url), 5000);
   }
   const addTag = raw => { const v = raw.trim(); if (!v || t.tags.includes(v)) return; up({ tags: [...t.tags, v] }); };
+  const isSchoolAssignment = t.task_kind === 'school_assignment';
+  const scheduleManaged = !isSchoolAssignment && t.plan_id != null;
 
   return (
     <div className="detail">
       <div className="drow" style={{ justifyContent: 'space-between' }}>
-        <button className="btn sm" onClick={onClose} title="完成編輯">✓ 完成</button>
+        <button className="btn sm" onClick={onClose} disabled={saveBusy} title="完成編輯">{saveBusy ? '儲存中…' : '✓ 完成'}</button>
         <div style={{ position: 'relative' }}>
           <button className="icon-btn" aria-label="更多" onClick={() => setMenu(m => !m)}>⋯</button>
           {menu && (
@@ -336,7 +338,7 @@ export function Detail({ task, lists, onSave, onDelete, onClose }) {
             </span>
           ))}
           <input placeholder="＋標籤" value={newTag} onChange={e => setNewTag(e.target.value)}
-            onKeyDown={e => { if (e.key === 'Enter') { e.preventDefault(); addTag(newTag); setNewTag(''); } }} style={{ width: 92 }} />
+            onKeyDown={e => { if (e.key === 'Enter' && !e.nativeEvent.isComposing) { e.preventDefault(); addTag(newTag); setNewTag(''); } }} style={{ width: 92 }} />
         </div>
       </div>
       <div>
@@ -355,19 +357,36 @@ export function Detail({ task, lists, onSave, onDelete, onClose }) {
 
       {/* ── 安排 ── */}
       <div className="detail-sec-t">安排</div>
+      {saveError && <div role="alert" className="ui-error" style={{ marginBottom: 8 }}>{saveError}，請確認後再按「完成」重試。</div>}
       <div className="drow">
-        <label>日期</label>
-        <input type="date" value={t.due_date || ''} onChange={e => up({ due_date: e.target.value || null })} />
+        <label>{isSchoolAssignment ? '繳交日期' : '日期'}</label>
+        <input type="date" aria-label={isSchoolAssignment ? '繳交日期' : '日期'} disabled={scheduleManaged}
+          value={(isSchoolAssignment ? t.deadline_date : t.due_date) || ''}
+          onChange={e => up(isSchoolAssignment ? { deadline_date: e.target.value || null } : { due_date: e.target.value || null })} />
       </div>
       <div className="drow">
-        <label>時間</label>
-        <input type="time" value={t.due_time || ''} onChange={e => up({ due_time: e.target.value || null })} />
+        <label>{isSchoolAssignment ? '繳交時間' : '時間'}</label>
+        <input type="time" aria-label={isSchoolAssignment ? '繳交時間' : '時間'} disabled={scheduleManaged}
+          value={(isSchoolAssignment ? t.deadline_time : t.due_time) || ''}
+          onChange={e => up(isSchoolAssignment ? { deadline_time: e.target.value || null } : { due_time: e.target.value || null })} />
       </div>
-      {RECURRING_UI && (
+      {isSchoolAssignment && (
+        <div className="drow">
+          <label>預估時間</label>
+          <div style={{ flex: 1, display: 'flex', alignItems: 'center', gap: 6 }}>
+            <input aria-label="預估時間（分鐘）" type="number" min="1" max="1440" inputMode="numeric"
+              value={t.estimated_minutes ?? ''}
+              onChange={e => up({ estimated_minutes: e.target.value === '' ? null : Number(e.target.value) })} />
+            <span className="muted">分鐘</span>
+          </div>
+        </div>
+      )}
+      {RECURRING_UI && !isSchoolAssignment && (
         <RepeatPicker value={t.recurring} dueDate={t.due_date} missPolicy={t.miss_policy}
           onChange={(recurring, miss_policy) => up({ recurring, miss_policy })} />
       )}
-      {t.plan_id != null && <div className="ui-meta" style={{ marginTop: 6 }}>此任務屬於讀書計畫，時段由排程管理；要改安排請到「計畫」裡調整。</div>}
+      {t.plan_id != null && <div className="ui-meta" style={{ marginTop: 6 }}>已加入讀書計畫；排定日期由計畫管理，要改安排請到「計畫」裡調整。</div>}
+      {isSchoolAssignment && t.plan_id == null && <div className="ui-meta" style={{ marginTop: 6 }}>尚未加入讀書計畫</div>}
 
       {/* ── 實際讀書 ── */}
       <div className="detail-sec-t">實際讀書</div>
@@ -547,23 +566,53 @@ export default function Tasks({ view, tasks, lists, filters, habits = [], reload
   // 儲存去抖動：不再每敲一個字就打 API＋全量重載（造成又慢又容易出錯）
   const saveTimer = useRef(null);
   const pendingSave = useRef(null);
+  const saveChain = useRef(Promise.resolve());
+  const [saveBusy, setSaveBusy] = useState(false);
+  const [saveError, setSaveError] = useState('');
   function flushSave() {
     const t = pendingSave.current;
     pendingSave.current = null;
-    if (!t) return Promise.resolve();
-    const { id, title, notes, due_date, due_time, priority, tags, subtasks, recurring, miss_policy, list_id } = t;
-    return api(`/tasks/${id}`, { method: 'PATCH', body: { title, notes, due_date, due_time, priority, tags, subtasks, recurring, miss_policy, list_id } }).catch(() => {});
+    if (!t) return saveChain.current;
+    const { id, title, notes, due_date, due_time, deadline_date, deadline_time, estimated_minutes,
+      priority, tags, subtasks, recurring, miss_policy, list_id, task_kind, school_assignment_type, plan_id } = t;
+    const school = task_kind === 'school_assignment';
+    const body = { title, notes, priority, tags, subtasks, list_id, task_kind };
+    if (school) {
+      Object.assign(body, { deadline_date, deadline_time, estimated_minutes, school_assignment_type });
+    } else {
+      Object.assign(body, { recurring, miss_policy });
+      // Plan Task 的日期只能由 ScheduleVersion 改；即使值沒變也不能送 generic PATCH。
+      if (plan_id == null) Object.assign(body, { due_date, due_time });
+    }
+    setSaveBusy(true);
+    setSaveError('');
+    const request = saveChain.current.catch(() => {}).then(() => api(`/tasks/${id}`, { method: 'PATCH', body }));
+    saveChain.current = request;
+    return request.then(() => {
+      setSaveError('');
+    }).catch(err => {
+      if (!pendingSave.current) pendingSave.current = t;
+      setSaveError(err?.message || '儲存失敗');
+      throw err;
+    }).finally(() => {
+      if (saveChain.current === request) setSaveBusy(false);
+    });
   }
   function save(t) {
     setOver(o => ({ ...o, [t.id]: t }));   // 先讓畫面反映
     pendingSave.current = t;
     clearTimeout(saveTimer.current);
-    saveTimer.current = setTimeout(flushSave, 400);
+    saveTimer.current = setTimeout(() => { flushSave().catch(() => {}); }, 400);
   }
-  function closeDetail() {
+  async function closeDetail() {
     clearTimeout(saveTimer.current);
-    setSelId(null);
-    flushSave().then(() => reload('tasks'));   // 關閉時先送出未儲存的變更，再重新整理
+    try {
+      await flushSave();
+      setSelId(null);
+      await reload('tasks');
+    } catch {
+      // 留在編輯畫面顯示錯誤，避免使用者以為已儲存。
+    }
   }
   async function del(t) {
     setHidden(h => new Set([...h, t.id]));   // 立刻消失
@@ -743,7 +792,8 @@ export default function Tasks({ view, tasks, lists, filters, habits = [], reload
           {view.type === 'today' && <VocabCard goVocab={goVocab} />}
         </div>
       </div>
-      {sel && <Detail key={sel.id} task={sel} lists={lists} onSave={save} onDelete={del} onClose={closeDetail} />}
+      {sel && <Detail key={sel.id} task={sel} lists={lists} onSave={save} onDelete={del} onClose={closeDetail}
+        saveBusy={saveBusy} saveError={saveError} />}
       {toast && (
         <div className="toast">
           <span>{toast.msg}</span>
