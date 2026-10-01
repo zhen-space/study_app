@@ -47,3 +47,27 @@ test('不存在或跨使用者的 material identity fail closed', async () => {
   assert.equal(r.status, 400);
   assert.match(r.body.error, /找不到其中一項教材內容/);
 });
+
+test('一般 Task 的 null material identity 不會污染混合 preview，只有習作套用純題目語意', async () => {
+  const start = todayTW(), next = addDays(start, 1);
+  const r = await runPreview(userId, {
+    startDate: start, endDate: next,
+    items: [
+      { subject_id: listId, title: '一般複習', minutes: 60, start, end: start, material_content_item_id: null },
+      { subject_id: listId, title: '自訂名稱不含題目關鍵字', minutes: 60, start, end: next, material_content_item_id: workbookId },
+    ],
+  });
+  assert.equal(r.status, 200);
+  const dates = new Map(r.body.blocks.map(block => [block.title, block.date]));
+  assert.equal(dates.get('一般複習'), start);
+  assert.equal(dates.get('自訂名稱不含題目關鍵字'), next,
+    '習作的 canonical kind 應使它避開同科一般內容，不靠自訂標題猜');
+});
+
+test('只有 null material identity 的一般 Task preview 維持正常', async () => {
+  const start = todayTW(), end = addDays(start, 2);
+  const r = await runPreview(userId, { startDate: start, endDate: end,
+    items: [{ subject_id: listId, title: '一般複習', minutes: 60, start, end, material_content_item_id: null }] });
+  assert.equal(r.status, 200);
+  assert.equal(r.body.blocks.length, 1);
+});

@@ -124,7 +124,12 @@ export async function runPreview(userId, body, previewOpts = {}) {
   if (!items.length) return { status: 400, body: { error: '沒有可排程的未完成任務' } };
   // Material 純題目不能靠顯示標題猜。只要帶正式 content item identity，就從 CURRENT
   // DB 重讀 canonical kind，習作即使改成任意中文名稱仍受一天最多兩份／不與節同日約束。
-  const materialIds = [...new Set(items.map(i => Number(i.material_content_item_id)).filter(Number.isInteger))];
+  const materialIds = [...new Set(items.flatMap(i => {
+    const raw = i.material_content_item_id;
+    if (raw == null) return [];
+    const id = Number(raw);
+    return Number.isInteger(id) && id > 0 ? [id] : [];
+  }))];
   if (materialIds.length) {
     const rows = await q.all(
       `SELECT id,kind FROM material_content_items WHERE user_id=? AND id IN (${materialIds.map(() => '?').join(',')})`,
@@ -132,7 +137,10 @@ export async function runPreview(userId, body, previewOpts = {}) {
     const kindById = new Map(rows.map(r => [Number(r.id), r.kind]));
     if (kindById.size !== materialIds.length) return { status: 400, body: { error: '找不到其中一項教材內容' } };
     for (const it of items) {
-      const kind = kindById.get(Number(it.material_content_item_id));
+      if (it.material_content_item_id == null) continue;
+      const id = Number(it.material_content_item_id);
+      if (!Number.isInteger(id) || id <= 0) continue;
+      const kind = kindById.get(id);
       if (PURE_QUESTION_KINDS.includes(kind)) it.onePerDay = true;
     }
   }
