@@ -185,7 +185,7 @@ function RepeatPicker({ value, dueDate, missPolicy, onChange }) {
   );
 }
 
-function TaskRow({ t, lists, sel, onSel, onToggle, onDragStart, onDropOn, onSwipeDelete }) {
+function TaskRow({ t, lists, sel, onSel, onToggle, onDragStart, onDropOn, onSwipeDelete, mutationBusy = false, mutationError = '' }) {
   const list = lists.find(l => l.id === t.list_id);
   const pastDue = t.due_date && t.due_date < today() && !t.completed;
   // §M：計畫任務的 due_date 是 AI 排的每日進度——過了原定日是「未完成進度」（warning），
@@ -223,7 +223,9 @@ function TaskRow({ t, lists, sel, onSel, onToggle, onDragStart, onDropOn, onSwip
         onDrop={onDropOn ? () => onDropOn(t) : undefined}
         onTouchStart={start} onTouchMove={move} onTouchEnd={end} onTouchCancel={end}
         style={{ transform: dx ? `translateX(${dx}px)` : undefined, transition: dx ? 'none' : 'transform .18s', position: 'relative', background: 'var(--card)' }}>
-        <input type="checkbox" checked={!!t.completed} onClick={e => e.stopPropagation()} onChange={() => onToggle(t)} />
+        <input type="checkbox" checked={!!t.completed} disabled={mutationBusy}
+          aria-label={t.completed ? `取消完成「${t.title}」` : `完成「${t.title}」`}
+          onClick={e => e.stopPropagation()} onChange={() => onToggle(t)} />
         {/* §E：兩層資訊。第一層＝標題（主角）；第二層＝科目名＋日期（次要）。
             過去只有一顆神秘色點代表科目，要記得色碼才知道是哪一科；改成直接寫科目名。 */}
         <div className="trow-main">
@@ -243,6 +245,7 @@ function TaskRow({ t, lists, sel, onSel, onToggle, onDragStart, onDropOn, onSwip
           )}
         </div>
       </div>
+      {mutationError && <div role="alert" className="ui-error" style={{ margin: '4px 8px 0' }}>{mutationError}</div>}
     </div>
   );
 }
@@ -529,21 +532,59 @@ export default function Tasks({ view, tasks, lists, filters, habits = [], reload
 
   // 底部小提示（可復原，防誤按）
   const [toast, setToast] = useState(null);
+  const [toastBusy, setToastBusy] = useState(false);
   const toastTimer = useRef(null);
   function showToast(msg, undo) {
     clearTimeout(toastTimer.current);
     setToast({ msg, undo });
     toastTimer.current = setTimeout(() => setToast(null), 5000);
   }
+  async function undoToast() {
+    if (!toast?.undo || toastBusy) return;
+    clearTimeout(toastTimer.current);
+    setToastBusy(true);
+    try {
+      await toast.undo();
+      setToast(null);
+    } catch (e) {
+      setToast(t => t ? { ...t, error: e.message || '復原失敗，請再試一次' } : t);
+    } finally {
+      setToastBusy(false);
+    }
+  }
+  const mutationIds = useRef(new Set());
+  const [pendingIds, setPendingIds] = useState(new Set());
+  const [mutationErrors, setMutationErrors] = useState({});
+  const [refreshError, setRefreshError] = useState('');
+  const [refreshBusy, setRefreshBusy] = useState(false);
+  const beginMutation = id => {
+    if (mutationIds.current.has(id)) return false;
+    mutationIds.current.add(id);
+    setPendingIds(s => new Set([...s, id]));
+    setMutationErrors(e => ({ ...e, [id]: '' }));
+    return true;
+  };
+  const finishMutation = id => {
+    mutationIds.current.delete(id);
+    setPendingIds(s => { const n = new Set(s); n.delete(id); return n; });
+  };
   async function toggle(t) {
-    setHidden(h => new Set([...h, t.id]));   // 勾完成立即從當前列表消失
-    api(`/tasks/${t.id}`, { method: 'PATCH', body: { completed: !t.completed } }).then(() => reload('tasks')).catch(() => reload('tasks'));
+    if (!beginMutation(t.id)) return;
+    try {
+      await api(`/tasks/${t.id}`, { method: 'PATCH', body: { completed: !t.completed } });
+    } catch (e) {
+      setMutationErrors(errors => ({ ...errors, [t.id]: e.message || '更新任務失敗，請再試一次' }));
+      finishMutation(t.id);
+      return;
+    }
+    setHidden(h => new Set([...h, t.id]));
     if (!t.completed) showToast(`已完成「${t.title}」`, async () => {
-      // 復原：要主動取消遮蔽，不然它會一直被當成「等伺服器確認完成」而不顯示
-      setHidden(h => { const n = new Set(h); n.delete(t.id); return n; });
       await api(`/tasks/${t.id}`, { method: 'PATCH', body: { completed: false } });
-      reload('tasks');
+      setHidden(h => { const n = new Set(h); n.delete(t.id); return n; });
+      await reload('tasks').catch(() => setRefreshError('任務已復原，但畫面暫時無法重新載入。'));
     });
+    await reload('tasks').catch(() => setRefreshError('任務已更新，但畫面暫時無法重新載入。'));
+    finishMutation(t.id);
   }
   async function quickAdd(e) {
     e.preventDefault();
@@ -615,14 +656,31 @@ export default function Tasks({ view, tasks, lists, filters, habits = [], reload
     }
   }
   async function del(t) {
-    setHidden(h => new Set([...h, t.id]));   // 立刻消失
+    if (!beginMutation(t.id)) return;
+    try {
+      await api(`/tasks/${t.id}`, { method: 'DELETE' });
+    } catch (e) {
+      setMutationErrors(errors => ({ ...errors, [t.id]: e.message || '刪除任務失敗，請再試一次' }));
+      finishMutation(t.id);
+      return;
+    }
+    setHidden(h => new Set([...h, t.id]));
     setSelId(null);
-    api(`/tasks/${t.id}`, { method: 'DELETE' }).then(() => reload('tasks')).catch(() => reload('tasks'));
     showToast(`已刪除「${t.title}」`, async () => {
-      setHidden(h => { const n = new Set(h); n.delete(t.id); return n; });   // 同上，復原要取消遮蔽
       await api(`/tasks/${t.id}`, { method: 'PATCH', body: { deleted: false } });
-      reload('tasks');
+      setHidden(h => { const n = new Set(h); n.delete(t.id); return n; });
+      await reload('tasks').catch(() => setRefreshError('任務已復原，但畫面暫時無法重新載入。'));
     });
+    await reload('tasks').catch(() => setRefreshError('任務已刪除，但畫面暫時無法重新載入。'));
+    finishMutation(t.id);
+  }
+
+  async function retryTaskRefresh() {
+    if (refreshBusy) return;
+    setRefreshBusy(true);
+    try { await reload('tasks'); setRefreshError(''); }
+    catch { setRefreshError('仍然無法重新載入，請稍後再試。'); }
+    finally { setRefreshBusy(false); }
   }
 
   // 願望清單：想做/要記得的事（無日期、無清單）
@@ -706,6 +764,14 @@ export default function Tasks({ view, tasks, lists, filters, habits = [], reload
           </div>
         )}
         <div className="main-body">
+          {refreshError && (
+            <div role="alert" className="ui-error" style={{ marginBottom: 'var(--sp-3)' }}>
+              {refreshError}
+              <button type="button" disabled={refreshBusy} onClick={retryTaskRefresh} style={{ marginLeft: 8 }}>
+                {refreshBusy ? '重新載入中…' : '重新載入'}
+              </button>
+            </div>
+          )}
           {topSlot}
           {view.type === 'today' && <MemoCard goMemo={goMemo} />}
           {listLabel && shown.length > 0 && (
@@ -748,7 +814,7 @@ export default function Tasks({ view, tasks, lists, filters, habits = [], reload
                   {sorted.map(t => <TaskRow key={t.id} t={t} lists={lists} sel={t.id === selId} onSel={x => setSelId(x.id)} onToggle={toggle}
                     onDragStart={canDrag ? setDragT : undefined}
                     onDropOn={canDrag ? x => dropOn(x, sorted) : undefined}
-                    onSwipeDelete={del} />)}
+                    onSwipeDelete={del} mutationBusy={pendingIds.has(t.id)} mutationError={mutationErrors[t.id]} />)}
                 </div>
               );
             })}
@@ -795,9 +861,10 @@ export default function Tasks({ view, tasks, lists, filters, habits = [], reload
       {sel && <Detail key={sel.id} task={sel} lists={lists} onSave={save} onDelete={del} onClose={closeDetail}
         saveBusy={saveBusy} saveError={saveError} />}
       {toast && (
-        <div className="toast">
+        <div className="toast" role={toast.error ? 'alert' : 'status'}>
           <span>{toast.msg}</span>
-          <button onClick={() => { toast.undo(); setToast(null); }}>復原</button>
+          {toast.error && <span>{toast.error}</span>}
+          <button disabled={toastBusy} onClick={undoToast}>{toastBusy ? '復原中…' : '復原'}</button>
         </div>
       )}
     </>
