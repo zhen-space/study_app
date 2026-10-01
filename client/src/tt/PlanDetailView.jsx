@@ -182,6 +182,10 @@ export default function PlanDetailView({ planKey, tasks, lists, apiPlans = [], r
   const pct = plan.total ? Math.round(plan.done / plan.total * 100) : 0;
 
   const close = () => { setSheet(null); setErr(''); setRetain(null); };
+  // lifecycle 寫入尚未回來時不能讓 backdrop／Escape 把確認畫面藏起來。
+  // 否則請求稍後失敗，錯誤會留在已關閉的 sheet，手機上看起來就像什麼都沒發生。
+  // 用同步 ref 判斷，不只靠 busy render；點送出到 React 重繪間也不能被 Escape 關掉。
+  const lifecycleClose = () => { if (!mutationBusy.current) close(); };
   const previewSubject = () => {
     const selected = lists.find(l => Number(l.id) === Number(newSubject.subject_list_id));
     if (!selected || !newSubject.exam_date) return;
@@ -625,7 +629,7 @@ export default function PlanDetailView({ planKey, tasks, lists, apiPlans = [], r
       )}
 
       {sheet === 'manage' && (
-        <BottomSheet onClose={close} label="計畫選項">
+        <BottomSheet onClose={lifecycleClose} label="計畫選項" aria-busy={busy}>
           <b style={{ fontSize: 17 }}>計畫選項</b>
           <div style={{ marginTop: 'var(--sp-3)' }}>
             <ListRow title="編輯計畫資訊" subtitle="名稱、說明、開始日、目標日"
@@ -674,7 +678,7 @@ export default function PlanDetailView({ planKey, tasks, lists, apiPlans = [], r
               role="button" tabIndex={0} style={{ cursor: 'pointer', color: 'var(--danger, #c0392b)' }}
               onClick={() => { setRetain(null); setSheet('confirmDelete'); }} />
           </div>
-          {err && <div className="error" style={{ marginTop: 'var(--sp-3)' }}>{err}</div>}
+          {err && <div className="error" role="alert" style={{ marginTop: 'var(--sp-3)' }}>{err}</div>}
         </BottomSheet>
       )}
 
@@ -717,18 +721,18 @@ export default function PlanDetailView({ planKey, tasks, lists, apiPlans = [], r
 
       {/* ---------- 暫停確認 ---------- */}
       {sheet === 'confirmPause' && (
-        <BottomSheet onClose={close} label="暫停這個計畫">
+        <BottomSheet onClose={lifecycleClose} label="暫停這個計畫" aria-busy={busy}>
           <b style={{ fontSize: 17 }}>暫停這個計畫？</b>
           <div className="ui-meta" style={{ marginTop: 'var(--sp-2)' }}>
             計畫會留著並標示為「已暫停」，但不會再排新的時間，也不會出現在今天要做的事裡。
             你隨時可以再繼續。
           </div>
           <RetainPicker kind="pause" value={retain} onChange={setRetain} />
-          {err && <div className="error" style={{ marginTop: 'var(--sp-3)' }}>{err}</div>}
+          {err && <div className="error" role="alert" style={{ marginTop: 'var(--sp-3)' }}>{err}</div>}
           <div className="row" style={{ marginTop: 'var(--sp-5)' }}>
-            <Button onClick={close}>取消</Button>
+            <Button disabled={busy} onClick={close}>取消</Button>
             <Button variant="primary" style={{ marginLeft: 'auto' }}
-              disabled={busy || retain === null} onClick={pausePlan}>暫停計畫</Button>
+              disabled={busy || retain === null} onClick={pausePlan}>{busy ? '暫停中…' : '暫停計畫'}</Button>
           </div>
         </BottomSheet>
       )}
@@ -737,7 +741,7 @@ export default function PlanDetailView({ planKey, tasks, lists, apiPlans = [], r
           刪除沒有「保留任務」選項：整個計畫連同所有任務都會移除。想留進度但不再
           繼續，正確操作是「結束計畫」，不是刪除。 */}
       {sheet === 'confirmDelete' && (
-        <BottomSheet onClose={close} label="刪除這個計畫">
+        <BottomSheet onClose={lifecycleClose} label="刪除這個計畫">
           <b style={{ fontSize: 17, color: 'var(--danger, #c0392b)' }}>刪除這個計畫？</b>
           <div className="ui-meta" style={{ marginTop: 'var(--sp-2)' }}>
             這個計畫及其中<b>所有任務</b>都會從 App 中移除，<b>無法復原</b>。
@@ -753,16 +757,16 @@ export default function PlanDetailView({ planKey, tasks, lists, apiPlans = [], r
         </BottomSheet>
       )}
       {sheet === 'confirmDeleteFinal' && (
-        <BottomSheet onClose={close} label="確定刪除">
+        <BottomSheet onClose={lifecycleClose} label="確定刪除" aria-busy={busy}>
           <b style={{ fontSize: 17, color: 'var(--danger, #c0392b)' }}>真的要刪除「{plan.name}」？</b>
           <div className="ui-meta" style={{ marginTop: 'var(--sp-2)' }}>
             這個動作沒有復原按鈕。計畫及其中所有任務都會從 App 中移除。
           </div>
-          {err && <div className="error" style={{ marginTop: 'var(--sp-3)' }}>{err}</div>}
+          {err && <div className="error" role="alert" style={{ marginTop: 'var(--sp-3)' }}>{err}</div>}
           <div className="row" style={{ marginTop: 'var(--sp-5)' }}>
-            <Button onClick={() => setSheet('confirmDelete')}>返回</Button>
+            <Button disabled={busy} onClick={() => setSheet('confirmDelete')}>返回</Button>
             <Button variant="destructive" style={{ marginLeft: 'auto' }}
-              disabled={busy} onClick={deletePlan}>確定刪除</Button>
+              disabled={busy} onClick={deletePlan}>{busy ? '刪除中…' : '確定刪除'}</Button>
           </div>
         </BottomSheet>
       )}
@@ -789,17 +793,17 @@ export default function PlanDetailView({ planKey, tasks, lists, apiPlans = [], r
 
       {/* ---------- 結束計畫的明確確認：走既有 POST /plans/:id/end ---------- */}
       {sheet === 'confirmEnd' && (
-        <BottomSheet onClose={close} label="結束這個計畫">
+        <BottomSheet onClose={lifecycleClose} label="結束這個計畫" aria-busy={busy}>
           <b style={{ fontSize: 17 }}>結束這個計畫？</b>
           <div className="ui-meta" style={{ marginTop: 'var(--sp-2)' }}>
             {unresolved > 0 && <>還有 {unresolved} 項未完成，它們會被保留下來。<br /></>}
             計畫會標示為「已結束」並退出排程，<b>不會</b>被算成完成。之後仍可重新開始。
           </div>
-          {err && <div className="error" style={{ marginTop: 'var(--sp-3)' }}>{err}</div>}
+          {err && <div className="error" role="alert" style={{ marginTop: 'var(--sp-3)' }}>{err}</div>}
           <div className="row" style={{ marginTop: 'var(--sp-5)' }}>
-            <Button onClick={close}>取消</Button>
+            <Button disabled={busy} onClick={close}>取消</Button>
             <Button variant="primary" style={{ marginLeft: 'auto' }} disabled={busy}
-              onClick={() => endPlan(true)}>結束計畫</Button>
+              onClick={() => endPlan(true)}>{busy ? '結束中…' : '結束計畫'}</Button>
           </div>
         </BottomSheet>
       )}

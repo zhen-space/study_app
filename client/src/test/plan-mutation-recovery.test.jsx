@@ -45,6 +45,7 @@ async function openPause() {
 
 describe('Plan mutation recovery', () => {
   beforeEach(() => {
+    Object.defineProperty(window, 'innerWidth', { configurable: true, value: 375 });
     handlers = {};
     api.mockImplementation((path, options = {}) => {
       if (handlers[path]) return handlers[path](options);
@@ -71,6 +72,29 @@ describe('Plan mutation recovery', () => {
 
     expect(handlers['/plans/12/pause']).toHaveBeenCalledTimes(2);
     expect(reload).toHaveBeenCalledOnce();
+  });
+
+  it('keeps the 375px lifecycle confirmation visible while pause is pending', async () => {
+    let rejectPause;
+    handlers['/plans/12/pause'] = vi.fn().mockImplementation(() => new Promise((resolve, reject) => {
+      rejectPause = reject;
+    }));
+    mount();
+    const pause = await openPause();
+
+    fireEvent.click(pause);
+    const dialog = screen.getByRole('dialog', { name: '暫停這個計畫' });
+    await waitFor(() => expect(dialog).toHaveAttribute('aria-busy', 'true'));
+    expect(within(dialog).getByRole('button', { name: '取消' })).toBeDisabled();
+    fireEvent.click(document.querySelector('.sheet-backdrop'));
+    fireEvent.keyDown(document, { key: 'Escape' });
+    fireEvent.click(within(dialog).getByRole('button', { name: '暫停中…' }));
+    expect(screen.getByRole('dialog', { name: '暫停這個計畫' })).toBeInTheDocument();
+    expect(handlers['/plans/12/pause']).toHaveBeenCalledOnce();
+
+    await act(async () => { rejectPause(error('暫停失敗', 503)); });
+    expect(await within(dialog).findByRole('alert')).toHaveTextContent('暫停失敗');
+    expect(screen.getByRole('button', { name: '暫停計畫' })).toBeEnabled();
   });
 
   it('locks stale Plan mutations after commit succeeds but refresh fails', async () => {
