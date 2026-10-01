@@ -1185,7 +1185,7 @@ export async function applySchedule(userId, {
         // §Phase2 blocker2 DiD：以 CURRENT material item 重讀所有欄位（存在、所有權、CURRENT title、
         // CURRENT estimated_minutes、book 與 CURRENT subject_list_id、CURRENT completion）。
         materialItem = await tx.get(
-          `SELECT i.id, i.book_id, i.title, i.estimated_minutes, b.subject_list_id,
+          `SELECT i.id, i.book_id, i.kind, i.title, i.estimated_minutes, b.subject_list_id,
                   COALESCE(p.completed,0) AS completed
              FROM material_content_items i
              LEFT JOIN material_books b ON b.id=i.book_id AND b.user_id=i.user_id
@@ -1248,7 +1248,8 @@ export async function applySchedule(userId, {
         const same = (snap.title ?? null) === (materialItem.title ?? null)
           && (snap.estimated_minutes ?? null) === (materialItem.estimated_minutes ?? null)
           && Number(snap.material_book_id ?? -1) === Number(materialItem.book_id ?? -1)
-          && Number(snap.subject_list_id ?? -1) === Number(materialItem.subject_list_id ?? -1);
+          && Number(snap.subject_list_id ?? -1) === Number(materialItem.subject_list_id ?? -1)
+          && snap.kind === materialItem.kind;
         if (!same) throw new ScheduleInputError(`教材資料在你預覽之後已變更，請重新預覽：${materialItem.id}`, 'MATERIAL_STALE');
       } else {
         // 既有 Wizard / 非 strict：沿用原行為（信 client；material item 估時優先，否則回退 client/block）。

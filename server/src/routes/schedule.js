@@ -14,6 +14,7 @@ import { signExamSubjectToken } from '../schedule/exam-subject-token.js';
 import { buildPlanTimeline } from '../schedule/timeline.js';
 import { calculateScheduleDiff } from '../schedule/diff.js';
 import { createScheduleLock } from '../schedule/lock-store.js';
+import { PURE_QUESTION_KINDS } from '../material/tree.js';
 
 const router = Router();
 router.use(requireAuth);
@@ -121,6 +122,28 @@ export async function runPreview(userId, body, previewOpts = {}) {
     for (let i = items.length - 1; i >= 0; i--) if (ineligible.has(Number(items[i].task_id))) items.splice(i, 1);
   }
   if (!items.length) return { status: 400, body: { error: '沒有可排程的未完成任務' } };
+  // Material 純題目不能靠顯示標題猜。只要帶正式 content item identity，就從 CURRENT
+  // DB 重讀 canonical kind，習作即使改成任意中文名稱仍受一天最多兩份／不與節同日約束。
+  const materialIds = [...new Set(items.flatMap(i => {
+    const raw = i.material_content_item_id;
+    if (raw == null) return [];
+    const id = Number(raw);
+    return Number.isInteger(id) && id > 0 ? [id] : [];
+  }))];
+  if (materialIds.length) {
+    const rows = await q.all(
+      `SELECT id,kind FROM material_content_items WHERE user_id=? AND id IN (${materialIds.map(() => '?').join(',')})`,
+      [userId, ...materialIds]);
+    const kindById = new Map(rows.map(r => [Number(r.id), r.kind]));
+    if (kindById.size !== materialIds.length) return { status: 400, body: { error: '找不到其中一項教材內容' } };
+    for (const it of items) {
+      if (it.material_content_item_id == null) continue;
+      const id = Number(it.material_content_item_id);
+      if (!Number.isInteger(id) || id <= 0) continue;
+      const kind = kindById.get(id);
+      if (PURE_QUESTION_KINDS.includes(kind)) it.onePerDay = true;
+    }
+  }
   const requestedItems = items.map(item => ({ ...item }));
   const today = todayTW(); // 台灣時區的今天
   const gStart = body.startDate || today, gEnd = body.endDate || today;
@@ -1400,7 +1423,7 @@ export async function runRollingPreview(userId, body) {
     if (seenKey.has(rawKey)) { addErrors.push({ kind: 'material', id: cid, client_key: rawKey, reason: 'duplicate_client_key' }); continue; }
     if (seenMaterial.has(cid)) { addErrors.push({ kind: 'material', id: cid, reason: 'duplicate_material_selection' }); continue; }
     const mi = await q.get(
-      `SELECT i.id, i.book_id, i.title, i.estimated_minutes, b.subject_list_id,
+      `SELECT i.id, i.book_id, i.kind, i.title, i.estimated_minutes, b.subject_list_id,
               COALESCE(p.completed,0) AS completed
          FROM material_content_items i
          LEFT JOIN material_books b ON b.id=i.book_id AND b.user_id=i.user_id
@@ -1430,14 +1453,15 @@ export async function runRollingPreview(userId, body) {
       user_id: userId, plan_id: planId, base_version_id: baseVersionId ?? null,
       client_key: clientKey, content_item_id: cid,
       title: mi.title ?? null, estimated_minutes: mi.estimated_minutes ?? null,
-      material_book_id: mi.book_id ?? null, subject_list_id: mi.subject_list_id ?? null,
+      material_book_id: mi.book_id ?? null, subject_list_id: mi.subject_list_id ?? null, kind: mi.kind,
     });
     // task_creates 只帶身分（client_key + material_content_item_id）＋簽章 token；title/list_id/estimate
     // 由 apply 以 CURRENT material 重讀，preview 這裡附的值僅供 UI 顯示，apply strict 不採信。
     materialCreates.push({ client_key: clientKey, material_content_item_id: cid, content_item_id: cid, title: mi.title, list_id: mi.subject_list_id ?? null, estimated_minutes: mi.estimated_minutes ?? null, material_snapshot_token });
     const est = Number(mi.estimated_minutes) || 0;
     // Material Task 沒有自身 deadline → upper bound 由 Plan target_date 決定（schedulingUpperBound）。
-    if (est > 0) addItem({ id: negId, list_id: mi.subject_list_id ?? negId, title: mi.title }, est, null);
+    if (est > 0) addItem({ id: negId, list_id: mi.subject_list_id ?? negId, title: mi.title,
+      material_content_item_id: cid }, est, null);
     else missingEstimateMaterial.push(clientKey);
   }
 

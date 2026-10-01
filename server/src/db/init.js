@@ -508,7 +508,7 @@ CREATE TABLE IF NOT EXISTS material_content_items (
   user_id INTEGER NOT NULL,
   book_id INTEGER NOT NULL,
   node_id INTEGER NOT NULL,              -- 可以是 chapter、section 或 topic
-  kind TEXT NOT NULL,                    -- reading | example | unit_exercise | past_exam
+  kind TEXT NOT NULL,                    -- reading | example | unit_exercise | past_exam | workbook_exercise
   title TEXT NOT NULL,
   estimated_minutes INTEGER,
   order_index INTEGER DEFAULT 0,

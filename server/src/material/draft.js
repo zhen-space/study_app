@@ -20,7 +20,7 @@ canonical draft 形狀：
   book: { title, publisher?, subject_list_id? },
   chapters: [{
     title, order?,
-    content_items: [ ... ],        // 章直屬：reading / unit_exercise / past_exam
+    content_items: [ ... ],        // 章直屬：reading / unit_exercise / past_exam / workbook_exercise
     children: [{                   // Section 與 Topic 是**同層**，都直接掛在章底下
       kind: 'section' | 'topic',
       title, order?,

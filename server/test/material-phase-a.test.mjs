@@ -52,14 +52,15 @@ const goodDraft = (over = {}) => ({
 /* ============ A1：content kind ============ */
 
 describe('A1 content kind：範例與例題是兩種東西', () => {
-  test('五種 kind 都在正式 enum 裡，各自有學生看得懂的名字', () => {
+  test('六種 kind 都在正式 enum 裡，各自有學生看得懂的名字', () => {
     assert.deepEqual(ITEM_KINDS,
-      ['reading', 'example', 'example_problem', 'unit_exercise', 'past_exam']);
+      ['reading', 'example', 'example_problem', 'unit_exercise', 'past_exam', 'workbook_exercise']);
     assert.equal(ITEM_KIND_LABEL.reading, '課本內容');
     assert.equal(ITEM_KIND_LABEL.example, '範例');
     assert.equal(ITEM_KIND_LABEL.example_problem, '例題');
     assert.equal(ITEM_KIND_LABEL.unit_exercise, '單元練習');
     assert.equal(ITEM_KIND_LABEL.past_exam, '歷屆試題');
+    assert.equal(ITEM_KIND_LABEL.workbook_exercise, '習作');
     // 範例與例題不得共用同一個名字，否則學生分不出「讀過的示範」與「要做的題目」
     assert.notEqual(ITEM_KIND_LABEL.example, ITEM_KIND_LABEL.example_problem);
   });
@@ -72,8 +73,8 @@ describe('A1 content kind：範例與例題是兩種東西', () => {
     }
   });
 
-  test('placement：unit_exercise / past_exam 只能在章底下', () => {
-    for (const kind of ['unit_exercise', 'past_exam']) {
+  test('placement：unit_exercise / past_exam / workbook_exercise 只能在章底下', () => {
+    for (const kind of ['unit_exercise', 'past_exam', 'workbook_exercise']) {
       assert.equal(itemPlacementProblem(kind, 'chapter'), null);
       assert.match(itemPlacementProblem(kind, 'section'), /直接屬於章/);
       assert.match(itemPlacementProblem(kind, 'topic'), /直接屬於章/);

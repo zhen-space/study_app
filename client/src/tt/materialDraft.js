@@ -7,6 +7,14 @@ const leafItems = (items, title, isLeaf) => {
   return [{ kind: 'reading', title: String(title).trim() }];
 };
 
+// 章層純題目（單元練習／歷屆／習作）不是章本文的替代品。沒有子節的章即使
+// 已加入題目，仍要保留一筆以章名代表的 reading；已有明確 reading 時不重複補。
+const chapterLeafItems = (items, title, isLeaf) => {
+  const list = Array.isArray(items) ? items : [];
+  if (!isLeaf || !String(title || '').trim() || list.some(item => item?.kind === 'reading')) return list;
+  return [{ kind: 'reading', title: String(title).trim() }, ...list];
+};
+
 export function canonicalizeLeafContent(input) {
   if (!input) return input;
   return {
@@ -19,7 +27,7 @@ export function canonicalizeLeafContent(input) {
       return {
         ...chapter,
         children,
-        content_items: leafItems(chapter.content_items, chapter.title, children.length === 0),
+        content_items: chapterLeafItems(chapter.content_items, chapter.title, children.length === 0),
       };
     }),
   };
