@@ -83,8 +83,7 @@ export default function AddMaterialFlow({ lists = [], onCancel, onCreated, onAdd
     if (operationBusy.current) return;
     operationBusy.current = true;
     const candidate = canonicalizeLeafContent(submittedDraft || draft);
-    setDraft(candidate);
-    if (appendToBook) { setMergeTarget(appendToBook); operationBusy.current = false; return; }
+    if (appendToBook) { setDraft(candidate); setMergeTarget(appendToBook); operationBusy.current = false; return; }
     setBusy(true); setErr(''); setProblems([]);
     try {
       const chk = await nameCheck(candidate.book.title, candidate.book.subject_list_id);
@@ -266,7 +265,7 @@ function normalize(d) {
       kind: i.kind, title: i.title,
       ...(i.estimated_minutes != null ? { estimated_minutes: i.estimated_minutes } : {}),
     }));
-  return canonicalizeLeafContent({
+  return {
     book: {
       title: d?.book?.title || '',
       publisher: d?.book?.publisher || '',
@@ -283,5 +282,5 @@ function normalize(d) {
         children,
       };
     }),
-  });
+  };
 }

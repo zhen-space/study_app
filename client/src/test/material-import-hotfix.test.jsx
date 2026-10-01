@@ -156,6 +156,9 @@ describe('AddMaterialFlow hotfix', () => {
     await act(async () => { fireEvent.click(screen.getByRole('button', { name: /確認送出/ })); });
     await waitFor(() => expect(screen.getByText('共 2 項內容')).toBeTruthy());
 
+    fireEvent.change(screen.getByLabelText('第 1 章名稱'), { target: { value: 'L1 最新名稱' } });
+    expect(screen.getByText('共 2 項內容')).toBeTruthy();
+
     const title = screen.getByLabelText('教材名稱');
     fireEvent.compositionStart(title);
     fireEvent.change(title, { target: { value: '課本3' } });
@@ -170,7 +173,7 @@ describe('AddMaterialFlow hotfix', () => {
     const payload = commitDraft.mock.calls.at(-1)[0];
     expect(payload.book).toEqual({ title: '課本3', publisher: '龍騰', subject_list_id: 2 });
     expect(payload.chapters.map(c => c.content_items[0])).toEqual([
-      { kind: 'reading', title: 'L1' },
+      { kind: 'reading', title: 'L1 最新名稱' },
       { kind: 'reading', title: '複習 R3' },
     ]);
   });
