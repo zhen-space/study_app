@@ -1,4 +1,4 @@
-import { useEffect, useState, useCallback } from 'react';
+import { useEffect, useState, useCallback, useRef } from 'react';
 import { api } from '../api';
 import { md } from './plans';
 import { SurfaceCard, Button, ProgressBar, EmptyState, BottomSheet } from './ui';
@@ -64,7 +64,7 @@ function SegmentRow({ seg, editable, onEdit, onDelete }) {
 }
 
 // 新增／編輯一段的表單。scope 從這個計畫已選的教材內容挑（不必重新匯入）。
-function SegmentSheet({ planId, lists, selection, initial, onClose, onSaved }) {
+export function SegmentSheet({ planId, lists, selection, initial, onClose, onSaved }) {
   const [title, setTitle] = useState(initial?.title || '');
   const [start, setStart] = useState(initial?.start_date || '');
   const [end, setEnd] = useState(initial?.end_date || '');
@@ -73,13 +73,18 @@ function SegmentSheet({ planId, lists, selection, initial, onClose, onSaved }) {
   const [scope, setScope] = useState(new Set((initial?.scope || []).map(Number)));
   const [err, setErr] = useState('');
   const [busy, setBusy] = useState(false);
+  const [committed, setCommitted] = useState(null);
+  // state 更新不是同步的；ref 才能擋住同一個 event turn 的快速重入。
+  const saveBusy = useRef(false);
 
   const toggle = id => setScope(s => { const n = new Set(s); if (n.has(id)) n.delete(id); else n.add(id); return n; });
 
   const save = async () => {
+    if (saveBusy.current || committed) return;
+    saveBusy.current = true;
     setErr('');
-    if (!title.trim()) return setErr('請輸入這一段的名稱');
-    if (!end) return setErr('請選結束日期');
+    if (!title.trim()) { saveBusy.current = false; return setErr('請輸入這一段的名稱'); }
+    if (!end) { saveBusy.current = false; return setErr('請選結束日期'); }
     setBusy(true);
     try {
       const body = {
@@ -89,8 +94,37 @@ function SegmentSheet({ planId, lists, selection, initial, onClose, onSaved }) {
       };
       const path = `/plans/${planId}/progress-segments${initial?.id ? '/' + initial.id : ''}`;
       const data = await api(path, { method: initial?.id ? 'PATCH' : 'POST', body });
-      onSaved(data);
-    } catch (e) { setErr(e.message || '儲存失敗'); setBusy(false); }
+      // 從這裡起寫入已成立，不可因父層刷新失敗再次 POST/PATCH。
+      setCommitted(data);
+      try {
+        await onSaved(data);
+        setBusy(false);
+        saveBusy.current = false;
+      } catch (e) {
+        setErr(e.message || '重新載入失敗');
+        setBusy(false);
+        saveBusy.current = false;
+      }
+    } catch (e) {
+      setErr(e.message || '儲存失敗');
+      setBusy(false);
+      saveBusy.current = false;
+    }
+  };
+
+  const retrySaved = async () => {
+    if (saveBusy.current || !committed) return;
+    saveBusy.current = true;
+    setBusy(true); setErr('');
+    try {
+      await onSaved(committed);
+      setBusy(false);
+      saveBusy.current = false;
+    } catch (e) {
+      setErr(e.message || '重新載入失敗');
+      setBusy(false);
+      saveBusy.current = false;
+    }
   };
 
   // 只列尚未完成或已在 scope 內的選取項；已完成的仍顯示但標記，方便理解範圍。
@@ -103,7 +137,20 @@ function SegmentSheet({ planId, lists, selection, initial, onClose, onSaved }) {
   }
 
   return (
-    <BottomSheet onClose={onClose} label={initial?.id ? '編輯進度段' : '新增進度段'}>
+    <BottomSheet onClose={busy ? undefined : onClose} label={initial?.id ? '編輯進度段' : '新增進度段'}>
+      {committed ? (
+        <div style={{ display: 'grid', gap: 10 }}>
+          <b>進度安排已儲存</b>
+          <div className="ui-meta">畫面尚未更新，請勿再次儲存。你可以只重試載入最新資料。</div>
+          {err && <div role="alert" className="ui-meta" style={{ color: 'var(--danger, #c53030)' }}>
+            進度安排已儲存，但畫面暫時無法更新。{err}
+          </div>}
+          <div className="row" style={{ gap: 8 }}>
+            <Button variant="ghost" disabled={busy} onClick={onClose}>先關閉</Button>
+            <Button variant="primary" disabled={busy} onClick={retrySaved}>{busy ? '載入中…' : '重新載入'}</Button>
+          </div>
+        </div>
+      ) : (
       <div style={{ display: 'grid', gap: 10 }}>
         <b>{initial?.id ? '編輯這一段進度' : '新增一段進度'}</b>
         <label className="ui-field">
@@ -160,9 +207,10 @@ function SegmentSheet({ planId, lists, selection, initial, onClose, onSaved }) {
         {err && <div className="ui-meta" style={{ color: 'var(--danger, #c53030)' }}>{err}</div>}
         <div className="row" style={{ gap: 8 }}>
           <Button variant="primary" disabled={busy} onClick={save}>{busy ? '儲存中…' : '儲存'}</Button>
-          <Button variant="ghost" onClick={onClose}>取消</Button>
+          <Button variant="ghost" disabled={busy} onClick={busy ? undefined : onClose}>取消</Button>
         </div>
       </div>
+      )}
     </BottomSheet>
   );
 }
