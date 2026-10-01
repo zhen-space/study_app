@@ -100,3 +100,144 @@ describe('PlanRangeView', () => {
     expect(screen.getByText('加入要考的範圍')).toBeTruthy();
   });
 });
+
+describe('教材範圍移除恢復', () => {
+  const exam = { plan: {}, subjects: [{ subject_list_id: 1, subject_name: '數學' }],
+    material: [mat({ content_item_id: 11, subject_list_id: 1, book_id: 5, book_title: '課本', chapter_title: '第一章', title: '第一課' })], manual_scope: [] };
+  const preview = { content_item_id: 11, title: '第一課', base_version_id: 3, token: 'signed', will_cancel_task: true, removed_block_count: 1 };
+
+  it('375px pending apply 禁止 backdrop、Escape、取消，且同步 guard 只送一次', async () => {
+    Object.defineProperty(window, 'innerWidth', { configurable: true, value: 375 });
+    let resolveApply;
+    api.mockImplementation((path = '') => {
+      if (path.includes('/exam')) return Promise.resolve(exam);
+      if (path.includes('/timeline')) return Promise.resolve({ segments: [], items: [], unscheduled: [] });
+      if (path.endsWith('/preview')) return Promise.resolve(preview);
+      if (path.endsWith('/apply')) return new Promise(resolve => { resolveApply = resolve; });
+      return Promise.resolve({});
+    });
+    render(<PlanRangeView plan={plan} lists={LISTS} />);
+    fireEvent.click(await screen.findByRole('button', { name: '移除' }));
+    await waitFor(() => expect(screen.getByRole('button', { name: '確認移除' })).toBeEnabled());
+    fireEvent.click(screen.getByRole('button', { name: '確認移除' }));
+    fireEvent.click(document.querySelector('.sheet-backdrop'));
+    expect(screen.getByRole('dialog', { name: '移除教材範圍' })).toBeInTheDocument();
+    fireEvent.keyDown(document, { key: 'Escape' });
+    expect(screen.getByRole('dialog', { name: '移除教材範圍' })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: '取消' }));
+    expect(screen.getByRole('dialog', { name: '移除教材範圍' })).toBeInTheDocument();
+    expect(api.mock.calls.filter(([p]) => p.endsWith('/apply'))).toHaveLength(1);
+    resolveApply({ version_id: 8 });
+  });
+
+  it('同步 ref guard 阻止快速重入 apply', async () => {
+    let confirm; let nested = false;
+    api.mockImplementation((path = '') => {
+      if (path.includes('/exam')) return Promise.resolve(exam);
+      if (path.includes('/timeline')) return Promise.resolve({ segments: [], items: [], unscheduled: [] });
+      if (path.endsWith('/preview')) return Promise.resolve(preview);
+      if (path.endsWith('/apply')) {
+        if (!nested) {
+          nested = true;
+          const key = Object.keys(confirm).find(k => k.startsWith('__reactProps'));
+          confirm[key].onClick();
+        }
+        return Promise.resolve({ version_id: 8 });
+      }
+      return Promise.resolve({});
+    });
+    render(<PlanRangeView plan={plan} lists={LISTS} />);
+    fireEvent.click(await screen.findByRole('button', { name: '移除' }));
+    await waitFor(() => expect(screen.getByRole('button', { name: '確認移除' })).toBeEnabled());
+    confirm = screen.getByRole('button', { name: '確認移除' });
+    fireEvent.click(confirm);
+    await waitFor(() => expect(api.mock.calls.filter(([p]) => p.endsWith('/apply'))).toHaveLength(1));
+  });
+  it('apply 成功但 load 失敗只重試 load，不重送 apply', async () => {
+    let applied = false; let refreshFails = true;
+    api.mockImplementation((path = '') => {
+      if (path.endsWith('/preview')) return Promise.resolve(preview);
+      if (path.endsWith('/apply')) { applied = true; return Promise.resolve({ version_id: 8 }); }
+      if (path.includes('/exam')) {
+        if (applied && refreshFails) { refreshFails = false; return Promise.reject(new Error('刷新失敗')); }
+        return Promise.resolve(exam);
+      }
+      if (path.includes('/timeline')) return Promise.resolve({ segments: [], items: [], unscheduled: [] });
+      return Promise.resolve({});
+    });
+    render(<PlanRangeView plan={plan} lists={LISTS} />);
+    fireEvent.click(await screen.findByRole('button', { name: '移除' }));
+    fireEvent.click(await screen.findByRole('button', { name: '確認移除' }));
+    expect(await screen.findByRole('alert')).toHaveTextContent('範圍已移除，但畫面暫時無法更新');
+    fireEvent.click(screen.getByRole('button', { name: '重新載入' }));
+    await waitFor(() => expect(screen.queryByRole('dialog', { name: '移除教材範圍' })).toBeNull());
+    expect(api.mock.calls.filter(([p]) => p.endsWith('/apply'))).toHaveLength(1);
+  });
+
+  it('成功移除並載入後可立即預覽另一個範圍', async () => {
+    const secondExam = { ...exam, material: [
+      ...exam.material,
+      mat({ content_item_id: 12, subject_list_id: 1, book_id: 5, book_title: '課本', chapter_title: '第一章', title: '第二課' }),
+    ] };
+    const refreshedExam = { ...secondExam, material: secondExam.material.filter(row => row.content_item_id === 12) };
+    let applied = false;
+    api.mockImplementation((path = '', options) => {
+      if (path.includes('/exam')) return Promise.resolve(applied ? refreshedExam : secondExam);
+      if (path.includes('/timeline')) return Promise.resolve({ segments: [], items: [], unscheduled: [] });
+      if (path.endsWith('/preview')) {
+        const id = options.body.content_item_id;
+        return Promise.resolve({ ...preview, content_item_id: id, title: id === 11 ? '第一課' : '第二課', token: `signed-${id}` });
+      }
+      if (path.endsWith('/apply')) { applied = true; return Promise.resolve({ version_id: 8 }); }
+      return Promise.resolve({});
+    });
+    render(<PlanRangeView plan={plan} lists={LISTS} />);
+    const removeButtons = await screen.findAllByRole('button', { name: '移除' });
+    fireEvent.click(removeButtons[0]);
+    fireEvent.click(await screen.findByRole('button', { name: '確認移除' }));
+    await waitFor(() => expect(screen.queryByRole('dialog', { name: '移除教材範圍' })).toBeNull());
+
+    fireEvent.click(screen.getByRole('button', { name: '移除' }));
+    expect(await screen.findByText('要移除「第二課」嗎？')).toBeInTheDocument();
+    expect(api).toHaveBeenCalledWith('/schedule/material-scope/remove/preview', expect.objectContaining({
+      body: { plan_id: 1, content_item_id: 12 },
+    }));
+  });
+
+  it('同步 ref guard 阻止快速重入 preview', async () => {
+    let removeButton; let nested = false;
+    api.mockImplementation((path = '') => {
+      if (path.includes('/exam')) return Promise.resolve(exam);
+      if (path.includes('/timeline')) return Promise.resolve({ segments: [], items: [], unscheduled: [] });
+      if (path.endsWith('/preview')) {
+        if (!nested) {
+          nested = true;
+          const key = Object.keys(removeButton).find(k => k.startsWith('__reactProps'));
+          removeButton[key].onClick();
+        }
+        return Promise.resolve(preview);
+      }
+      return Promise.resolve({});
+    });
+    render(<PlanRangeView plan={plan} lists={LISTS} />);
+    removeButton = await screen.findByRole('button', { name: '移除' });
+    fireEvent.click(removeButton);
+    await screen.findByText('要移除「第一課」嗎？');
+    expect(api.mock.calls.filter(([path]) => path.endsWith('/preview'))).toHaveLength(1);
+  });
+
+  it('stale apply 關閉舊 preview 並要求重新預覽', async () => {
+    api.mockImplementation((path = '') => {
+      if (path.includes('/exam')) return Promise.resolve(exam);
+      if (path.includes('/timeline')) return Promise.resolve({ segments: [], items: [], unscheduled: [] });
+      if (path.endsWith('/preview')) return Promise.resolve(preview);
+      if (path.endsWith('/apply')) return Promise.reject(Object.assign(new Error('stale'), { status: 409, payload: { code: 'STALE_SCHEDULE_PREVIEW' } }));
+      return Promise.resolve({});
+    });
+    render(<PlanRangeView plan={plan} lists={LISTS} />);
+    fireEvent.click(await screen.findByRole('button', { name: '移除' }));
+    fireEvent.click(await screen.findByRole('button', { name: '確認移除' }));
+    expect(await screen.findByRole('alert')).toHaveTextContent('請重新點「移除」取得最新預覽');
+    expect(screen.queryByRole('dialog', { name: '移除教材範圍' })).toBeNull();
+  });
+});
