@@ -449,6 +449,14 @@ export default function PlanDetailView({ planKey, tasks, lists, apiPlans = [], r
             onArrange={plan.status === 'active' ? () => setSheet('arrange') : undefined}
             onAddManual={plan.status === 'active' ? () => setSheet('add') : undefined}
             onEditSubject={plan.status === 'active' ? s => { setEditSubject({ ...s }); setSheet('editSubjectDate'); } : undefined}
+            afterSubjects={(
+              <PlanTimeline
+                plan={plan}
+                refreshKey={examRefreshKey}
+                onAddContent={plan.status === 'active' ? () => setSheet('addContent') : undefined}
+                onAdjust={plan.status === 'active' ? () => setShowRolling(true) : undefined}
+              />
+            )}
           />
         ) : (
           /* 舊資料／歷史計畫：沒有正式 planId，維持簡單進度呈現 */
@@ -461,14 +469,6 @@ export default function PlanDetailView({ planKey, tasks, lists, apiPlans = [], r
               <ProgressBar value={plan.done} max={plan.total} label={`${plan.name}：${plan.total} 項中已完成 ${plan.done} 項`} />
             </div>
           </div>
-        )}
-        {isReal && (
-          <PlanTimeline
-            plan={plan}
-            refreshKey={examRefreshKey}
-            onAddContent={plan.status === 'active' ? () => setSheet('addContent') : undefined}
-            onAdjust={plan.status === 'active' ? () => setShowRolling(true) : undefined}
-          />
         )}
         {isReal && goScheduleHistory && (
           <div className="row" style={{ marginTop: 'var(--sp-3)' }}>

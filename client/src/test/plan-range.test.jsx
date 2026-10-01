@@ -100,6 +100,26 @@ describe('PlanRangeView', () => {
     await waitFor(() => expect(screen.getByText('還沒加入要考的範圍')).toBeTruthy());
     expect(screen.getByText('加入要考的範圍')).toBeTruthy();
   });
+
+  it('375px 結構順序為考試科目 → 日期安排 → 完整範圍長清單', async () => {
+    Object.defineProperty(window, 'innerWidth', { configurable: true, value: 375 });
+    mockApi({ exam: {
+      plan: { target_date: '2099-10-02' },
+      subjects: [{ subject_list_id: 1, subject_name: '數學', exam_date: '2099-10-02' }],
+      material: Array.from({ length: 20 }, (_, i) => mat({
+        content_item_id: 100 + i, subject_list_id: 1, book_id: 5, book_title: '數學課本',
+        chapter_title: `第 ${i + 1} 章`, title: `範圍 ${i + 1}`,
+      })),
+      manual_scope: [],
+    } });
+    render(<PlanRangeView plan={plan} lists={LISTS} afterSubjects={<div>日期安排測試插槽</div>} />);
+
+    const subjects = await screen.findByText('考試科目與日期');
+    const timeline = screen.getByText('日期安排測試插槽');
+    const range = screen.getByText('要讀完的範圍');
+    expect(subjects.compareDocumentPosition(timeline) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(timeline.compareDocumentPosition(range) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  });
 });
 
 describe('教材範圍移除恢復', () => {
