@@ -83,15 +83,33 @@ describe('commit ownership fail-closed + 零殘留（HTTP）', () => {
     assert.equal(after, before, 'ownership 失敗不得留下半本書');
   });
 
-  test('commit 內容有問題（空殼）→ 400，零殘留', async () => {
+  test('commit 真正空白的內容 → 400，零殘留', async () => {
     const mine = (await post('/lists', { name: '我的科目' })).body;
     const before = (await get('/study-materials?shelf=1')).body.books?.length ?? 0;
     const r = await post('/material/import/commit', { draft: {
-      book: { title: '空殼', subject_list_id: mine.id }, chapters: [{ title: '第一章', content_items: [], children: [] }],
+      book: { title: '空殼', subject_list_id: mine.id }, chapters: [{ title: '', content_items: [], children: [] }],
     } });
     assert.equal(r.status, 400);
     const after = (await get('/study-materials?shelf=1')).body.books?.length ?? 0;
     assert.equal(after, before);
+  });
+
+  test('只有 L1/L2 標題的葉章也會真正建立 ContentItem，刷新仍存在', async () => {
+    const mine = (await post('/lists', { name: '英文' })).body;
+    const r = await post('/material/import/commit', { draft: {
+      book: { title: '課本3', publisher: '龍騰', subject_list_id: mine.id },
+      chapters: [
+        { title: 'L1', content_items: [], children: [] },
+        { title: 'Unit 2', content_items: [], children: [{ kind: 'section', title: 'L2', content_items: [] }] },
+      ],
+    } });
+    assert.equal(r.status, 201, JSON.stringify(r.body));
+    const tree = (await get(`/material/books/${r.body.book.id}/tree`)).body;
+    assert.equal(tree.nodes[0].content_items[0].title, 'L1');
+    assert.equal(tree.nodes[0].content_items[0].completed, false);
+    assert.equal(tree.nodes[1].content_items.length, 0, '有子節的章仍是純容器');
+    assert.equal(tree.nodes[1].children[0].content_items[0].title, 'L2');
+    assert.equal(tree.nodes[1].children[0].content_items[0].completed, false);
   });
 
   test('preview payload 上限不依賴 AI 金鑰（沒有金鑰也先擋壞輸入）', async () => {

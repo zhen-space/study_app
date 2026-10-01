@@ -5,6 +5,7 @@ import MaterialDraftEditor, { emptyDraft } from './MaterialDraftEditor';
 import MergeReview from './MergeReview';
 import PhotoQueue from './PhotoQueue';
 import { Button } from './ui';
+import { canonicalizeLeafContent, materialContentCount } from './materialDraft';
 
 // 「加入教材」。學生只要在兩件事之間選一個：拍照，或自己打。
 //
@@ -65,8 +66,7 @@ export default function AddMaterialFlow({ lists = [], onCancel, onCreated, onAdd
       });
       const next = withContext(normalize(r.draft));
       setDraft(next);
-      const itemCount = next.chapters.reduce((n, c) =>
-        n + c.content_items.length + c.children.reduce((m, child) => m + child.content_items.length, 0), 0);
+      const itemCount = materialContentCount(next);
       setProblems((r.problems || []).filter(p => {
         if (p.path === 'book.title' && next.book.title.trim()) return false;
         if (p.path === 'chapters' && itemCount > 0 && /沒有任何內容項目/.test(p.message || '')) return false;
@@ -79,20 +79,21 @@ export default function AddMaterialFlow({ lists = [], onCancel, onCreated, onAdd
   };
 
   // 建立前先偵測同名同科：有衝突就要求三選一（合併／另存／取消），未選不 commit。
-  const create = async () => {
+  const create = async submittedDraft => {
     if (operationBusy.current) return;
     operationBusy.current = true;
-    if (appendToBook) { setMergeTarget(appendToBook); operationBusy.current = false; return; }
+    const candidate = canonicalizeLeafContent(submittedDraft || draft);
+    if (appendToBook) { setDraft(candidate); setMergeTarget(appendToBook); operationBusy.current = false; return; }
     setBusy(true); setErr(''); setProblems([]);
     try {
-      const chk = await nameCheck(draft.book.title, draft.book.subject_list_id);
+      const chk = await nameCheck(candidate.book.title, candidate.book.subject_list_id);
       if (chk.has_conflict) {
         setConflict({ books: chk.same_name_books || [] });
         operationBusy.current = false;
         setBusy(false);
         return;
       }
-      const r = await commitDraft(draft);
+      const r = await commitDraft(candidate);
       setCreated(r);
       try { await onCreated?.(r); }
       catch { setErr('教材已建立，但畫面暫時無法更新。請重新載入，請勿再次建立。'); }
@@ -260,13 +261,10 @@ function readable(e) {
 // parser 回來的 draft 已經是正式形狀，這裡只補齊編輯器需要的欄位，
 // 不做任何結構重組——重組就等於在前端複製一份 hierarchy 契約。
 function normalize(d) {
-  const content = (items, fallbackTitle = '') => {
-    const out = (items || []).map(i => ({
+  const content = items => (items || []).map(i => ({
       kind: i.kind, title: i.title,
       ...(i.estimated_minutes != null ? { estimated_minutes: i.estimated_minutes } : {}),
     }));
-    return out.length || !fallbackTitle.trim() ? out : [{ kind: 'reading', title: fallbackTitle.trim() }];
-  };
   return {
     book: {
       title: d?.book?.title || '',
@@ -276,11 +274,11 @@ function normalize(d) {
     chapters: (d?.chapters || []).map(c => {
       const children = (c.children || []).map(s => ({
         kind: s.kind, title: s.title || '',
-        content_items: content(s.content_items, s.title || ''),
+        content_items: content(s.content_items),
       }));
       return {
         title: c.title || '',
-        content_items: content(c.content_items, children.length ? '' : (c.title || '')),
+        content_items: content(c.content_items),
         children,
       };
     }),

@@ -47,6 +47,23 @@ describe('AddMaterialFlow committed recovery', () => {
     });
   });
 
+  it('手動只有葉章標題也可建立，送出時成為最新標題的 reading', async () => {
+    render(<AddMaterialFlow lists={[{ id: 1, name: '英文' }]} defaultSubjectId={1} onCancel={vi.fn()} onCreated={vi.fn()} />);
+    fireEvent.click(screen.getByText('自己建立教材'));
+    fireEvent.change(screen.getByLabelText('教材名稱'), { target: { value: '課本3' } });
+    const chapter = screen.getByLabelText('第 1 章名稱');
+    fireEvent.change(chapter, { target: { value: 'L1' } });
+    fireEvent.change(chapter, { target: { value: 'L1 最新名稱' } });
+    expect(screen.getByText('共 1 項內容')).toBeInTheDocument();
+    const submit = screen.getByRole('button', { name: '建立教材' });
+    expect(submit).toBeEnabled();
+    fireEvent.click(submit);
+    await waitFor(() => expect(commitDraft).toHaveBeenCalledOnce());
+    expect(commitDraft.mock.calls[0][0].chapters[0].content_items).toEqual([
+      { kind: 'reading', title: 'L1 最新名稱' },
+    ]);
+  });
+
   it('moves to a non-repeatable committed state while the parent refresh is pending', async () => {
     const refresh = deferred();
     const onCreated = vi.fn(() => refresh.promise);
@@ -92,6 +109,14 @@ describe('AddMaterialFlow committed recovery', () => {
 
     await waitFor(() => expect(commitDraft).toHaveBeenCalledTimes(2));
     expect(await screen.findByText('教材已建立')).toBeInTheDocument();
+  });
+
+  it('取消只有標題的葉章草稿不會寫入任何教材', () => {
+    readyManual({ onCreated: vi.fn() });
+    fireEvent.click(screen.getByRole('button', { name: '取消' }));
+    expect(screen.getByText('加入教材')).toBeInTheDocument();
+    expect(nameCheck).not.toHaveBeenCalled();
+    expect(commitDraft).not.toHaveBeenCalled();
   });
 
   it('synchronously guards a re-entrant commit', async () => {

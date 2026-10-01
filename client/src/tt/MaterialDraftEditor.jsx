@@ -1,5 +1,6 @@
 import { useMemo, useState } from 'react';
 import { ITEM_LABEL } from './material';
+import { canonicalizeLeafContent, materialContentCount } from './materialDraft';
 import { Button } from './ui';
 
 // 一份教材在寫進資料庫**之前**的樣子，可以直接編輯。
@@ -67,9 +68,7 @@ export default function MaterialDraftEditor({
     children: d.chapters[ci].children.map((c, i) => (i === si ? { ...c, ...patch } : c)),
   });
 
-  const total = useMemo(() => d.chapters.reduce(
-    (n, c) => n + c.content_items.length + c.children.reduce((m, s) => m + s.content_items.length, 0),
-    0), [d]);
+  const total = useMemo(() => materialContentCount(d), [d]);
 
   const ready = d.book.title.trim() && d.chapters.some(c => c.title.trim()) && total > 0;
 
@@ -193,7 +192,7 @@ export default function MaterialDraftEditor({
       <div className="md-foot">
         <span className="md-total" aria-live="polite">共 {total} 項內容</span>
         {onCancel && <Button variant="tertiary" onClick={onCancel} disabled={busy}>取消</Button>}
-        <Button variant="primary" disabled={busy || !ready} onClick={onSubmit}>
+        <Button variant="primary" disabled={busy || !ready} onClick={() => onSubmit(canonicalizeLeafContent(d))}>
           {busy ? '處理中…' : submitLabel}
         </Button>
       </div>
