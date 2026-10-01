@@ -127,6 +127,8 @@ describe('段考進度時間軸 projection', () => {
       [u, prog, `${D(0)}T10:00:00`, 20, 'completed', 'manual']);
     const r = await tl(u, plan);
     assert.equal(r.items.find(i => i.task_id === Number(done)).completion, 'completed');
+    assert.equal(r.items.find(i => i.task_id === Number(done)).display_mode, 'completed');
+    assert.ok(!r.unscheduled.some(i => i.task_id === Number(done)), '已完成項目不得誤列為尚未安排');
     assert.equal(r.items.find(i => i.task_id === Number(prog)).completion, 'in_progress');
     assert.equal(r.items.find(i => i.task_id === Number(fresh)).completion, 'not_started');
   });
@@ -198,5 +200,33 @@ describe('段考進度時間軸 projection', () => {
     const r = buildPlanTimeline({ plan: { id: 1, status: 'active', target_date: null }, activeVersionId: 1, tasks: [], blocks: [], today: TODAY });
     assert.equal(r.empty, true);
     assert.equal(r.segments.length, 0);
+  });
+
+  test('T12 日期狀態與未安排原因由 server-authoritative projection 提供', () => {
+    const tasks = [
+      { id: 1, title: '今天讀', list_id: 1, estimated_minutes: 60, completed: 0 },
+      { id: 2, title: '之後讀', list_id: 1, estimated_minutes: 60, completed: 0 },
+      { id: 3, title: '還沒排', list_id: 1, estimated_minutes: null, completed: 0 },
+    ];
+    const blocks = [
+      { id: 1, task_id: 1, date: TODAY, planned_minutes: 60 },
+      { id: 2, task_id: 2, date: D(2), planned_minutes: 60 },
+    ];
+    const r = buildPlanTimeline({ plan: { id: 1, status: 'active', target_date: D(30) }, activeVersionId: 1, tasks, blocks, today: TODAY });
+    assert.equal(r.items.find(i => i.task_id === 1).time_status, 'today');
+    assert.equal(r.items.find(i => i.task_id === 2).time_status, 'upcoming');
+    assert.equal(r.items.find(i => i.task_id === 3).time_status, 'schedule_gap');
+    assert.ok(r.items.find(i => i.task_id === 3).warnings.includes('schedule_gap'));
+  });
+
+  test('T13 手動範圍沿用 Task 排程並標示來源', () => {
+    const tasks = [{ id: 7, title: '老師講義第三章', list_id: 1, estimated_minutes: 60, completed: 0 }];
+    const blocks = [{ id: 8, task_id: 7, date: TODAY, planned_minutes: 60 }];
+    const r = buildPlanTimeline({
+      plan: { id: 1, status: 'active', target_date: D(30) }, activeVersionId: 1, tasks, blocks,
+      manualByTaskId: new Map([[7, '老師講義第三章']]), today: TODAY,
+    });
+    assert.equal(r.items[0].kind, 'manual');
+    assert.equal(r.items[0].display_mode, 'range');
   });
 });

@@ -45,7 +45,7 @@ function completionOf(task, hasSession) {
 export function buildPlanTimeline({
   plan, activeVersionId, tasks = [], blocks = [],
   subjectsById = new Map(), materialById = new Map(),
-  lockedTaskIds = new Set(), sessionTaskIds = new Set(), today,
+  manualByTaskId = new Map(), lockedTaskIds = new Set(), sessionTaskIds = new Set(), today,
 }) {
   const scheduable = SCHEDULABLE.has(plan.status) && activeVersionId != null;
   const planTarget = plan.target_date || null;
@@ -67,7 +67,7 @@ export function buildPlanTimeline({
   for (const t of tasks) {
     const taskId = Number(t.id);
     const kind = t.task_kind === 'school_assignment' ? 'school_assignment'
-      : (t.material_content_item_id != null ? 'material' : 'standard');
+      : (t.material_content_item_id != null ? 'material' : (manualByTaskId.has(taskId) ? 'manual' : 'standard'));
     const subjectId = t.list_id ?? null;
     const subjectName = (subjectId != null ? subjectsById.get(Number(subjectId)) : null) || null;
     const mat = t.material_content_item_id != null ? (materialById.get(Number(t.material_content_item_id)) || null) : null;
@@ -105,9 +105,24 @@ export function buildPlanTimeline({
     //   有 block 但違反上限 → 'gap'
     //   無 block（在計畫內卻沒排入）→ 'unscheduled'
     let displayMode;
-    if (kind === 'school_assignment' && t.deadline_date) displayMode = 'deadline';
+    if (completion === 'completed') displayMode = 'completed';
+    else if (kind === 'school_assignment' && t.deadline_date) displayMode = 'deadline';
     else if (taskBlocks.length) displayMode = violated ? 'gap' : 'range';
-    else displayMode = 'unscheduled';
+    else {
+      displayMode = 'unscheduled';
+      itemWarnings.push('schedule_gap');
+    }
+
+    let timeStatus = null;
+    if (completion === 'completed') timeStatus = 'completed';
+    else if (displayMode === 'gap' || displayMode === 'unscheduled') timeStatus = 'schedule_gap';
+    else {
+      const starts = displayMode === 'deadline' ? t.deadline_date : rangeStart;
+      const ends = displayMode === 'deadline' ? t.deadline_date : rangeEnd;
+      if (today && ends && ends < today) timeStatus = 'past_due';
+      else if (today && starts && starts > today) timeStatus = 'upcoming';
+      else if (today && starts && ends && starts <= today && today <= ends) timeStatus = 'today';
+    }
 
     items.push({
       task_id: taskId,
@@ -126,6 +141,7 @@ export function buildPlanTimeline({
       block_ids: blockIds,
       day_blocks: dayBlocks,               // 展開才看每日安排；沒有時段就是 null，不捏造
       completion,
+      time_status: timeStatus,
       locked: lockedTaskIds.has(taskId),
       warnings: itemWarnings,
     });

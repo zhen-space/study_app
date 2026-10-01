@@ -77,7 +77,7 @@ describe('PlanRangeView', () => {
     expect(screen.getByText(/範圍已完成 1／4/)).toBeTruthy();
   });
 
-  it('有每日排程時顯示「每天要做的」', async () => {
+  it('日期安排交由獨立 active ScheduleVersion projection 呈現，不重複顯示舊摘要', async () => {
     mockApi({
       exam: { plan: { target_date: '2099-10-02' }, subjects: [{ subject_list_id: 1, subject_name: '數學', exam_date: '2099-10-02' }],
         material: [mat({ content_item_id: 11, subject_list_id: 1, book_id: 5, book_title: '數學課本', chapter_title: '第一課', title: '1-1' })], manual_scope: [] },
@@ -88,8 +88,9 @@ describe('PlanRangeView', () => {
       },
     });
     render(<PlanRangeView plan={plan} lists={LISTS} />);
-    await waitFor(() => expect(screen.getByText('每天要做的')).toBeTruthy());
-    expect(screen.getByText('9/25')).toBeTruthy();
+    await screen.findByText('1-1');
+    expect(screen.queryByText('每天要做的')).toBeNull();
+    expect(api.mock.calls.some(([path]) => path.includes('/schedule/timeline'))).toBe(false);
   });
 
   it('沒有範圍時給「加入要考的範圍」入口', async () => {

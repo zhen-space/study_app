@@ -33,10 +33,10 @@ describe('PlanTimeline', () => {
       segments: [{ range_start: '2026-09-25', range_end: '2026-09-27', display_mode: 'range', groups: [{ subject_id: 1, subject_name: '數學', task_ids: [10] }] }],
     }));
     render(<PlanTimeline plan={plan} />);
-    await waitFor(() => expect(screen.getByText('排程摘要')).toBeTruthy());
+    await waitFor(() => expect(screen.getByText('日期安排')).toBeTruthy());
     expect(screen.getByText('9/25–9/27')).toBeTruthy();
     expect(screen.getByText('數學')).toBeTruthy();
-    expect(screen.getByText('第一章 · Ch1 閱讀')).toBeTruthy();
+    expect(screen.getByText('課本 · 第一章 · Ch1 閱讀')).toBeTruthy();
     // 展開才看每日安排
     expect(screen.queryByText(/9\/25 19:00–20:00/)).toBeNull();
     fireEvent.click(screen.getByText('展開每日安排'));
@@ -57,17 +57,18 @@ describe('PlanTimeline', () => {
     mockTimeline(range({ items: [gap], gaps: [gap] }));
     render(<PlanTimeline plan={plan} onAdjust={onAdjust} />);
     await waitFor(() => expect(screen.getByText('需要調整（排不下或期限衝突）')).toBeTruthy());
-    expect(screen.getByText('排在期限之後')).toBeTruthy();
+    expect(screen.getByText('目前安排超過期限')).toBeTruthy();
     fireEvent.click(screen.getByText('調整計畫'));
     expect(onAdjust).toHaveBeenCalled();
   });
 
   it('未排入內容另列', async () => {
-    const un = { task_id: 40, title: '還沒排的章節', display_mode: 'unscheduled', warnings: ['missing_estimate'], day_blocks: [], completion: 'not_started' };
+    const un = { task_id: 40, title: '還沒排的章節', display_mode: 'unscheduled', time_status: 'schedule_gap', warnings: ['missing_estimate', 'schedule_gap'], day_blocks: [], completion: 'not_started' };
     mockTimeline(range({ items: [un], unscheduled: [un] }));
     render(<PlanTimeline plan={plan} />);
     await waitFor(() => expect(screen.getByText(/尚未排入/)).toBeTruthy());
-    expect(screen.getByText('缺預估時間')).toBeTruthy();
+    expect(screen.getByText('尚未填預估時間')).toBeTruthy();
+    expect(screen.getByText('安排有缺口')).toBeTruthy();
   });
 
   it('空狀態提供「加入內容」與「調整計畫」', async () => {
@@ -77,5 +78,31 @@ describe('PlanTimeline', () => {
     await waitFor(() => expect(screen.getByText('這個計畫還沒有確切安排')).toBeTruthy());
     fireEvent.click(screen.getByText('加入內容'));
     expect(onAddContent).toHaveBeenCalled();
+  });
+
+  it('375px 單欄完整顯示日期狀態、手動範圍與 School Assignment', async () => {
+    Object.defineProperty(window, 'innerWidth', { configurable: true, value: 375 });
+    const manual = { task_id: 51, kind: 'manual', subject_name: '國文', title: '老師講義第三章', display_mode: 'range',
+      range_start: '2026-10-01', range_end: '2026-10-01', time_status: 'today', completion: 'not_started', warnings: [], day_blocks: [] };
+    const school = { task_id: 52, kind: 'school_assignment', subject_name: '英文', title: '英文作業', display_mode: 'deadline',
+      deadline_date: '2026-09-30', deadline_time: '20:00', time_status: 'past_due', completion: 'not_started', warnings: ['past_due'], day_blocks: [] };
+    mockTimeline(range({
+      items: [manual, school], deadlines: [school],
+      segments: [{ range_start: '2026-10-01', range_end: '2026-10-01', groups: [{ subject_name: '國文', task_ids: [51] }] }],
+    }));
+    render(<PlanTimeline plan={plan} />);
+    expect(await screen.findByText('老師指定：老師講義第三章')).toBeInTheDocument();
+    expect(screen.getByText('今天')).toBeInTheDocument();
+    expect(screen.getByText('9/30 20:00 前：英文作業')).toBeInTheDocument();
+    expect(screen.getByText('已逾期')).toBeInTheDocument();
+  });
+
+  it('API 失敗顯示 alert 並可重試，不吞錯誤', async () => {
+    api.mockRejectedValueOnce(new Error('網路暫時中斷')).mockResolvedValueOnce(range({ empty: true }));
+    render(<PlanTimeline plan={plan} />);
+    expect(await screen.findByRole('alert')).toHaveTextContent('網路暫時中斷');
+    fireEvent.click(screen.getByRole('button', { name: '重試' }));
+    expect(await screen.findByText('目前沒有可顯示的排程')).toBeInTheDocument();
+    expect(api).toHaveBeenCalledTimes(2);
   });
 });

@@ -20,11 +20,10 @@ const Mark = ({ done }) => (done
   ? <span title="已完成" style={{ color: 'var(--success, #2f855a)' }}>✓</span>
   : <span title="尚未完成" style={{ color: 'var(--muted, #a0aec0)' }}>○</span>);
 
-export default function PlanRangeView({ plan, lists = [], onAddRange, onArrange, onAdjust, onAddManual, onEditSubject, refreshKey = 0 }) {
+export default function PlanRangeView({ plan, lists = [], onAddRange, onArrange, onAddManual, onEditSubject, refreshKey = 0 }) {
   const planId = plan?.planId;
   const editable = plan?.status === 'active' || plan?.status === 'draft';
   const [exam, setExam] = useState(null);
-  const [timeline, setTimeline] = useState(null);
   const [removal, setRemoval] = useState(null);
   const [removeBusy, setRemoveBusy] = useState(false);
   const [removeCommitted, setRemoveCommitted] = useState(false);
@@ -34,13 +33,8 @@ export default function PlanRangeView({ plan, lists = [], onAddRange, onArrange,
 
   const load = useCallback(async (strict = false) => {
     if (planId == null) return;
-    const fetchOrNull = path => strict ? api(path) : api(path).catch(() => null);
-    const [ex, tl] = await Promise.all([
-      fetchOrNull(`/plans/${planId}/exam`),
-      fetchOrNull(`/schedule/timeline/${planId}`),
-    ]);
+    const ex = strict ? await api(`/plans/${planId}/exam`) : await api(`/plans/${planId}/exam`).catch(() => null);
     setExam(ex && Array.isArray(ex.subjects) ? ex : { subjects: [], material: [], manual_scope: [], plan: {} });
-    setTimeline(tl && Array.isArray(tl.segments) ? tl : null);
   }, [planId]);
   useEffect(() => { load(); }, [load, refreshKey]);
 
@@ -115,7 +109,6 @@ export default function PlanRangeView({ plan, lists = [], onAddRange, onArrange,
   const done = material.filter(r => r.material_completed).length;
   const overallEnd = exam.plan?.target_date || plan.end;
   const dl = daysLeft(overallEnd);
-  const hasDaily = !!(timeline && (timeline.segments.length || (timeline.unscheduled || []).length));
 
   // 依科目分組（科目→教材→章）＋該科手動 scope。
   const rowsBySubject = new Map();
@@ -207,7 +200,7 @@ export default function PlanRangeView({ plan, lists = [], onAddRange, onArrange,
               <Button size="sm" variant="ghost" onClick={onAddManual}>＋ 老師指定、教材庫沒有的範圍</Button>
             </div>
           )}
-          {editable && !hasDaily && onArrange && (
+          {editable && onArrange && (
             <div className="row" style={{ marginTop: 12, gap: 8 }}>
               <Button size="sm" variant="primary" onClick={onArrange}>要不要幫你排出每天要做的？</Button>
             </div>
@@ -215,15 +208,6 @@ export default function PlanRangeView({ plan, lists = [], onAddRange, onArrange,
         </SurfaceCard>
       )}
 
-      {hasDaily && (
-        <SurfaceCard style={{ marginTop: 'var(--sp-4)' }}>
-          <div className="row" style={{ alignItems: 'baseline' }}>
-            <b>每天要做的</b>
-            {editable && onAdjust && <Button size="sm" style={{ marginLeft: 'auto' }} onClick={onAdjust}>調整</Button>}
-          </div>
-          <DailyList timeline={timeline} />
-        </SurfaceCard>
-      )}
       {removal && <BottomSheet onClose={closeRemoval} label="移除教材範圍">
         {removeCommitted ? <>
           <b>教材範圍已移除</b>
@@ -247,39 +231,6 @@ export default function PlanRangeView({ plan, lists = [], onAddRange, onArrange,
         </>}
       </BottomSheet>}
       {!removal && removeError && <div role="alert" style={{ color: 'var(--danger)', marginTop: 8 }}>{removeError}</div>}
-    </div>
-  );
-}
-
-function DailyList({ timeline }) {
-  const byId = new Map((timeline.items || []).map(i => [i.task_id, i]));
-  const label = it => {
-    if (it?.material && (it.material.item_title || (it.material.path || []).length)) {
-      const leaf = (it.material.path || []).slice(-1)[0]?.title;
-      return [leaf, it.material.item_title].filter(Boolean).join(' · ') || it.title;
-    }
-    return it?.title || '';
-  };
-  return (
-    <div>
-      {timeline.segments.map((seg, si) => (
-        <div key={si} style={{ marginTop: 8 }}>
-          <div style={{ fontWeight: 600 }}>
-            {seg.range_start === seg.range_end ? md(seg.range_start) : `${md(seg.range_start)}–${md(seg.range_end)}`}
-          </div>
-          {(seg.groups || []).map((g, gi) => (
-            <div key={gi} style={{ marginLeft: 6, marginTop: 2 }}>
-              {g.subject_name && <span className="ui-meta">{g.subject_name}：</span>}
-              {(g.task_ids || []).map(id => byId.get(id)).filter(Boolean).map(it => (
-                <span key={it.task_id} style={{ marginRight: 8 }}>{label(it)}</span>
-              ))}
-            </div>
-          ))}
-        </div>
-      ))}
-      {(timeline.unscheduled || []).length > 0 && (
-        <div className="ui-meta" style={{ marginTop: 8 }}>還沒排入：{timeline.unscheduled.length} 項</div>
-      )}
     </div>
   );
 }
