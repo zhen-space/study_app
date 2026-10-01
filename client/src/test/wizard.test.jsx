@@ -523,3 +523,69 @@ describe('reconcile 對應規則', () => {
     expect(r.remove.map(x => x.id)).toEqual([2]);
   });
 });
+
+describe('確認套用的 committed recovery', () => {
+  it('375px：正式寫入後 profile 同步失敗只重試 finalize，不再建立 Plan', async () => {
+    Object.defineProperty(window, 'innerWidth', { configurable: true, value: 375 });
+    let profileCalls = 0;
+    setApi({ '/plans/99/schedule-profile': () => {
+      profileCalls += 1;
+      if (profileCalls === 1) throw new Error('條件同步失敗');
+      return { ok: true };
+    } });
+    const reload = vi.fn().mockResolvedValue();
+    const goTasks = vi.fn();
+    await mountWizard({ reload, goTasks });
+    await toResult();
+    await click(btn(/滿意，加入待辦/));
+    expect(await screen.findByRole('alert')).toHaveTextContent('安排已儲存，但後續同步暫時失敗');
+    expect(sent('/plans', 'POST')).toHaveLength(1);
+    await click(btn('重新載入並完成'));
+    await waitFor(() => expect(goTasks).toHaveBeenCalledOnce());
+    expect(sent('/plans', 'POST')).toHaveLength(1);
+  });
+
+  it('reload 失敗只重試 finalize，不再 POST schedule apply', async () => {
+    const reload = vi.fn().mockRejectedValueOnce(new Error('刷新失敗')).mockResolvedValueOnce();
+    const onDone = vi.fn();
+    setApi({ '/schedule/preview': fx.preview });
+    await mountWizard({ mode: 'edit', planId: 12, planTitle: '段考準備', planTasks: fx.planTasks, initialSection: 'cond', reload, onDone });
+    await click(btn(/產生排程/)); await flush();
+    await click(btn(/套用新版安排/));
+    expect(await screen.findByRole('alert')).toHaveTextContent('刷新失敗');
+    expect(sent('/schedule/apply', 'POST')).toHaveLength(1);
+    await click(btn('重新載入並完成'));
+    await waitFor(() => expect(onDone).toHaveBeenCalledOnce());
+    expect(sent('/schedule/apply', 'POST')).toHaveLength(1);
+  });
+
+  it('真正 apply failure 保留預覽並可重試', async () => {
+    let planWrites = 0;
+    setApi({ '/plans': () => {
+      planWrites += 1;
+      if (planWrites === 1) throw new Error('建立失敗');
+      return { id: 99 };
+    } });
+    await mountWizard();
+    await toResult();
+    await click(btn(/滿意，加入待辦/));
+    expect(await screen.findByRole('alert')).toHaveTextContent('建立失敗');
+    expect(btn(/滿意，加入待辦/)).toBeEnabled();
+    await click(btn(/滿意，加入待辦/));
+    await waitFor(() => expect(sent('/plans', 'POST')).toHaveLength(2));
+  });
+
+  it('同步 ref guard 阻止快速重入建立兩個 Plan', async () => {
+    let submit;
+    let nested = false;
+    setApi({ '/plans': () => {
+      if (!nested) { nested = true; const key = Object.keys(submit).find(k => k.startsWith('__reactProps$')); submit[key].onClick(); }
+      return { id: 99 };
+    } });
+    await mountWizard();
+    await toResult();
+    submit = btn(/滿意，加入待辦/);
+    await click(submit);
+    await waitFor(() => expect(sent('/plans', 'POST')).toHaveLength(1));
+  });
+});

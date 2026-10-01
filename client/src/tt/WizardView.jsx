@@ -97,6 +97,8 @@ export default function WizardView({
   const [planNameInput, setPlanNameInput] = useState('');  // 這份計畫要叫什麼（確認步驟）
   const [err, setErr] = useState('');
   const [saving, setSaving] = useState(false);
+  const [committed, setCommitted] = useState(null);
+  const confirmBusy = useRef(false);
   const [importMsg, setImportMsg] = useState('');
   const [aiPreview, setAiPreview] = useState(null);   // 統整後的匯入預覽群組（.ics 等有日期的來源）
   const [aiBusy, setAiBusy] = useState(false);
@@ -425,44 +427,59 @@ export default function WizardView({
     return m;
   }, [materialItems]);
 
-  async function confirm() {
-    setSaving(true);
+  async function finalize(r) {
     try {
-      const r = await applyWizardSchedule({
+      await persistConfirmedConditions(r.planId, conditions);
+      localStorage.removeItem(draftKey);
+      await reload();
+      if (isEdit) await onDone?.();
+      else await goTasks?.();
+    } catch (e) {
+      setErr(e.message || '重新載入失敗');
+      setSaving(false);
+      confirmBusy.current = false;
+    }
+  }
+
+  async function retryFinalize() {
+    if (confirmBusy.current || !committed) return;
+    confirmBusy.current = true;
+    setSaving(true); setErr('');
+    await finalize(committed);
+  }
+
+  async function confirm() {
+    if (confirmBusy.current || committed) return;
+    confirmBusy.current = true;
+    setSaving(true); setErr('');
+    let r;
+    try {
+      r = await applyWizardSchedule({
         mode: isEdit ? 'edit' : 'create',
         planId,
         name: planNameInput.trim() || planName(
           preview.blocks.map(b => ({ title: b.title, list_id: b.subject_id, due_date: b.date })), lists),
         blocks: preview.blocks,
-        // 這一批 Material 選取產生的 block 對應到哪個 ContentItem。
-        // key 是本次 session 自己生成的（科目＋標題），不是拿去猜 legacy 身分的全域比對。
         materialByBlock: materialBlockMap,
         existingTasks: livePlanTasks,
-        // 舊任務只有同時滿足這三件事才會被軟刪除：
-        //   ① 這次真的被帶進排程（merged）
-        //   ② 內容確實出現在最後的排程結果裡（沒排進去的不能刪）
-        //   ③ plan_id == null（正式 Plan 的任務一律不碰，apply layer 還會再擋一次）
         legacyMerged: isEdit ? [] : mergedLeftover.filter(t =>
           preview.blocks.some(b => b.title === t.title && String(b.subject_id) === String(t.list_id))),
-        // 使用者選「維持原本日期不動」時，這次沒排到的任務原封不動留著
         removeUnscheduled: redoUndone,
       });
-      // Create Mode：Plan 這時候才存在，把草稿選取寫成正式的 Plan selection。
-      // （Edit Mode 的每一次點擊本來就已經寫進後端了，不需要再送一次）
-      if (!isEdit && matIds.size) {
-        try { await selectItems(r.planId, [...matIds], true); } catch { /* 排程已成立，選取失敗不回滾 */ }
-      }
-      setApplied(r);
-      // 先把這次真正用的排法記下來，之後 Today 的 AI 重排才有得依循。
-      // 順序很重要：草稿是「操作到一半」，套用成功後就沒有意義了，
-      // 但條件必須活得比草稿久——所以一定是先存快照、再清草稿。
-      await persistConfirmedConditions(r.planId, conditions);
-      localStorage.removeItem(draftKey);
-    } catch (e) { setSaving(false); setErr(e.message); return; }
-    setSaving(false);
-    await reload();
-    if (isEdit) onDone?.();
-    else goTasks();
+    } catch (e) {
+      setSaving(false);
+      confirmBusy.current = false;
+      setErr(e.message);
+      return;
+    }
+
+    // 排程已正式寫入；之後任何 projection/finalize 失敗都不能再次 apply。
+    setCommitted(r);
+    setApplied(r);
+    if (!isEdit && matIds.size) {
+      try { await selectItems(r.planId, [...matIds], true); } catch { /* 排程已成立，選取失敗不回滾 */ }
+    }
+    await finalize(r);
   }
   const dateInput = (k, label) => {
     const o = dMap[k] || {};
@@ -975,15 +992,24 @@ export default function WizardView({
                 這只是預覽，按下「套用新版安排」之前，原本的計畫不會有任何改變
               </div>
             )}
-            {err && <div className="error" style={{ marginTop: 8 }}>{err}</div>}
-            <div className="row" style={{ marginTop: 14 }}>
-              <button className="btn ghost" onClick={() => setStep(1)}>不滿意，重新調整</button>
-              <button className="btn" disabled={saving} onClick={confirm}>
-                {saving ? (isEdit ? '套用中…' : '建立中…')
-                  : isEdit ? `套用新版安排（${preview.blocks.length} ${timed ? '段' : '項'}）`
-                    : `滿意，加入待辦（${preview.blocks.length} ${timed ? '段' : '項'}）！`}
-              </button>
-            </div>
+            {committed ? (
+              <div style={{ marginTop: 14 }}>
+                <b>{isEdit ? '新版安排已套用' : '讀書計畫已建立'}</b>
+                <div className="muted" style={{ marginTop: 6 }}>正式安排已儲存，請勿再次套用。你可以只重試完成同步與重新載入。</div>
+                {err && <div className="error" role="alert" style={{ marginTop: 8 }}>安排已儲存，但後續同步暫時失敗。{err}</div>}
+                {err && <button className="btn" disabled={saving} onClick={retryFinalize} style={{ marginTop: 10 }}>{saving ? '完成中…' : '重新載入並完成'}</button>}
+              </div>
+            ) : <>
+              {err && <div className="error" role="alert" style={{ marginTop: 8 }}>{err}</div>}
+              <div className="row" style={{ marginTop: 14 }}>
+                <button className="btn ghost" disabled={saving} onClick={() => setStep(1)}>不滿意，重新調整</button>
+                <button className="btn" disabled={saving} onClick={confirm}>
+                  {saving ? (isEdit ? '套用中…' : '建立中…')
+                    : isEdit ? `套用新版安排（${preview.blocks.length} ${timed ? '段' : '項'}）`
+                      : `滿意，加入待辦（${preview.blocks.length} ${timed ? '段' : '項'}）！`}
+                </button>
+              </div>
+            </>}
             {applied && (
               <div className="muted" style={{ marginTop: 8, fontSize: 12 }}>
                 已套用：保留 {applied.updated} 項、新增 {applied.created} 項
