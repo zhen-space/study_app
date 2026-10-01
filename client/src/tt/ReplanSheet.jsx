@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { api } from '../api';
 import Icon from './Icons';
 import { today, addDays } from './helpers';
@@ -27,6 +27,8 @@ export default function ReplanSheet({ plan, health, raw, lists = [], reload, onC
   const [preview, setPreview] = useState(null);
   const [err, setErr] = useState('');
   const [profile, setProfile] = useState(null);
+  const applyBusy = useRef(false);
+  const [applied, setApplied] = useState(false);
   useEffect(() => { if (plan.planId != null) api(`/plans/${plan.planId}/schedule-profile`).then(setProfile).catch(() => {}); }, [plan.planId]);
 
   // 重排的對象：這個計畫底下還沒完成的任務。完成的連讀都不讀進來。
@@ -74,6 +76,8 @@ export default function ReplanSheet({ plan, health, raw, lists = [], reload, onC
   }
 
   async function apply() {
+    if (applyBusy.current || applied) return;
+    applyBusy.current = true;
     setStage('saving'); setErr('');
     try {
       await applyWizardSchedule({
@@ -86,24 +90,70 @@ export default function ReplanSheet({ plan, health, raw, lists = [], reload, onC
         // 也不動使用者自己設的起訖日與名稱
         updatePlanDates: false,
       });
-    } catch (e) { setErr(e.message); setStage('preview'); return; }
-    await reload();
-    onClose();
+    } catch (e) {
+      setErr(e.message); setStage('preview'); applyBusy.current = false; return;
+    }
+    // 寫入成功後就不能再送一次。父層刷新失敗是讀取恢復問題，不是套用失敗。
+    setApplied(true);
+    setStage('applied');
+    try {
+      await reload();
+      onClose();
+    } catch (e) {
+      setErr(e.message || '重新載入失敗');
+    } finally {
+      applyBusy.current = false;
+    }
+  }
+
+  async function retryRefresh() {
+    if (applyBusy.current) return;
+    applyBusy.current = true;
+    setStage('saving'); setErr('');
+    try {
+      await reload();
+      onClose();
+    } catch (e) {
+      setErr(e.message || '重新載入失敗');
+      setStage('applied');
+    } finally {
+      applyBusy.current = false;
+    }
   }
 
   const Head = ({ title }) => (
     <div className="row">
       <b>{title}</b>
-      <button className="icon-btn" style={{ marginLeft: 'auto' }} aria-label="關閉" onClick={onClose}>
+      <button className="icon-btn" style={{ marginLeft: 'auto' }} aria-label="關閉"
+        disabled={stage === 'saving'} onClick={stage === 'saving' ? undefined : onClose}>
         <Icon name="x" size={14} />
       </button>
     </div>
   );
 
   return (
-    <BottomSheet onClose={onClose}>
+    <BottomSheet onClose={stage === 'saving' ? undefined : onClose}>
       <>
-        {stage === 'confirm' || stage === 'loading' ? (
+        {applied ? (
+          <>
+            <Head title="新版安排已套用" />
+            <SurfaceCard tone="accent" style={{ marginTop: 'var(--sp-3)' }}>
+              <b>安排已安全儲存</b>
+              <div className="ui-meta" style={{ marginTop: 4 }}>
+                {stage === 'saving' ? '正在重新載入最新安排…' : '畫面尚未更新，請勿再次套用。你可以只重試載入最新資料。'}
+              </div>
+            </SurfaceCard>
+            {err && <div className="error" role="alert" style={{ marginTop: 10 }}>
+              新版安排已套用，但畫面暫時無法更新。{err}
+            </div>}
+            <div className="row" style={{ marginTop: 14 }}>
+              <Button variant="secondary" disabled={stage === 'saving'} onClick={onClose}>先關閉</Button>
+              <Button variant="primary" style={{ marginLeft: 'auto' }} disabled={stage === 'saving'} onClick={retryRefresh}>
+                {stage === 'saving' ? '載入中…' : '重新載入'}
+              </Button>
+            </div>
+          </>
+        ) : stage === 'confirm' || stage === 'loading' ? (
           <>
             <Head title={`重新安排「${plan.name}」`} />
             <div className="sheet-sec" style={{ marginTop: 10 }}>原因</div>
