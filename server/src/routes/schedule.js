@@ -1755,6 +1755,14 @@ export async function getPlanTimeline(userId, planId) {
         WHERE user_id=? AND plan_id=? AND COALESCE(deleted,0)=0 AND COALESCE(cancelled,0)=0`,
       [userId, planId]);
 
+    // 手動範圍在 daily/timed 模式會綁定正式 Task；保留同一 Task domain，
+    // 只在 projection 標出來源，讓日期安排能顯示「老師指定」而不另建狀態。
+    const manualRows = await q.all(
+      `SELECT task_id,label FROM plan_manual_scope
+        WHERE user_id=? AND plan_id=? AND removed_at IS NULL AND task_id IS NOT NULL`,
+      [userId, planId]);
+    const manualByTaskId = new Map(manualRows.map(r => [Number(r.task_id), r.label]));
+
     // active 版本裡屬於本計畫、未刪未完未取消 task 的 block（現役計畫才有意義）。
     const blocks = ['draft', 'active'].includes(plan.status) && activeVersionId != null
       ? await q.all(
@@ -1825,7 +1833,7 @@ export async function getPlanTimeline(userId, planId) {
 
     return { status: 200, body: buildPlanTimeline({
       plan, activeVersionId, tasks, blocks,
-      subjectsById, materialById, lockedTaskIds, sessionTaskIds, today: todayTW(),
+      subjectsById, materialById, manualByTaskId, lockedTaskIds, sessionTaskIds, today: todayTW(),
     }) };
   }
 }

@@ -16,9 +16,24 @@ const dueLabel = it => (it.deadline_time ? `${md(it.deadline_date)} ${it.deadlin
 function itemTitle(it) {
   if (it.material && (it.material.item_title || (it.material.path || []).length)) {
     const leaf = (it.material.path || []).slice(-1)[0]?.title;
-    return [leaf, it.material.item_title].filter(Boolean).join(' · ') || it.title;
+    return [it.material.book_title, leaf, it.material.item_title].filter(Boolean).join(' · ') || it.title;
   }
-  return it.title;
+  return it.kind === 'manual' ? `老師指定：${it.title}` : it.title;
+}
+
+const STATUS_LABEL = {
+  today: '今天', past_due: '已逾期', upcoming: '接下來', schedule_gap: '安排有缺口',
+};
+const REASON_LABEL = {
+  missing_estimate: '尚未填預估時間',
+  schedule_gap: '尚未排入目前生效的日期安排',
+  deadline_violation: '目前安排超過期限',
+};
+
+function StatusLabel({ status }) {
+  if (!STATUS_LABEL[status]) return null;
+  const warning = status === 'past_due' || status === 'schedule_gap';
+  return <span className="ui-meta" style={{ color: warning ? 'var(--warning, #b7791f)' : undefined }}>{STATUS_LABEL[status]}</span>;
 }
 
 function CompletionDot({ completion }) {
@@ -33,8 +48,8 @@ function ItemLine({ it, expanded }) {
       <div className="row" style={{ gap: 6, alignItems: 'baseline' }}>
         <CompletionDot completion={it.completion} />
         <span style={{ textDecoration: it.completion === 'completed' ? 'line-through' : 'none' }}>{itemTitle(it)}</span>
+        <StatusLabel status={it.time_status} />
         {it.locked && <span className="ui-meta" title="已鎖定">🔒</span>}
-        {it.warnings?.includes('past_due') && <span className="ui-meta" style={{ color: 'var(--warning, #b7791f)' }}>已過期限</span>}
       </div>
       {expanded && it.day_blocks?.length > 0 && (
         <div className="ui-meta" style={{ marginLeft: 18, marginTop: 2 }}>
@@ -50,22 +65,34 @@ function ItemLine({ it, expanded }) {
   );
 }
 
-export default function PlanTimeline({ plan, onAddContent, onAdjust }) {
+export default function PlanTimeline({ plan, onAddContent, onAdjust, refreshKey = 0 }) {
   const planId = plan?.planId;
-  const [state, setState] = useState({ loading: true, data: null });
+  const [state, setState] = useState({ loading: true, data: null, error: '' });
   const [expanded, setExpanded] = useState(false);
 
   const load = useCallback(async () => {
-    if (planId == null) { setState({ loading: false, data: null }); return; }
+    void refreshKey;
+    if (planId == null) { setState({ loading: false, data: null, error: '' }); return; }
+    setState(s => ({ ...s, loading: true, error: '' }));
     try {
       const d = await api(`/schedule/timeline/${planId}`);
-      // 只認得出 timeline 形狀（有 segments 陣列）才顯示；否則不擋畫面、不顯示。
-      setState({ loading: false, data: d && Array.isArray(d.segments) ? d : null });
-    } catch { setState({ loading: false, data: null }); }
-  }, [planId]);
+      if (!d || !Array.isArray(d.segments)) throw new Error('日期安排資料格式不正確');
+      setState({ loading: false, data: d, error: '' });
+    } catch (e) {
+      setState(s => ({ loading: false, data: s.data, error: e.message || '無法載入日期安排' }));
+    }
+  }, [planId, refreshKey]);
   useEffect(() => { load(); }, [load]);
 
-  if (state.loading || !state.data) return null;
+  if (state.loading && !state.data) return <div className="ui-meta" style={{ marginTop: 'var(--sp-5)' }}>正在載入日期安排…</div>;
+  if (state.error && !state.data) return (
+    <SurfaceCard style={{ marginTop: 'var(--sp-5)' }}>
+      <b>日期安排</b>
+      <div role="alert" style={{ color: 'var(--danger)', marginTop: 8 }}>{state.error}</div>
+      <Button size="sm" style={{ marginTop: 10 }} onClick={load}>重試</Button>
+    </SurfaceCard>
+  );
+  if (!state.data) return null;
   const t = {
     segments: [], deadlines: [], gaps: [], unscheduled: [], items: [],
     no_active_schedule: false, ...state.data,
@@ -77,7 +104,7 @@ export default function PlanTimeline({ plan, onAddContent, onAdjust }) {
   if (!hasAnything) {
     return (
       <SurfaceCard style={{ marginTop: 'var(--sp-5)' }}>
-        <b>排程摘要</b>
+        <b>日期安排</b>
         <div style={{ marginTop: 8 }}>
           <EmptyState
             title={t.no_active_schedule ? '這個計畫還沒有確切安排' : '目前沒有可顯示的排程'}
@@ -94,13 +121,14 @@ export default function PlanTimeline({ plan, onAddContent, onAdjust }) {
 
   return (
     <SurfaceCard style={{ marginTop: 'var(--sp-5)' }}>
-      <div className="row" style={{ alignItems: 'baseline' }}>
-        <b>排程摘要</b>
-        <span className="ui-meta">已排定的每日安排（確切安排）</span>
+      <div className="row" style={{ alignItems: 'baseline', flexWrap: 'wrap', gap: 8 }}>
+        <b>日期安排</b>
+        <span className="ui-meta">目前生效的確切安排</span>
         <Button size="sm" style={{ marginLeft: 'auto' }} onClick={() => setExpanded(v => !v)}>
           {expanded ? '收合每日安排' : '展開每日安排'}
         </Button>
       </div>
+      {state.error && <div role="alert" style={{ color: 'var(--danger)', marginTop: 8 }}>{state.error} <Button size="sm" onClick={load}>重試</Button></div>}
 
       {/* 日期區間 → 應完成內容（同區間按科目分組）。 */}
       {t.segments.map((seg, si) => (
@@ -126,6 +154,7 @@ export default function PlanTimeline({ plan, onAddContent, onAdjust }) {
               <CompletionDot completion={it.completion} />
               <span>{dueLabel(it)}：{itemTitle(it)}</span>
               {it.subject_name && <span className="ui-meta">{it.subject_name}</span>}
+              <StatusLabel status={it.time_status} />
             </div>
           ))}
         </div>
@@ -139,7 +168,8 @@ export default function PlanTimeline({ plan, onAddContent, onAdjust }) {
             <div key={it.task_id} className="row" style={{ gap: 6, marginTop: 4, alignItems: 'baseline' }}>
               <span aria-hidden="true">⚠️</span>
               <span>{itemTitle(it)}</span>
-              {it.warnings?.includes('deadline_violation') && <span className="ui-meta">排在期限之後</span>}
+              <StatusLabel status="schedule_gap" />
+              {it.warnings?.includes('deadline_violation') && <span className="ui-meta">{REASON_LABEL.deadline_violation}</span>}
             </div>
           ))}
           {onAdjust && <Button size="sm" style={{ marginTop: 8 }} onClick={onAdjust}>調整計畫</Button>}
@@ -154,7 +184,10 @@ export default function PlanTimeline({ plan, onAddContent, onAdjust }) {
             <div key={it.task_id} className="row" style={{ gap: 6, marginTop: 4, alignItems: 'baseline' }}>
               <span className="ui-meta">•</span>
               <span>{itemTitle(it)}</span>
-              {it.warnings?.includes('missing_estimate') && <span className="ui-meta" style={{ color: 'var(--warning, #b7791f)' }}>缺預估時間</span>}
+              <StatusLabel status={it.time_status || 'schedule_gap'} />
+              <span className="ui-meta" style={{ color: 'var(--warning, #b7791f)' }}>
+                {it.warnings?.map(w => REASON_LABEL[w]).filter(Boolean)[0] || REASON_LABEL.schedule_gap}
+              </span>
             </div>
           ))}
           {onAdjust && <Button size="sm" style={{ marginTop: 8 }} onClick={onAdjust}>安排這些內容</Button>}

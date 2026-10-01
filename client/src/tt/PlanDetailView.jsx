@@ -13,6 +13,7 @@ import ExplainSheet from './ExplainSheet';
 import RollingExamSchedule from './RollingExamSchedule';
 import PlanContentPicker from './PlanContentPicker';
 import PlanRangeView from './PlanRangeView';
+import PlanTimeline from './PlanTimeline';
 import { Button, IconButton, PageHeader, SurfaceCard, ProgressBar, ListRow, BottomSheet, EmptyState } from './ui';
 
 // 單一計畫的內容。
@@ -447,7 +448,6 @@ export default function PlanDetailView({ planKey, tasks, lists, apiPlans = [], r
             onAddRange={plan.status === 'active' ? () => setSheet('addContent') : undefined}
             onArrange={plan.status === 'active' ? () => setSheet('arrange') : undefined}
             onAddManual={plan.status === 'active' ? () => setSheet('add') : undefined}
-            onAdjust={plan.status === 'active' ? () => setShowRolling(true) : undefined}
             onEditSubject={plan.status === 'active' ? s => { setEditSubject({ ...s }); setSheet('editSubjectDate'); } : undefined}
           />
         ) : (
@@ -461,6 +461,14 @@ export default function PlanDetailView({ planKey, tasks, lists, apiPlans = [], r
               <ProgressBar value={plan.done} max={plan.total} label={`${plan.name}：${plan.total} 項中已完成 ${plan.done} 項`} />
             </div>
           </div>
+        )}
+        {isReal && (
+          <PlanTimeline
+            plan={plan}
+            refreshKey={examRefreshKey}
+            onAddContent={plan.status === 'active' ? () => setSheet('addContent') : undefined}
+            onAdjust={plan.status === 'active' ? () => setShowRolling(true) : undefined}
+          />
         )}
         {isReal && goScheduleHistory && (
           <div className="row" style={{ marginTop: 'var(--sp-3)' }}>

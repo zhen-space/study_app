@@ -629,14 +629,20 @@ describe('Plan Detail', () => {
   });
 
   it('active 段考可修改單科考試日，取消不送 mutation', async () => {
+    const timelineItem = { task_id: 991, title: '日期安排內容', kind: 'standard', subject_name: '數學',
+      display_mode: 'range', range_start: fx.TODAY, range_end: fx.TODAY, time_status: 'today',
+      completion: 'not_started', warnings: [], day_blocks: [] };
     setApi({
       '/plans': [PLAN], '/tasks': TASKS,
       '/plans/70/exam': { plan: PLAN, subjects: [{ subject_list_id: 1, subject_name: '數學', exam_date: fx.TODAY }], material: [], manual_scope: [] },
-      '/schedule/timeline/70': { segments: [], unscheduled: [] },
+      '/schedule/timeline/70': { items: [timelineItem], deadlines: [], gaps: [], unscheduled: [],
+        segments: [{ range_start: fx.TODAY, range_end: fx.TODAY, groups: [{ subject_name: '數學', task_ids: [991] }] }] },
     });
     render(<PlanDetailView planKey="plan:70" tasks={TASKS} lists={fx.lists} apiPlans={[PLAN]}
       reload={() => {}} onBack={() => {}} goWizard={() => {}} adjustPlan={() => {}} />);
     await waitFor(() => expect(screen.getByText('考試科目與日期')).toBeTruthy());
+    expect(screen.getByText('日期安排')).toBeTruthy();
+    expect(screen.getByText('日期安排內容')).toBeTruthy();
     fireEvent.click(screen.getByRole('button', { name: '修改日期' }));
     expect(screen.getByLabelText('考試日期')).toHaveValue(fx.TODAY);
     fireEvent.click(screen.getByRole('button', { name: '取消' }));
