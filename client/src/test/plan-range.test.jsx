@@ -174,6 +174,58 @@ describe('教材範圍移除恢復', () => {
     expect(api.mock.calls.filter(([p]) => p.endsWith('/apply'))).toHaveLength(1);
   });
 
+  it('成功移除並載入後可立即預覽另一個範圍', async () => {
+    const secondExam = { ...exam, material: [
+      ...exam.material,
+      mat({ content_item_id: 12, subject_list_id: 1, book_id: 5, book_title: '課本', chapter_title: '第一章', title: '第二課' }),
+    ] };
+    const refreshedExam = { ...secondExam, material: secondExam.material.filter(row => row.content_item_id === 12) };
+    let applied = false;
+    api.mockImplementation((path = '', options) => {
+      if (path.includes('/exam')) return Promise.resolve(applied ? refreshedExam : secondExam);
+      if (path.includes('/timeline')) return Promise.resolve({ segments: [], items: [], unscheduled: [] });
+      if (path.endsWith('/preview')) {
+        const id = options.body.content_item_id;
+        return Promise.resolve({ ...preview, content_item_id: id, title: id === 11 ? '第一課' : '第二課', token: `signed-${id}` });
+      }
+      if (path.endsWith('/apply')) { applied = true; return Promise.resolve({ version_id: 8 }); }
+      return Promise.resolve({});
+    });
+    render(<PlanRangeView plan={plan} lists={LISTS} />);
+    const removeButtons = await screen.findAllByRole('button', { name: '移除' });
+    fireEvent.click(removeButtons[0]);
+    fireEvent.click(await screen.findByRole('button', { name: '確認移除' }));
+    await waitFor(() => expect(screen.queryByRole('dialog', { name: '移除教材範圍' })).toBeNull());
+
+    fireEvent.click(screen.getByRole('button', { name: '移除' }));
+    expect(await screen.findByText('要移除「第二課」嗎？')).toBeInTheDocument();
+    expect(api).toHaveBeenCalledWith('/schedule/material-scope/remove/preview', expect.objectContaining({
+      body: { plan_id: 1, content_item_id: 12 },
+    }));
+  });
+
+  it('同步 ref guard 阻止快速重入 preview', async () => {
+    let removeButton; let nested = false;
+    api.mockImplementation((path = '') => {
+      if (path.includes('/exam')) return Promise.resolve(exam);
+      if (path.includes('/timeline')) return Promise.resolve({ segments: [], items: [], unscheduled: [] });
+      if (path.endsWith('/preview')) {
+        if (!nested) {
+          nested = true;
+          const key = Object.keys(removeButton).find(k => k.startsWith('__reactProps'));
+          removeButton[key].onClick();
+        }
+        return Promise.resolve(preview);
+      }
+      return Promise.resolve({});
+    });
+    render(<PlanRangeView plan={plan} lists={LISTS} />);
+    removeButton = await screen.findByRole('button', { name: '移除' });
+    fireEvent.click(removeButton);
+    await screen.findByText('要移除「第一課」嗎？');
+    expect(api.mock.calls.filter(([path]) => path.endsWith('/preview'))).toHaveLength(1);
+  });
+
   it('stale apply 關閉舊 preview 並要求重新預覽', async () => {
     api.mockImplementation((path = '') => {
       if (path.includes('/exam')) return Promise.resolve(exam);

@@ -28,6 +28,7 @@ export default function PlanRangeView({ plan, lists = [], onAddRange, onArrange,
   const [removal, setRemoval] = useState(null);
   const [removeBusy, setRemoveBusy] = useState(false);
   const [removeCommitted, setRemoveCommitted] = useState(false);
+  const previewBusyRef = useRef(false);
   const removeBusyRef = useRef(false);
   const [removeError, setRemoveError] = useState('');
 
@@ -44,13 +45,15 @@ export default function PlanRangeView({ plan, lists = [], onAddRange, onArrange,
   useEffect(() => { load(); }, [load, refreshKey]);
 
   async function previewRemoval(row) {
-    if (removeBusy) return;
+    if (previewBusyRef.current || removeBusyRef.current) return;
+    previewBusyRef.current = true;
     setRemoveBusy(true); setRemoveError(''); setRemoveCommitted(false);
     try {
       setRemoval(await api('/schedule/material-scope/remove/preview', {
         method: 'POST', body: { plan_id: planId, content_item_id: row.content_item_id },
       }));
     } catch (e) { setRemoveError(e.message); }
+    previewBusyRef.current = false;
     setRemoveBusy(false);
   }
 
@@ -60,6 +63,8 @@ export default function PlanRangeView({ plan, lists = [], onAddRange, onArrange,
       setRemoval(null);
       setRemoveCommitted(false);
       setRemoveError('');
+      setRemoveBusy(false);
+      removeBusyRef.current = false;
     } catch (e) {
       setRemoveError(e.message || '重新載入失敗');
       setRemoveBusy(false);
@@ -75,7 +80,7 @@ export default function PlanRangeView({ plan, lists = [], onAddRange, onArrange,
   }
 
   function closeRemoval() {
-    if (removeBusyRef.current) return;
+    if (previewBusyRef.current || removeBusyRef.current) return;
     setRemoval(null); setRemoveError(''); setRemoveCommitted(false);
   }
 
