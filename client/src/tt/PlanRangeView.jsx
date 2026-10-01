@@ -1,4 +1,4 @@
-import { useEffect, useState, useCallback } from 'react';
+import { useEffect, useState, useCallback, useRef } from 'react';
 import { api } from '../api';
 import { md } from './plans';
 import { today } from './helpers';
@@ -27,13 +27,16 @@ export default function PlanRangeView({ plan, lists = [], onAddRange, onArrange,
   const [timeline, setTimeline] = useState(null);
   const [removal, setRemoval] = useState(null);
   const [removeBusy, setRemoveBusy] = useState(false);
+  const [removeCommitted, setRemoveCommitted] = useState(false);
+  const removeBusyRef = useRef(false);
   const [removeError, setRemoveError] = useState('');
 
-  const load = useCallback(async () => {
+  const load = useCallback(async (strict = false) => {
     if (planId == null) return;
+    const fetchOrNull = path => strict ? api(path) : api(path).catch(() => null);
     const [ex, tl] = await Promise.all([
-      api(`/plans/${planId}/exam`).catch(() => null),
-      api(`/schedule/timeline/${planId}`).catch(() => null),
+      fetchOrNull(`/plans/${planId}/exam`),
+      fetchOrNull(`/schedule/timeline/${planId}`),
     ]);
     setExam(ex && Array.isArray(ex.subjects) ? ex : { subjects: [], material: [], manual_scope: [], plan: {} });
     setTimeline(tl && Array.isArray(tl.segments) ? tl : null);
@@ -41,7 +44,8 @@ export default function PlanRangeView({ plan, lists = [], onAddRange, onArrange,
   useEffect(() => { load(); }, [load, refreshKey]);
 
   async function previewRemoval(row) {
-    setRemoveBusy(true); setRemoveError('');
+    if (removeBusy) return;
+    setRemoveBusy(true); setRemoveError(''); setRemoveCommitted(false);
     try {
       setRemoval(await api('/schedule/material-scope/remove/preview', {
         method: 'POST', body: { plan_id: planId, content_item_id: row.content_item_id },
@@ -50,17 +54,51 @@ export default function PlanRangeView({ plan, lists = [], onAddRange, onArrange,
     setRemoveBusy(false);
   }
 
+  async function finishRemoval() {
+    try {
+      await load(true);
+      setRemoval(null);
+      setRemoveCommitted(false);
+      setRemoveError('');
+    } catch (e) {
+      setRemoveError(e.message || '重新載入失敗');
+      setRemoveBusy(false);
+      removeBusyRef.current = false;
+    }
+  }
+
+  async function retryRemovalLoad() {
+    if (removeBusyRef.current || !removeCommitted) return;
+    removeBusyRef.current = true;
+    setRemoveBusy(true); setRemoveError('');
+    await finishRemoval();
+  }
+
+  function closeRemoval() {
+    if (removeBusyRef.current) return;
+    setRemoval(null); setRemoveError(''); setRemoveCommitted(false);
+  }
+
   async function confirmRemoval() {
-    if (!removal) return;
+    if (!removal || removeBusyRef.current || removeCommitted) return;
+    removeBusyRef.current = true;
     setRemoveBusy(true); setRemoveError('');
     try {
       await api('/schedule/material-scope/remove/apply', { method: 'POST', body: {
         plan_id: planId, content_item_id: removal.content_item_id,
         base_version_id: removal.base_version_id, token: removal.token,
       } });
-      setRemoval(null); await load();
-    } catch (e) { setRemoveError(e.message); }
-    setRemoveBusy(false);
+    } catch (e) {
+      if (e.status === 409 || e.payload?.code === 'STALE_SCHEDULE_PREVIEW') {
+        setRemoval(null);
+        setRemoveError('排程或範圍已更新，請重新點「移除」取得最新預覽。');
+      } else setRemoveError(e.message);
+      setRemoveBusy(false);
+      removeBusyRef.current = false;
+      return;
+    }
+    setRemoveCommitted(true);
+    await finishRemoval();
   }
 
   if (planId == null || exam == null) return null;
@@ -181,19 +219,27 @@ export default function PlanRangeView({ plan, lists = [], onAddRange, onArrange,
           <DailyList timeline={timeline} />
         </SurfaceCard>
       )}
-      {removal && <BottomSheet onClose={() => { if (!removeBusy) { setRemoval(null); setRemoveError(''); } }} label="移除教材範圍">
-        <b>要移除「{removal.title}」嗎？</b>
-        <div className="ui-meta" style={{ marginTop: 8 }}>
-          這只會取消本次段考的選取{removal.will_cancel_task ? '與尚未完成的連結任務' : ''}；完成紀錄、讀書紀錄與歷史排程都會保留。
-          {removal.removed_block_count > 0 && ` 目前排程中的 ${removal.removed_block_count} 個安排會移出，確認後建立新版排程。`}
-        </div>
-        {removeError && <div role="alert" style={{ color: 'var(--danger)', marginTop: 8 }}>{removeError}</div>}
-        <div className="row" style={{ marginTop: 16, gap: 8 }}>
-          <Button disabled={removeBusy} onClick={() => { setRemoval(null); setRemoveError(''); }}>取消</Button>
-          <Button variant="primary" disabled={removeBusy} style={{ marginLeft: 'auto' }} onClick={confirmRemoval}>
-            {removeBusy ? '處理中…' : '確認移除'}
-          </Button>
-        </div>
+      {removal && <BottomSheet onClose={closeRemoval} label="移除教材範圍">
+        {removeCommitted ? <>
+          <b>教材範圍已移除</b>
+          <div className="ui-meta" style={{ marginTop: 8 }}>變更已正式儲存，請勿再次移除。你可以只重試載入最新範圍。</div>
+          {removeError && <div role="alert" style={{ color: 'var(--danger)', marginTop: 8 }}>範圍已移除，但畫面暫時無法更新。{removeError}</div>}
+          <div className="row" style={{ marginTop: 16, gap: 8 }}>
+            <Button disabled={removeBusy} onClick={closeRemoval}>先關閉</Button>
+            <Button variant="primary" disabled={removeBusy} style={{ marginLeft: 'auto' }} onClick={retryRemovalLoad}>{removeBusy ? '載入中…' : '重新載入'}</Button>
+          </div>
+        </> : <>
+          <b>要移除「{removal.title}」嗎？</b>
+          <div className="ui-meta" style={{ marginTop: 8 }}>
+            這只會取消本次段考的選取{removal.will_cancel_task ? '與尚未完成的連結任務' : ''}；完成紀錄、讀書紀錄與歷史排程都會保留。
+            {removal.removed_block_count > 0 && ` 目前排程中的 ${removal.removed_block_count} 個安排會移出，確認後建立新版排程。`}
+          </div>
+          {removeError && <div role="alert" style={{ color: 'var(--danger)', marginTop: 8 }}>{removeError}</div>}
+          <div className="row" style={{ marginTop: 16, gap: 8 }}>
+            <Button disabled={removeBusy} onClick={closeRemoval}>取消</Button>
+            <Button variant="primary" disabled={removeBusy} style={{ marginLeft: 'auto' }} onClick={confirmRemoval}>{removeBusy ? '處理中…' : '確認移除'}</Button>
+          </div>
+        </>}
       </BottomSheet>}
       {!removal && removeError && <div role="alert" style={{ color: 'var(--danger)', marginTop: 8 }}>{removeError}</div>}
     </div>
