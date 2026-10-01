@@ -1,4 +1,4 @@
-import { useEffect, useState, useCallback } from 'react';
+import { useEffect, useState, useCallback, useRef } from 'react';
 import { api } from '../api';
 import { BottomSheet, Button } from './ui';
 import { fetchExternalBusy } from './calendarBusy';
@@ -19,6 +19,8 @@ export default function RollingExamSchedule({
   const [preview, setPreview] = useState(null);
   const [loading, setLoading] = useState(false);
   const [applying, setApplying] = useState(false);
+  const [committed, setCommitted] = useState(null);
+  const applyBusy = useRef(false);
   const [error, setError] = useState('');
   const [picking, setPicking] = useState(false);      // SELECT_MOVABLE_BLOCKS 選取中
   const [movable, setMovable] = useState([]);          // 使用者勾選可移動的 frozen block id
@@ -59,12 +61,12 @@ export default function RollingExamSchedule({
   };
 
   const confirmApply = async () => {
-    if (!canConfirm(preview)) return;
+    if (applyBusy.current || committed || !canConfirm(preview)) return;
+    applyBusy.current = true;
     setApplying(true); setError('');
+    let saved;
     try {
-      await api('/schedule/rolling/apply', { method: 'POST', body: applyPayload(preview) });
-      await onApplied?.();
-      onClose?.();
+      saved = await api('/schedule/rolling/apply', { method: 'POST', body: applyPayload(preview) });
     } catch (e) {
       // §12 STALE_SCHEDULE_PREVIEW：排程在預覽後被別的變更取代 → 自動重新預覽。
       // 訊息在 doPreview 之後才設，因為 doPreview 一開始會清掉 error。
@@ -75,9 +77,35 @@ export default function RollingExamSchedule({
         setError(e.message || '套用失敗');
       }
       setApplying(false);
+      applyBusy.current = false;
+      return;
+    }
+
+    // rolling apply 已建立新版；父層刷新失敗只能重試讀取，不能再次 apply。
+    setCommitted(saved || { ok: true });
+    try {
+      await onApplied?.(saved);
+      onClose?.();
+    } catch (e) {
+      setError(e.message || '重新載入失敗');
+      setApplying(false);
+      applyBusy.current = false;
     }
   };
 
+  const retryApplied = async () => {
+    if (applyBusy.current || !committed) return;
+    applyBusy.current = true;
+    setApplying(true); setError('');
+    try {
+      await onApplied?.(committed);
+      onClose?.();
+    } catch (e) {
+      setError(e.message || '重新載入失敗');
+      setApplying(false);
+      applyBusy.current = false;
+    }
+  };
   const sec = preview ? sectionize(preview) : null;
   const allFrozenPins = preview ? [...(preview.frozen || []), ...(preview.movable || [])] : [];
   const titleFor = it => {
@@ -86,16 +114,25 @@ export default function RollingExamSchedule({
   };
 
   return (
-    <BottomSheet onClose={onClose} label="段考滾動重排">
+    <BottomSheet onClose={applying ? undefined : onClose} label="段考滾動重排">
       <div className="rolling">
         <h3 style={{ margin: '0 0 var(--sp-3)' }}>
           {examSubject ? `${examSubject.operation === 'update' ? '修改' : '加入'}${examSubject.subject_name || '科目'}並重新安排`
             : addTaskIds.length || materialSelections.length ? '加入內容並重新安排' : '這次段考安排・滾動重排'}
         </h3>
-        {error && <div className="ui-card ui-card--warning" role="alert" style={{ marginBottom: 'var(--sp-3)' }}>{error}</div>}
-        {loading && <div className="ui-meta">預覽中…</div>}
+        {committed && <div style={{ display: 'grid', gap: 'var(--sp-3)' }}>
+          <b>新版安排已套用</b>
+          <div className="ui-meta">畫面尚未更新，請勿再次套用。你可以只重試載入最新資料。</div>
+          {error && <div className="ui-card ui-card--warning" role="alert">新版安排已套用，但畫面暫時無法更新。{error}</div>}
+          <div className="row" style={{ gap: 'var(--sp-2)' }}>
+            <Button variant="tertiary" disabled={applying} onClick={onClose}>先關閉</Button>
+            <Button variant="primary" disabled={applying} onClick={retryApplied}>{applying ? '載入中…' : '重新載入'}</Button>
+          </div>
+        </div>}
+        {!committed && error && <div className="ui-card ui-card--warning" role="alert" style={{ marginBottom: 'var(--sp-3)' }}>{error}</div>}
+        {!committed && loading && <div className="ui-meta">預覽中…</div>}
 
-        {preview && !loading && (
+        {!committed && preview && !loading && (
           <>
             <div className="ui-meta" style={{ marginBottom: 'var(--sp-2)' }}>
               今天（{preview.window?.freeze_start}）與明天（{preview.window?.freeze_through}）維持不變；
@@ -155,7 +192,7 @@ export default function RollingExamSchedule({
             )}
 
             <div className="row" style={{ marginTop: 'var(--sp-4)', gap: 'var(--sp-2)' }}>
-              <Button variant="tertiary" onClick={onClose}>取消</Button>
+              <Button variant="tertiary" disabled={applying} onClick={applying ? undefined : onClose}>取消</Button>
               <Button variant="primary" style={{ marginLeft: 'auto' }}
                 disabled={!canConfirm(preview) || applying} onClick={confirmApply}>
                 {applying ? '套用中…' : '確認套用'}
