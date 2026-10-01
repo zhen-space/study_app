@@ -20,7 +20,7 @@ const Mark = ({ done }) => (done
   ? <span title="已完成" style={{ color: 'var(--success, #2f855a)' }}>✓</span>
   : <span title="尚未完成" style={{ color: 'var(--muted, #a0aec0)' }}>○</span>);
 
-export default function PlanRangeView({ plan, lists = [], onAddRange, onArrange, onAddManual, onEditSubject, refreshKey = 0 }) {
+export default function PlanRangeView({ plan, lists = [], onAddRange, onArrange, onAddManual, onEditSubject, afterSubjects, refreshKey = 0 }) {
   const planId = plan?.planId;
   const editable = plan?.status === 'active' || plan?.status === 'draft';
   const [exam, setExam] = useState(null);
@@ -148,6 +148,9 @@ export default function PlanRangeView({ plan, lists = [], onAddRange, onArrange,
           ))}
         </SurfaceCard>
       )}
+
+      {/* 結構化首屏插槽：日期安排緊接考試科目，避免被完整範圍長清單推到畫面底部。 */}
+      {afterSubjects}
 
       {total === 0 ? (
         <SurfaceCard style={{ marginTop: 'var(--sp-3)' }}>

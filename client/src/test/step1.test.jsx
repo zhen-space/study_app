@@ -641,7 +641,11 @@ describe('Plan Detail', () => {
     render(<PlanDetailView planKey="plan:70" tasks={TASKS} lists={fx.lists} apiPlans={[PLAN]}
       reload={() => {}} onBack={() => {}} goWizard={() => {}} adjustPlan={() => {}} />);
     await waitFor(() => expect(screen.getByText('考試科目與日期')).toBeTruthy());
-    expect(screen.getByText('日期安排')).toBeTruthy();
+    const subjectsHeading = screen.getByText('考試科目與日期');
+    const timelineHeading = screen.getByText('日期安排');
+    const rangeEmptyState = screen.getByText('還沒加入要考的範圍');
+    expect(subjectsHeading.compareDocumentPosition(timelineHeading) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(timelineHeading.compareDocumentPosition(rangeEmptyState) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     expect(screen.getByText('日期安排內容')).toBeTruthy();
     fireEvent.click(screen.getByRole('button', { name: '修改日期' }));
     expect(screen.getByLabelText('考試日期')).toHaveValue(fx.TODAY);
