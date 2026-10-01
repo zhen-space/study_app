@@ -474,6 +474,27 @@ describe('加入教材', () => {
     noCrash();
   });
 
+  it('leaf-only 章與自訂習作共存：建立 payload 同時保留章本文與習作', async () => {
+    let body = null;
+    setApi({ '/material/import/commit': opts => { body = opts.body; return { book: { id: 5 } }; } });
+    await openAdd();
+    await click(btn(/自己建立教材/));
+    await flush();
+    fireEvent.change(screen.getByLabelText(/教材名稱|^教材名稱$/), { target: { value: '只有章的教材' } });
+    fireEvent.change(screen.getByLabelText('第 1 章名稱'), { target: { value: '第一章 整數' } });
+    await click(btn(/習作／自訂題目/));
+    fireEvent.change(screen.getByLabelText('習作或自訂題目名稱'), { target: { value: '整數習作' } });
+    await click(screen.getByRole('button', { name: '加入' }));
+    await click(btn(/^建立教材$/));
+    await flush();
+
+    expect(body.draft.chapters[0].children).toEqual([]);
+    expect(body.draft.chapters[0].content_items).toEqual([
+      expect.objectContaining({ kind: 'reading', title: '第一章 整數' }),
+      expect.objectContaining({ kind: 'workbook_exercise', title: '整數習作' }),
+    ]);
+  });
+
   it('伺服器沒有 AI 金鑰時，講學生聽得懂的話，而且不留下半本教材', async () => {
     setApi({
       '/material/import/preview': () => {
@@ -656,7 +677,7 @@ describe('Plan Detail', () => {
       reload={() => {}} onBack={() => {}} goWizard={() => {}} adjustPlan={() => {}} />);
     await waitFor(() => expect(screen.getByText('考試科目與日期')).toBeTruthy());
     const subjectsHeading = screen.getByText('考試科目與日期');
-    const timelineHeading = screen.getByText('日期安排');
+    const timelineHeading = await screen.findByText('日期安排');
     const rangeEmptyState = screen.getByText('還沒加入要考的範圍');
     expect(subjectsHeading.compareDocumentPosition(timelineHeading) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     expect(timelineHeading.compareDocumentPosition(rangeEmptyState) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
