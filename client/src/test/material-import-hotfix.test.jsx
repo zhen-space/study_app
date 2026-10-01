@@ -73,9 +73,24 @@ vi.mock('../tt/material', () => ({
 vi.mock('../tt/vocabImport', () => ({ fileToPayload: vi.fn(async f => ({ filename: f.name, mime: 'image/jpeg', data: 'AAAA' })) }));
 
 const AddMaterialFlow = (await import('../tt/AddMaterialFlow')).default;
+const { canonicalizeLeafContent, materialContentCount } = await import('../tt/materialDraft');
 const LISTS = [{ id: 1, name: '數學' }, { id: 2, name: '英文' }];
 
 describe('AddMaterialFlow hotfix', () => {
+  it('葉章／葉節算內容，但有子節的章只算容器', () => {
+    const draft = canonicalizeLeafContent({
+      book: { title: '課本3' },
+      chapters: [
+        { title: 'L1', content_items: [], children: [] },
+        { title: 'Unit 2', content_items: [], children: [{ kind: 'section', title: 'L2', content_items: [] }] },
+      ],
+    });
+    expect(materialContentCount(draft)).toBe(2);
+    expect(draft.chapters[0].content_items).toEqual([{ kind: 'reading', title: 'L1' }]);
+    expect(draft.chapters[1].content_items).toEqual([]);
+    expect(draft.chapters[1].children[0].content_items).toEqual([{ kind: 'reading', title: 'L2' }]);
+  });
+
   it('拍照 → 先進 PhotoQueue，不立即解析（importPreview 尚未呼叫）', async () => {
     const { importPreview } = await import('../tt/material');
     render(<AddMaterialFlow lists={LISTS} onCancel={() => {}} onCreated={() => {}} />);
@@ -116,7 +131,9 @@ describe('AddMaterialFlow hotfix', () => {
   });
 
   it('OCR 只有目錄 leaf：計入內容；中文書名修正舊錯誤後可送出 canonical payload', async () => {
+    Object.defineProperty(window, 'innerWidth', { configurable: true, value: 375 });
     const { importPreview, commitDraft, nameCheck } = await import('../tt/material');
+    const onCreated = vi.fn();
     importPreview.mockResolvedValueOnce({
       draft: {
         book: { title: '', publisher: '龍騰', subject_list_id: null },
@@ -133,7 +150,7 @@ describe('AddMaterialFlow hotfix', () => {
     nameCheck.mockResolvedValueOnce({ has_conflict: false, same_name_books: [] });
     commitDraft.mockResolvedValueOnce({ book: { id: 88, title: '課本3' } });
 
-    render(<AddMaterialFlow lists={LISTS} defaultSubjectId={2} onCancel={() => {}} onCreated={() => {}} />);
+    render(<AddMaterialFlow lists={LISTS} defaultSubjectId={2} onCancel={() => {}} onCreated={onCreated} />);
     fireEvent.click(screen.getByText('拍照／匯入教材目錄'));
     setFiles(screen.getByLabelText('選多張照片'), [file('toc.pdf', 4, 'application/pdf')]);
     await act(async () => { fireEvent.click(screen.getByRole('button', { name: /確認送出/ })); });
@@ -149,6 +166,7 @@ describe('AddMaterialFlow hotfix', () => {
     await act(async () => { fireEvent.click(submit); });
 
     await waitFor(() => expect(commitDraft).toHaveBeenCalled());
+    await waitFor(() => expect(onCreated).toHaveBeenCalledWith({ book: { id: 88, title: '課本3' } }));
     const payload = commitDraft.mock.calls.at(-1)[0];
     expect(payload.book).toEqual({ title: '課本3', publisher: '龍騰', subject_list_id: 2 });
     expect(payload.chapters.map(c => c.content_items[0])).toEqual([

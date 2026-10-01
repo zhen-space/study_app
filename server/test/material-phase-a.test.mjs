@@ -175,11 +175,25 @@ describe('Canonical Material Draft', () => {
     assert.match(p.path, /chapters\[0\]\.children\[0\]\.content_items\[0\]\.kind/);
   });
 
-  test('沒有名稱、沒有章、整本沒有內容都會被指出來', () => {
+  test('沒有名稱、沒有章、真正空白的教材都會被指出來', () => {
     assert.ok(validateDraft({ chapters: [] }).problems.some(p => p.path === 'book.title'));
     assert.ok(validateDraft({ book: { title: 'x' }, chapters: [] }).problems.some(p => p.path === 'chapters'));
-    assert.ok(validateDraft({ book: { title: 'x' }, chapters: [{ title: '第一章', content_items: [], children: [] }] })
+    assert.ok(validateDraft({ book: { title: 'x' }, chapters: [{ title: '', content_items: [], children: [] }] })
       .problems.some(p => /沒有任何內容項目/.test(p.message)));
+  });
+
+  test('只有標題的葉章／葉節會成為 reading；有子節的章仍只是容器', () => {
+    const { draft, problems } = validateDraft({
+      book: { title: '英文課本' },
+      chapters: [
+        { title: 'L1', content_items: [], children: [] },
+        { title: 'Unit 2', content_items: [], children: [{ kind: 'section', title: 'L2', content_items: [] }] },
+      ],
+    });
+    assert.deepEqual(problems, []);
+    assert.deepEqual(draft.chapters[0].content_items.map(i => [i.kind, i.title]), [['reading', 'L1']]);
+    assert.equal(draft.chapters[1].content_items.length, 0, '有子節的章不可誤算成內容');
+    assert.deepEqual(draft.chapters[1].children[0].content_items.map(i => [i.kind, i.title]), [['reading', 'L2']]);
   });
 
   test('order 缺漏時依陣列順序補齊', () => {

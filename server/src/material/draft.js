@@ -60,6 +60,14 @@ export function validateDraft(input) {
   const chaptersIn = Array.isArray(input?.chapters) ? input.chapters : [];
   if (!chaptersIn.length) at('chapters', '至少要有一章');
 
+  // OCR 的最末層常只有「L1／第一課」這類可學習標題，沒有額外列 content_items。
+  // 葉節點本身就是 reading；有 children 的章則只是容器，不可多造一筆內容。
+  const leafItems = (list, title, isLeaf) => {
+    if (!isLeaf || !title || (Array.isArray(list) && list.length)) return list;
+    if (list != null && !Array.isArray(list)) return list; // 交給 items() 回報型別錯誤
+    return [{ title, kind: 'reading' }];
+  };
+
   const items = (list, parentKind, path) => {
     if (list == null) return [];
     if (!Array.isArray(list)) { at(path, '內容必須是陣列'); return []; }
@@ -111,14 +119,14 @@ export function validateDraft(input) {
         kind: CHILD_KINDS.includes(kind) ? kind : kind,
         title: ct,
         order: Number.isFinite(int(c?.order)) ? int(c.order) : si,
-        content_items: items(c?.content_items, CHILD_KINDS.includes(kind) ? kind : null, `${cp}.content_items`),
+        content_items: items(leafItems(c?.content_items, ct, true), CHILD_KINDS.includes(kind) ? kind : null, `${cp}.content_items`),
       };
     });
 
     return {
       title: t,
       order: Number.isFinite(int(raw?.order)) ? int(raw.order) : ci,
-      content_items: items(raw?.content_items, 'chapter', `${p}.content_items`),
+      content_items: items(leafItems(raw?.content_items, t, children.length === 0), 'chapter', `${p}.content_items`),
       children,
     };
   });
