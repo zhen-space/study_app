@@ -87,13 +87,13 @@ const countPMISel = u => q.get('SELECT COUNT(*) c FROM plan_material_items WHERE
 // 產生一個「與 CURRENT material 一致」的合法簽章 token（測試模擬 preview 端）。
 async function tokenFor(u, planId, cid, clientKey, baseVersion = null) {
   const mi = await q.get(
-    `SELECT i.id,i.book_id,i.title,i.estimated_minutes,b.subject_list_id
+    `SELECT i.id,i.book_id,i.kind,i.title,i.estimated_minutes,b.subject_list_id
        FROM material_content_items i LEFT JOIN material_books b ON b.id=i.book_id AND b.user_id=i.user_id
       WHERE i.id=? AND i.user_id=?`, [cid, u]);
   return signMaterialSnapshotToken({
     user_id: u, plan_id: planId, base_version_id: baseVersion, client_key: clientKey, content_item_id: cid,
     title: mi.title ?? null, estimated_minutes: mi.estimated_minutes ?? null,
-    material_book_id: mi.book_id ?? null, subject_list_id: mi.subject_list_id ?? null,
+    material_book_id: mi.book_id ?? null, subject_list_id: mi.subject_list_id ?? null, kind: mi.kind,
   });
 }
 
@@ -628,7 +628,7 @@ describe('Phase 2 audit r2. hasAdditions / block identity / material stale', () 
     return { u, plan, list, cid, pv };
   };
 
-  test('B3 material stale：estimate / title / subject / book 改變 → apply 拒絕且零寫入；未變 → 成功', async () => {
+  test('B3 material stale：estimate / title / kind / subject / book 改變 → apply 拒絕且零寫入；未變 → 成功', async () => {
     // estimate 90→120
     { const { u, plan, cid, pv } = await setupMat();
       await q.run('UPDATE material_content_items SET estimated_minutes=120 WHERE id=? AND user_id=?', [cid, u]);
@@ -639,6 +639,11 @@ describe('Phase 2 audit r2. hasAdditions / block identity / material stale', () 
     // title 改變
     { const { u, plan, cid, pv } = await setupMat();
       await q.run('UPDATE material_content_items SET title=? WHERE id=? AND user_id=?', ['新標題', cid, u]);
+      await assert.rejects(() => applyFromPreview(u, plan, pv), e => e.code === 'MATERIAL_STALE');
+    }
+    // canonical kind 改變：純題目規則可能不同，舊 candidate 不得套用
+    { const { u, plan, cid, pv } = await setupMat();
+      await q.run("UPDATE material_content_items SET kind='workbook_exercise' WHERE id=? AND user_id=?", [cid, u]);
       await assert.rejects(() => applyFromPreview(u, plan, pv), e => e.code === 'MATERIAL_STALE');
     }
     // subject/list 改變（book.subject_list_id）
@@ -685,11 +690,12 @@ describe('Phase 2 audit r3. signed material snapshot token', () => {
     const cid = await mkMaterialItem(u, list, { est: 60 });
     const cid2 = await mkMaterialItem(u, list, { est: 60 });
     const mi = await q.get(
-      `SELECT i.id,i.book_id,i.title,i.estimated_minutes,b.subject_list_id
+      `SELECT i.id,i.book_id,i.kind,i.title,i.estimated_minutes,b.subject_list_id
          FROM material_content_items i LEFT JOIN material_books b ON b.id=i.book_id AND b.user_id=i.user_id
         WHERE i.id=? AND i.user_id=?`, [cid, u]);
     const base = { user_id: u, plan_id: plan, base_version_id: null, client_key: 'm', content_item_id: cid,
-      title: mi.title, estimated_minutes: mi.estimated_minutes, material_book_id: mi.book_id, subject_list_id: mi.subject_list_id };
+      title: mi.title, estimated_minutes: mi.estimated_minutes, material_book_id: mi.book_id, subject_list_id: mi.subject_list_id,
+      kind: mi.kind };
     const sign = over => signMaterialSnapshotToken({ ...base, ...over });
     const block = { client_key: 'm', date: D(2), start_time: '19:00', end_time: '20:00', planned_minutes: 60 };
     const reject = async (tok, code) => {

@@ -17,7 +17,7 @@ const ALLOWED_PARENT = {
 // 「範例」與「例題」是課本上兩種不同的東西：範例是講解過的示範，
 // 例題是要自己動手做的題目。學生會想「這章只讀課本內容」或「只做例題」，
 // 所以它們必須是各自獨立的 ContentItem，不能合成一種。
-export const ITEM_KINDS = ['reading', 'example', 'example_problem', 'unit_exercise', 'past_exam'];
+export const ITEM_KINDS = ['reading', 'example', 'example_problem', 'unit_exercise', 'past_exam', 'workbook_exercise'];
 
 // 範例／例題掛在節或主題底下；單元練習／歷屆試題直接屬於章。
 //
@@ -30,6 +30,7 @@ const ALLOWED_ITEM_PARENT = {
   example_problem: ['section', 'topic'],
   unit_exercise: ['chapter'],
   past_exam: ['chapter'],
+  workbook_exercise: ['chapter'],
 };
 
 // 學生看到的字。這是唯一一份對照表，前後端都以它為準。
@@ -39,7 +40,11 @@ export const ITEM_KIND_LABEL = {
   example_problem: '例題',
   unit_exercise: '單元練習',
   past_exam: '歷屆試題',
+  workbook_exercise: '習作',
 };
+
+// 排程上的「純題目」語意由 canonical kind 決定；title 只供顯示，不能拿來當身分。
+export const PURE_QUESTION_KINDS = ['unit_exercise', 'past_exam', 'workbook_exercise'];
 
 // 只能掛在 Section / Topic 底下的類型（章底下不會有）
 const SECTION_LEVEL_KINDS = ['example', 'example_problem'];

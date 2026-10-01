@@ -14,7 +14,7 @@ const secret = () => process.env.JWT_SECRET || 'dev-secret-change-me';
 // 兩端必須用同一個 canonical 欄位順序，否則簽章對不上。
 const FIELDS = [
   'user_id', 'plan_id', 'base_version_id', 'client_key', 'content_item_id',
-  'title', 'estimated_minutes', 'material_book_id', 'subject_list_id',
+  'title', 'estimated_minutes', 'material_book_id', 'subject_list_id', 'kind',
 ];
 
 function canonical(payload) {

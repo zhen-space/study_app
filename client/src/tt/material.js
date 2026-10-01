@@ -165,10 +165,11 @@ export const ITEM_LABEL = {
   example_problem: '例題',
   unit_exercise: '單元練習',
   past_exam: '歷屆試題',
+  workbook_exercise: '習作',
 };
 // Chapter 可以直接承載的內容類型。用它判斷「這一列是 chapter-level content」，
 // 而不是靠「沒有 section parent」去猜。
-export const CHAPTER_LEVEL_KINDS = ['unit_exercise', 'past_exam'];
+export const CHAPTER_LEVEL_KINDS = ['unit_exercise', 'past_exam', 'workbook_exercise'];
 
 // 章底下的子節點：Section 與 Topic 是**同層**，這裡只是為了顯示而保持後端順序。
 // 刻意不做任何 section→topic 的巢狀重組。

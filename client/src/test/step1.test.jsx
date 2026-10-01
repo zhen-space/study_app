@@ -369,8 +369,11 @@ describe('加入教材', () => {
     await click(btn(/1-1 數與數線：加入課本內容/));
     await click(btn(/1-1 數與數線：加入範例/));
     await click(btn(/第 1 章：加入單元練習/));
+    await click(btn(/習作／自訂題目/));
+    fireEvent.change(screen.getByLabelText('習作或自訂題目名稱'), { target: { value: '基礎習作 A' } });
+    await click(screen.getByRole('button', { name: '加入' }));
     await flush();
-    expect(screen.getByText('共 3 項內容')).toBeTruthy();
+    expect(screen.getByText('共 4 項內容')).toBeTruthy();
     await click(btn(/^建立教材$/));
     await flush();
 
@@ -378,7 +381,10 @@ describe('加入教材', () => {
     expect(d.book.title).toBe('自己打的教材');
     expect(d.chapters.length).toBe(1);
     // 單元練習直接屬於章，不在任何一節底下
-    expect(d.chapters[0].content_items.map(i => i.kind)).toEqual(['unit_exercise']);
+    expect(d.chapters[0].content_items).toEqual([
+      expect.objectContaining({ kind: 'unit_exercise', title: '單元練習' }),
+      expect.objectContaining({ kind: 'workbook_exercise', title: '基礎習作 A' }),
+    ]);
     expect(d.chapters[0].children[0].kind).toBe('section');
     expect(d.chapters[0].children[0].content_items.map(i => i.kind)).toEqual(['reading', 'example']);
     // 節底下不會再有節或主題
@@ -445,7 +451,7 @@ describe('加入教材', () => {
     noCrash();
   });
 
-  it('內容種類就是學生看得懂的五個字面，沒有「其他」或「練習區」', async () => {
+  it('章層可加入自訂名稱的習作，中文輸入組字不會提早送出', async () => {
     await openAdd();
     await click(btn(/自己建立教材/));
     await flush();
@@ -456,7 +462,15 @@ describe('加入教材', () => {
     }
     expect(btn(/加入單元練習/)).toBeTruthy();
     expect(btn(/加入歷屆試題/)).toBeTruthy();
-    expect(document.body.textContent).not.toMatch(/其他|練習區/);
+    await click(btn(/習作／自訂題目/));
+    const input = screen.getByLabelText('習作或自訂題目名稱');
+    fireEvent.compositionStart(input);
+    fireEvent.change(input, { target: { value: '數學習作甲' } });
+    fireEvent.keyDown(input, { key: 'Enter', isComposing: true });
+    expect(screen.queryByText('數學習作甲')).toBeNull();
+    fireEvent.compositionEnd(input, { data: '甲' });
+    await click(screen.getByRole('button', { name: '加入' }));
+    expect(screen.getByText('數學習作甲')).toBeTruthy();
     noCrash();
   });
 

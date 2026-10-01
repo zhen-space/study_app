@@ -11,7 +11,7 @@ import { Button } from './ui';
 //
 // 正式結構在這裡就是實際的畫面結構：
 //   章 →（節｜主題，同層）→ 課本內容／範例／例題
-//   章底下另外直接掛 單元練習／歷屆試題
+//   章底下另外直接掛 單元練習／歷屆試題／習作
 // 沒有「其他」、沒有「練習區」，也不為章層內容造一個假的節。
 
 const CHILD_KINDS = ['reading', 'example', 'example_problem'];
@@ -47,6 +47,26 @@ function ItemPills({ items, kinds, onAdd, onRemove, label }) {
       ))}
     </div>
   );
+}
+
+// 「習作」是正式 kind；學生可自訂這一份的顯示名稱，但不會因改名失去純題目規則。
+function CustomWorkbookItem({ busy, onAdd }) {
+  const [open, setOpen] = useState(false);
+  const [title, setTitle] = useState('習作');
+  const add = () => {
+    const next = title.trim();
+    if (!next) return;
+    onAdd({ kind: 'workbook_exercise', title: next });
+    setTitle('習作'); setOpen(false);
+  };
+  if (!open) return <button type="button" className="md-add-pill" disabled={busy} onClick={() => setOpen(true)}>＋習作／自訂題目</button>;
+  return <div className="md-newsubject" style={{ marginTop: 6 }}>
+    <input autoFocus aria-label="習作或自訂題目名稱" value={title} disabled={busy}
+      onChange={e => setTitle(e.target.value)} onCompositionEnd={e => setTitle(e.currentTarget.value)}
+      onKeyDown={e => { if (e.key === 'Enter' && !e.nativeEvent.isComposing) { e.preventDefault(); add(); } }} />
+    <Button size="sm" disabled={busy || !title.trim()} onClick={add}>加入</Button>
+    <Button size="sm" variant="tertiary" disabled={busy} onClick={() => { setOpen(false); setTitle('習作'); }}>取消</Button>
+  </div>;
 }
 
 export default function MaterialDraftEditor({
@@ -173,7 +193,7 @@ export default function MaterialDraftEditor({
             children: [...ch.children, { kind: 'section', title: '', content_items: [] }],
           })}>＋ 加一節／主題</button>
 
-          {/* 單元練習與歷屆試題直接屬於這一章，不放進任何一節 */}
+          {/* 單元練習、歷屆試題與習作直接屬於這一章，不放進任何一節 */}
           <div className="md-chapter-level">
             <span className="md-chapter-level-label">本章</span>
             <ItemPills items={ch.content_items} kinds={CHAPTER_KINDS} label={`第 ${ci + 1} 章`}
@@ -181,6 +201,9 @@ export default function MaterialDraftEditor({
                 content_items: [...ch.content_items, { kind: k, title: nextTitle(ch.content_items, k) }],
               })}
               onRemove={i => at(ci, { content_items: ch.content_items.filter((_, x) => x !== i) })} />
+            <CustomWorkbookItem busy={busy} onAdd={item => at(ci, {
+              content_items: [...ch.content_items, item],
+            })} />
           </div>
         </div>
       ))}

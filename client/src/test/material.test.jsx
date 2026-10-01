@@ -819,9 +819,9 @@ describe('編輯教材', () => {
     fireEvent.change(sel, { target: { value: 'example_problem' } });
     await flush();
     expect(sent('/material/content-items/101', 'PATCH')[0][1].body).toEqual({ kind: 'example_problem' });
-    // 章底下的單元練習只在單元練習／歷屆試題之間換
+    // 章底下的純題目只在章層 canonical kinds 之間換
     expect([...screen.getByLabelText('單元練習 的內容種類').options].map(o => o.textContent))
-      .toEqual(['單元練習', '歷屆試題']);
+      .toEqual(['單元練習', '歷屆試題', '習作']);
   });
 
   it('編輯模式不出現完成度勾選框——改名字不該有機會誤按成已完成', async () => {

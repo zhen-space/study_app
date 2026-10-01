@@ -4,7 +4,7 @@
 import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  buildTree, descendantItemIds, nodePlacementProblem, itemPlacementProblem,
+  buildTree, descendantItemIds, nodePlacementProblem, itemPlacementProblem, PURE_QUESTION_KINDS,
 } from '../src/material/tree.js';
 
 const node = (id, kind, parent_id, order_index = 0) =>
@@ -13,6 +13,10 @@ const item = (id, node_id, kind = 'reading', order_index = 0) =>
   ({ id, book_id: 1, node_id, kind, title: `i${id}`, estimated_minutes: null, order_index });
 
 describe('樹形限制（契約 7）', () => {
+  test('習作的 canonical kind 具備純題目排程語意', () => {
+    assert.equal(PURE_QUESTION_KINDS.includes('workbook_exercise'), true);
+  });
+
   test('章在書底下，Section / Topic 同層且都只能直接掛在章底下', () => {
     assert.equal(nodePlacementProblem('chapter', null), null);
     assert.equal(nodePlacementProblem('section', 'chapter'), null);
@@ -30,11 +34,13 @@ describe('樹形限制（契約 7）', () => {
     assert.match(itemPlacementProblem('example', 'chapter'), /只能放在節或主題底下/);
   });
 
-  test('單元練習／歷屆試題直接屬於章，不得為它建假的節', () => {
+  test('單元練習／歷屆試題／習作直接屬於章，不得為它建假的節', () => {
     assert.equal(itemPlacementProblem('unit_exercise', 'chapter'), null);
     assert.equal(itemPlacementProblem('past_exam', 'chapter'), null);
+    assert.equal(itemPlacementProblem('workbook_exercise', 'chapter'), null);
     assert.match(itemPlacementProblem('unit_exercise', 'section'), /直接屬於章，不要為它建立節/);
     assert.match(itemPlacementProblem('past_exam', 'topic'), /直接屬於章，不要為它建立節/);
+    assert.match(itemPlacementProblem('workbook_exercise', 'section'), /習作直接屬於章/);
   });
 
   test('教材項目一定要有掛的節點', () => {
