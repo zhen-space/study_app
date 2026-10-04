@@ -15,7 +15,10 @@ const tasks = [{
   completed: false,
 }];
 
-beforeEach(() => { api.mockReset(); });
+beforeEach(() => {
+  api.mockReset();
+  Object.defineProperty(window, 'innerWidth', { configurable: true, value: 375 });
+});
 
 describe('LocksView recoverable mutations', () => {
   it('建立時鎖住重複操作，成功後刷新，並送出 canonical payload', async () => {
@@ -90,5 +93,31 @@ describe('LocksView recoverable mutations', () => {
     fireEvent.click(screen.getByRole('button', { name: '解除鎖定' }));
     await waitFor(() => expect(screen.queryByText('2030-08-21 全天')).toBeNull());
     expect(deletes).toBe(2);
+  });
+
+  it('解除已提交後直接更新本地投影，不因刷新失敗誘導重送 DELETE', async () => {
+    let reads = 0;
+    let deletes = 0;
+    api.mockImplementation(async (path, options) => {
+      if (options?.method === 'DELETE') {
+        deletes += 1;
+        return { ok: true };
+      }
+      if (path === '/schedule/locks') {
+        reads += 1;
+        if (reads > 1) throw new Error('重新整理失敗');
+        return [{ id: 14, type: 'day', date: '2030-08-22' }];
+      }
+      return {};
+    });
+    render(<LocksView tasks={tasks} />);
+    expect(await screen.findByText('2030-08-22 全天')).toBeTruthy();
+
+    fireEvent.click(screen.getByRole('button', { name: '解除鎖定' }));
+    await waitFor(() => expect(screen.queryByText('2030-08-22 全天')).toBeNull());
+
+    expect(deletes).toBe(1);
+    expect(reads).toBe(1);
+    expect(screen.queryByRole('alert')).toBeNull();
   });
 });
