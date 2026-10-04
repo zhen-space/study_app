@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useRef, useState } from 'react';
 import { api } from '../api';
 import { Button, PageHeader, SurfaceCard, EmptyState, BottomSheet } from './ui';
 import { onActivePlan } from './helpers';
@@ -9,21 +9,66 @@ import {
   formatDeadline, deadlineLabelText, nowTW,
 } from './schoolAssignment';
 
+function useAssignmentMutations(reload) {
+  const live = useRef(new Set());
+  const [pending, setPending] = useState(new Set());
+  const [errors, setErrors] = useState({});
+  const [refreshError, setRefreshError] = useState('');
+  const [refreshBusy, setRefreshBusy] = useState(false);
+  const patch = async (task, body) => {
+    if (live.current.has(task.id)) return;
+    live.current.add(task.id);
+    setPending(s => new Set([...s, task.id]));
+    setErrors(e => ({ ...e, [task.id]: '' }));
+    try { await api(`/tasks/${task.id}`, { method: 'PATCH', body }); }
+    catch (e) {
+      setErrors(all => ({ ...all, [task.id]: e.message || '更新作業失敗，請稍後再試' }));
+      live.current.delete(task.id);
+      setPending(s => { const n = new Set(s); n.delete(task.id); return n; });
+      return;
+    }
+    try { await reload('tasks'); }
+    catch { setRefreshError('作業已更新，但畫面暫時無法重新載入。'); }
+    finally {
+      live.current.delete(task.id);
+      setPending(s => { const n = new Set(s); n.delete(task.id); return n; });
+    }
+  };
+  const retryRefresh = async () => {
+    if (refreshBusy) return;
+    setRefreshBusy(true);
+    try { await reload('tasks'); setRefreshError(''); }
+    catch { setRefreshError('仍然無法重新載入，請稍後再試。'); }
+    finally { setRefreshBusy(false); }
+  };
+  return { patch, pending, errors, refreshError, refreshBusy, retryRefresh };
+}
+
+function MutationRefreshError({ mutations }) {
+  if (!mutations.refreshError) return null;
+  return <div className="ui-error" role="alert" style={{ marginBottom: 'var(--sp-3)' }}>
+    {mutations.refreshError}
+    <Button size="sm" disabled={mutations.refreshBusy} onClick={mutations.retryRefresh} style={{ marginLeft: 8 }}>
+      {mutations.refreshBusy ? '重新載入中…' : '重新載入'}
+    </Button>
+  </div>;
+}
+
 // 一列學校作業：科目 · 名稱 · 類型 · 期限 · 狀態。生命週期一律沿用既有 Task
 // API（PATCH /tasks/:id），沒有 school-specific 的完成／取消／刪除／reopen。
-export function SARow({ t, list, now, onEdit, onAddPlan, reload, showSubject = true }) {
+export function SARow({ t, list, now, onEdit, onAddPlan, reload, mutations: sharedMutations = null, showSubject = true }) {
   const [menu, setMenu] = useState(false);
-  const [busy, setBusy] = useState(false);
-  const [err, setErr] = useState('');
+  const localMutations = useAssignmentMutations(reload);
+  const mutations = sharedMutations || localMutations;
+  const busy = mutations.pending.has(t.id);
+  const err = mutations.errors[t.id] || '';
   const done = !!t.completed;
   const cancelled = !!t.cancelled;
   const overdue = isOverdue(t, now);
 
   async function patch(body) {
-    setBusy(true); setMenu(false); setErr('');
-    try { await api(`/tasks/${t.id}`, { method: 'PATCH', body }); await reload('tasks'); }
-    catch (e) { setErr(e.message || '更新作業失敗，請稍後再試'); }
-    finally { setBusy(false); }
+    setMenu(false);
+    await mutations.patch(t, body);
   }
   async function del() {
     if (!window.confirm(`刪除「${t.title}」？`)) return;
@@ -81,7 +126,7 @@ function Group({ title, tone, items, ...row }) {
     <section className="ui-section">
       <div className={'ui-section-title' + (tone === 'danger' ? ' sa-title-danger' : '')}>{title}（{items.length}）</div>
       <SurfaceCard>
-        {items.map(t => <SARow key={t.id} t={t} list={row.listOf(t)} now={row.now} onEdit={row.onEdit} onAddPlan={row.onAddPlan} reload={row.reload} />)}
+        {items.map(t => <SARow key={t.id} t={t} list={row.listOf(t)} now={row.now} onEdit={row.onEdit} onAddPlan={row.onAddPlan} reload={row.reload} mutations={row.mutations} />)}
       </SurfaceCard>
     </section>
   );
@@ -91,6 +136,7 @@ function Group({ title, tone, items, ...row }) {
 // 已逾期，且**允許重疊**（今天中午要交、現在下午，會同時在「今天要交」與「已逾期」）。
 export function SchoolAssignmentToday({ tasks, lists, reload }) {
   const [form, setForm] = useState(null); // null=關閉；{}=新增；task=編輯
+  const mutations = useAssignmentMutations(reload);
   const now = nowTW();
   // 執行面過濾：掛在 paused／completed／ended／deleted 計畫的作業要退出 Today
   // （與 App 其餘執行面同一條 onActivePlan 規則）。standalone（plan_id=NULL）不受影響。
@@ -103,22 +149,23 @@ export function SchoolAssignmentToday({ tasks, lists, reload }) {
   return (
     <section className="ui-section sa-today">
       <div className="ui-section-title" style={{ marginBottom: 'var(--sp-2)' }}>學校作業</div>
+      <MutationRefreshError mutations={mutations} />
       {groups.overdue.length > 0 && (
         <SurfaceCard tone="warning" style={{ marginBottom: 'var(--sp-2)' }}>
           <div className="sa-group-label sa-title-danger">已逾期（{groups.overdue.length}）</div>
-          {groups.overdue.map(t => <SARow key={t.id} t={t} list={listOf(t)} now={now} onEdit={setForm} reload={reload} />)}
+          {groups.overdue.map(t => <SARow key={t.id} t={t} list={listOf(t)} now={now} onEdit={setForm} reload={reload} mutations={mutations} />)}
         </SurfaceCard>
       )}
       {groups.due_today.length > 0 && (
         <SurfaceCard style={{ marginBottom: 'var(--sp-2)' }}>
           <div className="sa-group-label">今天要交（{groups.due_today.length}）</div>
-          {groups.due_today.map(t => <SARow key={t.id} t={t} list={listOf(t)} now={now} onEdit={setForm} reload={reload} />)}
+          {groups.due_today.map(t => <SARow key={t.id} t={t} list={listOf(t)} now={now} onEdit={setForm} reload={reload} mutations={mutations} />)}
         </SurfaceCard>
       )}
       {groups.upcoming.length > 0 && (
         <SurfaceCard>
           <div className="sa-group-label">即將到期（7 天內，{groups.upcoming.length}）</div>
-          {groups.upcoming.map(t => <SARow key={t.id} t={t} list={listOf(t)} now={now} onEdit={setForm} reload={reload} />)}
+          {groups.upcoming.map(t => <SARow key={t.id} t={t} list={listOf(t)} now={now} onEdit={setForm} reload={reload} mutations={mutations} />)}
         </SurfaceCard>
       )}
       {form && (
@@ -132,6 +179,7 @@ export function SchoolAssignmentToday({ tasks, lists, reload }) {
 // 「任務」底下的專屬學校作業視圖（不是新的 bottom tab；資料仍來自既有 Task API）。
 export default function SchoolAssignmentView({ tasks, lists, plans = [], reload }) {
   const [form, setForm] = useState(null);
+  const mutations = useAssignmentMutations(reload);
   const [attach, setAttach] = useState(null);
   const [attachPlan, setAttachPlan] = useState('');
   const [rolling, setRolling] = useState(null);
@@ -150,12 +198,13 @@ export default function SchoolAssignmentView({ tasks, lists, plans = [], reload 
   const doneOrCancelled = all.filter(t => t.completed || t.cancelled);
   const [showDone, setShowDone] = useState(false);
   const activePlans = plans.filter(p => p.status === 'active');
-  const rowProps = { listOf, now, onEdit: setForm, onAddPlan: t => { setAttach(t); setAttachPlan(''); }, reload };
+  const rowProps = { listOf, now, onEdit: setForm, onAddPlan: t => { setAttach(t); setAttachPlan(''); }, reload, mutations };
 
   return (
     <div className="main">
       <PageHeader title="學校作業" subtitle="截止與提醒，沿用任務系統" />
       <div className="main-body">
+        <MutationRefreshError mutations={mutations} />
         {all.length === 0 ? (
           <EmptyState title="還沒有學校作業"
             description="把老師出的作業、報告、考試記下來，會依繳交期限提醒你。"
@@ -173,7 +222,7 @@ export default function SchoolAssignmentView({ tasks, lists, plans = [], reload 
                 </button>
                 {showDone && (
                   <SurfaceCard>
-                    {doneOrCancelled.map(t => <SARow key={t.id} t={t} list={listOf(t)} now={now} onEdit={setForm} reload={reload} />)}
+                    {doneOrCancelled.map(t => <SARow key={t.id} t={t} list={listOf(t)} now={now} onEdit={setForm} reload={reload} mutations={mutations} />)}
                   </SurfaceCard>
                 )}
               </section>
