@@ -27,7 +27,10 @@ const deferred = () => {
   return { promise, resolve };
 };
 
-beforeEach(() => { api.mockReset(); });
+beforeEach(() => {
+  api.mockReset();
+  Object.defineProperty(window, 'innerWidth', { configurable: true, value: 375 });
+});
 
 function standardApi(overrides = {}) {
   api.mockImplementation(async (path, options) => {
@@ -126,5 +129,37 @@ describe('ScheduleHistory restore recovery', () => {
     fireEvent.click(within(dialog).getByRole('button', { name: '恢復中…' }));
     expect(api.mock.calls.filter(([path, options]) => path.endsWith('/restore') && options?.method === 'POST')).toHaveLength(1);
     post.resolve({ applied: false });
+  });
+
+  it('恢復已寫入但刷新失敗時只重試投影，不會再次建立版本', async () => {
+    let listAttempts = 0;
+    let restoreAttempts = 0;
+    standardApi({
+      '/schedule/versions': async () => {
+        listAttempts += 1;
+        if (listAttempts === 2) throw new Error('重新整理失敗');
+        return versions;
+      },
+      '/schedule/versions/1/restore': async () => {
+        restoreAttempts += 1;
+        return { applied: true, version: { version_id: 1 } };
+      },
+    });
+    render(<ScheduleHistoryView />);
+    await selectVersion();
+    fireEvent.click(screen.getByRole('button', { name: '恢復這個版本' }));
+    const dialog = await screen.findByRole('dialog', { name: '恢復排程版本' });
+    fireEvent.click(within(dialog).getByRole('button', { name: '確認恢復' }));
+
+    expect(await within(dialog).findByRole('alert')).toHaveTextContent('排程已恢復，但畫面暫時無法更新');
+    expect(restoreAttempts).toBe(1);
+    expect(within(dialog).getByRole('button', { name: '關閉' })).toBeDisabled();
+    fireEvent.click(document.querySelector('.sheet-backdrop'));
+    expect(screen.getByRole('dialog', { name: '恢復排程版本' })).toBeTruthy();
+
+    fireEvent.click(within(dialog).getByRole('button', { name: '重新載入結果' }));
+    await waitFor(() => expect(screen.queryByRole('dialog', { name: '恢復排程版本' })).toBeNull());
+    expect(restoreAttempts).toBe(1);
+    expect(listAttempts).toBe(3);
   });
 });

@@ -59,6 +59,8 @@ export default function ScheduleHistoryView({ onRestored }) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
   const [restoreError, setRestoreError] = useState('');
+  const [committedRestore, setCommittedRestore] = useState(null);
+  const applyBusy = useRef(false);
   const detailRequest = useRef(0);
   const load = async () => {
     try { setVersions(await api('/schedule/versions')); } catch (e) { setError(e.message); }
@@ -86,14 +88,21 @@ export default function ScheduleHistoryView({ onRestored }) {
     setBusy(false);
   }
   async function applyRestore() {
-    if (!preview || busy) return;
+    if (!preview || busy || applyBusy.current) return;
+    applyBusy.current = true;
     setBusy(true); setError('');
     setRestoreError('');
     try {
       const r = await api(`/schedule/versions/${preview.source_version.id}/restore`, {
         method: 'POST', body: { base_version_id: preview.base_version_id, confirm_partial: preview.status === 'partial' },
       });
-      if (r.applied) { setPreview(null); await load(); await onRestored?.(); await openVersion(r.version.version_id); }
+      if (r.applied) {
+        setCommittedRestore(r);
+        // 寫入已完成；後續只負責更新投影。先交還鎖，讓 finishRestore
+        // 取得自己的同步鎖，避免把成功寫入誤當成可以再次 POST。
+        applyBusy.current = false;
+        await finishRestore(r);
+      }
     } catch (e) {
       if (e.status === 409 && e.payload?.code === 'STALE_SCHEDULE_PREVIEW') {
         setPreview(null);
@@ -104,7 +113,28 @@ export default function ScheduleHistoryView({ onRestored }) {
         setRestoreError(e.message);
       }
     }
+    applyBusy.current = false;
     setBusy(false);
+  }
+  async function finishRestore(result = committedRestore) {
+    if (!result || applyBusy.current) return;
+    applyBusy.current = true;
+    setBusy(true); setRestoreError('');
+    try {
+      const nextVersions = await api('/schedule/versions');
+      await onRestored?.();
+      const id = result.version.version_id;
+      const [version, versionDiff] = await Promise.all([
+        api(`/schedule/versions/${id}`), api(`/schedule/versions/${id}/diff?include_unchanged=0`),
+      ]);
+      setVersions(nextVersions); setSelected(version); setDiff(versionDiff);
+      setCommittedRestore(null); setPreview(null);
+    } catch (e) {
+      setRestoreError(`排程已恢復，但畫面暫時無法更新：${e.message || '請再試一次'}`);
+    } finally {
+      applyBusy.current = false;
+      setBusy(false);
+    }
   }
   return (
     <div className="main">
@@ -121,8 +151,8 @@ export default function ScheduleHistoryView({ onRestored }) {
         <VersionDiff diff={diff} />
         {selected && <Button variant="primary" block size="lg" style={{ marginTop: 'var(--sp-4)' }} onClick={openRestore} disabled={busy}>恢復這個版本</Button>}
       </div>
-      {preview && <BottomSheet onClose={busy ? undefined : () => { setPreview(null); setRestoreError(''); }} label="恢復排程版本">
-        <div className="row"><b style={{ fontSize: 17 }}>恢復 V{preview.source_version.version_no}</b><button className="icon-btn" style={{ marginLeft: 'auto' }} disabled={busy} onClick={() => { setPreview(null); setRestoreError(''); }} aria-label="關閉">×</button></div>
+      {preview && <BottomSheet onClose={(busy || committedRestore) ? undefined : () => { setPreview(null); setRestoreError(''); }} label="恢復排程版本">
+        <div className="row"><b style={{ fontSize: 17 }}>恢復 V{preview.source_version.version_no}</b><button className="icon-btn" style={{ marginLeft: 'auto' }} disabled={busy || Boolean(committedRestore)} onClick={() => { setPreview(null); setRestoreError(''); }} aria-label="關閉">×</button></div>
         <p className="ui-meta" style={{ marginTop: 'var(--sp-3)' }}>
           {preview.status === 'full' ? '所有仍有效的安排都可以恢復。'
             : preview.status === 'partial' ? '部分安排無法恢復；其餘安排可以套用。'
@@ -133,7 +163,11 @@ export default function ScheduleHistoryView({ onRestored }) {
         </SurfaceCard>)}
         {preview.unplaced_task_ids.length > 0 && <div className="ui-meta" style={{ marginTop: 'var(--sp-3)' }}>套用後將有 {preview.unplaced_task_ids.length} 項任務尚未安排。</div>}
         {restoreError && <div role="alert" className="error" style={{ marginTop: 'var(--sp-3)' }}>{restoreError}</div>}
-        {(preview.status === 'full' || preview.status === 'partial') && <Button variant="primary" block size="lg" style={{ marginTop: 'var(--sp-4)' }} disabled={busy} onClick={applyRestore}>
+        {committedRestore
+          ? <Button variant="primary" block size="lg" style={{ marginTop: 'var(--sp-4)' }} disabled={busy} onClick={() => finishRestore()}>
+              {busy ? '重新載入中…' : '重新載入結果'}
+            </Button>
+          : (preview.status === 'full' || preview.status === 'partial') && <Button variant="primary" block size="lg" style={{ marginTop: 'var(--sp-4)' }} disabled={busy} onClick={applyRestore}>
           {busy ? '恢復中…' : preview.status === 'partial' ? '恢復可行的部分' : '確認恢復'}
         </Button>}
       </BottomSheet>}
