@@ -47,7 +47,7 @@ describe('LocksView recoverable mutations', () => {
       method: 'POST',
       body: { type: 'time', date: '2030-08-20', start_time: '18:00', end_time: '19:00' },
     });
-    resolvePost({ id: 11 });
+    resolvePost({ id: 11, type: 'time', date: '2030-08-20', start_time: '18:00', end_time: '19:00' });
     expect(await screen.findByText('2030-08-20 18:00–19:00')).toBeTruthy();
   });
 
@@ -57,7 +57,7 @@ describe('LocksView recoverable mutations', () => {
       if (options?.method === 'POST') {
         attempts += 1;
         if (attempts === 1) throw new Error('網路中斷');
-        return { id: 12 };
+        return { id: 12, type: 'task', task_id: 7 };
       }
       return [];
     });
@@ -117,6 +117,33 @@ describe('LocksView recoverable mutations', () => {
     await waitFor(() => expect(screen.queryByText('2030-08-22 全天')).toBeNull());
 
     expect(deletes).toBe(1);
+    expect(reads).toBe(1);
+    expect(screen.queryByRole('alert')).toBeNull();
+  });
+
+  it('建立已提交後使用 canonical response，不因刷新失敗誘導重送 POST', async () => {
+    let reads = 0;
+    let posts = 0;
+    api.mockImplementation(async (path, options) => {
+      if (options?.method === 'POST') {
+        posts += 1;
+        return { id: 15, type: 'day', date: '2030-08-23', existing: false };
+      }
+      if (path === '/schedule/locks') {
+        reads += 1;
+        if (reads > 1) throw new Error('重新整理失敗');
+        return [];
+      }
+      return {};
+    });
+    render(<LocksView tasks={tasks} />);
+    await waitFor(() => expect(reads).toBe(1));
+    fireEvent.click(screen.getByRole('button', { name: '整天' }));
+    fireEvent.change(screen.getByLabelText('鎖定日期'), { target: { value: '2030-08-23' } });
+    fireEvent.click(screen.getByRole('button', { name: '鎖定' }));
+
+    expect(await screen.findByText('2030-08-23 全天')).toBeTruthy();
+    expect(posts).toBe(1);
     expect(reads).toBe(1);
     expect(screen.queryByRole('alert')).toBeNull();
   });

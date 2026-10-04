@@ -20,6 +20,7 @@ export default function LocksView({ tasks = [] }) {
   const [loading, setLoading] = useState(true);
   const [addBusy, setAddBusy] = useState(false);
   const [deletingId, setDeletingId] = useState(null);
+  const addingRef = useRef(false);
   const deletingRef = useRef(false);
 
   const load = useCallback(async () => {
@@ -36,7 +37,8 @@ export default function LocksView({ tasks = [] }) {
   useEffect(() => { load(); }, [load]);
 
   const add = async () => {
-    if (addBusy) return;
+    if (addBusy || addingRef.current) return;
+    addingRef.current = true;
     setAddBusy(true);
     setErr('');
     try {
@@ -45,11 +47,14 @@ export default function LocksView({ tasks = [] }) {
         : type === 'day'
           ? { type, date }
           : { type, date, start_time: start, end_time: end };
-      await api('/schedule/locks', { method: 'POST', body });
-      await load();
+      const created = await api('/schedule/locks', { method: 'POST', body });
+      // POST 回傳伺服器正規化後的完整 lock（含 existing）。寫入成功即以這份
+      // 伺服器回應更新投影，避免後續 GET 失敗被誤報成建立失敗。
+      setLocks(current => [...current.filter(lock => lock.id !== created.id), created]);
     } catch (e) {
       setErr(e.message);
     } finally {
+      addingRef.current = false;
       setAddBusy(false);
     }
   };
