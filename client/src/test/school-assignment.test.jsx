@@ -6,6 +6,7 @@
 //   ・生命週期沿用既有 Task API（PATCH /tasks/:id）
 //   ・Plan lifecycle 投影不 regression、標準任務 UI 不 regression
 import { describe, it, expect, beforeEach, vi } from 'vitest';
+import { act } from 'react';
 import { render, screen, fireEvent, waitFor } from '@testing-library/react';
 import {
   isOverdue, groupSchoolAssignments, formatDeadline, deadlineLabelText,
@@ -354,5 +355,33 @@ describe('Today 只收進行中計畫（含 standalone）的作業', () => {
     expect(screen.getByText('單機作業')).toBeInTheDocument();
     expect(screen.queryByText('結束計畫作業')).not.toBeInTheDocument();
     expect(screen.queryByText('暫停計畫作業')).not.toBeInTheDocument();
+  });
+
+  it('375px 重疊投影共用 busy：完成只送一次，兩列同步鎖定', async () => {
+    Object.defineProperty(window, 'innerWidth', { configurable: true, value: 375 });
+    let resolveWrite;
+    api.mockImplementation(() => new Promise(resolve => { resolveWrite = resolve; }));
+    const duplicate = sa({ id: 44, title: '今天截止報告', deadline_date: today(), deadline_time: '00:00' });
+    render(<SchoolAssignmentToday tasks={[duplicate]} lists={[{ id: 1, name: '數學' }]} reload={vi.fn()} />);
+    const checks = screen.getAllByRole('checkbox', { name: '標記完成' });
+    expect(checks).toHaveLength(2);
+    fireEvent.click(checks[0]);
+    await waitFor(() => checks.forEach(check => expect(check).toBeDisabled()));
+    fireEvent.change(checks[1], { target: { checked: true } });
+    expect(api).toHaveBeenCalledTimes(1);
+    await act(async () => { resolveWrite({}); });
+  });
+
+  it('write 成功但 refresh 失敗時只重試 reload，不重送完成', async () => {
+    api.mockResolvedValue({});
+    const reload = vi.fn().mockRejectedValueOnce(new Error('離線')).mockResolvedValueOnce(undefined);
+    const duplicate = sa({ id: 45, title: '今天截止測驗', deadline_date: today(), deadline_time: '00:00' });
+    render(<SchoolAssignmentToday tasks={[duplicate]} lists={[{ id: 1, name: '數學' }]} reload={reload} />);
+    fireEvent.click(screen.getAllByRole('checkbox', { name: '標記完成' })[0]);
+    expect(await screen.findByRole('alert')).toHaveTextContent('作業已更新，但畫面暫時無法重新載入');
+    fireEvent.click(screen.getByRole('button', { name: '重新載入' }));
+    await waitFor(() => expect(screen.queryByRole('button', { name: '重新載入' })).not.toBeInTheDocument());
+    expect(api).toHaveBeenCalledTimes(1);
+    expect(reload).toHaveBeenCalledTimes(2);
   });
 });
