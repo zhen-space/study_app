@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { api } from '../api';
 import { Button, PageHeader, SurfaceCard } from './ui';
 import { onActivePlan } from './helpers';
@@ -20,6 +20,7 @@ export default function LocksView({ tasks = [] }) {
   const [loading, setLoading] = useState(true);
   const [addBusy, setAddBusy] = useState(false);
   const [deletingId, setDeletingId] = useState(null);
+  const deletingRef = useRef(false);
 
   const load = useCallback(async () => {
     try {
@@ -54,15 +55,19 @@ export default function LocksView({ tasks = [] }) {
   };
 
   const remove = async id => {
-    if (deletingId !== null) return;
+    if (deletingId !== null || deletingRef.current) return;
+    deletingRef.current = true;
     setDeletingId(id);
     setErr('');
     try {
       await api(`/schedule/locks/${id}`, { method: 'DELETE' });
-      await load();
+      // DELETE 已在伺服器提交後，第二次呼叫會是 404。成功時直接更新目前投影，
+      // 不把後續 GET 失敗誤報成「解除失敗」而誘導使用者再次送出 mutation。
+      setLocks(current => current.filter(lock => lock.id !== id));
     } catch (e) {
       setErr(e.message);
     } finally {
+      deletingRef.current = false;
       setDeletingId(null);
     }
   };
