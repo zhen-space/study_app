@@ -36,6 +36,10 @@ describe('375px Task／School Assignment 附件上傳 recovery', () => {
       return Promise.resolve({});
     });
     vi.spyOn(window, 'confirm').mockReturnValue(true);
+    Object.defineProperty(URL, 'createObjectURL', { configurable: true, value: vi.fn(() => 'blob:attachment') });
+    Object.defineProperty(URL, 'revokeObjectURL', { configurable: true, value: vi.fn() });
+    vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(() => {});
+    HTMLAnchorElement.prototype.click.mockClear();
   });
 
   it('同步防止重複上傳，pending 時不能關閉明細', async () => {
@@ -210,5 +214,83 @@ describe('375px Task／School Assignment 附件上傳 recovery', () => {
     await waitFor(() => expect(screen.queryByRole('alert')).not.toBeInTheDocument());
     expect(api.mock.calls.filter(([path]) => path === '/attachments/43')).toHaveLength(1);
     expect(attachmentGets).toBe(3);
+  });
+
+  it('附件下載同步防重入，pending 時停用下載與刪除', async () => {
+    const attachment = { id: 51, name: '題目.pdf', size: 12 };
+    let resolveDownload;
+    let download;
+    let reentered = false;
+    api.mockImplementation(path => {
+      if (path === '/attachments/51') {
+        if (!reentered) {
+          reentered = true;
+          fireEvent.click(download);
+        }
+        return new Promise(resolve => { resolveDownload = resolve; });
+      }
+      if (path === '/tasks/501/attachments') return Promise.resolve([attachment]);
+      if (path === '/study-sessions') return Promise.resolve([]);
+      return Promise.resolve({});
+    });
+    mount();
+    download = await screen.findByRole('button', { name: '下載附件「題目.pdf」' });
+
+    fireEvent.click(download);
+    expect(api.mock.calls.filter(([path]) => path === '/attachments/51')).toHaveLength(1);
+    expect(download).toBeDisabled();
+    expect(screen.getByRole('button', { name: '刪除附件「題目.pdf」' })).toBeDisabled();
+    expect(screen.getByRole('button', { name: '附件處理中…' })).toBeDisabled();
+    expect(screen.getByLabelText('新增附件')).toBeDisabled();
+
+    await act(async () => { resolveDownload({ name: '題目.pdf', mime: 'application/pdf', data: btoa('pdf') }); });
+    await waitFor(() => expect(screen.getByRole('button', { name: '下載附件「題目.pdf」' })).toBeEnabled());
+    expect(HTMLAnchorElement.prototype.click).toHaveBeenCalledOnce();
+    expect(URL.createObjectURL).toHaveBeenCalledOnce();
+  });
+
+  it('附件 GET 失敗顯示錯誤並保留下載入口可重試', async () => {
+    const attachment = { id: 52, name: '解答.pdf', size: 12 };
+    let downloads = 0;
+    api.mockImplementation(path => {
+      if (path === '/attachments/52') {
+        downloads += 1;
+        return downloads === 1
+          ? Promise.reject(new Error('下載暫時失敗'))
+          : Promise.resolve({ name: '解答.pdf', mime: 'application/pdf', data: btoa('answer') });
+      }
+      if (path === '/tasks/501/attachments') return Promise.resolve([attachment]);
+      if (path === '/study-sessions') return Promise.resolve([]);
+      return Promise.resolve({});
+    });
+    mount();
+    const download = await screen.findByRole('button', { name: '下載附件「解答.pdf」' });
+
+    fireEvent.click(download);
+    expect(await screen.findByRole('alert')).toHaveTextContent('下載暫時失敗');
+    expect(download).toBeEnabled();
+    expect(HTMLAnchorElement.prototype.click).not.toHaveBeenCalled();
+
+    fireEvent.click(download);
+    await waitFor(() => expect(screen.queryByRole('alert')).not.toBeInTheDocument());
+    expect(downloads).toBe(2);
+    expect(HTMLAnchorElement.prototype.click).toHaveBeenCalledOnce();
+  });
+
+  it('損壞的附件資料不觸發下載，顯示可恢復錯誤', async () => {
+    const attachment = { id: 53, name: '損壞.pdf', size: 12 };
+    api.mockImplementation(path => {
+      if (path === '/attachments/53') return Promise.resolve({ name: '損壞.pdf', mime: 'application/pdf', data: '%%%不是base64' });
+      if (path === '/tasks/501/attachments') return Promise.resolve([attachment]);
+      if (path === '/study-sessions') return Promise.resolve([]);
+      return Promise.resolve({});
+    });
+    mount();
+    fireEvent.click(await screen.findByRole('button', { name: '下載附件「損壞.pdf」' }));
+
+    expect(await screen.findByRole('alert')).not.toHaveTextContent('');
+    expect(URL.createObjectURL).not.toHaveBeenCalled();
+    expect(HTMLAnchorElement.prototype.click).not.toHaveBeenCalled();
+    expect(screen.getByRole('button', { name: '下載附件「損壞.pdf」' })).toBeEnabled();
   });
 });
