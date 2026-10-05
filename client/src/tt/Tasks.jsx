@@ -337,8 +337,8 @@ export function Detail({ task, lists, onSave, onDelete, onClose, saveBusy = fals
     setTimeout(() => URL.revokeObjectURL(url), 5000);
   }
   async function deleteAtt(a) {
-    if (!window.confirm(`刪除附件「${a.name}」？此動作無法復原。`)) return;
     if (attBusyRef.current || attMutation?.committed) return;
+    if (!window.confirm(`刪除附件「${a.name}」？此動作無法復原。`)) return;
     attBusyRef.current = true;
     setAttBusy(true);
     setAttMutation(null);

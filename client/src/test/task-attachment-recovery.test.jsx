@@ -144,6 +144,7 @@ describe('375px Task／School Assignment 附件上傳 recovery', () => {
 
     fireEvent.click(remove);
     expect(api.mock.calls.filter(([path, options]) => path === '/attachments/41' && options?.method === 'DELETE')).toHaveLength(1);
+    expect(window.confirm).toHaveBeenCalledOnce();
     expect(remove).toBeDisabled();
     const close = screen.getByRole('button', { name: '附件處理中…' });
     expect(close).toBeDisabled();
