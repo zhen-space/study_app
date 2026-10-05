@@ -35,6 +35,7 @@ describe('375px Task／School Assignment 附件上傳 recovery', () => {
       if (path.endsWith('/attachments') || path === '/study-sessions') return Promise.resolve([]);
       return Promise.resolve({});
     });
+    vi.spyOn(window, 'confirm').mockReturnValue(true);
   });
 
   it('同步防止重複上傳，pending 時不能關閉明細', async () => {
@@ -116,6 +117,98 @@ describe('375px Task／School Assignment 附件上傳 recovery', () => {
     expect(await screen.findByText('講義.pdf')).toBeInTheDocument();
     expect(screen.queryByRole('alert')).not.toBeInTheDocument();
     expect(api.mock.calls.filter(([path, options]) => path === '/tasks/501/attachments' && options?.method === 'POST')).toHaveLength(1);
+    expect(attachmentGets).toBe(3);
+  });
+
+  it('附件刪除同步防重入，pending 時不能關閉明細', async () => {
+    const attachment = { id: 41, name: '舊講義.pdf', size: 12 };
+    let resolveDelete;
+    let remove;
+    let reentered = false;
+    let deleted = false;
+    api.mockImplementation((path, options = {}) => {
+      if (path === '/attachments/41' && options.method === 'DELETE') {
+        if (!reentered) {
+          reentered = true;
+          fireEvent.click(remove);
+        }
+        return new Promise(resolve => { resolveDelete = resolve; });
+      }
+      if (path === '/tasks/501/attachments') return Promise.resolve(deleted ? [] : [attachment]);
+      if (path === '/study-sessions') return Promise.resolve([]);
+      return Promise.resolve({});
+    });
+    const onClose = vi.fn();
+    mount(onClose);
+    remove = await screen.findByRole('button', { name: '刪除附件「舊講義.pdf」' });
+
+    fireEvent.click(remove);
+    expect(api.mock.calls.filter(([path, options]) => path === '/attachments/41' && options?.method === 'DELETE')).toHaveLength(1);
+    expect(window.confirm).toHaveBeenCalledOnce();
+    expect(remove).toBeDisabled();
+    const close = screen.getByRole('button', { name: '附件處理中…' });
+    expect(close).toBeDisabled();
+    fireEvent.click(close);
+    expect(onClose).not.toHaveBeenCalled();
+
+    deleted = true;
+    await act(async () => { resolveDelete({ ok: true }); });
+    await waitFor(() => expect(screen.queryByText('舊講義.pdf')).not.toBeInTheDocument());
+  });
+
+  it('真正 DELETE 失敗保留附件與錯誤，允許確認後重試', async () => {
+    const attachment = { id: 42, name: '英文作業.pdf', size: 12 };
+    let deletes = 0;
+    api.mockImplementation((path, options = {}) => {
+      if (path === '/attachments/42' && options.method === 'DELETE') {
+        deletes += 1;
+        return deletes === 1 ? Promise.reject(new Error('附件刪除失敗')) : Promise.resolve({ ok: true });
+      }
+      if (path === '/tasks/501/attachments') return Promise.resolve(deletes > 1 ? [] : [attachment]);
+      if (path === '/study-sessions') return Promise.resolve([]);
+      return Promise.resolve({});
+    });
+    mount();
+    const remove = await screen.findByRole('button', { name: '刪除附件「英文作業.pdf」' });
+
+    fireEvent.click(remove);
+    expect(await screen.findByRole('alert')).toHaveTextContent('附件刪除失敗');
+    expect(screen.getByText('英文作業.pdf')).toBeInTheDocument();
+    expect(remove).toBeEnabled();
+
+    fireEvent.click(remove);
+    await waitFor(() => expect(screen.queryByText('英文作業.pdf')).not.toBeInTheDocument());
+    expect(deletes).toBe(2);
+  });
+
+  it('DELETE committed 後清單失敗只重試 GET，取消則零寫入', async () => {
+    const attachment = { id: 43, name: '答案.pdf', size: 12 };
+    let attachmentGets = 0;
+    api.mockImplementation((path, options = {}) => {
+      if (path === '/attachments/43' && options.method === 'DELETE') return Promise.resolve({ ok: true });
+      if (path === '/tasks/501/attachments') {
+        attachmentGets += 1;
+        if (attachmentGets === 2) return Promise.reject(new Error('清單離線'));
+        return Promise.resolve(attachmentGets === 1 ? [attachment] : []);
+      }
+      if (path === '/study-sessions') return Promise.resolve([]);
+      return Promise.resolve({});
+    });
+    mount();
+    const remove = await screen.findByRole('button', { name: '刪除附件「答案.pdf」' });
+
+    window.confirm.mockReturnValueOnce(false);
+    fireEvent.click(remove);
+    expect(api.mock.calls.filter(([path]) => path === '/attachments/43')).toHaveLength(0);
+    expect(screen.getByText('答案.pdf')).toBeInTheDocument();
+
+    window.confirm.mockReturnValue(true);
+    fireEvent.click(remove);
+    expect(await screen.findByRole('alert')).toHaveTextContent('附件已刪除，但清單暫時無法更新');
+    expect(screen.queryByText('答案.pdf')).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: '重新載入附件' }));
+    await waitFor(() => expect(screen.queryByRole('alert')).not.toBeInTheDocument());
+    expect(api.mock.calls.filter(([path]) => path === '/attachments/43')).toHaveLength(1);
     expect(attachmentGets).toBe(3);
   });
 });
