@@ -58,12 +58,20 @@ export default function ScheduleHistoryView({ onRestored }) {
   const [preview, setPreview] = useState(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
+  const [listError, setListError] = useState('');
+  const [listLoading, setListLoading] = useState(true);
   const [restoreError, setRestoreError] = useState('');
   const [committedRestore, setCommittedRestore] = useState(null);
   const applyBusy = useRef(false);
+  const listBusy = useRef(false);
   const detailRequest = useRef(0);
   const load = async () => {
-    try { setVersions(await api('/schedule/versions')); } catch (e) { setError(e.message); }
+    if (listBusy.current) return;
+    listBusy.current = true;
+    setListLoading(true); setListError('');
+    try { setVersions(await api('/schedule/versions')); }
+    catch (e) { setListError(e.message || '無法載入排程紀錄'); }
+    finally { listBusy.current = false; setListLoading(false); }
   };
   useEffect(() => { load(); }, []);
   async function openVersion(id) {
@@ -140,8 +148,15 @@ export default function ScheduleHistoryView({ onRestored }) {
     <div className="main">
       <PageHeader title="排程紀錄" subtitle="查看舊版安排，必要時恢復可行的部分" />
       <div className="main-body">
+        {listError && <SurfaceCard tone="warning" style={{ marginBottom: 'var(--sp-3)' }}>
+          <div role="alert"><b>暫時無法載入排程紀錄</b><div className="ui-meta" style={{ marginTop: 4 }}>{listError}</div></div>
+          <Button variant="secondary" size="sm" style={{ marginTop: 'var(--sp-3)' }} disabled={listLoading} onClick={load}>
+            {listLoading ? '重新載入中…' : '重新載入紀錄'}
+          </Button>
+        </SurfaceCard>}
         {error && <div role="alert"><SurfaceCard tone="warning" style={{ marginBottom: 'var(--sp-3)' }}>{error}</SurfaceCard></div>}
-        {!versions.length && <EmptyState title="還沒有排程紀錄" description="建立第一份正式排程後，版本會出現在這裡。" />}
+        {listLoading && <p aria-live="polite">載入排程紀錄中…</p>}
+        {!listLoading && !listError && !versions.length && <EmptyState title="還沒有排程紀錄" description="建立第一份正式排程後，版本會出現在這裡。" />}
         {versions.map(v => <SurfaceCard key={v.id} style={{ marginBottom: 'var(--sp-2)', cursor: 'pointer' }}
           role="button" tabIndex={0} onClick={() => openVersion(v.id)} onKeyDown={e => e.key === 'Enter' && openVersion(v.id)}>
           <div className="row"><b>V{v.version_no}</b>{v.id === selected?.version.id && <span className="chip">查看中</span>}<span className="ui-meta" style={{ marginLeft: 'auto' }}>{SOURCE[v.source] || v.source}</span></div>
