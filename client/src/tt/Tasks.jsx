@@ -386,11 +386,11 @@ export function Detail({ task, lists, onSave, onDelete, onClose, saveBusy = fals
   return (
     <div className="detail">
       <div className="drow" style={{ justifyContent: 'space-between' }}>
-        <button className="btn sm" onClick={onClose} disabled={saveBusy || attBusy} title="完成編輯">
-          {saveBusy ? '儲存中…' : attBusy ? '附件處理中…' : '✓ 完成'}
+        <button className="btn sm" onClick={onClose} disabled={saveBusy || attBusy || attOpenBusyId != null} title="完成編輯">
+          {saveBusy ? '儲存中…' : (attBusy || attOpenBusyId != null) ? '附件處理中…' : '✓ 完成'}
         </button>
         <div style={{ position: 'relative' }}>
-          <button className="icon-btn" aria-label="更多" disabled={attBusy} onClick={() => setMenu(m => !m)}>⋯</button>
+          <button className="icon-btn" aria-label="更多" disabled={attBusy || attOpenBusyId != null} onClick={() => setMenu(m => !m)}>⋯</button>
           {menu && (
             <>
               <div style={{ position: 'fixed', inset: 0, zIndex: 40 }} onClick={() => setMenu(false)} />
@@ -506,7 +506,7 @@ export function Detail({ task, lists, onSave, onDelete, onClose, saveBusy = fals
             )}
           </div>
         ))}
-        <input type="file" aria-label="新增附件" disabled={attBusy || !!attMutation?.committed}
+        <input type="file" aria-label="新增附件" disabled={attBusy || attOpenBusyId != null || !!attMutation?.committed}
           onChange={addAtt} style={{ marginTop: 4, width: '100%' }} />
         {attMutation?.error && (
           <div role="alert" className="ui-error" style={{ marginTop: 6 }}>

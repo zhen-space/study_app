@@ -240,6 +240,8 @@ describe('375px Task／School Assignment 附件上傳 recovery', () => {
     expect(api.mock.calls.filter(([path]) => path === '/attachments/51')).toHaveLength(1);
     expect(download).toBeDisabled();
     expect(screen.getByRole('button', { name: '刪除附件「題目.pdf」' })).toBeDisabled();
+    expect(screen.getByRole('button', { name: '附件處理中…' })).toBeDisabled();
+    expect(screen.getByLabelText('新增附件')).toBeDisabled();
 
     await act(async () => { resolveDownload({ name: '題目.pdf', mime: 'application/pdf', data: btoa('pdf') }); });
     await waitFor(() => expect(screen.getByRole('button', { name: '下載附件「題目.pdf」' })).toBeEnabled());
