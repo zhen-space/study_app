@@ -175,4 +175,62 @@ describe('Plan mutation recovery', () => {
     expect(screen.queryByLabelText('任務名稱')).not.toBeInTheDocument();
     expect(handlers['/tasks']).toHaveBeenCalledOnce();
   });
+
+  it('synchronously prevents duplicate completion writes while the first PATCH is pending', async () => {
+    let resolvePatch;
+    handlers['/tasks/21'] = vi.fn().mockImplementation(() => new Promise(resolve => { resolvePatch = resolve; }));
+    const reload = mount();
+    const checkbox = screen.getByRole('checkbox', { name: tasks[0].title });
+
+    fireEvent.click(checkbox);
+    fireEvent.click(checkbox);
+
+    expect(handlers['/tasks/21']).toHaveBeenCalledOnce();
+    expect(handlers['/tasks/21']).toHaveBeenCalledWith(expect.objectContaining({
+      method: 'PATCH', body: { completed: true },
+    }));
+    expect(checkbox).toBeDisabled();
+
+    await act(async () => { resolvePatch({ ...tasks[0], completed: 1 }); });
+    await waitFor(() => expect(reload).toHaveBeenCalledWith('tasks'));
+  });
+
+  it('shows a real completion failure and keeps the unchanged task retryable', async () => {
+    handlers['/tasks/21'] = vi.fn()
+      .mockRejectedValueOnce(error('完成狀態更新失敗', 503))
+      .mockResolvedValueOnce({ ...tasks[0], completed: 1 });
+    const reload = mount();
+    const checkbox = screen.getByRole('checkbox', { name: tasks[0].title });
+
+    await click(checkbox);
+    expect((await screen.findByText('無法更新完成狀態')).closest('[role="alert"]'))
+      .toHaveTextContent('完成狀態更新失敗');
+    expect(checkbox).not.toBeChecked();
+    expect(checkbox).toBeEnabled();
+    expect(reload).not.toHaveBeenCalled();
+
+    await click(checkbox);
+    expect(handlers['/tasks/21']).toHaveBeenCalledTimes(2);
+    expect(reload).toHaveBeenCalledOnce();
+  });
+
+  it('retries only the projection refresh after a completion PATCH was committed', async () => {
+    handlers['/tasks/21'] = vi.fn().mockResolvedValue({ ...tasks[0], completed: 1 });
+    const reload = vi.fn()
+      .mockRejectedValueOnce(new Error('目前離線'))
+      .mockResolvedValueOnce(undefined);
+    mount(reload);
+    const checkbox = screen.getByRole('checkbox', { name: tasks[0].title });
+
+    await click(checkbox);
+    expect((await screen.findByText('完成狀態已儲存，但畫面暫時無法更新')).closest('[role="alert"]'))
+      .toHaveTextContent('目前離線');
+    expect(checkbox).toBeDisabled();
+    expect(handlers['/tasks/21']).toHaveBeenCalledOnce();
+
+    await click(screen.getByRole('button', { name: '重新載入' }));
+    await waitFor(() => expect(screen.queryByText('完成狀態已儲存，但畫面暫時無法更新')).not.toBeInTheDocument());
+    expect(reload).toHaveBeenCalledTimes(2);
+    expect(handlers['/tasks/21']).toHaveBeenCalledOnce();
+  });
 });

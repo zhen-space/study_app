@@ -92,6 +92,8 @@ export default function PlanDetailView({ planKey, tasks, lists, apiPlans = [], r
   const [err, setErr] = useState('');
   const [refreshStale, setRefreshStale] = useState(false);
   const mutationBusy = useRef(false);
+  const taskToggleBusyRef = useRef(false);
+  const [taskToggleState, setTaskToggleState] = useState(null); // { taskId, committed, error }
   const [replan, setReplan] = useState(false);
   const [unresolved, setUnresolved] = useState(0);
   const [nt, setNt] = useState({ title: '', list_id: '', deadline_date: '', estimated_minutes: '' });
@@ -201,10 +203,35 @@ export default function PlanDetailView({ planKey, tasks, lists, apiPlans = [], r
     setShowRolling(true);
   };
 
-  // 完成任務走既有的 PATCH /tasks/:id，沒有第二套完成邏輯
-  const toggle = t =>
-    api(`/tasks/${t.id}`, { method: 'PATCH', body: { completed: !t.completed } })
-      .then(() => reload('tasks')).catch(() => reload('tasks'));
+  // 完成任務走既有的 PATCH /tasks/:id，沒有第二套完成邏輯。
+  // PATCH 成功後就已經提交；若只是父層資料刷新失敗，重試只能刷新，不能再反轉一次。
+  const refreshCommittedTaskToggle = async taskId => {
+    if (taskToggleBusyRef.current) return;
+    taskToggleBusyRef.current = true;
+    setTaskToggleState({ taskId, committed: true, error: '' });
+    try {
+      await reload('tasks');
+      setTaskToggleState(null);
+    } catch (e) {
+      setTaskToggleState({ taskId, committed: true, error: e.message || '重新載入失敗，請稍後再試。' });
+    } finally {
+      taskToggleBusyRef.current = false;
+    }
+  };
+  const toggle = async t => {
+    if (taskToggleBusyRef.current || taskToggleState?.committed) return;
+    taskToggleBusyRef.current = true;
+    setTaskToggleState({ taskId: t.id, committed: false, error: '' });
+    try {
+      await api(`/tasks/${t.id}`, { method: 'PATCH', body: { completed: !t.completed } });
+    } catch (e) {
+      setTaskToggleState({ taskId: t.id, committed: false, error: e.message || '更新完成狀態失敗，請稍後再試。' });
+      taskToggleBusyRef.current = false;
+      return;
+    }
+    taskToggleBusyRef.current = false;
+    await refreshCommittedTaskToggle(t.id);
+  };
 
   // 以下全部走 Phase 2A 已有的 /plans API，前端不另外存一份計畫狀態
   const run = async (fn, afterReload) => {
@@ -381,7 +408,9 @@ export default function PlanDetailView({ planKey, tasks, lists, apiPlans = [], r
     return (
       <ListRow key={t.id} muted={!!t.completed}
         leading={<input type="checkbox" aria-label={t.title} checked={!!t.completed}
-          disabled={readOnly} onChange={() => { if (!readOnly) toggle(t); }} />}
+          disabled={readOnly || !!taskToggleState?.committed
+            || (taskToggleState?.taskId === t.id && taskToggleBusyRef.current)}
+          onChange={() => { if (!readOnly) toggle(t); }} />}
         title={rowTitle(t)}
         trailing={t.due_date
           ? (block
@@ -407,6 +436,21 @@ export default function PlanDetailView({ planKey, tasks, lists, apiPlans = [], r
         </>}
       />
       <div className="main-body">
+        {taskToggleState?.error && (
+          <SurfaceCard tone={taskToggleState.committed ? 'accent' : undefined}>
+            <div role="alert">
+              <b>{taskToggleState.committed ? '完成狀態已儲存，但畫面暫時無法更新' : '無法更新完成狀態'}</b>
+              <div className="ui-meta" style={{ marginTop: 'var(--sp-2)' }}>{taskToggleState.error}</div>
+            </div>
+            {taskToggleState.committed && (
+              <Button size="sm" variant="primary" style={{ marginTop: 'var(--sp-3)' }}
+                disabled={taskToggleBusyRef.current}
+                onClick={() => refreshCommittedTaskToggle(taskToggleState.taskId)}>
+                {taskToggleBusyRef.current ? '重新載入中…' : '重新載入'}
+              </Button>
+            )}
+          </SurfaceCard>
+        )}
         <div className="row">
           {!isReal && (
             <Button size="sm" style={{ marginLeft: 'auto' }} onClick={goWizard}>
