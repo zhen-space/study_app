@@ -265,6 +265,9 @@ export function Detail({ task, lists, onSave, onDelete, onClose, saveBusy = fals
   const [attBusy, setAttBusy] = useState(false);
   const [attMutation, setAttMutation] = useState(null); // { operation, committed, error }
   const attBusyRef = useRef(false);
+  const attOpenBusyRef = useRef(false);
+  const [attOpenBusyId, setAttOpenBusyId] = useState(null);
+  const [attOpenError, setAttOpenError] = useState(null); // { id, message }
   const loadAtts = async () => {
     const rows = await api(`/tasks/${task.id}/attachments`);
     setAtts(rows);
@@ -327,14 +330,27 @@ export function Detail({ task, lists, onSave, onDelete, onClose, saveBusy = fals
     }
   }
   async function openAtt(a) {
-    const full = await api(`/attachments/${a.id}`);
-    const bin = atob(full.data);
-    const bytes = new Uint8Array(bin.length);
-    for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
-    const url = URL.createObjectURL(new Blob([bytes], { type: full.mime || 'application/octet-stream' }));
-    const aEl = document.createElement('a');
-    aEl.href = url; aEl.download = full.name; aEl.click();
-    setTimeout(() => URL.revokeObjectURL(url), 5000);
+    if (attOpenBusyRef.current) return;
+    attOpenBusyRef.current = true;
+    setAttOpenBusyId(a.id);
+    setAttOpenError(null);
+    try {
+      const full = await api(`/attachments/${a.id}`);
+      const bin = atob(full.data);
+      const bytes = new Uint8Array(bin.length);
+      for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+      const url = URL.createObjectURL(new Blob([bytes], { type: full.mime || 'application/octet-stream' }));
+      const aEl = document.createElement('a');
+      aEl.href = url;
+      aEl.download = full.name;
+      aEl.click();
+      setTimeout(() => URL.revokeObjectURL(url), 5000);
+    } catch (err) {
+      setAttOpenError({ id: a.id, message: err.message || '附件下載失敗，請再試一次。' });
+    } finally {
+      attOpenBusyRef.current = false;
+      setAttOpenBusyId(null);
+    }
   }
   async function deleteAtt(a) {
     if (attBusyRef.current || attMutation?.committed) return;
@@ -472,11 +488,22 @@ export function Detail({ task, lists, onSave, onDelete, onClose, saveBusy = fals
       <div>
         <label className="muted">📎 附件</label>
         {atts.map(a => (
-          <div key={a.id} className="subtask">
-            <span style={{ flex: 1, cursor: 'pointer', color: 'var(--primary)' }} onClick={() => openAtt(a)}>{a.name}</span>
-            <span className="muted">{Math.round(a.size * 0.75 / 1024)}KB</span>
-            <button className="icon-btn" aria-label={`刪除附件「${a.name}」`} disabled={attBusy || !!attMutation?.committed}
-              onClick={() => deleteAtt(a)}>✕</button>
+          <div key={a.id}>
+            <div className="subtask">
+              <button type="button" aria-label={`下載附件「${a.name}」`}
+                disabled={attOpenBusyId != null}
+                onClick={() => openAtt(a)}
+                style={{ flex: 1, cursor: 'pointer', color: 'var(--primary)', textAlign: 'left', background: 'none', border: 0, padding: 0 }}>
+                {attOpenBusyId === a.id ? '下載中…' : a.name}
+              </button>
+              <span className="muted">{Math.round(a.size * 0.75 / 1024)}KB</span>
+              <button className="icon-btn" aria-label={`刪除附件「${a.name}」`}
+                disabled={attBusy || attOpenBusyId != null || !!attMutation?.committed}
+                onClick={() => deleteAtt(a)}>✕</button>
+            </div>
+            {attOpenError?.id === a.id && (
+              <div role="alert" className="ui-error" style={{ margin: '4px 0 0' }}>{attOpenError.message}</div>
+            )}
           </div>
         ))}
         <input type="file" aria-label="新增附件" disabled={attBusy || !!attMutation?.committed}
