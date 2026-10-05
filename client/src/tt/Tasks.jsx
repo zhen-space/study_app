@@ -263,7 +263,7 @@ export function Detail({ task, lists, onSave, onDelete, onClose, saveBusy = fals
   // 附件
   const [atts, setAtts] = useState([]);
   const [attBusy, setAttBusy] = useState(false);
-  const [attMutation, setAttMutation] = useState(null); // { committed, error }
+  const [attMutation, setAttMutation] = useState(null); // { operation, committed, error }
   const attBusyRef = useRef(false);
   const loadAtts = async () => {
     const rows = await api(`/tasks/${task.id}/attachments`);
@@ -294,18 +294,18 @@ export function Detail({ task, lists, onSave, onDelete, onClose, saveBusy = fals
       await api(`/tasks/${task.id}/attachments`, { method: 'POST', body: { name: file.name, mime: file.type, data: btoa(bin) } });
     } catch (err) {
       input.value = ''; // 讓同一個檔案可以重新選取並觸發 change
-      setAttMutation({ committed: false, error: err.message || '附件上傳失敗，請重新選取檔案再試一次。' });
+      setAttMutation({ operation: 'upload', committed: false, error: err.message || '附件上傳失敗，請重新選取檔案再試一次。' });
       attBusyRef.current = false;
       setAttBusy(false);
       return;
     }
     input.value = '';
-    setAttMutation({ committed: true, error: '' });
+    setAttMutation({ operation: 'upload', committed: true, error: '' });
     try {
       await loadAtts();
       setAttMutation(null);
     } catch (err) {
-      setAttMutation({ committed: true, error: err.message || '附件已上傳，但清單暫時無法更新。' });
+      setAttMutation({ operation: 'upload', committed: true, error: err.message || '附件已上傳，但清單暫時無法更新。' });
     } finally {
       attBusyRef.current = false;
       setAttBusy(false);
@@ -319,7 +319,8 @@ export function Detail({ task, lists, onSave, onDelete, onClose, saveBusy = fals
       await loadAtts();
       setAttMutation(null);
     } catch (err) {
-      setAttMutation({ committed: true, error: err.message || '仍然無法更新附件清單，請稍後再試。' });
+      setAttMutation(m => ({ operation: m?.operation || 'refresh', committed: true,
+        error: err.message || '仍然無法更新附件清單，請稍後再試。' }));
     } finally {
       attBusyRef.current = false;
       setAttBusy(false);
@@ -334,6 +335,33 @@ export function Detail({ task, lists, onSave, onDelete, onClose, saveBusy = fals
     const aEl = document.createElement('a');
     aEl.href = url; aEl.download = full.name; aEl.click();
     setTimeout(() => URL.revokeObjectURL(url), 5000);
+  }
+  async function deleteAtt(a) {
+    if (!window.confirm(`刪除附件「${a.name}」？此動作無法復原。`)) return;
+    if (attBusyRef.current || attMutation?.committed) return;
+    attBusyRef.current = true;
+    setAttBusy(true);
+    setAttMutation(null);
+    try {
+      await api(`/attachments/${a.id}`, { method: 'DELETE' });
+    } catch (err) {
+      setAttMutation({ operation: 'delete', committed: false, error: err.message || '附件刪除失敗，請再試一次。' });
+      attBusyRef.current = false;
+      setAttBusy(false);
+      return;
+    }
+    // DELETE 已提交就立刻移除本地投影，避免刷新失敗時再次送出不可逆刪除。
+    setAtts(rows => rows.filter(row => Number(row.id) !== Number(a.id)));
+    setAttMutation({ operation: 'delete', committed: true, error: '' });
+    try {
+      await loadAtts();
+      setAttMutation(null);
+    } catch (err) {
+      setAttMutation({ operation: 'delete', committed: true, error: err.message || '附件已刪除，但清單暫時無法更新。' });
+    } finally {
+      attBusyRef.current = false;
+      setAttBusy(false);
+    }
   }
   const addTag = raw => { const v = raw.trim(); if (!v || t.tags.includes(v)) return; up({ tags: [...t.tags, v] }); };
   const isSchoolAssignment = t.task_kind === 'school_assignment';
@@ -447,14 +475,17 @@ export function Detail({ task, lists, onSave, onDelete, onClose, saveBusy = fals
           <div key={a.id} className="subtask">
             <span style={{ flex: 1, cursor: 'pointer', color: 'var(--primary)' }} onClick={() => openAtt(a)}>{a.name}</span>
             <span className="muted">{Math.round(a.size * 0.75 / 1024)}KB</span>
-            <button className="icon-btn" onClick={() => api(`/attachments/${a.id}`, { method: 'DELETE' }).then(loadAtts)}>✕</button>
+            <button className="icon-btn" aria-label={`刪除附件「${a.name}」`} disabled={attBusy || !!attMutation?.committed}
+              onClick={() => deleteAtt(a)}>✕</button>
           </div>
         ))}
         <input type="file" aria-label="新增附件" disabled={attBusy || !!attMutation?.committed}
           onChange={addAtt} style={{ marginTop: 4, width: '100%' }} />
         {attMutation?.error && (
           <div role="alert" className="ui-error" style={{ marginTop: 6 }}>
-            {attMutation.committed ? '附件已上傳，但清單暫時無法更新。' : attMutation.error}
+            {attMutation.committed
+              ? (attMutation.operation === 'delete' ? '附件已刪除，但清單暫時無法更新。' : '附件已上傳，但清單暫時無法更新。')
+              : attMutation.error}
             {attMutation.committed && (
               <button type="button" disabled={attBusy} onClick={retryAtts} style={{ marginLeft: 8 }}>
                 {attBusy ? '重新載入中…' : '重新載入附件'}
