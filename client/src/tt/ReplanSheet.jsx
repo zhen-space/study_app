@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { api } from '../api';
 import Icon from './Icons';
 import { today, addDays } from './helpers';
@@ -27,9 +27,27 @@ export default function ReplanSheet({ plan, health, raw, lists = [], reload, onC
   const [preview, setPreview] = useState(null);
   const [err, setErr] = useState('');
   const [profile, setProfile] = useState(null);
+  const [profileLoading, setProfileLoading] = useState(true);
+  const [profileError, setProfileError] = useState('');
+  const profileRequest = useRef(0);
   const applyBusy = useRef(false);
   const [applied, setApplied] = useState(false);
-  useEffect(() => { if (plan.planId != null) api(`/plans/${plan.planId}/schedule-profile`).then(setProfile).catch(() => {}); }, [plan.planId]);
+  const loadProfile = useCallback(async () => {
+    const request = ++profileRequest.current;
+    setProfileLoading(true); setProfileError('');
+    try {
+      const value = await api(`/plans/${plan.planId}/schedule-profile`);
+      if (request === profileRequest.current) setProfile(value);
+    } catch (e) {
+      if (request === profileRequest.current) setProfileError(e.message || '無法載入安排條件');
+    } finally {
+      if (request === profileRequest.current) setProfileLoading(false);
+    }
+  }, [plan.planId]);
+  useEffect(() => {
+    if (plan.planId != null) loadProfile();
+    else setProfileLoading(false);
+  }, [plan.planId, loadProfile]);
 
   // 重排的對象：這個計畫底下還沒完成的任務。完成的連讀都不讀進來。
   const pending = plan.items.filter(t => !t.completed && !t.deleted);
@@ -169,7 +187,18 @@ export default function ReplanSheet({ plan, health, raw, lists = [], reload, onC
 
             {/* 找不到這個計畫當初的排法時，不會自己補一組預設值硬排下去，
                 而是請使用者確認一次；確認過的條件之後就會被沿用。 */}
-            {!complete && (
+            {profileLoading && (
+              <SurfaceCard tone="accent" style={{ marginTop: 'var(--sp-3)' }}>
+                <b>正在載入原本的安排條件…</b>
+              </SurfaceCard>
+            )}
+            {!profileLoading && profileError && (
+              <SurfaceCard tone="warning" style={{ marginTop: 'var(--sp-3)' }}>
+                <div role="alert"><b>暫時無法載入安排條件</b><div className="ui-meta" style={{ marginTop: 4 }}>{profileError}</div></div>
+                <Button variant="secondary" size="sm" style={{ marginTop: 'var(--sp-3)' }} onClick={loadProfile}>重新載入條件</Button>
+              </SurfaceCard>
+            )}
+            {!profileLoading && !profileError && !complete && (
               <SurfaceCard tone="accent" style={{ marginTop: 'var(--sp-3)' }}>
                 <b>需要先確認安排條件</b>
                 <div className="muted" style={{ fontSize: 13, marginTop: 2 }}>
@@ -183,7 +212,7 @@ export default function ReplanSheet({ plan, health, raw, lists = [], reload, onC
 
             {err && <div className="error" style={{ marginTop: 10 }}>{err}</div>}
             <div className="row" style={{ marginTop: 14 }}>
-              {complete ? (
+              {profileLoading || profileError ? null : complete ? (
                 <>
                   <Button variant="secondary" disabled={stage === 'loading'} onClick={() => onEditConditions('deadline')}>修改條件</Button>
                   <Button variant="primary" style={{ marginLeft: 'auto' }} disabled={stage === 'loading' || !pending.length} onClick={run}>

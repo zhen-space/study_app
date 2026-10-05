@@ -21,7 +21,7 @@ function mount(reload = vi.fn().mockResolvedValue(), onClose = vi.fn()) {
   return { reload, onClose };
 }
 async function openPreview() {
-  fireEvent.click(screen.getByRole('button', { name: '重新安排' }));
+  fireEvent.click(await screen.findByRole('button', { name: '重新安排' }));
   await screen.findByText('新的安排已準備好');
   return screen.getByRole('button', { name: '套用新版安排' });
 }
@@ -33,6 +33,29 @@ beforeEach(() => {
 afterEach(cleanup);
 
 describe('ReplanSheet 套用後恢復', () => {
+  it('375px：安排條件載入失敗不冒充缺少設定，並可原地重試', async () => {
+    let profileCalls = 0;
+    api.mockImplementation(path => {
+      if (path === '/plans/7/schedule-profile') {
+        profileCalls += 1;
+        if (profileCalls === 1) return Promise.reject(new Error('網路中斷'));
+        return Promise.resolve({ timed: false, pace: 'even', perDay: 3 });
+      }
+      if (path === '/schedule/preview') return Promise.resolve(structuredClone(preview));
+      return Promise.resolve({});
+    });
+    mount();
+
+    expect(await screen.findByRole('alert')).toHaveTextContent('暫時無法載入安排條件');
+    expect(screen.queryByText('需要先確認安排條件')).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: '重新安排' })).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('button', { name: '重新載入條件' }));
+    expect(await screen.findByRole('button', { name: '重新安排' })).toBeEnabled();
+    expect(profileCalls).toBe(2);
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument();
+  });
+
   it('套用尚未完成時 backdrop 與關閉都不能卸載，成功後才可關閉', async () => {
     let finishApply;
     const pendingApply = new Promise(resolve => { finishApply = resolve; });
