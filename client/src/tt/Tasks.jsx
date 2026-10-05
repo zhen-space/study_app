@@ -262,10 +262,16 @@ export function Detail({ task, lists, onSave, onDelete, onClose, saveBusy = fals
 
   // 附件
   const [atts, setAtts] = useState([]);
-  const loadAtts = () => api(`/tasks/${task.id}/attachments`).then(setAtts).catch(() => {});
+  const [attBusy, setAttBusy] = useState(false);
+  const [attMutation, setAttMutation] = useState(null); // { committed, error }
+  const attBusyRef = useRef(false);
+  const loadAtts = async () => {
+    const rows = await api(`/tasks/${task.id}/attachments`);
+    setAtts(rows);
+  };
   // 一定要包成 { }：箭頭函式直接回傳 Promise 的話，React 會把那個 Promise 當成
   // 清理函式，關掉任務時就會 destroy() → 「l is not a function」整頁掛掉
-  useEffect(() => { loadAtts(); }, [task.id]);
+  useEffect(() => { loadAtts().catch(() => {}); }, [task.id]);
   // 實際讀書：這個任務累計讀了多久（只算 completed 的 StudySession；來源是 GET /study-sessions）
   const [sessions, setSessions] = useState([]);
   useEffect(() => {
@@ -275,14 +281,49 @@ export function Detail({ task, lists, onSave, onDelete, onClose, saveBusy = fals
 
   async function addAtt(e) {
     const file = e.target.files[0];
-    if (!file) return;
-    if (file.size > 3 * 1024 * 1024) { alert('檔案太大（上限 3MB）'); return; }
-    const bytes = new Uint8Array(await file.arrayBuffer());
-    let bin = '';
-    for (let i = 0; i < bytes.length; i += 8192) bin += String.fromCharCode(...bytes.subarray(i, i + 8192));
-    await api(`/tasks/${task.id}/attachments`, { method: 'POST', body: { name: file.name, mime: file.type, data: btoa(bin) } });
-    e.target.value = '';
-    loadAtts();
+    if (!file || attBusyRef.current || attMutation?.committed) return;
+    if (file.size > 3 * 1024 * 1024) { alert('檔案太大（上限 3MB）'); e.target.value = ''; return; }
+    const input = e.target;
+    attBusyRef.current = true;
+    setAttBusy(true);
+    setAttMutation(null);
+    try {
+      const bytes = new Uint8Array(await file.arrayBuffer());
+      let bin = '';
+      for (let i = 0; i < bytes.length; i += 8192) bin += String.fromCharCode(...bytes.subarray(i, i + 8192));
+      await api(`/tasks/${task.id}/attachments`, { method: 'POST', body: { name: file.name, mime: file.type, data: btoa(bin) } });
+    } catch (err) {
+      input.value = ''; // 讓同一個檔案可以重新選取並觸發 change
+      setAttMutation({ committed: false, error: err.message || '附件上傳失敗，請重新選取檔案再試一次。' });
+      attBusyRef.current = false;
+      setAttBusy(false);
+      return;
+    }
+    input.value = '';
+    setAttMutation({ committed: true, error: '' });
+    try {
+      await loadAtts();
+      setAttMutation(null);
+    } catch (err) {
+      setAttMutation({ committed: true, error: err.message || '附件已上傳，但清單暫時無法更新。' });
+    } finally {
+      attBusyRef.current = false;
+      setAttBusy(false);
+    }
+  }
+  async function retryAtts() {
+    if (attBusyRef.current) return;
+    attBusyRef.current = true;
+    setAttBusy(true);
+    try {
+      await loadAtts();
+      setAttMutation(null);
+    } catch (err) {
+      setAttMutation({ committed: true, error: err.message || '仍然無法更新附件清單，請稍後再試。' });
+    } finally {
+      attBusyRef.current = false;
+      setAttBusy(false);
+    }
   }
   async function openAtt(a) {
     const full = await api(`/attachments/${a.id}`);
@@ -301,9 +342,11 @@ export function Detail({ task, lists, onSave, onDelete, onClose, saveBusy = fals
   return (
     <div className="detail">
       <div className="drow" style={{ justifyContent: 'space-between' }}>
-        <button className="btn sm" onClick={onClose} disabled={saveBusy} title="完成編輯">{saveBusy ? '儲存中…' : '✓ 完成'}</button>
+        <button className="btn sm" onClick={onClose} disabled={saveBusy || attBusy} title="完成編輯">
+          {saveBusy ? '儲存中…' : attBusy ? '附件處理中…' : '✓ 完成'}
+        </button>
         <div style={{ position: 'relative' }}>
-          <button className="icon-btn" aria-label="更多" onClick={() => setMenu(m => !m)}>⋯</button>
+          <button className="icon-btn" aria-label="更多" disabled={attBusy} onClick={() => setMenu(m => !m)}>⋯</button>
           {menu && (
             <>
               <div style={{ position: 'fixed', inset: 0, zIndex: 40 }} onClick={() => setMenu(false)} />
@@ -407,7 +450,18 @@ export function Detail({ task, lists, onSave, onDelete, onClose, saveBusy = fals
             <button className="icon-btn" onClick={() => api(`/attachments/${a.id}`, { method: 'DELETE' }).then(loadAtts)}>✕</button>
           </div>
         ))}
-        <input type="file" onChange={addAtt} style={{ marginTop: 4, width: '100%' }} />
+        <input type="file" aria-label="新增附件" disabled={attBusy || !!attMutation?.committed}
+          onChange={addAtt} style={{ marginTop: 4, width: '100%' }} />
+        {attMutation?.error && (
+          <div role="alert" className="ui-error" style={{ marginTop: 6 }}>
+            {attMutation.committed ? '附件已上傳，但清單暫時無法更新。' : attMutation.error}
+            {attMutation.committed && (
+              <button type="button" disabled={attBusy} onClick={retryAtts} style={{ marginLeft: 8 }}>
+                {attBusy ? '重新載入中…' : '重新載入附件'}
+              </button>
+            )}
+          </div>
+        )}
       </div>
     </div>
   );
