@@ -54,6 +54,28 @@ async function selectVersion(version = 1) {
 }
 
 describe('ScheduleHistory restore recovery', () => {
+  it('375px：版本清單載入失敗不冒充空紀錄，並可原地重試', async () => {
+    let attempts = 0;
+    api.mockImplementation(async path => {
+      if (path === '/schedule/versions') {
+        attempts += 1;
+        if (attempts === 1) throw new Error('網路中斷');
+        return versions;
+      }
+      throw new Error(`unexpected ${path}`);
+    });
+    render(<ScheduleHistoryView />);
+
+    expect(await screen.findByRole('alert')).toHaveTextContent('暫時無法載入排程紀錄');
+    expect(screen.queryByText('還沒有排程紀錄')).toBeNull();
+    expect(screen.queryByRole('button', { name: /V1/ })).toBeNull();
+
+    fireEvent.click(screen.getByRole('button', { name: '重新載入紀錄' }));
+    expect(await screen.findByRole('button', { name: /V1/ })).toBeTruthy();
+    expect(attempts).toBe(2);
+    expect(screen.queryByRole('alert')).toBeNull();
+  });
+
   it('快速切換版本時只有最後一次請求能更新詳情', async () => {
     const pending = new Map([
       ['/schedule/versions/1', deferred()],
