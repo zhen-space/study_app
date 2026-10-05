@@ -734,13 +734,33 @@ export default function Tasks({ view, tasks, lists, filters, habits = [], reload
 
   // 願望清單：想做/要記得的事（無日期、無清單）
   const [wish, setWish] = useState('');
+  const [wishBusy, setWishBusy] = useState(false);
+  const [wishError, setWishError] = useState('');
+  const wishBusyRef = useRef(false);
+  const wishComposing = useRef(false);
   const wishes = tv.filter(t => !t.list_id && !t.completed && !t.due_date && !t.deleted);
   async function addWish(e) {
     e.preventDefault();
-    if (!wish.trim()) return;
-    await api('/tasks', { method: 'POST', body: { title: wish.trim() } });
+    if (wishComposing.current || wishBusyRef.current || !wish.trim()) return;
+    wishBusyRef.current = true;
+    setWishBusy(true);
+    setWishError('');
+    try {
+      await api('/tasks', { method: 'POST', body: { title: wish.trim() } });
+    } catch (e) {
+      setWishError(e.message || '新增願望失敗，請再試一次。');
+      wishBusyRef.current = false;
+      setWishBusy(false);
+      return;
+    }
     setWish('');
-    reload('tasks');
+    try {
+      await reload('tasks');
+    } catch {
+      setRefreshError('願望已新增，但畫面暫時無法重新載入。');
+    }
+    wishBusyRef.current = false;
+    setWishBusy(false);
   }
 
   return (
@@ -904,9 +924,15 @@ export default function Tasks({ view, tasks, lists, filters, habits = [], reload
             <div className="tgroup" style={{ marginTop: 24, borderTop: '2px dashed var(--border)', paddingTop: 12 }}>
               <div className="glabel">💭 願望清單（想做、要記得的事）</div>
               {wishes.map(t => <TaskRow key={t.id} t={t} lists={lists} sel={t.id === selId} onSel={x => setSelId(x.id)} onToggle={toggle} onSwipeDelete={del} />)}
-              <form onSubmit={addWish} style={{ marginTop: 6 }}>
-                <input placeholder="＋ 記一件想做的事…" value={wish} onChange={e => setWish(e.target.value)}
+              <form onSubmit={addWish} aria-busy={wishBusy} style={{ marginTop: 6 }}>
+                <input placeholder="＋ 記一件想做的事…" value={wish} disabled={wishBusy}
+                  aria-invalid={wishError ? 'true' : undefined}
+                  onChange={e => { setWish(e.target.value); if (wishError) setWishError(''); }}
+                  onCompositionStart={() => { wishComposing.current = true; }}
+                  onCompositionEnd={() => { wishComposing.current = false; }}
+                  onKeyDown={e => { if (e.key === 'Enter' && (e.isComposing || e.nativeEvent?.isComposing)) e.preventDefault(); }}
                   style={{ width: '100%', background: 'var(--bg)', border: '1px dashed var(--border)' }} />
+                {wishError && <div role="alert" className="ui-error" style={{ marginTop: 6 }}>{wishError}</div>}
               </form>
             </div>
           )}
