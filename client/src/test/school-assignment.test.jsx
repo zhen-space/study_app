@@ -11,6 +11,7 @@ import { render, screen, fireEvent, waitFor } from '@testing-library/react';
 import {
   isOverdue, groupSchoolAssignments, formatDeadline, deadlineLabelText,
   reminderSelectionToFields, reminderFieldsToSelection, effectiveDeadlineTime,
+  nowTW,
 } from '../tt/schoolAssignment';
 import { matchView, onActivePlan, today } from '../tt/helpers';
 import { pickStudyTasks } from '../tt/StudyView';
@@ -361,7 +362,9 @@ describe('Today 只收進行中計畫（含 standalone）的作業', () => {
     Object.defineProperty(window, 'innerWidth', { configurable: true, value: 375 });
     let resolveWrite;
     api.mockImplementation(() => new Promise(resolve => { resolveWrite = resolve; }));
-    const duplicate = sa({ id: 44, title: '今天截止報告', deadline_date: today(), deadline_time: '00:00' });
+    // Today 分組以台灣時間為準；測試資料也必須沿用同一個時區，避免 UTC CI
+    // 在台灣午夜前後把「今天」算成不同日期而只渲染一列。
+    const duplicate = sa({ id: 44, title: '今天截止報告', deadline_date: nowTW().date, deadline_time: '00:00' });
     render(<SchoolAssignmentToday tasks={[duplicate]} lists={[{ id: 1, name: '數學' }]} reload={vi.fn()} />);
     const checks = screen.getAllByRole('checkbox', { name: '標記完成' });
     expect(checks).toHaveLength(2);

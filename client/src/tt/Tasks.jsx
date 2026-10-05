@@ -504,20 +504,69 @@ export default function Tasks({ view, tasks, lists, filters, habits = [], reload
   const shown = showChips ? subjFiltered.filter(chipFn[taskFilter] || chipFn.all) : shownAll;
   const chipCount = k => (subjFilter ? shownAll.filter(t => String(t.list_id) === subjFilter) : shownAll).filter(chipFn[k]).length;
   const sel = tv.find(t => t.id === selId);
+  const trashMutationIds = useRef(new Set());
+  const [trashPendingIds, setTrashPendingIds] = useState(new Set());
+  const [trashErrors, setTrashErrors] = useState({});
+  const emptyTrashBusyRef = useRef(false);
+  const [emptyTrashBusy, setEmptyTrashBusy] = useState(false);
+  const [emptyTrashError, setEmptyTrashError] = useState('');
+  const beginTrashMutation = id => {
+    if (trashMutationIds.current.has(id)) return false;
+    trashMutationIds.current.add(id);
+    setTrashPendingIds(ids => new Set([...ids, id]));
+    setTrashErrors(errors => ({ ...errors, [id]: '' }));
+    return true;
+  };
+  const finishTrashMutation = id => {
+    trashMutationIds.current.delete(id);
+    setTrashPendingIds(ids => { const next = new Set(ids); next.delete(id); return next; });
+  };
 
   async function restore(t) {
-    await api(`/tasks/${t.id}`, { method: 'PATCH', body: { deleted: false } });
-    reload('tasks');
+    if (!beginTrashMutation(t.id)) return;
+    try {
+      await api(`/tasks/${t.id}`, { method: 'PATCH', body: { deleted: false } });
+    } catch (e) {
+      setTrashErrors(errors => ({ ...errors, [t.id]: e.message || '還原失敗，請再試一次。' }));
+      finishTrashMutation(t.id);
+      return;
+    }
+    setHidden(ids => new Set([...ids, t.id]));
+    await reload('tasks').catch(() => setRefreshError('任務已還原，但畫面暫時無法重新載入。'));
+    finishTrashMutation(t.id);
   }
   async function hardDel(t) {
     if (!window.confirm(`永久刪除「${t.title}」？無法復原`)) return;
-    await api(`/tasks/${t.id}?hard=1`, { method: 'DELETE' });
-    reload('tasks');
+    if (!beginTrashMutation(t.id)) return;
+    try {
+      await api(`/tasks/${t.id}?hard=1`, { method: 'DELETE' });
+    } catch (e) {
+      setTrashErrors(errors => ({ ...errors, [t.id]: e.message || '永久刪除失敗，請再試一次。' }));
+      finishTrashMutation(t.id);
+      return;
+    }
+    setHidden(ids => new Set([...ids, t.id]));
+    await reload('tasks').catch(() => setRefreshError('任務已永久刪除，但畫面暫時無法重新載入。'));
+    finishTrashMutation(t.id);
   }
   async function emptyTrash() {
     if (!window.confirm('清空垃圾桶？所有項目將永久刪除')) return;
-    await api('/trash', { method: 'DELETE' });
-    reload('tasks');
+    if (emptyTrashBusyRef.current) return;
+    emptyTrashBusyRef.current = true;
+    setEmptyTrashBusy(true);
+    setEmptyTrashError('');
+    try {
+      await api('/trash', { method: 'DELETE' });
+    } catch (e) {
+      setEmptyTrashError(e.message || '清空垃圾桶失敗，請再試一次。');
+      emptyTrashBusyRef.current = false;
+      setEmptyTrashBusy(false);
+      return;
+    }
+    setHidden(ids => new Set([...ids, ...shown.map(t => t.id)]));
+    await reload('tasks').catch(() => setRefreshError('垃圾桶已清空，但畫面暫時無法重新載入。'));
+    emptyTrashBusyRef.current = false;
+    setEmptyTrashBusy(false);
   }
   // 拖曳排序（預設排序時才能拖）
   const [dragT, setDragT] = useState(null);
@@ -716,7 +765,8 @@ export default function Tasks({ view, tasks, lists, filters, habits = [], reload
             </select>
           )}
           {view.type === 'trash' && shown.length > 0 && (
-            <button className="btn sm ghost" style={{ marginLeft: 'auto' }} onClick={emptyTrash}>清空垃圾桶</button>
+            <button className="btn sm ghost" style={{ marginLeft: 'auto' }} disabled={emptyTrashBusy}
+              onClick={emptyTrash}>{emptyTrashBusy ? '清空中…' : '清空垃圾桶'}</button>
           )}
         </div>
         {/* §K：舊 Todo IA（學校作業／已完成／垃圾桶）從側欄移進「任務」頁的視圖切換列 */}
@@ -764,6 +814,7 @@ export default function Tasks({ view, tasks, lists, filters, habits = [], reload
           </div>
         )}
         <div className="main-body">
+          {emptyTrashError && <div role="alert" className="ui-error" style={{ marginBottom: 'var(--sp-3)' }}>{emptyTrashError}</div>}
           {refreshError && (
             <div role="alert" className="ui-error" style={{ marginBottom: 'var(--sp-3)' }}>
               {refreshError}
@@ -793,11 +844,16 @@ export default function Tasks({ view, tasks, lists, filters, habits = [], reload
           )}
           {view.type === 'trash'
             ? shown.map(t => (
-              <div key={t.id} className="trow" style={{ cursor: 'default' }}>
-                <span className="title" style={{ color: 'var(--muted)' }}>{t.title}</span>
-                {t.due_date && <span className="muted">{zhDateShort(t.due_date)}</span>}
-                <button className="btn sm ghost" onClick={() => restore(t)}>還原</button>
-                <button className="icon-btn" title="永久刪除" onClick={() => hardDel(t)}>✕</button>
+              <div key={t.id}>
+                <div className="trow" style={{ cursor: 'default' }}>
+                  <span className="title" style={{ color: 'var(--muted)' }}>{t.title}</span>
+                  {t.due_date && <span className="muted">{zhDateShort(t.due_date)}</span>}
+                  <button className="btn sm ghost" disabled={trashPendingIds.has(t.id)}
+                    onClick={() => restore(t)}>{trashPendingIds.has(t.id) ? '處理中…' : '還原'}</button>
+                  <button className="icon-btn" aria-label={`永久刪除「${t.title}」`}
+                    disabled={trashPendingIds.has(t.id)} onClick={() => hardDel(t)}>✕</button>
+                </div>
+                {trashErrors[t.id] && <div role="alert" className="ui-error" style={{ margin: '4px 8px 0' }}>{trashErrors[t.id]}</div>}
               </div>
             ))
             : (sortBy === 'subjectGroup' ? groupBySubject(shown) : groupTasks(shown, view.type)).map(([label, list]) => {
