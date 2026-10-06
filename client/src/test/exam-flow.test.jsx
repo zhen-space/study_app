@@ -124,4 +124,22 @@ describe('ExamCreateWizard', () => {
     expect(posted('/exam-plans').length).toBe(0);
     expect(posted('/plans').length).toBe(0);
   });
+
+  it('375px 多考科：逐科都要有範圍，明列缺少科目且不能進預覽', async () => {
+    Object.defineProperty(window, 'innerWidth', { configurable: true, value: 375 });
+    render(<ExamCreateWizard lists={LISTS} onDone={() => {}} onCancel={() => {}} />);
+    fireEvent.change(screen.getByLabelText('段考名稱'), { target: { value: '第二次段考' } });
+    fireEvent.change(screen.getByLabelText('段考結束日期'), { target: { value: '2099-10-02' } });
+    fireEvent.change(screen.getByLabelText('加入科目'), { target: { value: '1' } });
+    fireEvent.change(screen.getByLabelText('加入科目'), { target: { value: '2' } });
+    await click(screen.getByText('下一步：加入各科範圍'));
+    await click(screen.getAllByText('＋ 老師指定、教材庫沒有的範圍')[0]);
+    fireEvent.change(screen.getByLabelText('老師指定範圍'), { target: { value: '數學第一章' } });
+    await click(screen.getByText('加入'));
+    expect(screen.getAllByRole('alert')).toHaveLength(2);
+    expect(screen.getByText('尚未加入範圍：物理')).toBeTruthy();
+    expect(screen.getByText('請替物理加入至少一項考試範圍。')).toBeTruthy();
+    expect(screen.getByText('下一步：選擇怎麼安排').closest('button').disabled).toBe(true);
+    expect(posted('/exam-plans/preview')).toHaveLength(0);
+  });
 });

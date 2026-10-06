@@ -63,7 +63,7 @@ async function authoritativePreview(userId, b) {
 
 router.post('/exam-plans/preview', async (req, res) => {
   try { res.json(await authoritativePreview(req.userId, req.body || {})); }
-  catch (e) { res.status(e.status || 400).json({ error: e.message, code: e.code || 'EXAM_PREVIEW_ERROR' }); }
+  catch (e) { res.status(e.status || 400).json({ error: e.message, code: e.code || 'EXAM_PREVIEW_ERROR', subject_ids: e.subject_ids }); }
 });
 
 // 段考範圍投影（Plan Detail 首屏用）：各科考試日 + 教材範圍（科目→教材→章）+ 手動 scope。
