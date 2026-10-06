@@ -17,19 +17,25 @@ export default function LocksView({ tasks = [] }) {
   const [start, setStart] = useState('19:00');
   const [end, setEnd] = useState('20:00');
   const [err, setErr] = useState('');
+  const [listError, setListError] = useState('');
   const [loading, setLoading] = useState(true);
   const [addBusy, setAddBusy] = useState(false);
   const [deletingId, setDeletingId] = useState(null);
   const addingRef = useRef(false);
   const deletingRef = useRef(false);
+  const loadingRef = useRef(false);
 
   const load = useCallback(async () => {
+    if (loadingRef.current) return;
+    loadingRef.current = true;
+    setLoading(true);
+    setListError('');
     try {
       setLocks(await api('/schedule/locks'));
-      setErr('');
     } catch (e) {
-      setErr(e.message);
+      setListError(e.message || '無法載入排程鎖定');
     } finally {
+      loadingRef.current = false;
       setLoading(false);
     }
   }, []);
@@ -37,7 +43,7 @@ export default function LocksView({ tasks = [] }) {
   useEffect(() => { load(); }, [load]);
 
   const add = async () => {
-    if (addBusy || addingRef.current) return;
+    if (loading || listError || addBusy || addingRef.current) return;
     addingRef.current = true;
     setAddBusy(true);
     setErr('');
@@ -60,7 +66,7 @@ export default function LocksView({ tasks = [] }) {
   };
 
   const remove = async id => {
-    if (deletingId !== null || deletingRef.current) return;
+    if (loading || listError || deletingId !== null || deletingRef.current) return;
     deletingRef.current = true;
     setDeletingId(id);
     setErr('');
@@ -84,6 +90,12 @@ export default function LocksView({ tasks = [] }) {
   return <div className="main">
     <PageHeader title="排程鎖定" subtitle="鎖定後，重新排程不會改動這些安排" />
     <div className="main-body">
+      {listError && <SurfaceCard tone="warning">
+        <div role="alert"><b>暫時無法載入排程鎖定</b><div className="ui-meta" style={{ marginTop: 4 }}>{listError}</div></div>
+        <Button variant="secondary" size="sm" style={{ marginTop: 10 }} disabled={loading} onClick={load}>
+          {loading ? '重新載入中…' : '重新載入鎖定'}
+        </Button>
+      </SurfaceCard>}
       {err && <div role="alert"><SurfaceCard tone="warning">{err}</SurfaceCard></div>}
       <SurfaceCard style={{ marginTop: 12 }}>
         <b>新增鎖定</b>
@@ -92,25 +104,25 @@ export default function LocksView({ tasks = [] }) {
             key={value}
             type="button"
             className={type === value ? 'btn sm' : 'btn sm ghost'}
-            disabled={addBusy}
+            disabled={loading || Boolean(listError) || addBusy}
             onClick={() => setType(value)}
           >{value === 'task' ? '任務' : value === 'time' ? '時段' : '整天'}</button>)}
         </div>
         {type === 'task'
-          ? <select aria-label="選擇已排入時間的任務" value={task} disabled={addBusy} onChange={e => setTask(e.target.value)}>
+          ? <select aria-label="選擇已排入時間的任務" value={task} disabled={loading || Boolean(listError) || addBusy} onChange={e => setTask(e.target.value)}>
               <option value="">選擇已排入時間的任務</option>
               {tasks.filter(item => item.plan_id && onActivePlan(item) && !item.deleted && !item.completed && item.due_date)
                 .map(item => <option key={item.id} value={item.id}>{item.title}</option>)}
             </select>
           : <>
-              <input aria-label="鎖定日期" type="date" value={date} disabled={addBusy} onChange={e => setDate(e.target.value)} />
+              <input aria-label="鎖定日期" type="date" value={date} disabled={loading || Boolean(listError) || addBusy} onChange={e => setDate(e.target.value)} />
               {type === 'time' && <div className="row" style={{ gap: 8, flexWrap: 'wrap' }}>
-                <input aria-label="鎖定開始時間" type="time" value={start} disabled={addBusy} onChange={e => setStart(e.target.value)} />
+                <input aria-label="鎖定開始時間" type="time" value={start} disabled={loading || Boolean(listError) || addBusy} onChange={e => setStart(e.target.value)} />
                 <span>至</span>
-                <input aria-label="鎖定結束時間" type="time" value={end} disabled={addBusy} onChange={e => setEnd(e.target.value)} />
+                <input aria-label="鎖定結束時間" type="time" value={end} disabled={loading || Boolean(listError) || addBusy} onChange={e => setEnd(e.target.value)} />
               </div>}
             </>}
-        <Button variant="primary" block disabled={invalid || addBusy} onClick={add}>{addBusy ? '鎖定中…' : '鎖定'}</Button>
+        <Button variant="primary" block disabled={loading || Boolean(listError) || invalid || addBusy} onClick={add}>{addBusy ? '鎖定中…' : '鎖定'}</Button>
       </SurfaceCard>
       {loading && <p aria-live="polite">載入中…</p>}
       {locks.map(lock => <SurfaceCard key={lock.id} style={{ marginTop: 8 }}>
@@ -119,7 +131,7 @@ export default function LocksView({ tasks = [] }) {
           <Button
             size="sm"
             style={{ marginLeft: 'auto' }}
-            disabled={deletingId !== null}
+            disabled={loading || Boolean(listError) || deletingId !== null}
             onClick={() => remove(lock.id)}
           >{deletingId === lock.id ? '解除中…' : '解除鎖定'}</Button>
         </div>
