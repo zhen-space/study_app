@@ -97,6 +97,72 @@ describe('Plan mutation recovery', () => {
     expect(screen.getByRole('button', { name: '暫停計畫' })).toBeEnabled();
   });
 
+  it('synchronously guards the visible cancel button before the pending render', async () => {
+    let rejectPause;
+    let cancel;
+    handlers['/plans/12/pause'] = vi.fn().mockImplementation(() => {
+      // 模擬使用者在 React 把 disabled 畫上去前立即點到取消。
+      fireEvent.click(cancel);
+      return new Promise((resolve, reject) => { rejectPause = reject; });
+    });
+    mount();
+    const pause = await openPause();
+    const dialog = screen.getByRole('dialog', { name: '暫停這個計畫' });
+    cancel = within(dialog).getByRole('button', { name: '取消' });
+
+    fireEvent.click(pause);
+
+    expect(screen.getByRole('dialog', { name: '暫停這個計畫' })).toBeInTheDocument();
+    expect(handlers['/plans/12/pause']).toHaveBeenCalledOnce();
+    await act(async () => { rejectPause(error('暫停失敗', 503)); });
+    expect(await within(dialog).findByRole('alert')).toHaveTextContent('暫停失敗');
+  });
+
+  it('keeps the end confirmation visible when cancel is tapped before the pending render', async () => {
+    let rejectEnd;
+    let cancel;
+    handlers['/plans/12/end'] = vi.fn()
+      .mockRejectedValueOnce(error('需要確認', 409, {
+        code: 'end_confirmation_required', unresolved: [{ id: 1 }],
+      }))
+      .mockImplementationOnce(() => {
+        fireEvent.click(cancel);
+        return new Promise((resolve, reject) => { rejectEnd = reject; });
+      });
+    mount();
+    await click(screen.getByRole('button', { name: '計畫選項' }));
+    await click(screen.getByText('結束計畫'));
+    const dialog = await screen.findByRole('dialog', { name: '結束這個計畫' });
+    cancel = within(dialog).getByRole('button', { name: '取消' });
+
+    fireEvent.click(within(dialog).getByRole('button', { name: '結束計畫' }));
+
+    expect(screen.getByRole('dialog', { name: '結束這個計畫' })).toBeInTheDocument();
+    await act(async () => { rejectEnd(error('結束失敗', 503)); });
+    expect(await within(dialog).findByRole('alert')).toHaveTextContent('結束失敗');
+  });
+
+  it('keeps the final delete confirmation visible when return is tapped before the pending render', async () => {
+    let rejectDelete;
+    let back;
+    handlers['/plans/12/delete'] = vi.fn().mockImplementation(() => {
+      fireEvent.click(back);
+      return new Promise((resolve, reject) => { rejectDelete = reject; });
+    });
+    mount();
+    await click(screen.getByRole('button', { name: '計畫選項' }));
+    await click(screen.getByText('刪除計畫'));
+    await click(screen.getByRole('button', { name: '下一步' }));
+    const dialog = screen.getByRole('dialog', { name: '確定刪除' });
+    back = within(dialog).getByRole('button', { name: '返回' });
+
+    fireEvent.click(within(dialog).getByRole('button', { name: '確定刪除' }));
+
+    expect(screen.getByRole('dialog', { name: '確定刪除' })).toBeInTheDocument();
+    await act(async () => { rejectDelete(error('刪除失敗', 503)); });
+    expect(await within(dialog).findByRole('alert')).toHaveTextContent('刪除失敗');
+  });
+
   it('locks stale Plan mutations after commit succeeds but refresh fails', async () => {
     handlers['/plans/12/pause'] = vi.fn().mockResolvedValue({ plan: { ...plan, status: 'paused' } });
     const reload = mount(vi.fn().mockRejectedValue(new Error('離線')));
