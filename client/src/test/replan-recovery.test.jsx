@@ -10,6 +10,7 @@ vi.mock('../tt/schedulePreview', () => ({
   CONDITION_LABEL: {},
 }));
 const { api } = await import('../api');
+const { fetchExternalBusy } = await import('../tt/calendarBusy');
 const { applyWizardSchedule } = await import('../tt/wizardApply');
 const ReplanSheet = (await import('../tt/ReplanSheet')).default;
 const plan = { planId: 7, name: '段考', items: [{ id: 11, list_id: 2, title: '力學', completed: 0, deleted: 0 }] };
@@ -27,12 +28,38 @@ async function openPreview() {
 }
 beforeEach(() => {
   Object.defineProperty(window, 'innerWidth', { configurable: true, value: 375 });
-  api.mockReset(); applyWizardSchedule.mockReset();
+  api.mockReset(); applyWizardSchedule.mockReset(); fetchExternalBusy.mockClear();
   api.mockImplementation(path => path === '/schedule/preview' ? Promise.resolve(structuredClone(preview)) : Promise.resolve({}));
 });
 afterEach(cleanup);
 
 describe('ReplanSheet 套用後恢復', () => {
+  it('375px：preview loading 同步防重入且禁止所有關閉路徑，失敗後可重試', async () => {
+    let rejectPreview;
+    const pendingPreview = new Promise((resolve, reject) => { rejectPreview = reject; });
+    api.mockImplementation(path => path === '/schedule/preview' ? pendingPreview : Promise.resolve({}));
+    const onClose = vi.fn();
+    mount(undefined, onClose);
+    const run = await screen.findByRole('button', { name: '重新安排' });
+
+    fireEvent.click(run);
+    fireEvent.click(run);
+
+    expect(await screen.findByRole('button', { name: '重新安排中…' })).toBeDisabled();
+    const close = screen.getByRole('button', { name: '關閉' });
+    expect(close).toBeDisabled();
+    fireEvent.click(close);
+    fireEvent.click(document.querySelector('.sheet-backdrop'));
+    expect(onClose).not.toHaveBeenCalled();
+    expect(api.mock.calls.filter(([path]) => path === '/schedule/preview')).toHaveLength(1);
+    expect(fetchExternalBusy).toHaveBeenCalledOnce();
+
+    rejectPreview(new Error('預覽暫時失敗'));
+    expect(await screen.findByText('預覽暫時失敗')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: '重新安排' })).toBeEnabled();
+    expect(screen.getByText('AI 將重新計算')).toBeInTheDocument();
+  });
+
   it('375px：安排條件載入失敗不冒充缺少設定，並可原地重試', async () => {
     let profileCalls = 0;
     api.mockImplementation(path => {

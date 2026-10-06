@@ -30,6 +30,7 @@ export default function ReplanSheet({ plan, health, raw, lists = [], reload, onC
   const [profileLoading, setProfileLoading] = useState(true);
   const [profileError, setProfileError] = useState('');
   const profileRequest = useRef(0);
+  const previewBusy = useRef(false);
   const applyBusy = useRef(false);
   const [applied, setApplied] = useState(false);
   const loadProfile = useCallback(async () => {
@@ -57,6 +58,8 @@ export default function ReplanSheet({ plan, health, raw, lists = [], reload, onC
   const { conditions, minutes, missing, complete } = planScheduleConditions(plan.planId, pending, profile);
 
   async function run() {
+    if (previewBusy.current) return;
+    previewBusy.current = true;
     setStage('loading'); setErr('');
     const start = today();
     // 結束日：計畫自己的目標日優先。沒設或已經過去，就給一段合理的區間，
@@ -91,6 +94,7 @@ export default function ReplanSheet({ plan, health, raw, lists = [], reload, onC
       setPreview(pv);
       setStage('preview');
     } catch (e) { setErr(e.message); setStage('confirm'); }
+    finally { previewBusy.current = false; }
   }
 
   async function apply() {
@@ -139,18 +143,20 @@ export default function ReplanSheet({ plan, health, raw, lists = [], reload, onC
     }
   }
 
+  const previewLoading = stage === 'loading';
+  const closeLocked = stage === 'saving' || previewLoading;
   const Head = ({ title }) => (
     <div className="row">
       <b>{title}</b>
       <button className="icon-btn" style={{ marginLeft: 'auto' }} aria-label="關閉"
-        disabled={stage === 'saving'} onClick={stage === 'saving' ? undefined : onClose}>
+        disabled={closeLocked} onClick={closeLocked ? undefined : onClose}>
         <Icon name="x" size={14} />
       </button>
     </div>
   );
 
   return (
-    <BottomSheet onClose={stage === 'saving' ? undefined : onClose}>
+    <BottomSheet onClose={closeLocked ? undefined : onClose}>
       <>
         {applied ? (
           <>
