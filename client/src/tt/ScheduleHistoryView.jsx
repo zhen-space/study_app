@@ -84,8 +84,10 @@ export default function ScheduleHistoryView({ onRestored }) {
     detailBusyId.current = id;
     // 切換版本即使舊 restore preview 還在網路途中，也不能讓它稍後覆蓋新選取。
     restorePreviewRequest.current += 1;
-    restorePreviewBusy.current = false;
-    setBusy(false);
+    if (restorePreviewBusy.current) {
+      restorePreviewBusy.current = false;
+      setBusy(false);
+    }
     const request = ++detailRequest.current;
     setError(''); setDetailErrorId(null); setDetailLoadingId(id);
     setSelected(null); setDiff(null);
