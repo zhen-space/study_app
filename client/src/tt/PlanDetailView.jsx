@@ -774,7 +774,7 @@ export default function PlanDetailView({ planKey, tasks, lists, apiPlans = [], r
           <RetainPicker kind="pause" value={retain} onChange={setRetain} />
           {err && <div className="error" role="alert" style={{ marginTop: 'var(--sp-3)' }}>{err}</div>}
           <div className="row" style={{ marginTop: 'var(--sp-5)' }}>
-            <Button disabled={busy} onClick={close}>取消</Button>
+            <Button disabled={busy} onClick={lifecycleClose}>取消</Button>
             <Button variant="primary" style={{ marginLeft: 'auto' }}
               disabled={busy || retain === null} onClick={pausePlan}>{busy ? '暫停中…' : '暫停計畫'}</Button>
           </div>
@@ -808,7 +808,7 @@ export default function PlanDetailView({ planKey, tasks, lists, apiPlans = [], r
           </div>
           {err && <div className="error" role="alert" style={{ marginTop: 'var(--sp-3)' }}>{err}</div>}
           <div className="row" style={{ marginTop: 'var(--sp-5)' }}>
-            <Button disabled={busy} onClick={() => setSheet('confirmDelete')}>返回</Button>
+            <Button disabled={busy} onClick={() => { if (!mutationBusy.current) setSheet('confirmDelete'); }}>返回</Button>
             <Button variant="destructive" style={{ marginLeft: 'auto' }}
               disabled={busy} onClick={deletePlan}>{busy ? '刪除中…' : '確定刪除'}</Button>
           </div>
@@ -845,7 +845,7 @@ export default function PlanDetailView({ planKey, tasks, lists, apiPlans = [], r
           </div>
           {err && <div className="error" role="alert" style={{ marginTop: 'var(--sp-3)' }}>{err}</div>}
           <div className="row" style={{ marginTop: 'var(--sp-5)' }}>
-            <Button disabled={busy} onClick={close}>取消</Button>
+            <Button disabled={busy} onClick={lifecycleClose}>取消</Button>
             <Button variant="primary" style={{ marginLeft: 'auto' }} disabled={busy}
               onClick={() => endPlan(true)}>{busy ? '結束中…' : '結束計畫'}</Button>
           </div>
