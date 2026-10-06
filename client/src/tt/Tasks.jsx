@@ -253,7 +253,7 @@ function TaskRow({ t, lists, sel, onSel, onToggle, onDragStart, onDropOn, onSwip
 // §F 任務明細：分成「任務資訊／安排／實際讀書／其他」四區，不再是一長條扁平表單。
 // 刪除收進右上「•••」（不再一顆紅按鈕擺在最下面誤觸）；標籤改 chips（非開發者式逗號字串）；
 // 多出一個「實際讀書」摘要（讀了多久），把 generic 的「日期」歸到「安排」語意底下。
-export function Detail({ task, lists, onSave, onDelete, onClose, saveBusy = false, saveError = '' }) {
+export function Detail({ task, lists, onSave, onDelete, onClose, saveBusy = false, saveError = '', refreshCommitted = false, onRetryRefresh }) {
   const [t, setT] = useState(task);
   const [composing, setComposing] = useState(false);
   const composingRef = useRef(false);
@@ -401,8 +401,8 @@ export function Detail({ task, lists, onSave, onDelete, onClose, saveBusy = fals
   return (
     <div className="detail">
       <div className="drow" style={{ justifyContent: 'space-between' }}>
-        <button className="btn sm" onClick={finishEditing} disabled={composing || saveBusy || attBusy || attOpenBusyId != null} title="完成編輯">
-          {saveBusy ? '儲存中…' : (attBusy || attOpenBusyId != null) ? '附件處理中…' : '✓ 完成'}
+        <button className="btn sm" onClick={refreshCommitted ? onRetryRefresh : finishEditing} disabled={composing || saveBusy || attBusy || attOpenBusyId != null} title="完成編輯">
+          {saveBusy ? '儲存中…' : refreshCommitted ? '重新載入並關閉' : (attBusy || attOpenBusyId != null) ? '附件處理中…' : '✓ 完成'}
         </button>
         <div style={{ position: 'relative' }}>
           <button className="icon-btn" aria-label="更多" disabled={attBusy || attOpenBusyId != null} onClick={() => setMenu(m => !m)}>⋯</button>
@@ -468,7 +468,7 @@ export function Detail({ task, lists, onSave, onDelete, onClose, saveBusy = fals
 
       {/* ── 安排 ── */}
       <div className="detail-sec-t">安排</div>
-      {saveError && <div role="alert" className="ui-error" style={{ marginBottom: 8 }}>{saveError}，請確認後再按「完成」重試。</div>}
+      {saveError && <div role="alert" className="ui-error" style={{ marginBottom: 8 }}>{saveError}{refreshCommitted ? '' : '，請確認後再按「完成」重試。'}</div>}
       <div className="drow">
         <label>{isSchoolAssignment ? '繳交日期' : '日期'}</label>
         <input type="date" aria-label={isSchoolAssignment ? '繳交日期' : '日期'} disabled={scheduleManaged}
@@ -792,6 +792,7 @@ export default function Tasks({ view, tasks, lists, filters, habits = [], reload
   const saveChain = useRef(Promise.resolve());
   const [saveBusy, setSaveBusy] = useState(false);
   const [saveError, setSaveError] = useState('');
+  const [closeRefreshCommitted, setCloseRefreshCommitted] = useState(false);
   function flushSave() {
     const t = pendingSave.current;
     pendingSave.current = null;
@@ -822,6 +823,7 @@ export default function Tasks({ view, tasks, lists, filters, habits = [], reload
     });
   }
   function save(t) {
+    setCloseRefreshCommitted(false);
     setOver(o => ({ ...o, [t.id]: t }));   // 先讓畫面反映
     pendingSave.current = t;
     clearTimeout(saveTimer.current);
@@ -831,11 +833,26 @@ export default function Tasks({ view, tasks, lists, filters, habits = [], reload
     clearTimeout(saveTimer.current);
     try {
       await flushSave();
-      setSelId(null);
+    } catch { return; }
+    try {
       await reload('tasks');
+      setSelId(null);
     } catch {
-      // 留在編輯畫面顯示錯誤，避免使用者以為已儲存。
+      setCloseRefreshCommitted(true);
+      setSaveError('任務已儲存，但畫面暫時無法更新');
     }
+  }
+  async function retryCloseRefresh() {
+    if (saveBusy) return;
+    setSaveBusy(true);
+    try {
+      await reload('tasks');
+      setCloseRefreshCommitted(false);
+      setSaveError('');
+      setSelId(null);
+    } catch {
+      setSaveError('任務已儲存，但畫面暫時無法更新');
+    } finally { setSaveBusy(false); }
   }
   async function del(t) {
     if (!beginMutation(t.id)) return;
@@ -1074,7 +1091,7 @@ export default function Tasks({ view, tasks, lists, filters, habits = [], reload
         </div>
       </div>
       {sel && <Detail key={sel.id} task={sel} lists={lists} onSave={save} onDelete={del} onClose={closeDetail}
-        saveBusy={saveBusy} saveError={saveError} />}
+        saveBusy={saveBusy} saveError={saveError} refreshCommitted={closeRefreshCommitted} onRetryRefresh={retryCloseRefresh} />}
       {toast && (
         <div className="toast" role={toast.error ? 'alert' : 'status'}>
           <span>{toast.msg}</span>
