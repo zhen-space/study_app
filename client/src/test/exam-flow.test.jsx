@@ -142,4 +142,39 @@ describe('ExamCreateWizard', () => {
     expect(screen.getByText('下一步：選擇怎麼安排').closest('button').disabled).toBe(true);
     expect(posted('/exam-plans/preview')).toHaveLength(0);
   });
+
+  it('375px 單科考試日：預設真正沿用最後一天，自訂後可改回沿用', async () => {
+    Object.defineProperty(window, 'innerWidth', { configurable: true, value: 375 });
+    render(<ExamCreateWizard lists={LISTS} onDone={() => {}} onCancel={() => {}} />);
+    fireEvent.change(screen.getByLabelText('段考名稱'), { target: { value: '第二次段考' } });
+    fireEvent.change(screen.getByLabelText('開始日期'), { target: { value: '2099-09-20' } });
+    fireEvent.change(screen.getByLabelText('段考結束日期'), { target: { value: '2099-10-02' } });
+    fireEvent.change(screen.getByLabelText('加入科目'), { target: { value: '1' } });
+
+    const examDate = screen.getByLabelText('數學 考試日');
+    expect(examDate).toHaveValue('2099-10-02');
+    expect(screen.getByText('沿用整個段考最後一天（10/2）')).toBeTruthy();
+
+    // 總日期變更時，未自訂的單科日期必須跟著變，不能停在舊值。
+    fireEvent.change(screen.getByLabelText('段考結束日期'), { target: { value: '2099-10-05' } });
+    expect(examDate).toHaveValue('2099-10-05');
+
+    fireEvent.change(examDate, { target: { value: '2099-10-03' } });
+    expect(screen.getByText('已自訂單科考試日。')).toBeTruthy();
+    fireEvent.change(screen.getByLabelText('段考結束日期'), { target: { value: '2099-10-06' } });
+    expect(examDate).toHaveValue('2099-10-03');
+
+    await click(screen.getByText('改回沿用最後一天'));
+    expect(examDate).toHaveValue('2099-10-06');
+  });
+
+  it('單科考試日早於準備開始日時，不能進入下一步', () => {
+    render(<ExamCreateWizard lists={LISTS} onDone={() => {}} onCancel={() => {}} />);
+    fireEvent.change(screen.getByLabelText('段考名稱'), { target: { value: '第二次段考' } });
+    fireEvent.change(screen.getByLabelText('開始日期'), { target: { value: '2099-09-20' } });
+    fireEvent.change(screen.getByLabelText('段考結束日期'), { target: { value: '2099-10-02' } });
+    fireEvent.change(screen.getByLabelText('加入科目'), { target: { value: '1' } });
+    fireEvent.change(screen.getByLabelText('數學 考試日'), { target: { value: '2099-09-19' } });
+    expect(screen.getByText('下一步：加入各科範圍').closest('button').disabled).toBe(true);
+  });
 });

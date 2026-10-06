@@ -51,7 +51,10 @@ export default function ExamCreateWizard({ lists = [], onDone, onCancel }) {
   const nameOf = useCallback(id => lists.find(l => Number(l.id) === Number(id))?.name || '科目', [lists]);
   const addSubject = id => {
     if (subjects.some(s => Number(s.listId) === Number(id))) return;
-    setSubjects(s => [...s, { listId: Number(id), examDate: end || '' }]);
+    // 空值才是「沿用整個段考最後一天」的單一真相。
+    // 若在新增科目時就把當下 end 複製進去，後來改段考日期時它會
+    // 偷偷留在舊日期，畫面寫「沿用」卻實際沒有沿用。
+    setSubjects(s => [...s, { listId: Number(id), examDate: '' }]);
   };
   const removeSubject = id => {
     setSubjects(s => s.filter(x => Number(x.listId) !== Number(id)));
@@ -85,7 +88,7 @@ export default function ExamCreateWizard({ lists = [], onDone, onCancel }) {
 
   // ---- 驗證每一步 ----
   const step0ok = name.trim() && end && subjects.length && (!start || end >= start)
-    && subjects.every(s => !s.examDate || s.examDate <= end);
+    && subjects.every(s => !s.examDate || ((!start || s.examDate >= start) && s.examDate <= end));
   const scopeCount = id => Object.keys(subjScope(id).items).length + subjScope(id).manual.length;
   const totalScope = subjects.reduce((n, s) => n + scopeCount(s.listId), 0);
   const missingScopeSubjects = subjects.filter(s => scopeCount(s.listId) === 0);
@@ -172,11 +175,17 @@ export default function ExamCreateWizard({ lists = [], onDone, onCancel }) {
             <div>
               <div className="ui-meta" style={{ marginBottom: 4 }}>加入考試科目（每科可有自己的考試日）</div>
               {subjects.map(s => (
-                <div key={s.listId} className="row" style={{ gap: 8, alignItems: 'center', marginTop: 6 }}>
+                <div key={s.listId} className="row" style={{ gap: 8, alignItems: 'center', marginTop: 6, flexWrap: 'wrap' }}>
                   <span style={{ fontWeight: 600, minWidth: 64 }}>{nameOf(s.listId)}</span>
-                  <input type="date" aria-label={`${nameOf(s.listId)} 考試日`} value={s.examDate || ''} max={end || undefined}
-                    onChange={e => setExamDate(s.listId, e.target.value)} style={{ flex: 1 }} />
+                  <input type="date" aria-label={`${nameOf(s.listId)} 考試日`} value={s.examDate || end || ''}
+                    min={start || undefined} max={end || undefined}
+                    onChange={e => setExamDate(s.listId, e.target.value)} style={{ flex: 1, minWidth: 140 }} />
                   <IconButton label={`移除 ${nameOf(s.listId)}`} onClick={() => removeSubject(s.listId)}><Icon name="x" size={16} /></IconButton>
+                  <div className="ui-meta" style={{ flexBasis: '100%', paddingLeft: 72 }}>
+                    {s.examDate
+                      ? <><span>已自訂單科考試日。</span>{' '}<button type="button" className="btn sm ghost" onClick={() => setExamDate(s.listId, '')}>改回沿用最後一天</button></>
+                      : `沿用整個段考最後一天${end ? `（${md(end)}）` : ''}`}
+                  </div>
                 </div>
               ))}
               <select aria-label="加入科目" value="" style={{ marginTop: 8, width: '100%' }}
