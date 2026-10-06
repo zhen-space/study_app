@@ -68,6 +68,8 @@ export default function ScheduleHistoryView({ onRestored }) {
   const listBusy = useRef(false);
   const detailRequest = useRef(0);
   const detailBusyId = useRef(null);
+  const restorePreviewRequest = useRef(0);
+  const restorePreviewBusy = useRef(false);
   const load = async () => {
     if (listBusy.current) return;
     listBusy.current = true;
@@ -80,6 +82,10 @@ export default function ScheduleHistoryView({ onRestored }) {
   async function openVersion(id) {
     if (detailBusyId.current === id) return;
     detailBusyId.current = id;
+    // 切換版本即使舊 restore preview 還在網路途中，也不能讓它稍後覆蓋新選取。
+    restorePreviewRequest.current += 1;
+    restorePreviewBusy.current = false;
+    setBusy(false);
     const request = ++detailRequest.current;
     setError(''); setDetailErrorId(null); setDetailLoadingId(id);
     setSelected(null); setDiff(null);
@@ -102,12 +108,23 @@ export default function ScheduleHistoryView({ onRestored }) {
     }
   }
   async function openRestore() {
-    if (!selected || busy) return;
+    if (!selected || busy || restorePreviewBusy.current) return;
+    restorePreviewBusy.current = true;
+    const request = ++restorePreviewRequest.current;
+    const sourceId = selected.version.id;
     setBusy(true); setError('');
     setRestoreError('');
-    try { setPreview(await api(`/schedule/versions/${selected.version.id}/restore-preview`)); }
-    catch (e) { setError(e.message); }
-    setBusy(false);
+    try {
+      const value = await api(`/schedule/versions/${sourceId}/restore-preview`);
+      if (request === restorePreviewRequest.current) setPreview(value);
+    } catch (e) {
+      if (request === restorePreviewRequest.current) setError(e.message || '無法預覽恢復結果');
+    } finally {
+      if (request === restorePreviewRequest.current) {
+        restorePreviewBusy.current = false;
+        setBusy(false);
+      }
+    }
   }
   async function applyRestore() {
     if (!preview || busy || applyBusy.current) return;
