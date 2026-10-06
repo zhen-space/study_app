@@ -255,7 +255,22 @@ function TaskRow({ t, lists, sel, onSel, onToggle, onDragStart, onDropOn, onSwip
 // 多出一個「實際讀書」摘要（讀了多久），把 generic 的「日期」歸到「安排」語意底下。
 export function Detail({ task, lists, onSave, onDelete, onClose, saveBusy = false, saveError = '' }) {
   const [t, setT] = useState(task);
-  const up = patch => { const nt = { ...t, ...patch }; setT(nt); onSave(nt); };
+  const [composing, setComposing] = useState(false);
+  const composingRef = useRef(false);
+  const draftRef = useRef(task);
+  const up = (patch, save = true) => {
+    const nt = { ...draftRef.current, ...patch };
+    draftRef.current = nt;
+    setT(nt);
+    if (save && !composingRef.current) onSave(nt);
+  };
+  const startComposition = () => { composingRef.current = true; setComposing(true); };
+  const finishComposition = patch => {
+    composingRef.current = false;
+    setComposing(false);
+    up(patch);
+  };
+  const finishEditing = () => { if (!composingRef.current) onClose(); };
   const [newSub, setNewSub] = useState('');
   const [newTag, setNewTag] = useState('');
   const [menu, setMenu] = useState(false);
@@ -386,7 +401,7 @@ export function Detail({ task, lists, onSave, onDelete, onClose, saveBusy = fals
   return (
     <div className="detail">
       <div className="drow" style={{ justifyContent: 'space-between' }}>
-        <button className="btn sm" onClick={onClose} disabled={saveBusy || attBusy || attOpenBusyId != null} title="完成編輯">
+        <button className="btn sm" onClick={finishEditing} disabled={composing || saveBusy || attBusy || attOpenBusyId != null} title="完成編輯">
           {saveBusy ? '儲存中…' : (attBusy || attOpenBusyId != null) ? '附件處理中…' : '✓ 完成'}
         </button>
         <div style={{ position: 'relative' }}>
@@ -401,7 +416,10 @@ export function Detail({ task, lists, onSave, onDelete, onClose, saveBusy = fals
           )}
         </div>
       </div>
-      <input className="title" value={t.title} onChange={e => up({ title: e.target.value })} />
+      <input className="title" value={t.title}
+        onCompositionStart={startComposition}
+        onCompositionEnd={e => finishComposition({ title: e.currentTarget.value })}
+        onChange={e => up({ title: e.target.value }, !e.nativeEvent.isComposing)} />
 
       {/* ── 任務資訊 ── */}
       <div className="detail-sec-t">任務資訊</div>
@@ -436,7 +454,10 @@ export function Detail({ task, lists, onSave, onDelete, onClose, saveBusy = fals
         {t.subtasks.map((s, i) => (
           <div key={i} className={'subtask' + (s.done ? ' done' : '')}>
             <input type="checkbox" checked={s.done} onChange={() => up({ subtasks: t.subtasks.map((x, j) => j === i ? { ...x, done: !x.done } : x) })} />
-            <input type="text" value={s.title} onChange={e => up({ subtasks: t.subtasks.map((x, j) => j === i ? { ...x, title: e.target.value } : x) })} />
+            <input type="text" value={s.title}
+              onCompositionStart={startComposition}
+              onCompositionEnd={e => finishComposition({ subtasks: draftRef.current.subtasks.map((x, j) => j === i ? { ...x, title: e.currentTarget.value } : x) })}
+              onChange={e => up({ subtasks: draftRef.current.subtasks.map((x, j) => j === i ? { ...x, title: e.target.value } : x) }, !e.nativeEvent.isComposing)} />
             <button className="icon-btn" onClick={() => up({ subtasks: t.subtasks.filter((_, j) => j !== i) })}>✕</button>
           </div>
         ))}
