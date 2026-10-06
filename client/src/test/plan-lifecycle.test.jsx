@@ -139,6 +139,30 @@ describe('••• 選單', () => {
     noCrash();
   });
 
+  it('繼續請求 pending 時不能切到其他管理動作並藏掉失敗訊息', async () => {
+    let rejectResume;
+    let deleteRow;
+    setApi({
+      '/plans': [{ ...fx.plans[0], status: 'paused' }],
+      '/tasks': [...fx.tasks, ...fx.planTasks],
+      '/plans/12/resume': () => {
+        deleteRow.click();
+        return new Promise((resolve, reject) => { rejectResume = reject; });
+      },
+    });
+    await openManage('第二次段考準備', '已暫停');
+    deleteRow = sheetRow('刪除計畫');
+
+    sheetRow('繼續計畫').click();
+
+    expect(within(sheet()).getByText('繼續計畫')).toBeInTheDocument();
+    expect(within(sheet()).queryByText('刪除這個計畫？')).toBeNull();
+    await act(async () => { rejectResume(new Error('恢復失敗')); });
+    expect(await within(sheet()).findByRole('alert')).toHaveTextContent('恢復失敗');
+    expect(sent('POST', '/plans/12/resume')).toHaveLength(1);
+    noCrash();
+  });
+
   it('暫停的計畫不顯示排程／新增任務入口——那些按下去必定失敗', async () => {
     withPlan({}, { ...fx.plans[0], status: 'paused' });
     await openPlan('第二次段考準備', '已暫停');

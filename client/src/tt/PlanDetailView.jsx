@@ -188,6 +188,10 @@ export default function PlanDetailView({ planKey, tasks, lists, apiPlans = [], r
   // 否則請求稍後失敗，錯誤會留在已關閉的 sheet，手機上看起來就像什麼都沒發生。
   // 用同步 ref 判斷，不只靠 busy render；點送出到 React 重繪間也不能被 Escape 關掉。
   const lifecycleClose = () => { if (!mutationBusy.current) close(); };
+  const manageAction = action => {
+    if (mutationBusy.current) return;
+    action();
+  };
   const previewSubject = () => {
     const selected = lists.find(l => Number(l.id) === Number(newSubject.subject_list_id));
     if (!selected || !newSubject.exam_date) return;
@@ -675,19 +679,19 @@ export default function PlanDetailView({ planKey, tasks, lists, apiPlans = [], r
       {sheet === 'manage' && (
         <BottomSheet onClose={lifecycleClose} label="計畫選項" aria-busy={busy}>
           <b style={{ fontSize: 17 }}>計畫選項</b>
-          <div style={{ marginTop: 'var(--sp-3)' }}>
+          <div aria-disabled={busy || undefined} style={{ marginTop: 'var(--sp-3)', opacity: busy ? 0.65 : 1 }}>
             <ListRow title="編輯計畫資訊" subtitle="名稱、說明、開始日、目標日"
               trailing={<Icon name="chevron" size={16} />} role="button" tabIndex={0} style={{ cursor: 'pointer' }}
-              onClick={() => { setEdit({ name: plan.name, description: raw?.description || '', start_date: raw?.start_date || '', target_date: raw?.target_date || '' }); setSheet('edit'); }} />
+              onClick={() => manageAction(() => { setEdit({ name: plan.name, description: raw?.description || '', start_date: raw?.start_date || '', target_date: raw?.target_date || '' }); setSheet('edit'); })} />
             <ListRow title="AI 排程條件" subtitle="先確認 AI 解讀，再交給排程器"
-              role="button" tabIndex={0} style={{ cursor: 'pointer' }} onClick={() => setSheet('constraints')} />
+              role="button" tabIndex={0} style={{ cursor: 'pointer' }} onClick={() => manageAction(() => setSheet('constraints'))} />
             <ListRow title="為什麼這樣排" subtitle="看懂這份安排的依據，不會改動任何東西"
-              role="button" tabIndex={0} style={{ cursor: 'pointer' }} onClick={() => setSheet('explain')} />
+              role="button" tabIndex={0} style={{ cursor: 'pointer' }} onClick={() => manageAction(() => setSheet('explain'))} />
             {/* 已完成／已結束都可以重新開始，兩者都走正式 lifecycle endpoint。
                 以前只有 completed 有這個入口，ended 的計畫等於沒有回頭路。 */}
             {['completed', 'ended'].includes(plan.status) && (
               <ListRow title="重新開始" subtitle="回到進行中，保留全部任務"
-                role="button" tabIndex={0} style={{ cursor: 'pointer' }} onClick={restart} />
+                role="button" tabIndex={0} style={{ cursor: 'pointer' }} onClick={() => manageAction(restart)} />
             )}
             {/* §C：結束／完成的計畫，除了「重新開始」原計畫，也能直接開一個新計畫
                 （例如下一次段考）。這裡走既有建立計畫流程，用新的內容重新安排；
@@ -695,32 +699,32 @@ export default function PlanDetailView({ planKey, tasks, lists, apiPlans = [], r
             {['completed', 'ended'].includes(plan.status) && goWizard && (
               <ListRow title="以此計畫再建一個新計畫" subtitle="複製未完成的內容到新計畫，不動這個已結束的計畫"
                 trailing={<Icon name="chevron" size={16} />} role="button" tabIndex={0} style={{ cursor: 'pointer' }}
-                onClick={createFromThisPlan} />
+                onClick={() => manageAction(createFromThisPlan)} />
             )}
             {/* 只有進行中的計畫能標記完成——後端的轉換表就只允許 active → completed。
                 以前 draft／paused／ended 也看得到這個入口，按下去一律失敗。 */}
             {plan.status === 'active' && (
               <ListRow title="標記完成" subtitle="整個計畫做完了"
-                role="button" tabIndex={0} style={{ cursor: 'pointer' }} onClick={complete} />
+                role="button" tabIndex={0} style={{ cursor: 'pointer' }} onClick={() => manageAction(complete)} />
             )}
             {/* 結束 ≠ 完成。沒做完但不再繼續，就走這裡；完成率不會被污染。 */}
             {['draft', 'active', 'paused'].includes(plan.status) && (
               <ListRow title="結束計畫" subtitle="不再繼續了，未完成的任務會保留"
-                role="button" tabIndex={0} style={{ cursor: 'pointer' }} onClick={() => endPlan(false)} />
+                role="button" tabIndex={0} style={{ cursor: 'pointer' }} onClick={() => manageAction(() => endPlan(false))} />
             )}
             {/* 暫停：這個計畫先不排時間，之後可以繼續。封存已從產品移除。 */}
             {['draft', 'active'].includes(plan.status) && (
               <ListRow title="暫停計畫" subtitle="先不排時間，之後可以恢復"
                 role="button" tabIndex={0} style={{ cursor: 'pointer' }}
-                onClick={() => { setRetain(null); setSheet('confirmPause'); }} />
+                onClick={() => manageAction(() => { setRetain(null); setSheet('confirmPause'); })} />
             )}
             {plan.status === 'paused' && (
               <ListRow title="繼續計畫" subtitle="回到進行中，重新開始安排時間"
-                role="button" tabIndex={0} style={{ cursor: 'pointer' }} onClick={resumePlan} />
+                role="button" tabIndex={0} style={{ cursor: 'pointer' }} onClick={() => manageAction(resumePlan)} />
             )}
             <ListRow title="刪除計畫" subtitle="從清單中移除，無法復原"
               role="button" tabIndex={0} style={{ cursor: 'pointer', color: 'var(--danger, #c0392b)' }}
-              onClick={() => { setRetain(null); setSheet('confirmDelete'); }} />
+              onClick={() => manageAction(() => { setRetain(null); setSheet('confirmDelete'); })} />
           </div>
           {err && <div className="error" role="alert" style={{ marginTop: 'var(--sp-3)' }}>{err}</div>}
         </BottomSheet>
