@@ -8,7 +8,7 @@ process.env.DB_FILE = path.join(mkdtempSync(path.join(tmpdir(), 'schedule-locks-
 process.env.TURSO_DATABASE_URL = '';
 
 const { q, initSchema, ensureScheduleLockLiveIndexes } = await import('../src/db/init.js');
-const { createScheduleLock } = await import('../src/schedule/lock-store.js');
+const { createScheduleLock, releaseScheduleLock } = await import('../src/schedule/lock-store.js');
 
 const USER = 1;
 let taskId;
@@ -31,6 +31,18 @@ before(async () => {
 });
 
 describe('schedule lock idempotent store', () => {
+  test('解除鎖定 owner-scoped 且冪等，保留 released history', async () => {
+    const created = await createScheduleLock(USER, { type: 'day', date: '2030-08-18' });
+    assert.deepEqual(await releaseScheduleLock(USER, created.lock.id), { ok: true, existing: false });
+    const released = await q.get('SELECT released_at,release_reason FROM schedule_locks WHERE id=?', [created.lock.id]);
+    assert.ok(released.released_at);
+    assert.equal(released.release_reason, 'user');
+    assert.deepEqual(await releaseScheduleLock(USER, created.lock.id), { ok: true, existing: true });
+    await assert.rejects(() => releaseScheduleLock(2, created.lock.id), error => error.status === 404);
+    await assert.rejects(() => releaseScheduleLock(USER, 987654321), error => error.status === 404);
+    assert.deepEqual(await q.get('SELECT released_at,release_reason FROM schedule_locks WHERE id=?', [created.lock.id]), released);
+  });
+
   test('task/day/time 重複建立都回傳同一筆 live lock', async () => {
     const cases = [
       { type: 'task', task_id: taskId },
