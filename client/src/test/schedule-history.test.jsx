@@ -96,6 +96,33 @@ describe('ScheduleHistory restore recovery', () => {
     expect(screen.getByText('任務 2')).toBeTruthy();
   });
 
+  it('375px：版本詳情失敗不殘留舊版本，防重複讀取並可原地重試', async () => {
+    let detailAttempts = 0;
+    standardApi({
+      '/schedule/versions/2': async () => {
+        detailAttempts += 1;
+        if (detailAttempts === 1) throw new Error('版本詳情離線');
+        return detail(2);
+      },
+    });
+    render(<ScheduleHistoryView />);
+    await selectVersion(1);
+    const version2 = screen.getByRole('button', { name: /V2/ });
+
+    fireEvent.click(version2);
+    fireEvent.click(version2);
+
+    expect(await screen.findByRole('alert')).toHaveTextContent('版本詳情離線');
+    expect(detailAttempts).toBe(1);
+    expect(screen.queryByText('任務 1')).toBeNull();
+    expect(screen.queryByText('查看中')).toBeNull();
+
+    fireEvent.click(screen.getByRole('button', { name: '重新載入版本' }));
+    expect(await screen.findByText('任務 2')).toBeTruthy();
+    expect(detailAttempts).toBe(2);
+    expect(screen.queryByRole('alert')).toBeNull();
+  });
+
   it('一般 API 失敗在 sheet 內提示、保留 preview，並可直接重試', async () => {
     let attempts = 0;
     standardApi({

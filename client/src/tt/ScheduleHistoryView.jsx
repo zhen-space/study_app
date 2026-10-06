@@ -58,6 +58,8 @@ export default function ScheduleHistoryView({ onRestored }) {
   const [preview, setPreview] = useState(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
+  const [detailLoadingId, setDetailLoadingId] = useState(null);
+  const [detailErrorId, setDetailErrorId] = useState(null);
   const [listError, setListError] = useState('');
   const [listLoading, setListLoading] = useState(true);
   const [restoreError, setRestoreError] = useState('');
@@ -65,6 +67,7 @@ export default function ScheduleHistoryView({ onRestored }) {
   const applyBusy = useRef(false);
   const listBusy = useRef(false);
   const detailRequest = useRef(0);
+  const detailBusyId = useRef(null);
   const load = async () => {
     if (listBusy.current) return;
     listBusy.current = true;
@@ -75,8 +78,11 @@ export default function ScheduleHistoryView({ onRestored }) {
   };
   useEffect(() => { load(); }, []);
   async function openVersion(id) {
+    if (detailBusyId.current === id) return;
+    detailBusyId.current = id;
     const request = ++detailRequest.current;
-    setError('');
+    setError(''); setDetailErrorId(null); setDetailLoadingId(id);
+    setSelected(null); setDiff(null);
     try {
       const [version, versionDiff] = await Promise.all([
         api(`/schedule/versions/${id}`), api(`/schedule/versions/${id}/diff?include_unchanged=0`),
@@ -84,7 +90,15 @@ export default function ScheduleHistoryView({ onRestored }) {
       if (request !== detailRequest.current) return;
       setSelected(version); setDiff(versionDiff);
     } catch (e) {
-      if (request === detailRequest.current) setError(e.message);
+      if (request === detailRequest.current) {
+        setError(e.message || '無法載入版本詳情');
+        setDetailErrorId(id);
+      }
+    } finally {
+      if (request === detailRequest.current) {
+        detailBusyId.current = null;
+        setDetailLoadingId(null);
+      }
     }
   }
   async function openRestore() {
@@ -154,12 +168,15 @@ export default function ScheduleHistoryView({ onRestored }) {
             {listLoading ? '重新載入中…' : '重新載入紀錄'}
           </Button>
         </SurfaceCard>}
-        {error && <div role="alert"><SurfaceCard tone="warning" style={{ marginBottom: 'var(--sp-3)' }}>{error}</SurfaceCard></div>}
+        {error && <div role="alert"><SurfaceCard tone="warning" style={{ marginBottom: 'var(--sp-3)' }}>
+          <div>{error}</div>
+          {detailErrorId != null && <Button variant="secondary" size="sm" style={{ marginTop: 8 }} onClick={() => openVersion(detailErrorId)}>重新載入版本</Button>}
+        </SurfaceCard></div>}
         {listLoading && <p aria-live="polite">載入排程紀錄中…</p>}
         {!listLoading && !listError && !versions.length && <EmptyState title="還沒有排程紀錄" description="建立第一份正式排程後，版本會出現在這裡。" />}
         {versions.map(v => <SurfaceCard key={v.id} style={{ marginBottom: 'var(--sp-2)', cursor: 'pointer' }}
           role="button" tabIndex={0} onClick={() => openVersion(v.id)} onKeyDown={e => e.key === 'Enter' && openVersion(v.id)}>
-          <div className="row"><b>V{v.version_no}</b>{v.id === selected?.version.id && <span className="chip">查看中</span>}<span className="ui-meta" style={{ marginLeft: 'auto' }}>{SOURCE[v.source] || v.source}</span></div>
+          <div className="row"><b>V{v.version_no}</b>{v.id === selected?.version.id && <span className="chip">查看中</span>}{v.id === detailLoadingId && <span className="chip">載入中…</span>}<span className="ui-meta" style={{ marginLeft: 'auto' }}>{SOURCE[v.source] || v.source}</span></div>
           <div className="ui-meta" style={{ marginTop: 5 }}>{v.reason || '未填寫說明'} · {v.block_count} 個安排 · {fmt(v.created_at)}</div>
         </SurfaceCard>)}
         <VersionBlocks version={selected} />
