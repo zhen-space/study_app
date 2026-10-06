@@ -21,6 +21,32 @@ beforeEach(() => {
 });
 
 describe('LocksView recoverable mutations', () => {
+  it('375px：鎖定清單載入失敗不冒充空清單，禁止 mutation 並可原地重試', async () => {
+    let reads = 0;
+    let retry;
+    api.mockImplementation(async path => {
+      if (path !== '/schedule/locks') return {};
+      reads += 1;
+      if (reads === 1) throw new Error('鎖定清單離線');
+      // 模擬 React 尚未畫出 disabled 前再次點擊同一顆 retry。
+      retry.click();
+      return [{ id: 10, type: 'day', date: '2030-08-19' }];
+    });
+    render(<LocksView tasks={tasks} />);
+
+    expect(await screen.findByRole('alert')).toHaveTextContent('鎖定清單離線');
+    expect(screen.queryByText('2030-08-19 全天')).toBeNull();
+    expect(screen.getByRole('button', { name: '鎖定' })).toBeDisabled();
+    expect(screen.getByLabelText('選擇已排入時間的任務')).toBeDisabled();
+    retry = screen.getByRole('button', { name: '重新載入鎖定' });
+    fireEvent.click(retry);
+
+    expect(await screen.findByText('2030-08-19 全天')).toBeTruthy();
+    expect(reads).toBe(2);
+    expect(screen.queryByRole('alert')).toBeNull();
+    expect(screen.getByLabelText('選擇已排入時間的任務')).toBeEnabled();
+  });
+
   it('建立時鎖住重複操作，成功後刷新，並送出 canonical payload', async () => {
     let resolvePost;
     const pending = new Promise(resolve => { resolvePost = resolve; });
