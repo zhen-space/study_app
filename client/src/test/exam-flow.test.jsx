@@ -86,6 +86,7 @@ describe('ExamCreateWizard', () => {
     });
     render(<ExamCreateWizard lists={LISTS} onDone={() => {}} onCancel={() => {}} />);
     fireEvent.change(screen.getByLabelText('段考名稱'), { target: { value: '第二次段考' } });
+    fireEvent.change(screen.getByLabelText('開始日期'), { target: { value: '2099-09-20' } });
     fireEvent.change(screen.getByLabelText('段考結束日期'), { target: { value: '2099-10-02' } });
     fireEvent.change(screen.getByLabelText('加入科目'), { target: { value: '1' } });
     await waitFor(() => expect(screen.getByText('數學')).toBeTruthy());
@@ -100,6 +101,9 @@ describe('ExamCreateWizard', () => {
     await waitFor(() => expect(screen.getByText('希望怎麼安排？')).toBeTruthy());
     await click(screen.getAllByRole('radio')[1]);
     await waitFor(() => expect(screen.getByText('還不能建立每天安排')).toBeTruthy());
+    const previewBody = posted('/schedule/preview').at(-1)[1].body;
+    expect(previewBody.startDate).toBe('2099-09-20');
+    expect(previewBody.items[0].start).toBe('2099-09-20');
     const confirmBtn = screen.getByText('確認，建立段考計畫').closest('button');
     expect(confirmBtn.disabled).toBe(true);
     // 按下也不會 POST
