@@ -94,20 +94,21 @@ export default function ExamCreateWizard({ lists = [], onDone, onCancel }) {
   // 前端不送任何 blocks／task_creates（見後端 createExamPlanAtomic）。
   const buildItems = useCallback(() => {
     const items = [];
+    const scheduleStart = start || today();
     for (const s of subjects) {
       const sc = subjScope(s.listId);
       const dueEnd = s.examDate || end;
       for (const it of Object.values(sc.items)) {
         const title = `${it.book_title ? it.book_title + '｜' : ''}${it.chapter ? it.chapter + '｜' : ''}${it.title}`;
-        items.push({ subject_id: Number(s.listId), title, minutes: it.minutes || 30, spread: false, start: today(), end: dueEnd });
+        items.push({ subject_id: Number(s.listId), title, minutes: it.minutes || 30, spread: false, start: scheduleStart, end: dueEnd });
       }
       for (const m of sc.manual) {
         if (!m.est) continue; // 缺預估的手動範圍無法排入每日/時段（下方 scheduleGate 會擋住建立）
-        items.push({ subject_id: Number(s.listId), title: m.label, minutes: m.est, spread: false, start: today(), end: dueEnd });
+        items.push({ subject_id: Number(s.listId), title: m.label, minutes: m.est, spread: false, start: scheduleStart, end: dueEnd });
       }
     }
     return items;
-  }, [subjects, scope, end]);
+  }, [subjects, scope, start, end]);
 
   // 每日／時段需要每項都有預估時間，缺一律無法排入（跟後端 fail-closed 一致）。
   const scheduleGate = useMemo(() => {
@@ -127,13 +128,13 @@ export default function ExamCreateWizard({ lists = [], onDone, onCancel }) {
     if (!items.length) { setPreview({ blocks: [], unplacedCount: 0, empty: true }); return; }
     setBusy(true); setErr('');
     try {
-      const body = buildSchedulePreviewRequest({ items, startDate: today(), endDate: end, conditions: { timed: level === 'timed', pace: 'even' } });
+      const body = buildSchedulePreviewRequest({ items, startDate: start || today(), endDate: end, conditions: { timed: level === 'timed', pace: 'even' } });
       const r = await api('/schedule/preview', { method: 'POST', body });
       const unplacedCount = (r.unplaced_tasks || []).length || (r.unplaced ? 1 : 0);
       setPreview({ blocks: r.blocks || [], unplacedCount, failed: false });
     } catch (e) { setPreview({ blocks: [], unplacedCount: 0, failed: true, error: e.message || '預覽失敗' }); }
     finally { setBusy(false); }
-  }, [level, end, buildItems]);
+  }, [level, start, end, buildItems]);
   useEffect(() => { if (step === 2) runPreview(); }, [step, level, runPreview]);
 
   // daily／timed 只有在「有完整預估、預覽成功、有排出內容、且沒有排不下」時才可建立。

@@ -92,13 +92,15 @@ router.post('/exam-plans', async (req, res) => {
     if (!scope.scopeItems.length) {
       return res.status(422).json({ error: '這個安排方式需要至少一項可排入的範圍', code: 'EXAM_SCOPE_EMPTY' });
     }
-    const today = todayTW();
+    // 使用者明確設定的準備開始日必須同時約束預覽與正式排程；未設定才從今天開始。
+    // 排程器本身仍會排除已過日期，因此舊草稿填過去日期不會倒排。
+    const scheduleStart = startDate || todayTW();
     const items = scope.scopeItems.map(si => ({
-      subject_id: si.subjectId, title: si.title, minutes: si.minutes, spread: false, start: today, end: si.deadline,
+      subject_id: si.subjectId, title: si.title, minutes: si.minutes, spread: false, start: scheduleStart, end: si.deadline,
     }));
     let pv;
     try {
-      pv = await runPreview(userId, { items, timed: level === 'timed', startDate: today, endDate, pace: 'even' });
+      pv = await runPreview(userId, { items, timed: level === 'timed', startDate: scheduleStart, endDate, pace: 'even' });
     } catch (e) {
       return res.status(e.status || 500).json({ error: e.message || '無法排出可行的安排', code: 'EXAM_SCHEDULE_ERROR' });
     }

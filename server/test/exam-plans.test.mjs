@@ -69,6 +69,20 @@ describe('POST /exam-plans（server-authoritative 原子建立）', () => {
     assert.ok(t.due_date && t.due_date <= day(8), 'block 鏡射的 due_date 不得超過考試日');
   });
 
+  test('EP2-start：使用者設定未來開始日，正式安排不得提早到開始日前', async () => {
+    const math = await subject('數學EP2-start');
+    const m = await contentItem(math.id, '未來才開始');
+    const created = await post('/exam-plans', {
+      name: '段考未來開始', start_date: day(4), end_date: day(10), level: 'daily',
+      subjects: [{ subject_list_id: math.id, exam_date: day(8) }],
+      material_scope: [m.it.id], manual_scope: [],
+    });
+    assert.equal(created.status, 201, JSON.stringify(created.body));
+    const t = (await tasksNow()).find(x => x.material_content_item_id === m.it.id);
+    assert.ok(t?.due_date >= day(4), `安排 ${t?.due_date} 不得早於準備開始日 ${day(4)}`);
+    assert.ok(t.due_date <= day(8), '安排仍不得超過該科考試日');
+  });
+
   test('EP2b P0-3：client 傳的 deadline/排程一律忽略，deadline 以 CURRENT 考試日為準', async () => {
     const math = await subject('數學EP2b');
     const m = await contentItem(math.id, '第一章');
