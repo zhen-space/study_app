@@ -88,6 +88,7 @@ export default function ExamCreateWizard({ lists = [], onDone, onCancel }) {
     && subjects.every(s => !s.examDate || s.examDate <= end);
   const scopeCount = id => Object.keys(subjScope(id).items).length + subjScope(id).manual.length;
   const totalScope = subjects.reduce((n, s) => n + scopeCount(s.listId), 0);
+  const missingScopeSubjects = subjects.filter(s => scopeCount(s.listId) === 0);
 
   // ---- Step 3 排程預覽（每日/時段）----
   // 預覽只是「讓使用者看一眼」——實際排程由**伺服器**用 CURRENT scope 自己算，
@@ -199,13 +200,13 @@ export default function ExamCreateWizard({ lists = [], onDone, onCancel }) {
                 (byChapter[k] = byChapter[k] || []).push([cid, it]);
               }
               return (
-                <SurfaceCard key={s.listId}>
+                <SurfaceCard key={s.listId} tone={scopeCount(s.listId) === 0 ? 'warning' : undefined}>
                   <div className="row" style={{ alignItems: 'baseline' }}>
                     <b>{nameOf(s.listId)}</b>
                     <span className="ui-meta">考試 {s.examDate ? md(s.examDate) : md(end)}</span>
                   </div>
                   {Object.keys(byChapter).length === 0 && sc.manual.length === 0 && (
-                    <div className="ui-meta" style={{ marginTop: 6 }}>還沒選範圍。</div>
+                    <div className="error" role="alert" style={{ marginTop: 6 }}>請替{nameOf(s.listId)}加入至少一項考試範圍。</div>
                   )}
                   {Object.entries(byChapter).map(([k, arr]) => (
                     <div key={k} style={{ marginTop: 6 }}>
@@ -232,8 +233,10 @@ export default function ExamCreateWizard({ lists = [], onDone, onCancel }) {
                 </SurfaceCard>
               );
             })}
-            <Button variant="primary" block disabled={!totalScope} onClick={() => setStep(2)}>下一步：選擇怎麼安排</Button>
-            {!totalScope && <div className="ui-meta" style={{ textAlign: 'center' }}>至少替一科加入一項範圍。</div>}
+            <Button variant="primary" block disabled={!totalScope || missingScopeSubjects.length > 0} onClick={() => setStep(2)}>下一步：選擇怎麼安排</Button>
+            {missingScopeSubjects.length > 0 && <div className="error" role="alert" style={{ textAlign: 'center' }}>
+              尚未加入範圍：{missingScopeSubjects.map(s => nameOf(s.listId)).join('、')}
+            </div>}
           </div>
         )}
 

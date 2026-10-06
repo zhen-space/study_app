@@ -1473,6 +1473,7 @@ export async function buildExamScope(runner, userId, {
   }
 
   const scopeItems = [];        // { kind, subjectId, title, minutes, contentItemId, bookId, deadline, label }
+  const subjectsWithScope = new Set();
   const sigParts = [];
   const uniqTitle = new Set();
   const requireUniqueTitle = title => {
@@ -1502,6 +1503,7 @@ export async function buildExamScope(runner, userId, {
     if (scheduled && est == null) throw new ExamPlanError(`教材項目缺少估計時間，無法排入每天安排：${title}`, 'MATERIAL_ESTIMATE_MISSING', 422);
     if (scheduled) requireUniqueTitle(`${sid}\u0000${title}`);
     scopeItems.push({ kind: 'material', subjectId: sid, title, minutes: est ?? 30, contentItemId: cid, bookId: it.book_id ?? null, deadline: examBySubject.get(sid), label: null });
+    subjectsWithScope.add(sid);
     sigParts.push(`m:${cid}:${est ?? ''}:${sid}:${title}`);
   }
 
@@ -1523,6 +1525,15 @@ export async function buildExamScope(runner, userId, {
       sigParts.push(`x:${sid}:${est}:${label}`);
     }
     manualEntries.push({ subject_list_id: sid, label, estimated_minutes: est });
+    if (sid != null) subjectsWithScope.add(sid);
+  }
+
+  const missingSubjectIds = orderedSubjects
+    .map(s => Number(s.subject_list_id))
+    .filter(sid => !subjectsWithScope.has(sid));
+  if (missingSubjectIds.length) {
+    throw new ExamPlanError('每個考試科目都必須至少加入一項教材或老師指定範圍',
+      'SUBJECT_SCOPE_MISSING', 422, { subject_ids: missingSubjectIds });
   }
 
   const sig = sigParts.slice().sort().join('|');

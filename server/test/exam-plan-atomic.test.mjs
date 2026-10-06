@@ -133,4 +133,18 @@ describe('createExamPlanAtomic 單一交易原子性（P0-4）', () => {
     assert.equal(r.plans, 0); assert.equal(r.tasks, 0); assert.equal(r.manual, 0); assert.equal(r.subjects, 0);
     assert.equal(r.versions, 1, '既有的新版本必須保留，不能建立第二版');
   });
+
+  test('多考科只替其中一科加入範圍 → progress/daily 都拒絕並指出缺少科目', async () => {
+    const eng = await q.run('INSERT INTO lists (user_id,name) VALUES (?,?)', [USER, '英文']);
+    for (const level of ['progress', 'daily']) {
+      await assert.rejects(sched.buildExamScope(q, USER, {
+        endDate: rel(10), startDate: rel(0), level,
+        subjects: [{ subject_list_id: subjId }, { subject_list_id: Number(eng.lastInsertRowid) }],
+        materialIds: [], manual: [{ subject_list_id: subjId, label: '數學範圍', estimated_minutes: 60 }],
+      }), e => e.code === 'SUBJECT_SCOPE_MISSING'
+        && e.status === 422
+        && e.subject_ids?.[0] === Number(eng.lastInsertRowid));
+    }
+    assert.deepEqual(await residue(), { plans: 0, tasks: 0, manual: 0, subjects: 0, versions: 0, blocks: 0 });
+  });
 });
