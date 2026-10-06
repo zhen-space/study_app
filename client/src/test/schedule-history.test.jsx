@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
+import { act } from 'react';
 
 vi.mock('../api', () => ({ api: vi.fn() }));
 const { api } = await import('../api');
@@ -141,6 +142,31 @@ describe('ScheduleHistory restore recovery', () => {
     expect(within(dialog).getByText('恢復 V1')).toBeTruthy();
     fireEvent.click(within(dialog).getByRole('button', { name: '確認恢復' }));
     await waitFor(() => expect(attempts).toBe(2));
+  });
+
+  it('375px：restore preview pending 時切換版本會丟棄舊提案且不重複讀取', async () => {
+    const pendingPreview = deferred();
+    let previewCalls = 0;
+    standardApi({
+      '/schedule/versions/1/restore-preview': async () => {
+        previewCalls += 1;
+        return pendingPreview.promise;
+      },
+    });
+    render(<ScheduleHistoryView />);
+    await selectVersion(1);
+    const restore = screen.getByRole('button', { name: '恢復這個版本' });
+
+    fireEvent.click(restore);
+    fireEvent.click(restore);
+    expect(previewCalls).toBe(1);
+    fireEvent.click(screen.getByRole('button', { name: /V2/ }));
+    expect(await screen.findByText('任務 2')).toBeTruthy();
+
+    await act(async () => { pendingPreview.resolve(preview); });
+    expect(screen.queryByRole('dialog', { name: '恢復排程版本' })).toBeNull();
+    expect(screen.getByText('任務 2')).toBeTruthy();
+    expect(screen.getByText('查看中')).toBeTruthy();
   });
 
   it('stale preview 不可重送：關閉舊確認並引導重新預覽', async () => {
