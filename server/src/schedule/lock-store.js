@@ -73,3 +73,17 @@ export async function createScheduleLock(userId, body = {}) {
     return { lock: publicLock(existing), created: false };
   }
 }
+
+export async function releaseScheduleLock(userId, lockId) {
+  return q.tx(async tx => {
+    const owned = await tx.get('SELECT id,released_at FROM schedule_locks WHERE id=? AND user_id=?', [lockId, userId]);
+    if (!owned) {
+      const error = new Error('找不到這個鎖定');
+      error.status = 404;
+      throw error;
+    }
+    if (owned.released_at) return { ok: true, existing: true };
+    await tx.run("UPDATE schedule_locks SET released_at=CURRENT_TIMESTAMP, release_reason='user' WHERE id=? AND user_id=? AND released_at IS NULL", [lockId, userId]);
+    return { ok: true, existing: false };
+  });
+}

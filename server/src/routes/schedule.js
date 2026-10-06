@@ -13,7 +13,7 @@ import { signMaterialSnapshotToken } from '../schedule/material-token.js';
 import { signExamSubjectToken } from '../schedule/exam-subject-token.js';
 import { buildPlanTimeline } from '../schedule/timeline.js';
 import { calculateScheduleDiff } from '../schedule/diff.js';
-import { createScheduleLock } from '../schedule/lock-store.js';
+import { createScheduleLock, releaseScheduleLock } from '../schedule/lock-store.js';
 import { PURE_QUESTION_KINDS } from '../material/tree.js';
 
 const router = Router();
@@ -1891,7 +1891,10 @@ router.post('/locks', async (req, res) => {
     res.status(result.created ? 201 : 200).json({ ...result.lock, existing: !result.created });
   } catch(e) { res.status(e.status || 500).json({ error:e.message, conflicts:e.conflicts }); }
 });
-router.delete('/locks/:id', async (req,res) => { const r=await q.run("UPDATE schedule_locks SET released_at=CURRENT_TIMESTAMP, release_reason='user' WHERE id=? AND user_id=? AND released_at IS NULL",[req.params.id,req.userId]); if(!r.changes)return res.status(404).json({error:'找不到這個鎖定'}); res.json({ok:true}); });
+router.delete('/locks/:id', async (req,res) => {
+  try { res.json(await releaseScheduleLock(req.userId, Number(req.params.id))); }
+  catch (e) { res.status(e.status || 500).json({ error: e.message }); }
+});
 
 // 單一版本 ＋ 它的 blocks
 router.get('/versions/:id', async (req, res) => {

@@ -101,13 +101,13 @@ describe('LocksView recoverable mutations', () => {
     });
   });
 
-  it('解除失敗保留 lock，busy guard 防止重複；失敗後可重試', async () => {
+  it('解除回應遺失時保留 lock，重試冪等成功後收斂本地 stale 投影', async () => {
     let deletes = 0;
     api.mockImplementation(async (path, options) => {
       if (options?.method === 'DELETE') {
         deletes += 1;
         if (deletes === 1) throw new Error('解除失敗');
-        return { released: true };
+        return { ok: true, existing: true };
       }
       return deletes >= 2 ? [] : [{ id: 13, type: 'day', date: '2030-08-21' }];
     });
