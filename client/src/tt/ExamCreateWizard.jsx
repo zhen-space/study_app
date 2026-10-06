@@ -1,7 +1,6 @@
-import { useEffect, useMemo, useState, useCallback } from 'react';
+import { useEffect, useMemo, useState, useCallback, useRef } from 'react';
 import { api } from '../api';
 import { listShelf, getBookTree, flattenItems } from './material';
-import { buildSchedulePreviewRequest } from './schedulePreview';
 import { today } from './helpers';
 import { md } from './plans';
 import AddMaterialFlow from './AddMaterialFlow';
@@ -43,12 +42,13 @@ export default function ExamCreateWizard({ lists = [], onDone, onCancel }) {
   const [busy, setBusy] = useState(false);
   const [picking, setPicking] = useState(null);   // { listId } → 開教材選取
   const [preview, setPreview] = useState(null);    // 每日/時段的排程預覽 blocks
+  const previewRequest = useRef(0);
 
   // 草稿自動保存（返回/取消/重開可接續）。
   useEffect(() => { saveDraft({ step, name, start, end, subjects, scope, level }); },
     [step, name, start, end, subjects, scope, level]);
 
-  const nameOf = id => lists.find(l => Number(l.id) === Number(id))?.name || '科目';
+  const nameOf = useCallback(id => lists.find(l => Number(l.id) === Number(id))?.name || '科目', [lists]);
   const addSubject = id => {
     if (subjects.some(s => Number(s.listId) === Number(id))) return;
     setSubjects(s => [...s, { listId: Number(id), examDate: end || '' }]);
@@ -60,7 +60,7 @@ export default function ExamCreateWizard({ lists = [], onDone, onCancel }) {
   const setExamDate = (id, d) => setSubjects(s => s.map(x => Number(x.listId) === Number(id) ? { ...x, examDate: d } : x));
 
   // 科目的 scope 讀寫
-  const subjScope = id => scope[id] || { items: {}, manual: [] };
+  const subjScope = useCallback(id => scope[id] || { items: {}, manual: [] }, [scope]);
   const addItems = (listId, picked) => setScope(sc => {
     const cur = sc[listId] || { items: {}, manual: [] };
     const items = { ...cur.items };
@@ -92,23 +92,14 @@ export default function ExamCreateWizard({ lists = [], onDone, onCancel }) {
   // ---- Step 3 排程預覽（每日/時段）----
   // 預覽只是「讓使用者看一眼」——實際排程由**伺服器**用 CURRENT scope 自己算，
   // 前端不送任何 blocks／task_creates（見後端 createExamPlanAtomic）。
-  const buildItems = useCallback(() => {
-    const items = [];
-    const scheduleStart = start || today();
-    for (const s of subjects) {
-      const sc = subjScope(s.listId);
-      const dueEnd = s.examDate || end;
-      for (const it of Object.values(sc.items)) {
-        const title = `${it.book_title ? it.book_title + '｜' : ''}${it.chapter ? it.chapter + '｜' : ''}${it.title}`;
-        items.push({ subject_id: Number(s.listId), title, minutes: it.minutes || 30, spread: false, start: scheduleStart, end: dueEnd });
-      }
-      for (const m of sc.manual) {
-        if (!m.est) continue; // 缺預估的手動範圍無法排入每日/時段（下方 scheduleGate 會擋住建立）
-        items.push({ subject_id: Number(s.listId), title: m.label, minutes: m.est, spread: false, start: scheduleStart, end: dueEnd });
-      }
-    }
-    return items;
-  }, [subjects, scope, start, end]);
+  const requestBody = useCallback(() => ({
+    name: name.trim(), start_date: start || null, end_date: end, level,
+    subjects: subjects.map(s => ({ subject_list_id: Number(s.listId), exam_date: s.examDate || end })),
+    material_scope: subjects.flatMap(s => Object.keys(subjScope(s.listId).items).map(Number)),
+    manual_scope: subjects.flatMap(s => subjScope(s.listId).manual.map(m => ({
+      subject_list_id: Number(s.listId), label: m.label, estimated_minutes: m.est || null,
+    }))),
+  }), [name, start, end, level, subjects, subjScope]);
 
   // 每日／時段需要每項都有預估時間，缺一律無法排入（跟後端 fail-closed 一致）。
   const scheduleGate = useMemo(() => {
@@ -120,48 +111,41 @@ export default function ExamCreateWizard({ lists = [], onDone, onCancel }) {
       for (const m of sc.manual) if (!(m.est > 0)) missing.push(`${nameOf(s.listId)}｜${m.label}`);
     }
     return { ok: missing.length === 0, missing };
-  }, [level, subjects, scope]);
+  }, [level, subjects, nameOf, subjScope]);
 
   const runPreview = useCallback(async () => {
-    if (level === 'progress') { setPreview(null); return; }
-    const items = buildItems();
-    if (!items.length) { setPreview({ blocks: [], unplacedCount: 0, empty: true }); return; }
+    const requestId = ++previewRequest.current;
     setBusy(true); setErr('');
     try {
-      const body = buildSchedulePreviewRequest({ items, startDate: start || today(), endDate: end, conditions: { timed: level === 'timed', pace: 'even' } });
-      const r = await api('/schedule/preview', { method: 'POST', body });
-      const unplacedCount = (r.unplaced_tasks || []).length || (r.unplaced ? 1 : 0);
-      setPreview({ blocks: r.blocks || [], unplacedCount, failed: false });
-    } catch (e) { setPreview({ blocks: [], unplacedCount: 0, failed: true, error: e.message || '預覽失敗' }); }
-    finally { setBusy(false); }
-  }, [level, start, end, buildItems]);
+      const r = await api('/exam-plans/preview', { method: 'POST', body: requestBody() });
+      if (requestId === previewRequest.current) setPreview({ ...r, blocks: r.blocks || [], failed: false });
+    } catch (e) {
+      if (requestId === previewRequest.current) setPreview({ blocks: [], failed: true, error: e.message || '預覽失敗' });
+    } finally { if (requestId === previewRequest.current) setBusy(false); }
+  }, [requestBody]);
   useEffect(() => { if (step === 2) runPreview(); }, [step, level, runPreview]);
 
   // daily／timed 只有在「有完整預估、預覽成功、有排出內容、且沒有排不下」時才可建立。
   // 這是 P0-1 的前端防線；伺服器仍會再 fail-closed 一次（單一權威來源）。
-  const scheduleBlocked = level !== 'progress' && (
-    !scheduleGate.ok || busy || !preview || preview.failed || preview.empty
-    || preview.blocks.length === 0 || preview.unplacedCount > 0
-  );
+  const scheduleBlocked = !scheduleGate.ok || busy || !preview || preview.failed || !preview.preview_token
+    || (level !== 'progress' && preview.blocks.length === 0);
   const canConfirm = !busy && !scheduleBlocked;
 
   // ---- 確認建立（atomic，server-authoritative）----
   const confirm = async () => {
     setBusy(true); setErr('');
     try {
-      const material_scope = subjects.flatMap(s => Object.keys(subjScope(s.listId).items).map(Number));
-      const manual_scope = subjects.flatMap(s => subjScope(s.listId).manual.map(m => ({
-        subject_list_id: Number(s.listId), label: m.label, estimated_minutes: m.est || null,
-      })));
-      const body = {
-        name: name.trim(), start_date: start || null, end_date: end, level,
-        subjects: subjects.map(s => ({ subject_list_id: Number(s.listId), exam_date: s.examDate || end })),
-        material_scope, manual_scope,
-      };
+      const body = { ...requestBody(), preview_token: preview.preview_token };
       const created = await api('/exam-plans', { method: 'POST', body });
       clearDraft();
       onDone?.(created.plan.id);
-    } catch (e) { setErr(e.message || '建立失敗'); setBusy(false); }
+    } catch (e) {
+      if (e.status === 409 && e.payload?.code === 'EXAM_PREVIEW_STALE') {
+        setPreview(null);
+        setErr('範圍或安排已更新，請重新預覽後再確認。');
+      } else setErr(e.message || '建立失敗');
+      setBusy(false);
+    }
   };
 
   return (
@@ -269,14 +253,12 @@ export default function ExamCreateWizard({ lists = [], onDone, onCancel }) {
               <b>確認一下</b>
               <div className="ui-meta" style={{ marginBottom: 6 }}>{name}｜{start ? md(start) : ''}–{md(end)}</div>
               {subjects.map(s => {
-                const sc = subjScope(s.listId);
-                const chapters = [...new Set(Object.values(sc.items).map(it => `${it.book_title ? it.book_title + ' → ' : ''}${it.chapter}`))];
+                const canonical = (preview?.scope || []).filter(x => Number(x.subject_list_id) === Number(s.listId));
                 return (
                   <div key={s.listId} style={{ marginTop: 8 }}>
                     <div style={{ fontWeight: 600 }}>{nameOf(s.listId)} · 考試 {md(s.examDate || end)}</div>
-                    {chapters.map((c, i) => <div key={i} className="ui-meta" style={{ marginLeft: 6 }}>・{c}</div>)}
-                    {sc.manual.map((m, i) => <div key={`m${i}`} className="ui-meta" style={{ marginLeft: 6 }}>・📝 {m.label}（老師指定）</div>)}
-                    {chapters.length === 0 && sc.manual.length === 0 && <div className="ui-meta" style={{ marginLeft: 6 }}>（未選範圍）</div>}
+                    {canonical.map((x, i) => <div key={x.content_item_id ?? `m${i}`} className="ui-meta" style={{ marginLeft: 6 }}>・{x.kind === 'manual' ? '📝 ' : ''}{x.title}{x.estimated_minutes ? `（${x.estimated_minutes} 分）` : ''}</div>)}
+                    {preview && !preview.failed && canonical.length === 0 && <div className="ui-meta" style={{ marginLeft: 6 }}>（未選範圍）</div>}
                   </div>
                 );
               })}
@@ -298,13 +280,14 @@ export default function ExamCreateWizard({ lists = [], onDone, onCancel }) {
                   </div>
                 ) : preview?.failed ? (
                   <div className="ui-meta" style={{ marginTop: 4 }}>預覽失敗：{preview.error}</div>
-                ) : preview?.empty || preview?.blocks.length === 0 ? (
+                ) : !preview ? (
+                  <div className="ui-meta" style={{ marginTop: 4 }}>請重新取得最新預覽。</div>
+                ) : level !== 'progress' && preview?.blocks.length === 0 ? (
                   <div className="ui-meta" style={{ marginTop: 4 }}>目前沒有可排入的內容。</div>
-                ) : preview?.unplacedCount > 0 ? (
-                  <div className="ui-meta" style={{ marginTop: 4 }}>有 {preview.unplacedCount} 項排不進去（日期不夠或範圍太多）。</div>
                 ) : null}
                 <div className="row" style={{ gap: 8, marginTop: 8, flexWrap: 'wrap' }}>
                   <Button size="sm" variant="secondary" onClick={() => setStep(1)}>回上一步調整範圍／日期</Button>
+                  {(preview?.failed || !preview) && <Button size="sm" variant="primary" onClick={runPreview}>重新預覽</Button>}
                   {level !== 'progress' && <Button size="sm" variant="ghost" onClick={() => setLevel('progress')}>改用「只告訴我每個日期前要讀完什麼」</Button>}
                 </div>
               </SurfaceCard>

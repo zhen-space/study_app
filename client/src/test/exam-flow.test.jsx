@@ -15,7 +15,9 @@ const setApi = () => {
   api.mockImplementation((path, opts) => {
     calls.push([path, opts]);
     if (path === '/exam-plans' && opts?.method === 'POST') return Promise.resolve({ plan: { id: 99 } });
-    if (path === '/schedule/preview') return Promise.resolve({ blocks: [], unplaced: [] });
+    if (path === '/exam-plans/preview') return Promise.resolve({ preview_token: 'signed', blocks: [], scope: [
+      { kind: 'manual', subject_list_id: 1, title: '講義第三章', estimated_minutes: null },
+    ] });
     return Promise.resolve({});
   });
 };
@@ -77,10 +79,11 @@ describe('ExamCreateWizard', () => {
   it('P0-1：daily 排不下時，確認鍵停用並提供補救（回上一步／改用只分段）', async () => {
     api.mockImplementation((path, opts) => {
       calls.push([path, opts]);
-      if (path === '/schedule/preview') return Promise.resolve({
-        blocks: [{ subject_id: 1, title: '講義第三章', date: '2099-10-01' }],
-        unplaced: true, unplaced_tasks: [{ task_id: 1 }],
-      });
+      if (path === '/exam-plans/preview') return opts.body.level === 'progress'
+        ? Promise.resolve({ preview_token: 'progress-signed', blocks: [], scope: [
+          { kind: 'manual', subject_list_id: 1, title: '講義第三章', estimated_minutes: 60 },
+        ] })
+        : Promise.reject(new Error('有內容排不進去，請調整日期或範圍'));
       if (path === '/exam-plans' && opts?.method === 'POST') return Promise.resolve({ plan: { id: 99 } });
       return Promise.resolve({});
     });
@@ -101,9 +104,8 @@ describe('ExamCreateWizard', () => {
     await waitFor(() => expect(screen.getByText('希望怎麼安排？')).toBeTruthy());
     await click(screen.getAllByRole('radio')[1]);
     await waitFor(() => expect(screen.getByText('還不能建立每天安排')).toBeTruthy());
-    const previewBody = posted('/schedule/preview').at(-1)[1].body;
-    expect(previewBody.startDate).toBe('2099-09-20');
-    expect(previewBody.items[0].start).toBe('2099-09-20');
+    const previewBody = posted('/exam-plans/preview').at(-1)[1].body;
+    expect(previewBody.start_date).toBe('2099-09-20');
     const confirmBtn = screen.getByText('確認，建立段考計畫').closest('button');
     expect(confirmBtn.disabled).toBe(true);
     // 按下也不會 POST

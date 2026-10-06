@@ -13,6 +13,7 @@ process.env.TURSO_DATABASE_URL = '';
 
 const { q, initSchema } = await import('../src/db/init.js');
 const sched = await import('../src/schedule/persistence.js');
+const { signExamPlanPreview } = await import('../src/schedule/exam-plan-token.js');
 const { todayTW, addDays } = await import('../src/util/date.js');
 
 const rel = n => addDays(todayTW(), n);
@@ -47,10 +48,22 @@ const base = extra => ({
   materialIds: [], manual: [{ subject_list_id: subjId, label: '講義第三章', estimated_minutes: 60 }],
   ...extra,
 });
+const secured = async extra => {
+  const value = base(extra);
+  const scope = await sched.buildExamScope(q, USER, {
+    endDate: value.endDate, startDate: value.startDate, level: value.level,
+    subjects: value.subjects, materialIds: value.materialIds, manual: value.manual,
+  });
+  const blocks = value.computedBlocks || [];
+  const snapshot = { user_id: USER, level: value.level, start_date: value.startDate, end_date: value.endDate,
+    subjects: scope.orderedSubjects, material_ids: scope.materialIds, manual_scope: scope.manualEntries,
+    scope_sig: value.scopeSig ?? scope.sig, base_version_id: null, blocks };
+  return { ...value, scopeSig: snapshot.scope_sig, previewToken: signExamPlanPreview(snapshot) };
+};
 
 describe('createExamPlanAtomic 單一交易原子性（P0-4）', () => {
   test('happy path：Plan＋Task＋各科考試日＋version＋block 一次建立', async () => {
-    const { planId } = await sched.createExamPlanAtomic(USER, base({
+    const { planId } = await sched.createExamPlanAtomic(USER, await secured({
       computedBlocks: [{ subject_id: subjId, title: '講義第三章', date: rel(2) }],
       scopeSig: null,
     }));
@@ -67,7 +80,7 @@ describe('createExamPlanAtomic 單一交易原子性（P0-4）', () => {
 
   test('中途失敗①：block 超過該科考試日（deadline 違反，發生在 Plan/Task 已插入之後）→ 零殘留', async () => {
     await assert.rejects(
-      sched.createExamPlanAtomic(USER, base({
+      sched.createExamPlanAtomic(USER, await secured({
         computedBlocks: [{ subject_id: subjId, title: '講義第三章', date: rel(30) }], // > exam_date rel(5)
         scopeSig: null,
       })),
@@ -77,14 +90,14 @@ describe('createExamPlanAtomic 單一交易原子性（P0-4）', () => {
 
   test('中途失敗②：有 scope item 沒被任何 block 覆蓋 → EXAM_SCHEDULE_GAP，零殘留', async () => {
     await assert.rejects(
-      sched.createExamPlanAtomic(USER, base({ computedBlocks: [], scopeSig: null })),
+      sched.createExamPlanAtomic(USER, await secured({ computedBlocks: [], scopeSig: null })),
       e => e.code === 'EXAM_SCHEDULE_GAP');
     assert.deepEqual(await residue(), { plans: 0, tasks: 0, manual: 0, subjects: 0, versions: 0, blocks: 0 });
   });
 
   test('中途失敗③：block 對不到 CURRENT scope（stale）→ 零殘留', async () => {
     await assert.rejects(
-      sched.createExamPlanAtomic(USER, base({
+      sched.createExamPlanAtomic(USER, await secured({
         computedBlocks: [{ subject_id: subjId, title: '這個範圍不存在', date: rel(2) }],
         scopeSig: null,
       })),
@@ -94,11 +107,30 @@ describe('createExamPlanAtomic 單一交易原子性（P0-4）', () => {
 
   test('中途失敗④：scope 指紋與 preview 當時不一致（TOCTOU）→ 零殘留', async () => {
     await assert.rejects(
-      sched.createExamPlanAtomic(USER, base({
+      sched.createExamPlanAtomic(USER, await secured({
         computedBlocks: [{ subject_id: subjId, title: '講義第三章', date: rel(2) }],
         scopeSig: 'STALE-SIGNATURE',
       })),
-      e => e.code === 'STALE_SCHEDULE_PREVIEW');
+      e => e.code === 'EXAM_PREVIEW_STALE');
     assert.deepEqual(await residue(), { plans: 0, tasks: 0, manual: 0, subjects: 0, versions: 0, blocks: 0 });
+  });
+
+  test('簽章預覽後日期／範圍被修改 → 409 且零殘留', async () => {
+    const previewed = await secured({ computedBlocks: [{ subject_id: subjId, title: '講義第三章', date: rel(2) }] });
+    await assert.rejects(
+      sched.createExamPlanAtomic(USER, { ...previewed, endDate: rel(9) }),
+      e => e.code === 'EXAM_PREVIEW_STALE' && e.status === 409);
+    assert.deepEqual(await residue(), { plans: 0, tasks: 0, manual: 0, subjects: 0, versions: 0, blocks: 0 });
+  });
+
+  test('簽章預覽後 active ScheduleVersion 改變 → 409 且不建立段考', async () => {
+    const previewed = await secured({ computedBlocks: [{ subject_id: subjId, title: '講義第三章', date: rel(2) }] });
+    const v = await q.run(`INSERT INTO schedule_versions (user_id,version_no,source,reason,created_at)
+      VALUES (?,?,?,?,CURRENT_TIMESTAMP)`, [USER, 1, 'manual', '另一頁更新']);
+    await q.run('INSERT INTO user_schedule_state (user_id,active_version_id) VALUES (?,?)', [USER, Number(v.lastInsertRowid)]);
+    await assert.rejects(sched.createExamPlanAtomic(USER, previewed), e => e.code === 'EXAM_PREVIEW_STALE');
+    const r = await residue();
+    assert.equal(r.plans, 0); assert.equal(r.tasks, 0); assert.equal(r.manual, 0); assert.equal(r.subjects, 0);
+    assert.equal(r.versions, 1, '既有的新版本必須保留，不能建立第二版');
   });
 });
