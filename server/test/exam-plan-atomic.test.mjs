@@ -147,4 +147,11 @@ describe('createExamPlanAtomic 單一交易原子性（P0-4）', () => {
     }
     assert.deepEqual(await residue(), { plans: 0, tasks: 0, manual: 0, subjects: 0, versions: 0, blocks: 0 });
   });
+
+  test('daily 完全空白保留既有 EXAM_SCOPE_EMPTY，不被逐科錯誤覆蓋', async () => {
+    await assert.rejects(sched.buildExamScope(q, USER, {
+      endDate: rel(10), startDate: rel(0), level: 'daily',
+      subjects: [{ subject_list_id: subjId }], materialIds: [], manual: [],
+    }), e => e.code === 'EXAM_SCOPE_EMPTY' && e.status === 422);
+  });
 });

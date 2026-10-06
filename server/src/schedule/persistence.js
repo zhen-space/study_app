@@ -1531,6 +1531,11 @@ export async function buildExamScope(runner, userId, {
   const missingSubjectIds = orderedSubjects
     .map(s => Number(s.subject_list_id))
     .filter(sid => !subjectsWithScope.has(sid));
+  // 保留既有 API 語意：daily／timed 完全沒有任何範圍時，先回總空錯誤；
+  // 有部分科目已選、部分漏選時，才回逐科缺漏。
+  if (scheduled && subjectsWithScope.size === 0) {
+    throw new ExamPlanError('這個安排方式需要至少一項可排入的範圍', 'EXAM_SCOPE_EMPTY', 422);
+  }
   if (missingSubjectIds.length) {
     throw new ExamPlanError('每個考試科目都必須至少加入一項教材或老師指定範圍',
       'SUBJECT_SCOPE_MISSING', 422, { subject_ids: missingSubjectIds });

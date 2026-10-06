@@ -46,7 +46,10 @@ describe('POST /exam-plans（server-authoritative 原子建立）', () => {
       name: '第二次段考', start_date: day(0), end_date: day(14), level: 'progress',
       subjects: [{ subject_list_id: math.id, exam_date: day(10) }, { subject_list_id: eng.id }],
       material_scope: [m.it.id],
-      manual_scope: [{ subject_list_id: math.id, label: '老師講義第三章' }],
+      manual_scope: [
+        { subject_list_id: math.id, label: '老師講義第三章' },
+        { subject_list_id: eng.id, label: '英文課文第一課' },
+      ],
     });
     assert.equal(created.status, 201, JSON.stringify(created.body));
     const p = created.body;
@@ -55,9 +58,9 @@ describe('POST /exam-plans（server-authoritative 原子建立）', () => {
     assert.equal(p.subjects.find(s => s.subject_list_id === eng.id).exam_date, day(14));
     assert.equal(p.material.length, 1);
     assert.equal(p.material[0].chapter_title, '第一章多項式');
-    assert.equal(p.manual_scope.length, 1);
+    assert.equal(p.manual_scope.length, 2);
     assert.equal(p.manual_scope[0].label, '老師講義第三章');
-    assert.equal(p.manual_scope[0].task_id, null, 'progress 不建 Task');
+    assert.ok(p.manual_scope.every(x => x.task_id == null), 'progress 不建 Task');
     assert.ok(!(await tasksNow()).some(t => t.title === '老師講義第三章'), '手動範圍不得建成 Task');
   });
 
@@ -222,7 +225,8 @@ describe('POST /exam-plans（server-authoritative 原子建立）', () => {
 
   test('EP5 跨使用者：別人的 exam 投影 404', async () => {
     const math = await subject('數學EP5');
-    const created = await post('/exam-plans', { name: 'x', end_date: day(5), subjects: [{ subject_list_id: math.id }] });
+    const created = await post('/exam-plans', { name: 'x', end_date: day(5), subjects: [{ subject_list_id: math.id }],
+      manual_scope: [{ subject_list_id: math.id, label: '第一章' }] });
     assert.equal((await get(`/plans/${created.body.plan.id}/exam`, other)).status, 404);
   });
 
