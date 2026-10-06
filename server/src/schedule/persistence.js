@@ -9,6 +9,7 @@ import { samePlacement, effectiveDeadlineViolation } from './rolling.js';
 import { verifyMaterialSnapshotToken } from './material-token.js';
 import { verifyExamSubjectToken } from './exam-subject-token.js';
 import { signMaterialScopeRemovalToken, verifyMaterialScopeRemovalToken } from './material-scope-removal-token.js';
+import { verifyExamPlanPreview } from './exam-plan-token.js';
 
 // 手動調整的說法：使用者是「現在正要放」，不是「想恢復舊安排」。
 const MANUAL_MESSAGES = {
@@ -1541,13 +1542,27 @@ export async function buildExamScope(runner, userId, {
 export async function createExamPlanAtomic(userId, {
   name, description = '', startDate = null, endDate,
   level = 'progress', subjects = [], materialIds = [], manual = [],
-  computedBlocks = [], scopeSig = null,
+  computedBlocks = [], scopeSig = null, previewToken = null,
 }) {
   const scheduled = level === 'daily' || level === 'timed';
   const at = new Date().toISOString();
   return serializeWrite(() => withVersionNoRetry(() => q.tx(async tx => {
     // ① 交易內重讀 CURRENT scope（TOCTOU）。
     const scope = await buildExamScope(tx, userId, { endDate, startDate, level, subjects, materialIds, manual });
+    const signed = verifyExamPlanPreview(previewToken);
+    const state = await tx.get('SELECT active_version_id FROM user_schedule_state WHERE user_id=?', [userId]);
+    const requestShape = {
+      user_id: Number(userId), level, start_date: startDate || null, end_date: endDate,
+      subjects: scope.orderedSubjects,
+      material_ids: scope.materialIds,
+      manual_scope: scope.manualEntries,
+      scope_sig: scope.sig,
+      base_version_id: state?.active_version_id ?? null,
+      blocks: computedBlocks,
+    };
+    if (!signed || JSON.stringify(signed) !== JSON.stringify(requestShape)) {
+      throw new ExamPlanError('段考範圍或安排已更新，請重新預覽', 'EXAM_PREVIEW_STALE', 409);
+    }
     // 覆蓋證明／防 stale：CURRENT scope 指紋必須等於 preview 當時。
     if (scheduled && scopeSig != null && scope.sig !== scopeSig) {
       throw new ScheduleStalePreviewError(null);
@@ -1650,7 +1665,7 @@ export async function createExamPlanAtomic(userId, {
 
       // 其他 Plan 的未來 block 原封不動 carry-forward（ScheduleVersion 是 user-level 全域 snapshot）。
       const effFrom = todayTW();
-      const active = await tx.get('SELECT active_version_id FROM user_schedule_state WHERE user_id=?', [userId]);
+      const active = state;
       const carry = await otherPlanCarryForwardBlocks(tx, userId, active?.active_version_id ?? null, planId, effFrom);
       const candidate = [...carry, ...resolved];
       validateTimedBlockOverlaps(candidate);

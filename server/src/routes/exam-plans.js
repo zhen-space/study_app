@@ -5,6 +5,7 @@ import { buildExamScope, createExamPlanAtomic, ExamPlanError } from '../schedule
 import { runPreview } from './schedule.js';
 import { getPlanSelection } from '../material/service.js';
 import { todayTW } from '../util/date.js';
+import { signExamPlanPreview, verifyExamPlanPreview } from '../schedule/exam-plan-token.js';
 
 // 段考計畫（Exam Plan）——不是第二套 Plan，就是既有 Plan 加兩個 additive 層：
 //   ・plan_exam_subjects：每一科自己的考試日（plan.target_date＝整個段考最後一天）。
@@ -23,6 +24,47 @@ const router = Router();
 router.use(requireAuth);
 
 const LEVELS = ['progress', 'daily', 'timed'];
+
+async function authoritativePreview(userId, b) {
+  if (!String(b.name || '').trim()) throw new ExamPlanError('請輸入段考名稱', 'NAME_REQUIRED');
+  if (b.level != null && !LEVELS.includes(b.level)) throw new ExamPlanError('安排方式不正確', 'INVALID_LEVEL');
+  const level = LEVELS.includes(b.level) ? b.level : 'progress';
+  const endDate = b.end_date;
+  const startDate = b.start_date || null;
+  const scope = await buildExamScope(q, userId, { endDate, startDate, level,
+    subjects: b.subjects || [], materialIds: b.material_scope || [], manual: b.manual_scope || [] });
+  const state = await q.get('SELECT active_version_id FROM user_schedule_state WHERE user_id=?', [userId]);
+  let blocks = [], check = null, unplaced_tasks = [];
+  if (level === 'daily' || level === 'timed') {
+    if (!scope.scopeItems.length) throw new ExamPlanError('這個安排方式需要至少一項可排入的範圍', 'EXAM_SCOPE_EMPTY', 422);
+    const scheduleStart = startDate || todayTW();
+    const items = scope.scopeItems.map(si => ({ subject_id: si.subjectId, title: si.title,
+      minutes: si.minutes, spread: false, start: scheduleStart, end: si.deadline }));
+    const pv = await runPreview(userId, { items, timed: level === 'timed', startDate: scheduleStart, endDate, pace: 'even' });
+    if (pv.status !== 200) throw new ExamPlanError(pv.body?.error || '無法排出可行的安排', pv.body?.code || 'EXAM_SCHEDULE_INFEASIBLE', 422);
+    unplaced_tasks = pv.body.unplaced_tasks || [];
+    if (pv.body.unplaced || unplaced_tasks.length) throw new ExamPlanError(pv.body.message || '有內容排不進去，請調整日期或範圍', 'EXAM_SCHEDULE_GAP', 422);
+    blocks = (pv.body.blocks || []).filter(x => !x._pinned && x.subject_id != null);
+    check = pv.body.check || null;
+  }
+  const snapshot = { user_id: Number(userId), level, start_date: startDate, end_date: endDate,
+    subjects: scope.orderedSubjects, material_ids: scope.materialIds, manual_scope: scope.manualEntries,
+    scope_sig: scope.sig, base_version_id: state?.active_version_id ?? null, blocks };
+  const canonicalScope = scope.scopeItems.map(x => ({ kind: x.kind, subject_list_id: x.subjectId, title: x.title,
+    estimated_minutes: x.minutes, content_item_id: x.contentItemId, deadline: x.deadline }));
+  if (level === 'progress') for (const m of scope.manualEntries) canonicalScope.push({ kind: 'manual',
+    subject_list_id: m.subject_list_id, title: m.label, estimated_minutes: m.estimated_minutes,
+    content_item_id: null, deadline: scope.examBySubject.get(Number(m.subject_list_id)) ?? endDate });
+  return { level, start_date: startDate, end_date: endDate, subjects: scope.orderedSubjects,
+    scope: canonicalScope,
+    blocks, check, unplaced_tasks, base_version_id: snapshot.base_version_id,
+    preview_token: signExamPlanPreview(snapshot) };
+}
+
+router.post('/exam-plans/preview', async (req, res) => {
+  try { res.json(await authoritativePreview(req.userId, req.body || {})); }
+  catch (e) { res.status(e.status || 400).json({ error: e.message, code: e.code || 'EXAM_PREVIEW_ERROR' }); }
+});
 
 // 段考範圍投影（Plan Detail 首屏用）：各科考試日 + 教材範圍（科目→教材→章）+ 手動 scope。
 async function examProjection(userId, planId) {
@@ -71,50 +113,10 @@ router.post('/exam-plans', async (req, res) => {
   const level = LEVELS.includes(b.level) ? b.level : 'progress';
   const endDate = b.end_date;
   const startDate = b.start_date || null;
-  const scheduled = level === 'daily' || level === 'timed';
 
-  // ① 從 CURRENT 世界建立 scope（驗證＋擁有權＋歸屬＋估時）；同一支給交易內重讀共用。
-  let scope;
-  try {
-    scope = await buildExamScope(q, userId, {
-      endDate, startDate, level,
-      subjects: b.subjects || [], materialIds: b.material_scope || [], manual: b.manual_scope || [],
-    });
-  } catch (e) {
-    if (e instanceof ExamPlanError) return res.status(e.status || 400).json({ error: e.message, code: e.code || null });
-    throw e;
-  }
-
-  // ② daily／timed：伺服器自己排（唯讀 runPreview），排不下一律 fail closed，不建計畫。
-  //    client 不送任何 blocks；unplaced／empty／失敗時禁止建立可確認的計畫。
-  let computedBlocks = [];
-  if (scheduled) {
-    if (!scope.scopeItems.length) {
-      return res.status(422).json({ error: '這個安排方式需要至少一項可排入的範圍', code: 'EXAM_SCOPE_EMPTY' });
-    }
-    // 使用者明確設定的準備開始日必須同時約束預覽與正式排程；未設定才從今天開始。
-    // 排程器本身仍會排除已過日期，因此舊草稿填過去日期不會倒排。
-    const scheduleStart = startDate || todayTW();
-    const items = scope.scopeItems.map(si => ({
-      subject_id: si.subjectId, title: si.title, minutes: si.minutes, spread: false, start: scheduleStart, end: si.deadline,
-    }));
-    let pv;
-    try {
-      pv = await runPreview(userId, { items, timed: level === 'timed', startDate: scheduleStart, endDate, pace: 'even' });
-    } catch (e) {
-      return res.status(e.status || 500).json({ error: e.message || '無法排出可行的安排', code: 'EXAM_SCHEDULE_ERROR' });
-    }
-    if (pv.status !== 200) {
-      return res.status(422).json({ error: pv.body?.error || '無法排出可行的安排', code: pv.body?.code || 'EXAM_SCHEDULE_INFEASIBLE' });
-    }
-    if (pv.body.unplaced || (pv.body.unplaced_tasks && pv.body.unplaced_tasks.length)) {
-      return res.status(422).json({
-        error: pv.body.message || '有內容排不進去，請延長日期或減少範圍，或改用「只分段」',
-        code: 'EXAM_SCHEDULE_GAP',
-      });
-    }
-    computedBlocks = (pv.body.blocks || []).filter(x => !x._pinned && x.subject_id != null);
-  }
+  const signed = verifyExamPlanPreview(b.preview_token);
+  if (!signed || Number(signed.user_id) !== Number(userId)) return res.status(409).json({ error: '請先重新預覽段考安排', code: 'EXAM_PREVIEW_STALE' });
+  const computedBlocks = signed.blocks || [];
 
   // ③ 單一交易建立（任一步失敗 → 整筆 rollback，零可見殘留）。
   let planId;
@@ -122,7 +124,7 @@ router.post('/exam-plans', async (req, res) => {
     ({ planId } = await createExamPlanAtomic(userId, {
       name: b.name, description: b.description || '', startDate, endDate, level,
       subjects: b.subjects || [], materialIds: b.material_scope || [], manual: b.manual_scope || [],
-      computedBlocks, scopeSig: scope.sig,
+      computedBlocks, scopeSig: signed.scope_sig, previewToken: b.preview_token,
     }));
   } catch (e) {
     if (e instanceof ExamPlanError || e.status) {

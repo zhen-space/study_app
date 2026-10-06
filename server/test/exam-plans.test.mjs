@@ -15,7 +15,14 @@ const call = async (path, opts = {}, headers = H) => {
   const r = await fetch(base + path, { ...opts, headers, body: opts.body ? JSON.stringify(opts.body) : undefined });
   return { status: r.status, body: await r.json().catch(() => ({})) };
 };
-const post = (p, b, h) => call(p, { method: 'POST', body: b ?? {} }, h);
+const post = async (p, b, h) => {
+  if (p === '/exam-plans') {
+    const preview = await call('/exam-plans/preview', { method: 'POST', body: b ?? {} }, h);
+    if (preview.status !== 200) return preview;
+    return call(p, { method: 'POST', body: { ...(b ?? {}), preview_token: preview.body.preview_token } }, h);
+  }
+  return call(p, { method: 'POST', body: b ?? {} }, h);
+};
 const get = (p, h) => call(p, {}, h);
 before(async () => { S = await startServer(); base = S.base; H = S.H; other = (await S.secondUser()).H; });
 after(() => S?.stop());
