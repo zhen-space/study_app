@@ -39,7 +39,8 @@ export default function ExamCreateWizard({ lists = [], onDone, onCancel }) {
   const [scope, setScope] = useState(restored?.scope ?? {});
   const [level, setLevel] = useState(restored?.level ?? 'progress');
   const [err, setErr] = useState('');
-  const [busy, setBusy] = useState(false);
+  const [previewing, setPreviewing] = useState(false);
+  const [creating, setCreating] = useState(false);
   const [picking, setPicking] = useState(null);   // { listId } → 開教材選取
   const [preview, setPreview] = useState(null);    // 每日/時段的排程預覽 blocks
   const previewRequest = useRef(0);
@@ -128,25 +129,26 @@ export default function ExamCreateWizard({ lists = [], onDone, onCancel }) {
 
   const runPreview = useCallback(async () => {
     const requestId = ++previewRequest.current;
-    setBusy(true); setErr('');
+    setPreviewing(true); setErr('');
     try {
       const r = await api('/exam-plans/preview', { method: 'POST', body: requestBody() });
       if (requestId === previewRequest.current) setPreview({ ...r, blocks: r.blocks || [], failed: false });
     } catch (e) {
       if (requestId === previewRequest.current) setPreview({ blocks: [], failed: true, error: e.message || '預覽失敗' });
-    } finally { if (requestId === previewRequest.current) setBusy(false); }
+    } finally { if (requestId === previewRequest.current) setPreviewing(false); }
   }, [requestBody]);
   useEffect(() => { if (step === 2) runPreview(); }, [step, level, runPreview]);
 
   // daily／timed 只有在「有完整預估、預覽成功、有排出內容、且沒有排不下」時才可建立。
   // 這是 P0-1 的前端防線；伺服器仍會再 fail-closed 一次（單一權威來源）。
-  const scheduleBlocked = !scheduleGate.ok || busy || !preview || preview.failed || !preview.preview_token
+  const scheduleBlocked = !scheduleGate.ok || previewing || !preview || preview.failed || !preview.preview_token
     || (level !== 'progress' && preview.blocks.length === 0);
-  const canConfirm = !busy && !scheduleBlocked;
+  const canConfirm = !creating && !scheduleBlocked;
 
   // ---- 確認建立（atomic，server-authoritative）----
   const confirm = async () => {
-    setBusy(true); setErr('');
+    if (creating || scheduleBlocked) return;
+    setCreating(true); setErr('');
     try {
       const body = { ...requestBody(), preview_token: preview.preview_token };
       const created = await api('/exam-plans', { method: 'POST', body });
@@ -157,7 +159,7 @@ export default function ExamCreateWizard({ lists = [], onDone, onCancel }) {
         setPreview(null);
         setErr('範圍或安排已更新，請重新預覽後再確認。');
       } else setErr(e.message || '建立失敗');
-      setBusy(false);
+      setCreating(false);
     }
   };
 
@@ -293,7 +295,14 @@ export default function ExamCreateWizard({ lists = [], onDone, onCancel }) {
             </SurfaceCard>
 
             {/* P0-1：daily／timed 排不下、缺預估、預覽失敗或空 → 不得建立可確認的計畫，給明確補救 */}
-            {scheduleBlocked && !busy && (
+            {previewing && (
+              <SurfaceCard>
+                <b>正在準備安排預覽…</b>
+                <div className="ui-meta" role="status" style={{ marginTop: 4 }}>還沒有建立計畫；預覽完成後，你可以先確認內容再建立。</div>
+              </SurfaceCard>
+            )}
+
+            {scheduleBlocked && !previewing && (
               <SurfaceCard>
                 <b>還不能建立每天安排</b>
                 {!scheduleGate.ok ? (
@@ -315,7 +324,9 @@ export default function ExamCreateWizard({ lists = [], onDone, onCancel }) {
               </SurfaceCard>
             )}
 
-            <Button variant="primary" block disabled={!canConfirm} onClick={confirm}>{busy ? '建立中…' : '確認，建立段考計畫'}</Button>
+            <Button variant="primary" block disabled={!canConfirm} onClick={confirm}>
+              {creating ? '正在建立段考計畫…' : previewing ? '正在產生預覽…' : '確認，建立段考計畫'}
+            </Button>
           </div>
         )}
 
