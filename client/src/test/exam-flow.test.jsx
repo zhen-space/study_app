@@ -73,6 +73,13 @@ describe('ExamCreateWizard', () => {
     expect(screen.getByText(/不產生每日待辦，也不會排到行事曆/)).toBeTruthy();
     expect(screen.getByText(/出現在每日待辦，但不指定幾點/)).toBeTruthy();
     expect(screen.getByText(/排出起訖時間，顯示在行事曆/)).toBeTruthy();
+    expect(screen.getByLabelText('建立結果摘要')).toHaveTextContent('只保存考試範圍與截止日');
+
+    await click(screen.getAllByRole('radio')[1]);
+    expect(screen.getByLabelText('建立結果摘要')).toHaveTextContent('建立每天要完成的待辦');
+
+    await click(screen.getAllByRole('radio')[2]);
+    expect(screen.getByLabelText('建立結果摘要')).toHaveTextContent('建立有起訖時間的每日安排');
   });
 
   it('只記錄範圍的預覽失敗時，不會誤稱為「每天安排」失敗', async () => {

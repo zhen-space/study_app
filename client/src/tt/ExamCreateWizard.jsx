@@ -23,6 +23,11 @@ const LEVELS = [
   ['daily', '幫我排出每天要完成什麼', '自動分配到每天並出現在每日待辦，但不指定幾點'],
   ['timed', '幫我排到每天的具體時間', '依可用時間與既有行程排出起訖時間，顯示在行事曆'],
 ];
+const LEVEL_OUTCOME = {
+  progress: '只保存考試範圍與截止日，不產生每日待辦或行事曆時段。',
+  daily: '建立每天要完成的待辦，但不指定幾點開始。',
+  timed: '建立有起訖時間的每日安排，並顯示在行事曆。',
+};
 
 const loadDraft = () => { try { return JSON.parse(localStorage.getItem(DRAFT_KEY) || 'null'); } catch { return null; } };
 const saveDraft = d => { try { localStorage.setItem(DRAFT_KEY, JSON.stringify(d)); } catch { /* private mode */ } };
@@ -293,6 +298,7 @@ export default function ExamCreateWizard({ lists = [], onDone, onCancel }) {
             <SurfaceCard>
               <b>確認一下</b>
               <div className="ui-meta" style={{ marginBottom: 6 }}>{name}｜{start ? md(start) : ''}–{md(end)}</div>
+              <div aria-label="建立結果摘要" style={{ marginBottom: 8 }}><b>這次會：</b>{LEVEL_OUTCOME[level]}</div>
               {subjects.map(s => {
                 const canonical = (preview?.scope || []).filter(x => Number(x.subject_list_id) === Number(s.listId));
                 return (
