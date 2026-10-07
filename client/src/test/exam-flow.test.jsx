@@ -61,6 +61,20 @@ describe('ExamCreateWizard', () => {
     await waitFor(() => expect(onDone).toHaveBeenCalledWith(99));
   });
 
+  it('三種安排直接說明建立後會出現在哪裡，避免把只記錄範圍誤認成每日排程', async () => {
+    localStorage.setItem('examWizardDraft:v1', JSON.stringify({
+      step: 2, name: '第二次段考', start: '2099-09-20', end: '2099-10-02', level: 'progress',
+      subjects: [{ listId: 1, examDate: '' }],
+      scope: { 1: { items: {}, manual: [{ label: '講義第三章', est: 60 }] } },
+    }));
+    render(<ExamCreateWizard lists={LISTS} onDone={() => {}} onCancel={() => {}} />);
+
+    expect(await screen.findByText('只記錄考試範圍與截止日')).toBeTruthy();
+    expect(screen.getByText(/不產生每日待辦，也不會排到行事曆/)).toBeTruthy();
+    expect(screen.getByText(/出現在每日待辦，但不指定幾點/)).toBeTruthy();
+    expect(screen.getByText(/排出起訖時間，顯示在行事曆/)).toBeTruthy();
+  });
+
   it('375px：產生預覽時明說尚未建立，不能把預覽誤認成正在建立計畫', async () => {
     Object.defineProperty(window, 'innerWidth', { configurable: true, value: 375 });
     let finishPreview;
