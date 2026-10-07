@@ -321,7 +321,7 @@ export default function ExamCreateWizard({ lists = [], onDone, onCancel }) {
 
             {scheduleBlocked && !previewing && (
               <SurfaceCard>
-                <b>還不能建立每天安排</b>
+                <b>{level === 'progress' ? '還不能建立段考計畫' : '還不能建立每天安排'}</b>
                 {!scheduleGate.ok ? (
                   <div className="ui-meta" style={{ marginTop: 4 }}>
                     這些範圍還沒有預估時間，無法排入每天安排：{scheduleGate.missing.slice(0, 6).join('、')}{scheduleGate.missing.length > 6 ? '…' : ''}
