@@ -10,6 +10,7 @@ import { verifyMaterialSnapshotToken } from './material-token.js';
 import { verifyExamSubjectToken } from './exam-subject-token.js';
 import { signMaterialScopeRemovalToken, verifyMaterialScopeRemovalToken } from './material-scope-removal-token.js';
 import { verifyExamPlanPreview } from './exam-plan-token.js';
+import { createHash } from 'node:crypto';
 
 // 手動調整的說法：使用者是「現在正要放」，不是「想恢復舊安排」。
 const MANUAL_MESSAGES = {
@@ -1562,7 +1563,17 @@ export async function createExamPlanAtomic(userId, {
 }) {
   const scheduled = level === 'daily' || level === 'timed';
   const at = new Date().toISOString();
+  const creationKey = typeof previewToken === 'string'
+    ? createHash('sha256').update(previewToken).digest('hex') : null;
   return serializeWrite(() => withVersionNoRetry(() => q.tx(async tx => {
+    // 同一份已簽章 preview 是同一次建立意圖。回應遺失或 client 重送時回到原 Plan，
+    // 不得再建一份；失敗交易會連同 commit marker 一起 rollback，仍可安全重試。
+    if (creationKey) {
+      const committed = await tx.get(
+        'SELECT plan_id FROM exam_plan_commits WHERE user_id=? AND creation_key=?',
+        [userId, creationKey]);
+      if (committed?.plan_id != null) return { planId: Number(committed.plan_id), replayed: true };
+    }
     // ① 交易內重讀 CURRENT scope（TOCTOU）。
     const scope = await buildExamScope(tx, userId, { endDate, startDate, level, subjects, materialIds, manual });
     const signed = verifyExamPlanPreview(previewToken);
@@ -1691,6 +1702,10 @@ export async function createExamPlanAtomic(userId, {
         parentVersionId: active?.active_version_id ?? null, blocks: candidate,
       });
     }
+
+    await tx.run(
+      'INSERT INTO exam_plan_commits (user_id,creation_key,plan_id,created_at) VALUES (?,?,?,?)',
+      [userId, creationKey, planId, at]);
 
     return { planId };
   })));

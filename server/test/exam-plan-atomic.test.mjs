@@ -27,7 +27,8 @@ before(async () => {
 beforeEach(async () => {
   // 每個案例都用乾淨的世界，確保「零殘留」斷言只反映這次呼叫。
   for (const t of ['scheduled_blocks', 'schedule_versions', 'user_schedule_state',
-    'plan_manual_scope', 'plan_exam_subjects', 'plan_material_items', 'tasks', 'plans', 'lists']) {
+    'plan_manual_scope', 'plan_exam_subjects', 'plan_material_items', 'tasks',
+    'exam_plan_commits', 'plans', 'lists']) {
     await q.run(`DELETE FROM ${t} WHERE user_id=?`, [USER]);
   }
   const l = await q.run('INSERT INTO lists (user_id,name) VALUES (?,?)', [USER, '數學']);
@@ -78,6 +79,19 @@ describe('createExamPlanAtomic 單一交易原子性（P0-4）', () => {
     assert.ok(ms.task_id, '手動 scope 應綁定 task_id');
   });
 
+  test('同一份 signed preview 重送只回原 Plan，不重複建立', async () => {
+    const previewed = await secured({ level: 'progress', computedBlocks: [], scopeSig: null });
+    const first = await sched.createExamPlanAtomic(USER, previewed);
+    const second = await sched.createExamPlanAtomic(USER, previewed);
+
+    assert.equal(second.planId, first.planId);
+    assert.equal(second.replayed, true);
+    assert.equal((await q.get('SELECT COUNT(*) c FROM plans WHERE user_id=?', [USER])).c, 1);
+    assert.equal((await q.get('SELECT COUNT(*) c FROM tasks WHERE user_id=?', [USER])).c, 0);
+    assert.equal((await q.get('SELECT COUNT(*) c FROM schedule_versions WHERE user_id=?', [USER])).c, 0);
+    assert.equal((await q.get('SELECT COUNT(*) c FROM exam_plan_commits WHERE user_id=?', [USER])).c, 1);
+  });
+
   test('中途失敗①：block 超過該科考試日（deadline 違反，發生在 Plan/Task 已插入之後）→ 零殘留', async () => {
     await assert.rejects(
       sched.createExamPlanAtomic(USER, await secured({
@@ -86,6 +100,7 @@ describe('createExamPlanAtomic 單一交易原子性（P0-4）', () => {
       })),
       e => e.name === 'ScheduleDeadlineViolationError' || e.code === 'DEADLINE_VIOLATION');
     assert.deepEqual(await residue(), { plans: 0, tasks: 0, manual: 0, subjects: 0, versions: 0, blocks: 0 });
+    assert.equal((await q.get('SELECT COUNT(*) c FROM exam_plan_commits WHERE user_id=?', [USER])).c, 0);
   });
 
   test('中途失敗②：有 scope item 沒被任何 block 覆蓋 → EXAM_SCHEDULE_GAP，零殘留', async () => {
