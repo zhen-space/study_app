@@ -301,6 +301,15 @@ CREATE TABLE IF NOT EXISTS plans (
   archived_at TEXT,
   archived_from_status TEXT
 );
+-- 段考建立的 idempotency marker：同一份已簽章 preview 只能對應一個 Plan。
+-- 不存原 token，只存 SHA-256；跟 Plan 同一交易寫入，失敗會一起 rollback。
+CREATE TABLE IF NOT EXISTS exam_plan_commits (
+  user_id INTEGER NOT NULL,
+  creation_key TEXT NOT NULL,
+  plan_id INTEGER NOT NULL,
+  created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (user_id, creation_key)
+);
 -- Master Plan H：Goal 是 Plan 的可選上層目標，不取代 Plan。
 CREATE TABLE IF NOT EXISTS goals (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -651,6 +660,14 @@ export async function initSchema() {
   // 最近一次 pause／delete 時使用者選的保留設定（0/1，NULL＝從未做過這個選擇）。
   // 恢復計畫時要據此誠實說明「當初沒有保留未完成任務」，不能讓使用者以為會復原。
   try { await client.execute("ALTER TABLE plans ADD COLUMN lifecycle_retained_tasks INTEGER"); } catch {}
+  // 段考 preview 重送要回到同一個 Plan，不能因網路重試產生重複資料。
+  try { await client.execute(`CREATE TABLE IF NOT EXISTS exam_plan_commits (
+    user_id INTEGER NOT NULL,
+    creation_key TEXT NOT NULL,
+    plan_id INTEGER NOT NULL,
+    created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (user_id, creation_key)
+  )`); } catch {}
   // Phase 2C-P1：排程持久化。契約見 docs/phase2c-schedule-persistence.md §2
   // effective_from：這一版涵蓋哪一天起（過去不進 snapshot）
   try { await client.execute("ALTER TABLE schedule_versions ADD COLUMN effective_from TEXT"); } catch {}
