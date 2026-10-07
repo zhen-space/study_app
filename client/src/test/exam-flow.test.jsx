@@ -61,6 +61,36 @@ describe('ExamCreateWizard', () => {
     await waitFor(() => expect(onDone).toHaveBeenCalledWith(99));
   });
 
+  it('375px：產生預覽時明說尚未建立，不能把預覽誤認成正在建立計畫', async () => {
+    Object.defineProperty(window, 'innerWidth', { configurable: true, value: 375 });
+    let finishPreview;
+    api.mockImplementation((path, opts) => {
+      calls.push([path, opts]);
+      if (path === '/exam-plans/preview') return new Promise(resolve => { finishPreview = resolve; });
+      if (path === '/exam-plans' && opts?.method === 'POST') return Promise.resolve({ plan: { id: 99 } });
+      return Promise.resolve({});
+    });
+    render(<ExamCreateWizard lists={LISTS} onDone={() => {}} onCancel={() => {}} />);
+    fireEvent.change(screen.getByLabelText('段考名稱'), { target: { value: '第二次段考' } });
+    fireEvent.change(screen.getByLabelText('段考結束日期'), { target: { value: '2099-10-02' } });
+    fireEvent.change(screen.getByLabelText('加入科目'), { target: { value: '1' } });
+    await click(screen.getByText('下一步：加入各科範圍'));
+    await click(screen.getByText('＋ 老師指定、教材庫沒有的範圍'));
+    fireEvent.change(screen.getByLabelText('老師指定範圍'), { target: { value: '講義第三章' } });
+    await click(screen.getByText('加入'));
+    await click(screen.getByText('下一步：選擇怎麼安排'));
+
+    expect(await screen.findByRole('status')).toHaveTextContent('還沒有建立計畫');
+    expect(screen.getByRole('button', { name: '正在產生預覽…' })).toBeDisabled();
+    expect(posted('/exam-plans')).toHaveLength(0);
+
+    await act(async () => finishPreview({ preview_token: 'signed', blocks: [], scope: [
+      { kind: 'manual', subject_list_id: 1, title: '講義第三章', estimated_minutes: null },
+    ] }));
+    expect(await screen.findByRole('button', { name: '確認，建立段考計畫' })).toBeEnabled();
+    expect(screen.queryByText('正在準備安排預覽…')).toBeNull();
+  });
+
   it('中文 IME：段考名稱在組字期間保持焦點', async () => {
     render(<ExamCreateWizard lists={LISTS} onDone={() => {}} onCancel={() => {}} />);
     const input = screen.getByLabelText('段考名稱');
