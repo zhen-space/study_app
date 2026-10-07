@@ -135,6 +135,7 @@ export default function RollingExamSchedule({
         {!committed && preview && !loading && (
           <>
             <div className="ui-meta" style={{ marginBottom: 'var(--sp-2)' }}>
+              先檢查下方變動；按「套用新版安排」後才會更新。<br />
               今天（{preview.window?.freeze_start}）與明天（{preview.window?.freeze_through}）維持不變；
               後天（{preview.window?.rolling_start}）起重新安排。
             </div>
@@ -195,7 +196,7 @@ export default function RollingExamSchedule({
               <Button variant="tertiary" disabled={applying} onClick={applying ? undefined : onClose}>取消</Button>
               <Button variant="primary" style={{ marginLeft: 'auto' }}
                 disabled={!canConfirm(preview) || applying} onClick={confirmApply}>
-                {applying ? '套用中…' : '確認套用'}
+                {applying ? '套用中…' : '套用新版安排'}
               </Button>
             </div>
           </>
