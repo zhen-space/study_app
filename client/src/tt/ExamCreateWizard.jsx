@@ -134,9 +134,14 @@ export default function ExamCreateWizard({ lists = [], onDone, onCancel }) {
     setPreviewing(true); setErr('');
     try {
       const r = await api('/exam-plans/preview', { method: 'POST', body: requestBody() });
-      if (requestId === previewRequest.current) setPreview({ ...r, blocks: r.blocks || [], failed: false });
+      if (requestId === previewRequest.current) {
+        setPreview({ ...r, blocks: r.blocks || [], failed: false });
+        return true;
+      }
+      return false;
     } catch (e) {
       if (requestId === previewRequest.current) setPreview({ blocks: [], failed: true, error: e.message || '預覽失敗' });
+      return false;
     } finally { if (requestId === previewRequest.current) setPreviewing(false); }
   }, [requestBody]);
   useEffect(() => { if (step === 2) runPreview(); }, [step, level, runPreview]);
@@ -160,7 +165,15 @@ export default function ExamCreateWizard({ lists = [], onDone, onCancel }) {
     } catch (e) {
       if (e.status === 409 && e.payload?.code === 'EXAM_PREVIEW_STALE') {
         setPreview(null);
-        setErr('範圍或安排已更新，請重新預覽後再確認。');
+        creatingRef.current = false;
+        setCreating(false);
+        // stale 不是使用者做錯事：自動取回 CURRENT 世界，但絕不自動送出第二次建立。
+        // 使用者會看到新預覽，必須親自再確認一次。
+        const refreshed = await runPreview();
+        setErr(refreshed
+          ? '範圍或安排已更新，已為你重新預覽；請確認新內容後再建立。'
+          : '範圍或安排已更新，但重新預覽失敗。請稍後再試。');
+        return;
       } else setErr(e.message || '建立失敗');
       creatingRef.current = false;
       setCreating(false);
