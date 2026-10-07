@@ -105,6 +105,40 @@ describe('ExamCreateWizard', () => {
     expect(onDone).toHaveBeenCalledTimes(1);
   });
 
+  it('建立前預覽失效時自動取得最新預覽，但不會自行再次建立', async () => {
+    localStorage.setItem('examWizardDraft:v1', JSON.stringify({
+      step: 2, name: '第二次段考', start: '2099-09-20', end: '2099-10-02', level: 'progress',
+      subjects: [{ listId: 1, examDate: '' }],
+      scope: { 1: { items: {}, manual: [{ label: '講義第三章', est: null }] } },
+    }));
+    let previewNo = 0;
+    api.mockImplementation((path, opts) => {
+      calls.push([path, opts]);
+      if (path === '/exam-plans/preview') return Promise.resolve({
+        preview_token: `signed-${++previewNo}`, blocks: [],
+        scope: [{ kind: 'manual', subject_list_id: 1, title: '講義第三章', estimated_minutes: null }],
+      });
+      if (path === '/exam-plans' && opts?.method === 'POST') {
+        const stale = new Error('stale');
+        stale.status = 409;
+        stale.payload = { code: 'EXAM_PREVIEW_STALE' };
+        return Promise.reject(stale);
+      }
+      return Promise.resolve({});
+    });
+
+    render(<ExamCreateWizard lists={LISTS} onDone={() => {}} onCancel={() => {}} />);
+    const confirm = await screen.findByRole('button', { name: '確認，建立段考計畫' });
+    await waitFor(() => expect(confirm).toBeEnabled());
+    await click(confirm);
+
+    expect(await screen.findByRole('alert')).toHaveTextContent('已為你重新預覽');
+    expect(posted('/exam-plans/preview')).toHaveLength(2);
+    expect(posted('/exam-plans')).toHaveLength(1);
+    expect(posted('/exam-plans/preview').at(-1)[1].body).toEqual(posted('/exam-plans/preview')[0][1].body);
+    expect(screen.getByRole('button', { name: '確認，建立段考計畫' })).toBeEnabled();
+  });
+
   it('375px：產生預覽時明說尚未建立，不能把預覽誤認成正在建立計畫', async () => {
     Object.defineProperty(window, 'innerWidth', { configurable: true, value: 375 });
     let finishPreview;
