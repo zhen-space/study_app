@@ -176,5 +176,16 @@ describe('ExamCreateWizard', () => {
     fireEvent.change(screen.getByLabelText('加入科目'), { target: { value: '1' } });
     fireEvent.change(screen.getByLabelText('數學 考試日'), { target: { value: '2099-09-19' } });
     expect(screen.getByText('下一步：加入各科範圍').closest('button').disabled).toBe(true);
+    expect(screen.getByRole('status')).toHaveTextContent('數學的考試日必須在準備開始日到段考最後一天之間');
+  });
+
+  it('375px 日期填反時會說明原因，不只是無聲停用下一步', () => {
+    Object.defineProperty(window, 'innerWidth', { configurable: true, value: 375 });
+    render(<ExamCreateWizard lists={LISTS} onDone={() => {}} onCancel={() => {}} />);
+    fireEvent.change(screen.getByLabelText('段考名稱'), { target: { value: '第二次段考' } });
+    fireEvent.change(screen.getByLabelText('開始日期'), { target: { value: '2099-10-03' } });
+    fireEvent.change(screen.getByLabelText('段考結束日期'), { target: { value: '2099-10-02' } });
+    expect(screen.getByText('下一步：加入各科範圍').closest('button').disabled).toBe(true);
+    expect(screen.getByRole('status')).toHaveTextContent('段考最後一天不能早於準備開始日');
   });
 });

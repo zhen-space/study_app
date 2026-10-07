@@ -87,8 +87,17 @@ export default function ExamCreateWizard({ lists = [], onDone, onCancel }) {
   const cancel = () => { clearDraft(); onCancel?.(); };
 
   // ---- 驗證每一步 ----
+  const invalidSubjectDates = subjects.filter(s => s.examDate && (
+    (start && s.examDate < start) || (end && s.examDate > end)
+  ));
   const step0ok = name.trim() && end && subjects.length && (!start || end >= start)
     && subjects.every(s => !s.examDate || ((!start || s.examDate >= start) && s.examDate <= end));
+  const step0Hint = !name.trim() ? '請先輸入段考名稱。'
+    : !end ? '請選擇整個段考的最後一天。'
+      : start && end < start ? '段考最後一天不能早於準備開始日。'
+        : !subjects.length ? '請至少加入一個考試科目。'
+          : invalidSubjectDates.length ? `${invalidSubjectDates.map(s => nameOf(s.listId)).join('、')}的考試日必須在準備開始日到段考最後一天之間。`
+            : '';
   const scopeCount = id => Object.keys(subjScope(id).items).length + subjScope(id).manual.length;
   const totalScope = subjects.reduce((n, s) => n + scopeCount(s.listId), 0);
   const missingScopeSubjects = subjects.filter(s => scopeCount(s.listId) === 0);
@@ -196,6 +205,7 @@ export default function ExamCreateWizard({ lists = [], onDone, onCancel }) {
               <div className="ui-meta" style={{ marginTop: 4 }}>未指定單科考試日 → 沿用整個段考最後一天。</div>
             </div>
             <Button variant="primary" block disabled={!step0ok} onClick={() => setStep(1)}>下一步：加入各科範圍</Button>
+            {!step0ok && <div className="ui-meta" role="status" style={{ textAlign: 'center' }}>{step0Hint}</div>}
           </div>
         )}
 
