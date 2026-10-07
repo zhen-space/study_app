@@ -44,6 +44,8 @@ export default function ExamCreateWizard({ lists = [], onDone, onCancel }) {
   const [picking, setPicking] = useState(null);   // { listId } → 開教材選取
   const [preview, setPreview] = useState(null);    // 每日/時段的排程預覽 blocks
   const previewRequest = useRef(0);
+  // React state 在同一個 event turn 不會同步更新；用 ref 擋住手機快速連點造成的重複建立。
+  const creatingRef = useRef(false);
 
   // 草稿自動保存（返回/取消/重開可接續）。
   useEffect(() => { saveDraft({ step, name, start, end, subjects, scope, level }); },
@@ -147,7 +149,8 @@ export default function ExamCreateWizard({ lists = [], onDone, onCancel }) {
 
   // ---- 確認建立（atomic，server-authoritative）----
   const confirm = async () => {
-    if (creating || scheduleBlocked) return;
+    if (creatingRef.current || scheduleBlocked) return;
+    creatingRef.current = true;
     setCreating(true); setErr('');
     try {
       const body = { ...requestBody(), preview_token: preview.preview_token };
@@ -159,6 +162,7 @@ export default function ExamCreateWizard({ lists = [], onDone, onCancel }) {
         setPreview(null);
         setErr('範圍或安排已更新，請重新預覽後再確認。');
       } else setErr(e.message || '建立失敗');
+      creatingRef.current = false;
       setCreating(false);
     }
   };

@@ -75,6 +75,36 @@ describe('ExamCreateWizard', () => {
     expect(screen.getByText(/排出起訖時間，顯示在行事曆/)).toBeTruthy();
   });
 
+  it('375px 快速連點確認只建立一次，progress 模式不會產生重複段考', async () => {
+    Object.defineProperty(window, 'innerWidth', { configurable: true, value: 375 });
+    localStorage.setItem('examWizardDraft:v1', JSON.stringify({
+      step: 2, name: '第二次段考', start: '2099-09-20', end: '2099-10-02', level: 'progress',
+      subjects: [{ listId: 1, examDate: '' }],
+      scope: { 1: { items: {}, manual: [{ label: '講義第三章', est: null }] } },
+    }));
+    let finishCreate;
+    api.mockImplementation((path, opts) => {
+      calls.push([path, opts]);
+      if (path === '/exam-plans/preview') return Promise.resolve({
+        preview_token: 'signed', blocks: [],
+        scope: [{ kind: 'manual', subject_list_id: 1, title: '講義第三章', estimated_minutes: null }],
+      });
+      if (path === '/exam-plans' && opts?.method === 'POST') return new Promise(resolve => { finishCreate = resolve; });
+      return Promise.resolve({});
+    });
+    const onDone = vi.fn();
+    render(<ExamCreateWizard lists={LISTS} onDone={onDone} onCancel={() => {}} />);
+    const confirm = await screen.findByRole('button', { name: '確認，建立段考計畫' });
+    await waitFor(() => expect(confirm).toBeEnabled());
+
+    await act(async () => { confirm.click(); confirm.click(); });
+    expect(posted('/exam-plans')).toHaveLength(1);
+    expect(screen.getByRole('button', { name: '正在建立段考計畫…' })).toBeDisabled();
+
+    await act(async () => finishCreate({ plan: { id: 99 } }));
+    expect(onDone).toHaveBeenCalledTimes(1);
+  });
+
   it('375px：產生預覽時明說尚未建立，不能把預覽誤認成正在建立計畫', async () => {
     Object.defineProperty(window, 'innerWidth', { configurable: true, value: 375 });
     let finishPreview;
