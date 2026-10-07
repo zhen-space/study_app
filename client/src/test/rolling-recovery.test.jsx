@@ -22,6 +22,13 @@ async function mount(onApplied = vi.fn().mockResolvedValue(), onClose = vi.fn())
 }
 
 describe('RollingExamSchedule 套用恢復', () => {
+  it('一般調整流程不顯示工程術語，並直接說明調整的是這次段考安排', async () => {
+    api.mockResolvedValueOnce(preview());
+    await mount();
+    expect(screen.getByRole('heading', { name: '調整這次段考安排' })).toBeInTheDocument();
+    expect(screen.queryByText(/滾動重排/)).not.toBeInTheDocument();
+  });
+
   it('pending apply 時禁止取消與 backdrop，且只送一次', async () => {
     api.mockResolvedValueOnce(preview()).mockImplementationOnce(() => new Promise(() => {}));
     const { button, onClose } = await mount(); fireEvent.click(button);
