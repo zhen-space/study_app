@@ -19,9 +19,9 @@ import Icon from './Icons';
 const DRAFT_KEY = 'examWizardDraft:v1';
 const STEPS = ['這次考試', '每科考什麼', '希望怎麼安排'];
 const LEVELS = [
-  ['progress', '只告訴我每個日期前要讀完什麼', '各科在考試日前把範圍讀完，不排每天做什麼'],
-  ['daily', '幫我排出每天要完成什麼', '列出每天要讀哪些內容，但不指定幾點'],
-  ['timed', '幫我排到每天的具體時間', '依你的可用時間與行事曆，排到幾點到幾點'],
+  ['progress', '只記錄考試範圍與截止日', '不產生每日待辦，也不會排到行事曆；之後仍可再安排'],
+  ['daily', '幫我排出每天要完成什麼', '自動分配到每天並出現在每日待辦，但不指定幾點'],
+  ['timed', '幫我排到每天的具體時間', '依可用時間與既有行程排出起訖時間，顯示在行事曆'],
 ];
 
 const loadDraft = () => { try { return JSON.parse(localStorage.getItem(DRAFT_KEY) || 'null'); } catch { return null; } };
@@ -319,7 +319,7 @@ export default function ExamCreateWizard({ lists = [], onDone, onCancel }) {
                 <div className="row" style={{ gap: 8, marginTop: 8, flexWrap: 'wrap' }}>
                   <Button size="sm" variant="secondary" onClick={() => setStep(1)}>回上一步調整範圍／日期</Button>
                   {(preview?.failed || !preview) && <Button size="sm" variant="primary" onClick={runPreview}>重新預覽</Button>}
-                  {level !== 'progress' && <Button size="sm" variant="ghost" onClick={() => setLevel('progress')}>改用「只告訴我每個日期前要讀完什麼」</Button>}
+                  {level !== 'progress' && <Button size="sm" variant="ghost" onClick={() => setLevel('progress')}>改用「只記錄考試範圍與截止日」</Button>}
                 </div>
               </SurfaceCard>
             )}
