@@ -474,9 +474,9 @@ export default function PlanDetailView({ planKey, tasks, lists, apiPlans = [], r
               <Icon name="plus" size={14} /> 加入科目
             </Button>
             <Button size="sm" variant="secondary" onClick={() => setShowRolling(true)}>
-              <Icon name="calendar" size={14} /> 段考滾動重排
+              <Icon name="calendar" size={14} /> 調整每天安排
             </Button>
-            <span className="ui-meta" style={{ marginLeft: 'var(--sp-2)' }}>把新作業／小考排進來，今天／明天不變動</span>
+            <span className="ui-meta" style={{ marginLeft: 'var(--sp-2)' }}>先預覽再套用；今天、明天不變動</span>
           </div>
         )}
         {showRolling && (
