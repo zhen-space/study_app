@@ -91,6 +91,40 @@ describe('ExamCreateWizard', () => {
     expect(screen.queryByText('正在準備安排預覽…')).toBeNull();
   });
 
+  it('375px 多科時，安排預覽逐項顯示科目與完整時段', async () => {
+    Object.defineProperty(window, 'innerWidth', { configurable: true, value: 375 });
+    localStorage.setItem('examWizardDraft:v1', JSON.stringify({
+      step: 2, name: '第二次段考', start: '2099-09-20', end: '2099-10-02', level: 'timed',
+      subjects: [{ listId: 1, examDate: '' }, { listId: 2, examDate: '' }],
+      scope: {
+        1: { items: {}, manual: [{ label: '數學講義', est: 60 }] },
+        2: { items: {}, manual: [{ label: '物理講義', est: 45 }] },
+      },
+    }));
+    api.mockImplementation((path, opts) => {
+      calls.push([path, opts]);
+      if (path === '/exam-plans/preview') return Promise.resolve({
+        preview_token: 'signed',
+        scope: [
+          { kind: 'manual', subject_list_id: 1, title: '數學講義', estimated_minutes: 60 },
+          { kind: 'manual', subject_list_id: 2, title: '物理講義', estimated_minutes: 45 },
+        ],
+        blocks: [
+          { subject_id: 1, date: '2099-09-21', start_time: '19:00', end_time: '20:00', title: '數學講義' },
+          { subject_id: 2, date: '2099-09-21', start_time: '20:00', end_time: '20:45', title: '物理講義' },
+        ],
+      });
+      return Promise.resolve({});
+    });
+
+    render(<ExamCreateWizard lists={LISTS} onDone={() => {}} onCancel={() => {}} />);
+    expect(await screen.findByText(/9\/21 · 2 項/)).toBeTruthy();
+    expect(screen.getAllByText('數學').length).toBeGreaterThan(0);
+    expect(screen.getAllByText('物理').length).toBeGreaterThan(0);
+    expect(screen.getByText('19:00–20:00')).toBeTruthy();
+    expect(screen.getByText('20:00–20:45')).toBeTruthy();
+  });
+
   it('中文 IME：段考名稱在組字期間保持焦點', async () => {
     render(<ExamCreateWizard lists={LISTS} onDone={() => {}} onCancel={() => {}} />);
     const input = screen.getByLabelText('段考名稱');
