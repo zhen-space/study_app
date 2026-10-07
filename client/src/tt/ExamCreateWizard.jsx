@@ -289,7 +289,7 @@ export default function ExamCreateWizard({ lists = [], onDone, onCancel }) {
               {level !== 'progress' && preview && !preview.failed && !preview.empty && (
                 <div style={{ marginTop: 10 }}>
                   <div className="ui-meta" style={{ fontWeight: 600 }}>每天要做的（預覽）</div>
-                  <DailyPreview blocks={preview.blocks} />
+                  <DailyPreview blocks={preview.blocks} nameOf={nameOf} />
                 </div>
               )}
             </SurfaceCard>
@@ -360,7 +360,7 @@ function ManualAdder({ onAdd }) {
 }
 
 // 每日預覽：blocks 依日期分組。
-function DailyPreview({ blocks = [] }) {
+function DailyPreview({ blocks = [], nameOf }) {
   const byDate = {};
   for (const b of blocks) (byDate[b.date] = byDate[b.date] || []).push(b);
   const dates = Object.keys(byDate).sort();
@@ -368,12 +368,14 @@ function DailyPreview({ blocks = [] }) {
   return (
     <div>
       {dates.map(d => (
-        <div key={d} style={{ marginTop: 4 }}>
-          <span style={{ fontWeight: 600 }}>{md(d)}</span>
+        <div key={d} style={{ marginTop: 8 }}>
+          <div style={{ fontWeight: 600 }}>{md(d)} · {byDate[d].length} 項</div>
           {byDate[d].map((b, i) => (
-            <span key={i} className="ui-meta" style={{ marginLeft: 6 }}>
-              {b.start_time ? `${b.start_time} ` : ''}{b.title}
-            </span>
+            <div key={i} className="ui-meta" style={{ margin: '4px 0 0 6px', display: 'flex', gap: 6, alignItems: 'baseline' }}>
+              <span style={{ flexShrink: 0 }}>{nameOf?.(b.subject_id) || '科目'}</span>
+              {b.start_time && <span style={{ flexShrink: 0 }}>{b.start_time}{b.end_time ? `–${b.end_time}` : ''}</span>}
+              <span>{b.title}</span>
+            </div>
           ))}
         </div>
       ))}
