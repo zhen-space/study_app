@@ -18,7 +18,7 @@ afterEach(cleanup);
 
 async function mount(onApplied = vi.fn().mockResolvedValue(), onClose = vi.fn()) {
   render(<RollingExamSchedule planId={7} onClose={onClose} onApplied={onApplied} />);
-  return { button: await screen.findByRole('button', { name: '確認套用' }), onApplied, onClose };
+  return { button: await screen.findByRole('button', { name: '套用新版安排' }), onApplied, onClose };
 }
 
 describe('RollingExamSchedule 套用恢復', () => {
@@ -26,6 +26,7 @@ describe('RollingExamSchedule 套用恢復', () => {
     api.mockResolvedValueOnce(preview());
     await mount();
     expect(screen.getByRole('heading', { name: '調整這次段考安排' })).toBeInTheDocument();
+    expect(screen.getByText(/先檢查下方變動.*套用新版安排.*才會更新/)).toBeInTheDocument();
     expect(screen.queryByText(/滾動重排/)).not.toBeInTheDocument();
   });
 

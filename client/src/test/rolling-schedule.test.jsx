@@ -73,8 +73,8 @@ describe('RollingExamSchedule 流程', () => {
     api.mockResolvedValueOnce({ version_id: 42 }); // apply
     const onApplied = vi.fn();
     render(<RollingExamSchedule planId={7} onClose={() => {}} onApplied={onApplied} />);
-    await waitFor(() => expect(screen.getByRole('button', { name: '確認套用' })).toBeEnabled());
-    fireEvent.click(screen.getByRole('button', { name: '確認套用' }));
+    await waitFor(() => expect(screen.getByRole('button', { name: '套用新版安排' })).toBeEnabled());
+    fireEvent.click(screen.getByRole('button', { name: '套用新版安排' }));
     await waitFor(() => expect(onApplied).toHaveBeenCalled());
     const applyCall = api.mock.calls.find(c => c[0] === '/schedule/rolling/apply');
     expect(applyCall).toBeTruthy();
@@ -95,7 +95,7 @@ describe('RollingExamSchedule 流程', () => {
     const preview = api.mock.calls.find(c => c[0] === '/schedule/rolling/preview');
     expect(preview[1].body.add_task_ids).toEqual([21]);
     expect(preview[1].body.material_selections).toEqual([{ content_item_id: 8, client_key: 'mat-8' }]);
-    fireEvent.click(await screen.findByRole('button', { name: '確認套用' }));
+    fireEvent.click(await screen.findByRole('button', { name: '套用新版安排' }));
     await waitFor(() => expect(api.mock.calls.some(c => c[0] === '/schedule/rolling/apply')).toBe(true));
     const apply = api.mock.calls.find(c => c[0] === '/schedule/rolling/apply');
     expect(apply[1].body.task_creates).toEqual(p.task_creates);
@@ -105,7 +105,7 @@ describe('RollingExamSchedule 流程', () => {
     api.mockResolvedValueOnce({ ...feasible(), code: 'MISSING_ESTIMATE', blocks: null, candidate_blocks: null, diff: null });
     render(<RollingExamSchedule planId={7} addTaskIds={[21]} onClose={() => {}} onApplied={() => {}} />);
     expect(await screen.findByText('請先補上預估時間')).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: '確認套用' })).toBeDisabled();
+    expect(screen.getByRole('button', { name: '套用新版安排' })).toBeDisabled();
   });
 
   it('INFEASIBLE → 顯示三選項；確認套用被停用', async () => {
@@ -113,7 +113,7 @@ describe('RollingExamSchedule 流程', () => {
     render(<RollingExamSchedule planId={7} triggerTaskId={99} onClose={() => {}} onApplied={() => {}} />);
     await waitFor(() => expect(screen.getByText(/在不動今天／明天的前提下排不進來/)).toBeInTheDocument());
     for (const o of INFEASIBLE_OPTIONS) expect(screen.getByRole('button', { name: o.label })).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: '確認套用' })).toBeDisabled();
+    expect(screen.getByRole('button', { name: '套用新版安排' })).toBeDisabled();
   });
 
   it('RELAX_FREEZE → 觸發第二次預覽（不直接 apply）', async () => {
@@ -154,8 +154,8 @@ describe('RollingExamSchedule 流程', () => {
     api.mockResolvedValueOnce(feasible());        // auto re-preview
     const onApplied = vi.fn();
     render(<RollingExamSchedule planId={7} onClose={() => {}} onApplied={onApplied} />);
-    await waitFor(() => expect(screen.getByRole('button', { name: '確認套用' })).toBeEnabled());
-    fireEvent.click(screen.getByRole('button', { name: '確認套用' }));
+    await waitFor(() => expect(screen.getByRole('button', { name: '套用新版安排' })).toBeEnabled());
+    fireEvent.click(screen.getByRole('button', { name: '套用新版安排' }));
     await waitFor(() => expect(screen.getByText(/已被其他變更取代/)).toBeInTheDocument());
     expect(onApplied).not.toHaveBeenCalled();
     const previews = api.mock.calls.filter(c => c[0] === '/schedule/rolling/preview');
