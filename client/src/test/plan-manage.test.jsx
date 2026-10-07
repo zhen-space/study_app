@@ -134,6 +134,16 @@ describe('建立計畫', () => {
 });
 
 describe('Plan 管理操作（全部走既有 /plans API）', () => {
+  it('現有段考用白話入口調整每天安排，不顯示工程術語', async () => {
+    withPlan();
+    await goPlans();
+    await click(cardByName('第二次段考準備'));
+    expect(screen.getByRole('button', { name: '調整每天安排' })).toBeInTheDocument();
+    expect(screen.getByText('先預覽再套用；今天、明天不變動')).toBeInTheDocument();
+    expect(screen.queryByText('段考滾動重排')).not.toBeInTheDocument();
+    noCrash();
+  });
+
   const withPlan = (over = {}) => setApi({
     '/plans': [fx.plans[0]], '/tasks': [...fx.tasks, ...fx.planTasks], ...over,
   });
