@@ -409,20 +409,30 @@ function DailyPreview({ blocks = [], nameOf }) {
 // 單科教材選取：列該科的書 → 開一本 → 勾課/章/單元 → 加入。教材庫沒有可當場匯入回卡。
 function SubjectMaterialPicker({ subjectId, subjectName, lists, selectedIds, onAdd, onClose }) {
   const [books, setBooks] = useState(null);
+  const [booksError, setBooksError] = useState('');
   const [openBook, setOpenBook] = useState(null);
   const [tree, setTree] = useState(null);
+  const [treeError, setTreeError] = useState('');
   const [checked, setChecked] = useState(new Set());
   const [importing, setImporting] = useState(false);
 
   const loadBooks = useCallback(async () => {
-    const r = await listShelf({});
-    setBooks((r.books || []).filter(b => Number(b.subject_list_id) === Number(subjectId) && b.material_book_id));
+    setBooks(null); setBooksError('');
+    try {
+      const r = await listShelf({});
+      setBooks((r.books || []).filter(b => Number(b.subject_list_id) === Number(subjectId) && b.material_book_id));
+      return true;
+    } catch (e) {
+      setBooksError(e.message || '暫時無法載入教材');
+      return false;
+    }
   }, [subjectId]);
-  useEffect(() => { loadBooks().catch(() => setBooks([])); }, [loadBooks]);
+  useEffect(() => { loadBooks(); }, [loadBooks]);
 
   const open = async b => {
-    setOpenBook(b); setTree(null); setChecked(new Set());
-    try { setTree(await getBookTree(b.material_book_id)); } catch { setTree({ nodes: [] }); }
+    setOpenBook(b); setTree(null); setTreeError(''); setChecked(new Set());
+    try { setTree(await getBookTree(b.material_book_id)); }
+    catch (e) { setTreeError(e.message || '暫時無法載入教材目錄'); }
   };
   const items = useMemo(() => (tree ? flattenItems(tree) : []), [tree]);
   const toggle = it => setChecked(s => { const n = new Set(s); if (n.has(it.id)) n.delete(it.id); else n.add(it.id); return n; });
@@ -447,7 +457,10 @@ function SubjectMaterialPicker({ subjectId, subjectName, lists, selectedIds, onA
     return (
       <div style={{ display: 'grid', gap: 8 }}>
         <div className="row"><b>{openBook.title}</b><Button size="sm" variant="ghost" style={{ marginLeft: 'auto' }} onClick={() => { setOpenBook(null); setTree(null); }}>返回書單</Button></div>
-        {!tree ? <div className="ui-meta">載入中…</div> : !items.length ? <div className="ui-meta">這本還沒有目錄。</div> : (
+        {treeError ? <div className="ui-card ui-card--warning" role="alert">
+          <div>{treeError}</div>
+          <Button size="sm" variant="secondary" style={{ marginTop: 6 }} onClick={() => open(openBook)}>重試載入目錄</Button>
+        </div> : !tree ? <div className="ui-meta">載入中…</div> : !items.length ? <div className="ui-meta">這本還沒有目錄。</div> : (
           <div style={{ maxHeight: 300, overflow: 'auto' }}>
             {items.map(it => (
               <label key={it.id} className="row" style={{ gap: 6, alignItems: 'baseline' }}>
@@ -465,7 +478,10 @@ function SubjectMaterialPicker({ subjectId, subjectName, lists, selectedIds, onA
   return (
     <div style={{ display: 'grid', gap: 8 }}>
       <b>{subjectName} 的教材</b>
-      {books == null ? <div className="ui-meta">載入中…</div>
+      {booksError ? <div className="ui-card ui-card--warning" role="alert">
+        <div>{booksError}</div>
+        <Button size="sm" variant="secondary" style={{ marginTop: 6 }} onClick={loadBooks}>重試載入教材</Button>
+      </div> : books == null ? <div className="ui-meta">載入中…</div>
         : books.length === 0 ? <EmptyState title="這科還沒有教材" description="當場匯入或建立一本，完成後回到這裡繼續選。" />
           : books.map(b => (
             <div key={b.material_book_id} className="row" role="button" tabIndex={0} style={{ cursor: 'pointer', padding: '6px 0' }}
