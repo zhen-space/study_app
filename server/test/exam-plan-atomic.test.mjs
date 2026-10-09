@@ -27,7 +27,7 @@ before(async () => {
 beforeEach(async () => {
   // 每個案例都用乾淨的世界，確保「零殘留」斷言只反映這次呼叫。
   for (const t of ['scheduled_blocks', 'schedule_versions', 'user_schedule_state',
-    'plan_manual_scope', 'plan_exam_subjects', 'plan_material_items', 'tasks',
+    'plan_progress_segments', 'plan_manual_scope', 'plan_exam_subjects', 'plan_material_items', 'tasks',
     'exam_plan_commits', 'plans', 'lists']) {
     await q.run(`DELETE FROM ${t} WHERE user_id=?`, [USER]);
   }
@@ -88,6 +88,11 @@ describe('createExamPlanAtomic 單一交易原子性（P0-4）', () => {
     assert.equal(second.replayed, true);
     assert.equal((await q.get('SELECT COUNT(*) c FROM plans WHERE user_id=?', [USER])).c, 1);
     assert.equal((await q.get('SELECT COUNT(*) c FROM tasks WHERE user_id=?', [USER])).c, 0);
+    assert.equal((await q.get('SELECT COUNT(*) c FROM plan_progress_segments WHERE user_id=?', [USER])).c, 1);
+    const segment = await q.get('SELECT start_date,end_date,title FROM plan_progress_segments WHERE user_id=?', [USER]);
+    assert.equal(segment.start_date, rel(0));
+    assert.equal(segment.end_date, rel(5));
+    assert.match(segment.title, /數學：講義第三章/);
     assert.equal((await q.get('SELECT COUNT(*) c FROM schedule_versions WHERE user_id=?', [USER])).c, 0);
     assert.equal((await q.get('SELECT COUNT(*) c FROM exam_plan_commits WHERE user_id=?', [USER])).c, 1);
   });

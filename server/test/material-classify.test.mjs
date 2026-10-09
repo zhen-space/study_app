@@ -82,20 +82,20 @@ describe('教材庫分類與篩選', () => {
 });
 
 describe('同名偵測（name-check）', () => {
-  test('名稱＋類型＋出版社相同 → 衝突；空白／大小寫正規化後也算', async () => {
+  test('名稱＋類型＋出版社＋科目相同 → 衝突；空白／大小寫正規化後也算', async () => {
     const subj = await ok('POST', '/lists', { name: '化學' });
     await seed('有機化學', subj.id, ['reading'], { book_type: '課本', publisher: '龍騰' });
-    const hit = await ok('GET', `/material/name-check?title=${encodeURIComponent('  有機化學 ')}&book_type=${encodeURIComponent(' 課本 ')}&publisher=${encodeURIComponent(' 龍騰 ')}`);
+    const hit = await ok('GET', `/material/name-check?title=${encodeURIComponent('  有機化學 ')}&book_type=${encodeURIComponent(' 課本 ')}&publisher=${encodeURIComponent(' 龍騰 ')}&subject_list_id=${subj.id}`);
     assert.equal(hit.has_conflict, true);
     assert.equal(hit.same_name_books.length, 1);
   });
 
-  test('相同三欄即使科目不同仍提示，由使用者決定是否合併', async () => {
+  test('相同三欄但科目不同不提示合併', async () => {
     const a = await ok('POST', '/lists', { name: '科目甲' });
     const b = await ok('POST', '/lists', { name: '科目乙' });
     await seed('講義', a.id, ['reading'], { book_type: '講義', publisher: '南一' });
     const res = await ok('GET', `/material/name-check?title=${encodeURIComponent('講義')}&book_type=${encodeURIComponent('講義')}&publisher=${encodeURIComponent('南一')}&subject_list_id=${b.id}`);
-    assert.equal(res.has_conflict, true);
+    assert.equal(res.has_conflict, false);
   });
 
   test('名稱相同但類型或出版社不同 → 不提示合併', async () => {

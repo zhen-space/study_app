@@ -111,6 +111,10 @@ export default function MaterialLibraryView({ goPlans = null, lists = [] }) {
   const [deleteState, setDeleteState] = useState(null);   // null | { loading } | { impact }
   const [deletedBooks, setDeletedBooks] = useState([]);
   const [restoringId, setRestoringId] = useState(null);
+  const [selectedBooks, setSelectedBooks] = useState(new Set());
+  const [batchAction, setBatchAction] = useState(null); // null | move | delete
+  const [batchCategory, setBatchCategory] = useState('');
+  const [batchImpacts, setBatchImpacts] = useState(null);
 
   const load = useCallback(async () => {
     const [c, b, deleted] = await Promise.all([
@@ -212,6 +216,47 @@ export default function MaterialLibraryView({ goPlans = null, lists = [] }) {
     .filter(c => (c.books || []).some(b => b.id === bookId))
     .map(c => c.name), [categories]);
 
+  const toggleSelected = id => setSelectedBooks(current => {
+    const next = new Set(current);
+    if (next.has(id)) next.delete(id); else next.add(id);
+    return next;
+  });
+
+  // 批次移動採「取代分類」語意：使用者先選移動，再選目的分類。
+  // 書本 identity、目錄、完成度與任務都不動，只改分類 reference。
+  const moveSelected = async () => {
+    if (!batchCategory || !selectedBooks.size) return;
+    setBusy(true); setErr('');
+    try {
+      for (const bookId of selectedBooks) {
+        const linked = categories.filter(c => (c.books || []).some(b => Number(b.id) === Number(bookId)));
+        for (const c of linked) if (String(c.id) !== String(batchCategory)) await removeBookFromCategory(c.id, bookId);
+        if (!linked.some(c => String(c.id) === String(batchCategory))) await addBookToCategory(batchCategory, bookId);
+      }
+      setSelectedBooks(new Set()); setBatchAction(null); setBatchCategory('');
+      await load();
+    } catch (e) { setErr(e.message || '批次移動失敗，請重新整理後確認'); }
+    finally { setBusy(false); }
+  };
+
+  const prepareBatchDelete = async () => {
+    setBatchAction('delete'); setBatchImpacts(null); setBusy(true); setErr('');
+    try {
+      const entries = await Promise.all([...selectedBooks].map(async id => [id, await bookImpact(id)]));
+      setBatchImpacts(Object.fromEntries(entries));
+    } catch (e) { setErr(e.message || '無法讀取刪除影響'); setBatchAction(null); }
+    finally { setBusy(false); }
+  };
+  const deleteSelected = async () => {
+    setBusy(true); setErr('');
+    try {
+      for (const id of selectedBooks) await deleteBook(id, { unlink: true });
+      setSelectedBooks(new Set()); setBatchAction(null); setBatchImpacts(null);
+      await load();
+    } catch (e) { setErr(e.message || '批次刪除未完成，請重新整理後確認'); }
+    finally { setBusy(false); }
+  };
+
   const addBook = async ({ saveAsNew = false } = {}) => {
     const title = adding.trim();
     if (!title) return;
@@ -219,7 +264,7 @@ export default function MaterialLibraryView({ goPlans = null, lists = [] }) {
     try {
       // 快速新增也不能繞過重複確認。三欄完全相同才詢問；選擇前不寫入。
       if (!saveAsNew) {
-        const duplicate = await nameCheck(title, addBookType, addPublisher);
+        const duplicate = await nameCheck(title, addBookType, addPublisher, addSubject || null);
         if (duplicate.has_conflict) {
           setDuplicateBooks(duplicate.same_name_books || []);
           return;
@@ -447,18 +492,32 @@ export default function MaterialLibraryView({ goPlans = null, lists = [] }) {
       </div>
       <div className="ui-meta">沒有指定科目的教材無法排入計畫（排程以科目分組）。</div>
 
+      {visibleBooks.length > 0 && (
+        <div className="row" style={{ gap: 8, marginTop: 10, flexWrap: 'wrap' }}>
+          <Button size="sm" variant="tertiary" onClick={() => setSelectedBooks(
+            selectedBooks.size === visibleBooks.length ? new Set() : new Set(visibleBooks.map(b => b.id)))}>
+            {selectedBooks.size === visibleBooks.length ? '取消全選' : '選取多本'}
+          </Button>
+          {selectedBooks.size > 0 && <>
+            <span className="ui-meta">已選 {selectedBooks.size} 本</span>
+            <Button size="sm" variant="secondary" onClick={() => { setBatchAction('move'); setBatchCategory(''); }}>移動到分類</Button>
+            <Button size="sm" variant="ghost" onClick={prepareBatchDelete}>刪除</Button>
+          </>}
+        </div>
+      )}
+
       {duplicateBooks && (
         <BottomSheet onClose={() => setDuplicateBooks(null)} label="找到相同教材">
           <div style={{ display: 'grid', gap: 10 }}>
-            <b>名稱、教材類型與出版社都相同。是否合併？</b>
-            <div className="ui-meta">合併會直接使用現有教材，不建立重複的一本，也不會改掉原本的完成度與計畫。</div>
+            <b>名稱、教材類型、出版社與科目都相同。是否使用現有教材？</b>
+            <div className="ui-meta">先確認結果：不會新增或改寫任何目錄，只會開啟下列現有教材；原本的完成度與計畫都會保留。若不是同一本，請選擇另存。</div>
             {duplicateBooks.map(b => (
               <Button key={b.id} variant="primary" disabled={busy} onClick={() => {
                 setDuplicateBooks(null);
                 setAdding(''); setAddSubject(''); setAddPublisher(''); setAddBookType('');
                 openTree(b.id);
               }}>
-                合併並使用「{b.title}」
+                確認，使用「{b.title}」
               </Button>
             ))}
             <Button variant="secondary" disabled={busy} onClick={() => addBook({ saveAsNew: true })}>
@@ -476,7 +535,9 @@ export default function MaterialLibraryView({ goPlans = null, lists = [] }) {
           {visibleBooks.map(b => {
             const inCats = catsOf(b.id);
             return (
-              <button key={b.id} type="button" className="ml-book" onClick={() => openTree(b.id)}>
+              <div key={b.id} className="row" style={{ gap: 8, alignItems: 'center' }}>
+                <input type="checkbox" aria-label={`選取 ${b.title}`} checked={selectedBooks.has(b.id)} onChange={() => toggleSelected(b.id)} />
+              <button type="button" className="ml-book" style={{ flex: 1 }} onClick={() => openTree(b.id)}>
                 <span className="ml-book-main">
                   <span className="ml-book-title">{b.title}</span>
                   {b.publisher && <span className="ml-book-sub">{b.publisher}</span>}
@@ -496,9 +557,45 @@ export default function MaterialLibraryView({ goPlans = null, lists = [] }) {
                   <span className="ml-book-pct">{b.progress.percent}%</span>
                 </span>
               </button>
+              </div>
             );
           })}
         </div>
+      )}
+
+      {batchAction === 'move' && (
+        <BottomSheet onClose={() => setBatchAction(null)} label="移動到分類">
+          <div style={{ display: 'grid', gap: 10 }}>
+            <b>將 {selectedBooks.size} 本教材移到哪個分類？</b>
+            <div className="ui-meta">會移除原本的分類標籤，但不會改動教材內容、完成度或計畫。</div>
+            <select aria-label="目的分類" value={batchCategory} onChange={e => setBatchCategory(e.target.value)}>
+              <option value="">選擇分類…</option>
+              {categories.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
+            </select>
+            <div className="row" style={{ gap: 8 }}>
+              <Button variant="primary" disabled={!batchCategory || busy} onClick={moveSelected}>{busy ? '移動中…' : '確認移動'}</Button>
+              <Button variant="tertiary" disabled={busy} onClick={() => setBatchAction(null)}>取消</Button>
+            </div>
+          </div>
+        </BottomSheet>
+      )}
+
+      {batchAction === 'delete' && (
+        <BottomSheet onClose={() => !busy && setBatchAction(null)} label="刪除多本教材">
+          {!batchImpacts ? <div className="mt-loading">讀取影響中…</div> : (() => {
+            const impacts = Object.values(batchImpacts);
+            const blocking = impacts.flatMap(x => x.blocking_plans || []);
+            return <div style={{ display: 'grid', gap: 10 }}>
+              <b>刪除所選 {selectedBooks.size} 本教材？</b>
+              <div className="ui-meta">教材會移到「最近刪除」，完成度、讀書紀錄與排程歷史都會保留。</div>
+              {blocking.length > 0 && <div className="mt-warn">其中有教材正被 {blocking.length} 個使用中計畫選用；確認後會先安全解除關聯，再刪除教材。</div>}
+              <div className="row" style={{ gap: 8 }}>
+                <Button variant="primary" disabled={busy} onClick={deleteSelected}>{busy ? '刪除中…' : blocking.length ? '解除關聯並刪除' : '確認刪除'}</Button>
+                <Button variant="tertiary" disabled={busy} onClick={() => setBatchAction(null)}>取消</Button>
+              </div>
+            </div>;
+          })()}
+        </BottomSheet>
       )}
 
       {deletedBooks.length > 0 && (

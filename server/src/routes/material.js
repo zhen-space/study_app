@@ -52,7 +52,7 @@ router.get('/material/books', handle(async (req, res) => {
   }));
 }));
 
-// 匯入／新增前的重複檢查：名稱、教材類型與出版社都相同才回傳，讓前端提供
+// 匯入／新增前的重複檢查：名稱、教材類型、出版社與科目都相同才回傳，讓前端提供
 // 「合併到現有／另存新教材／取消」三選一。這一步不寫任何東西。
 router.get('/material/name-check', handle(async (req, res) => {
   const books = await material.sameNameBooks(
@@ -60,6 +60,7 @@ router.get('/material/name-check', handle(async (req, res) => {
     req.query.title || '',
     req.query.book_type || '',
     req.query.publisher || '',
+    num(req.query.subject_list_id),
   );
   res.json({ same_name_books: books, has_conflict: books.length > 0 });
 }));

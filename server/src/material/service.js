@@ -137,10 +137,9 @@ export async function listBooks(userId, { includeArchived = false, filters = {} 
   return out;
 }
 
-// 疑似同一本的既有教材（名稱 + 教材類型 + 出版社皆相同）。用於匯入／新增前的三選一：
+// 疑似同一本的既有教材（名稱 + 教材類型 + 出版社 + 科目皆相同）。用於匯入／新增前的三選一：
 // 合併到現有／另存新教材／取消——在使用者選擇之前，呼叫端不得自動新增或覆寫。
-// 科目不是書的版本身分：同一本教材若曾誤放到另一科，仍要讓使用者看見並自行決定是否合併。
-export async function sameNameBooks(userId, title, bookType = '', publisher = '') {
+export async function sameNameBooks(userId, title, bookType = '', publisher = '', subjectListId = null) {
   const norm = normalizeBookName(title);
   if (!norm) return [];
   const normalizedType = normalizeBookMetadata(bookType);
@@ -150,7 +149,8 @@ export async function sameNameBooks(userId, title, bookType = '', publisher = ''
   return rows.filter(b =>
     normalizeBookName(b.title) === norm
     && normalizeBookMetadata(b.book_type) === normalizedType
-    && normalizeBookMetadata(b.publisher) === normalizedPublisher);
+    && normalizeBookMetadata(b.publisher) === normalizedPublisher
+    && (b.subject_list_id == null ? subjectListId == null : Number(b.subject_list_id) === Number(subjectListId)));
 }
 
 export async function createBook(userId, body = {}) {

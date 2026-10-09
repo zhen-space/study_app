@@ -78,7 +78,7 @@ export default function AddMaterialFlow({ lists = [], onCancel, onCreated, onAdd
     finally { setBusy(false); }
   };
 
-  // 建立前先偵測相同名稱、類型與出版社：有衝突就要求三選一，未選不 commit。
+  // 建立前先偵測相同名稱、類型、出版社與科目：有衝突就要求三選一，未選不 commit。
   const create = async submittedDraft => {
     if (operationBusy.current) return;
     operationBusy.current = true;
@@ -90,6 +90,7 @@ export default function AddMaterialFlow({ lists = [], onCancel, onCreated, onAdd
         candidate.book.title,
         candidate.book.book_type,
         candidate.book.publisher,
+        candidate.book.subject_list_id,
       );
       if (chk.has_conflict) {
         setConflict({ books: chk.same_name_books || [] });
