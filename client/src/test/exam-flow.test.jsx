@@ -303,6 +303,25 @@ describe('ExamCreateWizard', () => {
     expect(screen.getByText('數學')).toBeInTheDocument();
   });
 
+  it('草稿中的科目已被刪除時不送預覽，先帶回第一步安全移除', async () => {
+    localStorage.setItem('examWizardDraft:v1', JSON.stringify({
+      step: 2, name: '第二次段考', start: '2099-09-20', end: '2099-10-02', level: 'progress',
+      subjects: [{ listId: 999, examDate: '' }],
+      scope: { 999: { items: {}, manual: [{ label: '舊講義範圍', est: 60 }] } },
+    }));
+    render(<ExamCreateWizard lists={LISTS} onDone={() => {}} onCancel={() => {}} />);
+
+    expect(await screen.findByText(/草稿中的科目已不存在/)).toBeTruthy();
+    expect(posted('/exam-plans/preview')).toHaveLength(0);
+    expect(screen.getByRole('button', { name: '確認，建立段考計畫' })).toBeDisabled();
+
+    await click(screen.getByRole('button', { name: '回第一步移除失效科目' }));
+    expect(screen.getByText('已刪除的科目')).toBeTruthy();
+    expect(screen.getByRole('button', { name: '下一步：加入各科範圍' })).toBeDisabled();
+    await click(screen.getByRole('button', { name: '移除 已刪除的科目' }));
+    expect(screen.getByRole('status')).toHaveTextContent('請至少加入一個考試科目');
+  });
+
   it('375px 多考科：逐科都要有範圍，明列缺少科目且不能進預覽', async () => {
     Object.defineProperty(window, 'innerWidth', { configurable: true, value: 375 });
     render(<ExamCreateWizard lists={LISTS} onDone={() => {}} onCancel={() => {}} />);
