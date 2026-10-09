@@ -27,14 +27,26 @@ export default function PlanRangeView({ plan, lists = [], onAddRange, onArrange,
   const [removal, setRemoval] = useState(null);
   const [removeBusy, setRemoveBusy] = useState(false);
   const [removeCommitted, setRemoveCommitted] = useState(false);
+  const [loadBusy, setLoadBusy] = useState(false);
+  const [loadError, setLoadError] = useState('');
   const previewBusyRef = useRef(false);
   const removeBusyRef = useRef(false);
   const [removeError, setRemoveError] = useState('');
 
   const load = useCallback(async (strict = false) => {
     if (planId == null) return;
-    const ex = strict ? await api(`/plans/${planId}/exam`) : await api(`/plans/${planId}/exam`).catch(() => null);
-    setExam(ex && Array.isArray(ex.subjects) ? ex : { subjects: [], material: [], manual_scope: [], plan: {} });
+    if (!strict) { setLoadBusy(true); setLoadError(''); }
+    try {
+      const ex = await api(`/plans/${planId}/exam`);
+      if (!ex || !Array.isArray(ex.subjects)) throw new Error('段考範圍資料不完整');
+      setExam(ex);
+      setLoadError('');
+    } catch (e) {
+      if (strict) throw e;
+      setLoadError(e.message || '暫時無法載入段考範圍');
+    } finally {
+      if (!strict) setLoadBusy(false);
+    }
   }, [planId]);
   useEffect(() => { load(); }, [load, refreshKey]);
 
@@ -100,7 +112,15 @@ export default function PlanRangeView({ plan, lists = [], onAddRange, onArrange,
     await finishRemoval();
   }
 
-  if (planId == null || exam == null) return null;
+  if (planId == null) return null;
+  if (exam == null) return loadError ? (
+    <SurfaceCard style={{ marginTop: 'var(--sp-4)' }}>
+      <div role="alert"><b>段考範圍載入失敗</b><div className="ui-meta" style={{ marginTop: 4 }}>{loadError}</div></div>
+      <Button size="sm" variant="primary" disabled={loadBusy} style={{ marginTop: 8 }} onClick={() => load()}>
+        {loadBusy ? '重新載入中…' : '重新載入段考範圍'}
+      </Button>
+    </SurfaceCard>
+  ) : null;
 
   const subjects = exam.subjects || [];
   const material = exam.material || [];
@@ -130,6 +150,12 @@ export default function PlanRangeView({ plan, lists = [], onAddRange, onArrange,
 
   return (
     <div style={{ marginTop: 'var(--sp-4)' }}>
+      {loadError && <SurfaceCard tone="warning" style={{ marginBottom: 'var(--sp-3)' }}>
+        <div role="alert"><b>目前顯示上次載入的段考範圍</b><div className="ui-meta" style={{ marginTop: 4 }}>{loadError}</div></div>
+        <Button size="sm" variant="secondary" disabled={loadBusy} style={{ marginTop: 8 }} onClick={() => load()}>
+          {loadBusy ? '重新載入中…' : '重新載入段考範圍'}
+        </Button>
+      </SurfaceCard>}
       <div className="row" style={{ alignItems: 'baseline', gap: 8 }}>
         <span style={{ fontSize: 22, fontWeight: 700 }}>{overallEnd ? `段考到 ${md(overallEnd)}` : '尚未設定考試日期'}</span>
         {dl != null && <span className="ui-meta">{dl > 0 ? `剩 ${dl} 天` : dl === 0 ? '就是今天' : '已過'}</span>}

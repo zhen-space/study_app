@@ -23,6 +23,20 @@ beforeEach(() => api.mockReset());
 afterEach(() => cleanup());
 
 describe('PlanRangeView', () => {
+  it('段考範圍讀取失敗時不誤報為空範圍，並可直接重試', async () => {
+    const exam = { plan: { target_date: '2099-10-02' },
+      subjects: [{ subject_list_id: 1, subject_name: '數學', exam_date: '2099-10-02' }],
+      material: [mat({ content_item_id: 11, subject_list_id: 1, book_id: 5, book_title: '課本', chapter_title: '第一章', title: '第一課' })], manual_scope: [] };
+    api.mockRejectedValueOnce(new Error('網路暫時中斷')).mockResolvedValueOnce(exam);
+    render(<PlanRangeView plan={plan} lists={LISTS} onAddRange={() => {}} />);
+
+    expect(await screen.findByRole('alert')).toHaveTextContent('段考範圍載入失敗');
+    expect(screen.queryByText('還沒加入要考的範圍')).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: '重新載入段考範圍' }));
+    expect(await screen.findByText('第一課')).toBeInTheDocument();
+    expect(api).toHaveBeenCalledTimes(2);
+  });
+
   it('active 計畫先預覽再移除；失敗保留確認視窗並可重試', async () => {
     const exam = { plan: {}, subjects: [{ subject_list_id: 1, subject_name: '數學' }],
       material: [mat({ content_item_id: 11, subject_list_id: 1, book_id: 5, book_title: '課本', chapter_title: '第一章', title: '第一課' })], manual_scope: [] };
