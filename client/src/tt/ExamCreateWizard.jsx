@@ -33,7 +33,7 @@ const loadDraft = () => { try { return JSON.parse(localStorage.getItem(DRAFT_KEY
 const saveDraft = d => { try { localStorage.setItem(DRAFT_KEY, JSON.stringify(d)); } catch { /* private mode */ } };
 const clearDraft = () => { try { localStorage.removeItem(DRAFT_KEY); } catch { /* noop */ } };
 
-export default function ExamCreateWizard({ lists = [], onDone, onCancel }) {
+export default function ExamCreateWizard({ lists = [], onDone, onCancel, onManageSubjects }) {
   const restored = loadDraft();
   const [step, setStep] = useState(restored?.step ?? 0);
   const [name, setName] = useState(restored?.name ?? '');
@@ -100,6 +100,7 @@ export default function ExamCreateWizard({ lists = [], onDone, onCancel }) {
   // 草稿可能跨裝置／跨數天保留；期間若科目已被刪除，不能把失效 id 送去預覽或建立。
   // 保留該列讓使用者自己移除，不暗中刪掉已選範圍。
   const missingSubjects = subjects.filter(s => !lists.some(l => Number(l.id) === Number(s.listId)));
+  const availableSubjects = lists.filter(l => !subjects.some(s => Number(s.listId) === Number(l.id)));
   const invalidSubjectDates = subjects.filter(s => s.examDate && (
     (start && s.examDate < start) || (end && s.examDate > end)
   ));
@@ -227,11 +228,22 @@ export default function ExamCreateWizard({ lists = [], onDone, onCancel }) {
                   </div>
                 </div>
               ))}
-              <select aria-label="加入科目" value="" style={{ marginTop: 8, width: '100%' }}
+              <select aria-label="加入科目" value="" disabled={!availableSubjects.length} style={{ marginTop: 8, width: '100%' }}
                 onChange={e => { if (e.target.value) addSubject(e.target.value); }}>
                 <option value="">＋ 加入科目…</option>
-                {lists.filter(l => !subjects.some(s => Number(s.listId) === Number(l.id))).map(l => <option key={l.id} value={l.id}>{l.name}</option>)}
+                {availableSubjects.map(l => <option key={l.id} value={l.id}>{l.name}</option>)}
               </select>
+              {!lists.length ? (
+                <SurfaceCard tone="warning" style={{ marginTop: 8 }}>
+                  <b>還沒有可以加入的科目</b>
+                  <div className="ui-meta" style={{ marginTop: 4 }}>
+                    請先建立至少一個科目。這份段考草稿會保留，回到「計畫」再次建立段考即可接續。
+                  </div>
+                  {onManageSubjects && <Button size="sm" variant="secondary" style={{ marginTop: 8 }} onClick={onManageSubjects}>到設定新增科目</Button>}
+                </SurfaceCard>
+              ) : !availableSubjects.length && subjects.length ? (
+                <div className="ui-meta" role="status" style={{ marginTop: 4 }}>所有現有科目都已加入這次段考。</div>
+              ) : null}
               <div className="ui-meta" style={{ marginTop: 4 }}>未指定單科考試日 → 沿用整個段考最後一天。</div>
             </div>
             <Button variant="primary" block disabled={!step0ok} onClick={() => setStep(1)}>下一步：加入各科範圍</Button>

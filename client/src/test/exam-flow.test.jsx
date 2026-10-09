@@ -27,6 +27,19 @@ afterEach(() => { vi.restoreAllMocks(); cleanup(); });
 const click = el => act(async () => { el.click(); });
 
 describe('ExamCreateWizard', () => {
+  it('沒有任何科目時說明下一步並可前往既有科目設定，草稿不會被清除', async () => {
+    const onManageSubjects = vi.fn();
+    render(<ExamCreateWizard lists={[]} onDone={() => {}} onCancel={() => {}} onManageSubjects={onManageSubjects} />);
+
+    expect(screen.getByText('還沒有可以加入的科目')).toBeTruthy();
+    expect(screen.getByText(/這份段考草稿會保留/)).toBeTruthy();
+    expect(screen.getByLabelText('加入科目')).toBeDisabled();
+    expect(screen.getByRole('button', { name: '下一步：加入各科範圍' })).toBeDisabled();
+    await click(screen.getByRole('button', { name: '到設定新增科目' }));
+    expect(onManageSubjects).toHaveBeenCalledTimes(1);
+    expect(localStorage.getItem('examWizardDraft:v1')).not.toBeNull();
+  });
+
   it('三步走完（手動範圍）→ 確認才 POST /exam-plans；建立前不建任何 Plan', async () => {
     const onDone = vi.fn();
     render(<ExamCreateWizard lists={LISTS} onDone={onDone} onCancel={() => {}} />);
