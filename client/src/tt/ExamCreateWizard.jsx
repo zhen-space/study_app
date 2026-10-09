@@ -94,7 +94,17 @@ export default function ExamCreateWizard({ lists = [], onDone, onCancel, onManag
 
   // 離開不是放棄：手機上可能只是暫時切去查考試日期或教材，草稿要留著讓下次接續。
   // 只有 atomic 建立成功後才清掉草稿，避免誤觸返回／右上關閉就整份消失。
-  const exitForNow = () => { onCancel?.(); };
+  const exitForNow = () => {
+    // 送出已進入 server-authoritative atomic transaction 後不能讓使用者離開再開一份草稿。
+    // React state 尚未重繪的同一個 event turn 也要靠 ref 擋住，避免產生兩個段考計畫。
+    if (creatingRef.current) return;
+    onCancel?.();
+  };
+  const goBack = () => {
+    if (creatingRef.current) return;
+    if (step === 0) exitForNow();
+    else setStep(step - 1);
+  };
 
   // ---- 驗證每一步 ----
   // 草稿可能跨裝置／跨數天保留；期間若科目已被刪除，不能把失效 id 送去預覽或建立。
@@ -195,8 +205,8 @@ export default function ExamCreateWizard({ lists = [], onDone, onCancel, onManag
   return (
     <div className="main">
       <PageHeader title="建立段考"
-        back={<button className="page-back" onClick={step === 0 ? exitForNow : () => setStep(step - 1)}>← {step === 0 ? '稍後繼續' : '上一步'}</button>}
-        actions={<IconButton label="稍後繼續" onClick={exitForNow}><Icon name="x" size={18} /></IconButton>} />
+        back={<button className="page-back" disabled={creating} onClick={goBack}>← {step === 0 ? '稍後繼續' : '上一步'}</button>}
+        actions={<IconButton label="稍後繼續" disabled={creating} onClick={exitForNow}><Icon name="x" size={18} /></IconButton>} />
       <div className="main-body" style={{ maxWidth: 560 }}>
         <div className="steps" style={{ marginTop: 4 }}>{STEPS.map((_, i) => <div key={i} className={'step-dot' + (i <= step ? ' on' : '')} />)}</div>
         <div className="ui-meta" style={{ marginBottom: 10 }}>步驟 {step + 1}／3：{STEPS[step]}</div>

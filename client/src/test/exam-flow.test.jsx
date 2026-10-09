@@ -131,13 +131,20 @@ describe('ExamCreateWizard', () => {
       return Promise.resolve({});
     });
     const onDone = vi.fn();
-    render(<ExamCreateWizard lists={LISTS} onDone={onDone} onCancel={() => {}} />);
+    const onCancel = vi.fn();
+    render(<ExamCreateWizard lists={LISTS} onDone={onDone} onCancel={onCancel} />);
     const confirm = await screen.findByRole('button', { name: '確認，建立段考計畫' });
     await waitFor(() => expect(confirm).toBeEnabled());
 
     await act(async () => { confirm.click(); confirm.click(); });
     expect(posted('/exam-plans')).toHaveLength(1);
     expect(screen.getByRole('button', { name: '正在建立段考計畫…' })).toBeDisabled();
+    // atomic 建立尚未回來時，返回／關閉都必須同步鎖住；否則可重開同一份草稿再送一次。
+    expect(screen.getByRole('button', { name: /上一步/ })).toBeDisabled();
+    expect(screen.getByRole('button', { name: '稍後繼續' })).toBeDisabled();
+    fireEvent.click(screen.getByRole('button', { name: '稍後繼續' }));
+    expect(onCancel).not.toHaveBeenCalled();
+    expect(posted('/exam-plans')).toHaveLength(1);
 
     await act(async () => finishCreate({ plan: { id: 99 } }));
     expect(onDone).toHaveBeenCalledTimes(1);
