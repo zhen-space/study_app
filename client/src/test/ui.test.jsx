@@ -262,7 +262,7 @@ describe('UI-R2：Plans 與 Plan Detail', () => {
   });
 
   it('15. Plan Detail：首屏用白話講範圍（不先顯示抽象儀表板），管理收在右上', async () => {
-    await mountShell();
+    await mountShell({ '/plans/12/exam': { plan: { target_date: PLAN.target_date }, subjects: [], material: [], manual_scope: [] } });
     await goPlans();
     await click(cardByName('第二次段考'));
     expect(within(document.querySelector('.main')).getByRole('heading', { name: '第二次段考' })).toBeInTheDocument();
