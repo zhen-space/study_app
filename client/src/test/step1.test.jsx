@@ -739,6 +739,26 @@ describe('Plan Detail', () => {
     expect(screen.getByLabelText('科目')).toHaveValue('');
     expect(screen.queryByRole('option', { name: '數學' })).toBeNull();
   });
+
+  it('所有科目都已加入段考時停用入口，直接說明不用再開空白表單', async () => {
+    setApi({
+      '/plans': [PLAN], '/tasks': TASKS,
+      '/plans/70/exam': {
+        plan: PLAN,
+        subjects: fx.lists.map(l => ({ subject_list_id: l.id, subject_name: l.name, exam_date: fx.TODAY })),
+        material: [], manual_scope: [],
+      },
+      '/schedule/timeline/70': { items: [], deadlines: [], gaps: [], unscheduled: [], segments: [] },
+    });
+    render(<PlanDetailView planKey="plan:70" tasks={TASKS} lists={fx.lists} apiPlans={[PLAN]}
+      reload={() => {}} onBack={() => {}} goWizard={() => {}} adjustPlan={() => {}} />);
+
+    await waitFor(() => expect(screen.getByText('所有科目都已加入這次段考。')).toBeTruthy());
+    const addSubject = screen.getByRole('button', { name: '加入科目' });
+    expect(addSubject).toBeDisabled();
+    fireEvent.click(addSubject);
+    expect(screen.queryByLabelText('科目')).toBeNull();
+  });
 });
 
 /* ============ 7. 互動不能等 server round-trip ============ */
