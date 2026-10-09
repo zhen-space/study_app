@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState, useCallback, useRef } from 'react';
 import { api } from '../api';
-import { listShelf, getBookTree, flattenItems } from './material';
+import { listShelf, getBookTree, flattenItems, updateContentItem } from './material';
 import { today } from './helpers';
 import { md } from './plans';
 import AddMaterialFlow from './AddMaterialFlow';
@@ -19,12 +19,12 @@ import Icon from './Icons';
 const DRAFT_KEY = 'examWizardDraft:v1';
 const STEPS = ['這次考試', '每科考什麼', '希望怎麼安排'];
 const LEVELS = [
-  ['progress', '只記錄考試範圍與截止日', '不產生每日待辦，也不會排到行事曆；之後仍可再安排'],
+  ['progress', '設定幾號到幾號要讀完什麼', '依科目建立一段完成範圍；不產生每日待辦，也不會排到行事曆'],
   ['daily', '幫我排出每天要完成什麼', '自動分配到每天並出現在每日待辦，但不指定幾點'],
   ['timed', '幫我排到每天的具體時間', '依可用時間與既有行程排出起訖時間，顯示在行事曆'],
 ];
 const LEVEL_OUTCOME = {
-  progress: '只保存考試範圍與截止日，不產生每日待辦或行事曆時段。',
+  progress: '依科目建立「開始準備日到考試日」的完成範圍，不產生每日待辦或行事曆時段。',
   daily: '建立每天要完成的待辦，但不指定幾點開始。',
   timed: '建立有起訖時間的每日安排，並顯示在行事曆。',
 };
@@ -46,6 +46,7 @@ export default function ExamCreateWizard({ lists = [], onDone, onCancel, onManag
   const [err, setErr] = useState('');
   const [previewing, setPreviewing] = useState(false);
   const [creating, setCreating] = useState(false);
+  const [savingEstimate, setSavingEstimate] = useState(0);
   const [picking, setPicking] = useState(null);   // { listId } → 開教材選取
   const [preview, setPreview] = useState(null);    // 每日/時段的排程預覽 blocks
   const previewRequest = useRef(0);
@@ -83,6 +84,19 @@ export default function ExamCreateWizard({ lists = [], onDone, onCancel, onManag
     const items = { ...cur.items }; delete items[cid];
     return { ...sc, [listId]: { ...cur, items } };
   });
+  const setItemMinutes = (listId, cid, value) => setScope(sc => {
+    const cur = sc[listId] || { items: {}, manual: [] };
+    return { ...sc, [listId]: { ...cur, items: {
+      ...cur.items, [cid]: { ...cur.items[cid], minutes: value === '' ? null : Number(value) },
+    } } };
+  });
+  const saveItemMinutes = async (listId, cid) => {
+    const minutes = subjScope(listId).items[cid]?.minutes ?? null;
+    setSavingEstimate(n => n + 1); setErr('');
+    try { await updateContentItem(cid, { estimated_minutes: minutes }); }
+    catch (e) { setErr(e.message || '預估時間儲存失敗，請再試一次'); }
+    finally { setSavingEstimate(n => Math.max(0, n - 1)); }
+  };
   const addManual = (listId, label, est) => setScope(sc => {
     const cur = sc[listId] || { items: {}, manual: [] };
     return { ...sc, [listId]: { ...cur, manual: [...cur.manual, { label, est: est || null }] } };
@@ -172,7 +186,7 @@ export default function ExamCreateWizard({ lists = [], onDone, onCancel, onManag
   // 這是 P0-1 的前端防線；伺服器仍會再 fail-closed 一次（單一權威來源）。
   const scheduleBlocked = !!missingSubjects.length || !scheduleGate.ok || previewing || !preview || preview.failed || !preview.preview_token
     || (level !== 'progress' && preview.blocks.length === 0);
-  const canConfirm = !creating && !scheduleBlocked;
+  const canConfirm = !creating && !savingEstimate && !scheduleBlocked;
 
   // ---- 確認建立（atomic，server-authoritative）----
   const confirm = async () => {
@@ -283,8 +297,15 @@ export default function ExamCreateWizard({ lists = [], onDone, onCancel, onManag
                     <div key={k} style={{ marginTop: 6 }}>
                       <div className="ui-meta">{k.replace(/｜$/, '')}</div>
                       {arr.map(([cid, it]) => (
-                        <div key={cid} className="row" style={{ gap: 6, marginLeft: 8, alignItems: 'baseline' }}>
-                          <span>{it.title}</span>
+                        <div key={cid} className="row" style={{ gap: 6, marginLeft: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+                          <span style={{ flex: 1, minWidth: 120 }}>{it.title}</span>
+                          <label className="row ui-meta" style={{ gap: 4 }}>
+                            預估
+                            <input aria-label={`${it.title}預估分鐘`} type="number" min="1" inputMode="numeric"
+                              value={it.minutes ?? ''} placeholder="分鐘" style={{ width: 76 }}
+                              onChange={e => setItemMinutes(s.listId, cid, e.target.value)}
+                              onBlur={() => saveItemMinutes(s.listId, cid)} />
+                          </label>
                           <IconButton label={`移除 ${it.title}`} style={{ marginLeft: 'auto' }} onClick={() => removeItem(s.listId, cid)}><Icon name="x" size={14} /></IconButton>
                         </div>
                       ))}
@@ -304,7 +325,8 @@ export default function ExamCreateWizard({ lists = [], onDone, onCancel, onManag
                 </SurfaceCard>
               );
             })}
-            <Button variant="primary" block disabled={!totalScope || missingScopeSubjects.length > 0} onClick={() => setStep(2)}>下一步：選擇怎麼安排</Button>
+            {savingEstimate > 0 && <div className="ui-meta" role="status">正在儲存預估時間…</div>}
+            <Button variant="primary" block disabled={!totalScope || missingScopeSubjects.length > 0 || savingEstimate > 0} onClick={() => setStep(2)}>下一步：選擇怎麼安排</Button>
             {missingScopeSubjects.length > 0 && <div className="error" role="alert" style={{ textAlign: 'center' }}>
               尚未加入範圍：{missingScopeSubjects.map(s => nameOf(s.listId)).join('、')}
             </div>}
@@ -362,7 +384,7 @@ export default function ExamCreateWizard({ lists = [], onDone, onCancel, onManag
                   </div>
                 ) : !scheduleGate.ok ? (
                   <div className="ui-meta" style={{ marginTop: 4 }}>
-                    這些範圍還沒有預估時間，無法排入每天安排：{scheduleGate.missing.slice(0, 6).join('、')}{scheduleGate.missing.length > 6 ? '…' : ''}
+                    這些範圍還沒有預估時間，無法排入每天安排：{scheduleGate.missing.slice(0, 6).join('、')}{scheduleGate.missing.length > 6 ? '…' : ''}。請回上一步，直接在範圍旁填入分鐘。
                   </div>
                 ) : preview?.failed ? (
                   <div className="ui-meta" style={{ marginTop: 4 }}>預覽失敗：{preview.error}</div>
@@ -378,7 +400,7 @@ export default function ExamCreateWizard({ lists = [], onDone, onCancel, onManag
                     <>
                       <Button size="sm" variant="secondary" onClick={() => setStep(1)}>回上一步調整範圍／日期</Button>
                       {(preview?.failed || !preview) && <Button size="sm" variant="primary" onClick={runPreview}>重新預覽</Button>}
-                      {level !== 'progress' && <Button size="sm" variant="ghost" onClick={() => setLevel('progress')}>改用「只記錄考試範圍與截止日」</Button>}
+                      {level !== 'progress' && <Button size="sm" variant="ghost" onClick={() => setLevel('progress')}>改用「設定完成範圍」</Button>}
                     </>
                   )}
                 </div>

@@ -506,7 +506,7 @@ describe('教材的科目（Subject）', () => {
     await click(screen.getByRole('button', { name: '新增' }));
     await flush();
 
-    expect(screen.getByText('名稱、教材類型與出版社都相同。是否合併？')).toBeTruthy();
+    expect(screen.getByText('名稱、教材類型、出版社與科目都相同。是否使用現有教材？')).toBeTruthy();
     expect(calls.some(([p, o]) => p === '/material/books' && o?.method === 'POST')).toBe(false);
     expect(calls.some(([p]) => p.includes('title=%E7%AC%AC%E4%B8%89%E5%86%8A')
       && p.includes('book_type=%E8%AA%B2%E6%9C%AC') && p.includes('publisher=%E9%BE%8D%E9%A8%B0'))).toBe(true);
