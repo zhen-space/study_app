@@ -314,8 +314,19 @@ export default function MaterialLibraryView({ goPlans = null, lists = [] }) {
         )}
         {editing && tree && (
           <MaterialBookEditor book={book} tree={tree} lists={lists}
-            onChanged={async () => { setTree(await getBookTree(openBook)); await load(); }}
-            onDone={() => setEditing(false)} />
+            onChanged={(_saved, next) => {
+              setTree(next.tree);
+              setBooks(current => current.map(item => Number(item.id) === Number(openBook)
+                ? { ...item, ...next.book }
+                : item));
+            }}
+            onDone={next => {
+              // 已成功的每一筆都在編輯器內即時合併；先離開編輯畫面，不用等整個
+              // 教材庫、分類與最近刪除重新下載。權威資料在背景補同步。
+              setTree(next.tree);
+              setEditing(false);
+              load().catch(e => setErr(e.message || '教材已儲存，但背景同步失敗'));
+            }} />
         )}
         {!editing && tree && (
           <div className="ml-bookprog">

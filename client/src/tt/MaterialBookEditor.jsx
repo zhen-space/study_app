@@ -52,11 +52,72 @@ function NodeRow({ node, label, value, busy, onChange, onBlur, onDelete }) {
   );
 }
 
+// 寫入 API 已經會回傳正式資料，不必每改一個字就重新下載整本教材與整個書櫃。
+// 這些小函式只把「剛剛成功的那一筆」合併回目前畫面；完成編輯後，外層仍會在
+// 背景重讀一次 server-authoritative 資料，但不再讓使用者卡在載入畫面。
+const mapNodes = (nodes, fn) => (nodes || []).map(node => {
+  const changed = fn(node);
+  if (changed !== node) return changed;
+  const children = mapNodes(node.children, fn);
+  return children.some((child, i) => child !== (node.children || [])[i])
+    ? { ...node, children }
+    : node;
+});
+
+const patchNode = (tree, saved) => ({
+  ...tree,
+  nodes: mapNodes(tree?.nodes, node => node.id === saved.id ? { ...node, ...saved } : node),
+});
+
+const patchItem = (tree, saved) => ({
+  ...tree,
+  nodes: mapNodes(tree?.nodes, node => {
+    const items = node.content_items || [];
+    return items.some(item => item.id === saved.id)
+      ? { ...node, content_items: items.map(item => item.id === saved.id ? { ...item, ...saved } : item) }
+      : node;
+  }),
+});
+
+const addNode = (tree, saved) => saved.parent_id == null
+  ? { ...tree, nodes: [...(tree?.nodes || []), { ...saved, content_items: [], children: [] }] }
+  : {
+      ...tree,
+      nodes: mapNodes(tree?.nodes, node => node.id === saved.parent_id
+        ? { ...node, children: [...(node.children || []), { ...saved, content_items: [], children: [] }] }
+        : node),
+    };
+
+const addItemToTree = (tree, saved) => ({
+  ...tree,
+  nodes: mapNodes(tree?.nodes, node => node.id === saved.node_id
+    ? { ...node, content_items: [...(node.content_items || []), saved] }
+    : node),
+});
+
+const removeNode = (tree, id) => {
+  const prune = nodes => (nodes || [])
+    .filter(node => node.id !== id)
+    .map(node => ({ ...node, children: prune(node.children) }));
+  return { ...tree, nodes: prune(tree?.nodes) };
+};
+
+const removeItem = (tree, id) => ({
+  ...tree,
+  nodes: mapNodes(tree?.nodes, node => ({
+    ...node,
+    content_items: (node.content_items || []).filter(item => item.id !== id),
+  })),
+});
+
 export default function MaterialBookEditor({ book, tree, lists = [], onChanged, onDone }) {
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState('');
   const [refreshStale, setRefreshStale] = useState(false);
   const mutationBusy = useRef(false);
+  const bookRef = useRef(book);
+  const treeRef = useRef(tree);
+  const [, renderLocal] = useState(0);
   // 打字當下不送出：每敲一個字打一次 API 會讓游標跳掉，也會塞爆網路。
   // 只把改過的值先放在這裡，離開欄位（blur）才存。
   const [draft, setDraft] = useState({});
@@ -65,7 +126,14 @@ export default function MaterialBookEditor({ book, tree, lists = [], onChanged, 
   const valueOf = (type, id, fallback) => draft[key(type, id)] ?? fallback;
   const setLocal = (type, id, v) => setDraft(d => ({ ...d, [key(type, id)]: v }));
 
-  const run = async (fn) => {
+  const snapshot = () => ({ book: bookRef.current, tree: treeRef.current });
+  const applyLocal = (saved, reducer) => {
+    if (reducer) treeRef.current = reducer(treeRef.current, saved);
+    renderLocal(n => n + 1);
+    return snapshot();
+  };
+
+  const run = async (fn, reducer = null) => {
     if (mutationBusy.current || refreshStale) return;
     mutationBusy.current = true;
     setBusy(true); setErr('');
@@ -84,14 +152,19 @@ export default function MaterialBookEditor({ book, tree, lists = [], onChanged, 
       setBusy(false);
       return;
     }
+    const next = applyLocal(saved, reducer);
     try {
-      await onChanged?.(saved);
+      const background = onChanged?.(saved, next);
+      // 舊呼叫端若仍回 Promise，也只把它當背景同步；寫入已成功，不能再讓按鈕
+      // 因為第二輪整頁載入而維持 disabled。
+      if (background?.catch) background.catch(() => {
+        setRefreshStale(true);
+        setErr('變更已儲存。請完成編輯後重新開啟教材，以載入最新內容。');
+      });
     } catch {
-      // createNode/createContentItem 已成功，refresh 失敗不能再顯示成「建立失敗」；
-      // 否則同一顆按鈕重試會再 POST 一筆，製造重複範圍。鎖住這份 stale tree，
-      // 讓使用者離開後重新載入 server-authoritative 結構。
+      // 外層只做本地同步，不應阻擋已成功的寫入；真正的權威重讀在離開後背景進行。
       setRefreshStale(true);
-      setErr('變更已儲存，但畫面暫時無法更新。請完成編輯後重新開啟教材。');
+      setErr('變更已儲存。請完成編輯後重新開啟教材，以載入最新內容。');
     } finally {
       mutationBusy.current = false;
       setBusy(false);
@@ -103,9 +176,9 @@ export default function MaterialBookEditor({ book, tree, lists = [], onChanged, 
   const saveNode = (node, title) => {
     const t = String(title).trim();
     if (!t || t === node.title) return;
-    return run(() => updateNode(node.id, { title: t }));
+    return run(() => updateNode(node.id, { title: t }), patchNode);
   };
-  const saveItem = (item, patch) => run(() => updateContentItem(item.id, patch));
+  const saveItem = (item, patch) => run(() => updateContentItem(item.id, patch), patchItem);
   const renameItem = (item, title) => {
     const t = String(title).trim();
     if (!t || t === item.title) return;
@@ -117,7 +190,7 @@ export default function MaterialBookEditor({ book, tree, lists = [], onChanged, 
     busy: locked,
     onRename: v => setLocal('i', item.id, v),
     onKind: v => saveItem(item, { kind: v }),
-    onDelete: () => run(() => deleteContentItem(item.id)),
+    onDelete: () => run(() => deleteContentItem(item.id), current => removeItem(current, item.id)),
   });
   // blur 才送出：打字中不打 API
   const itemBlur = item => () => renameItem(item, valueOf('i', item.id, item.title));
@@ -126,17 +199,17 @@ export default function MaterialBookEditor({ book, tree, lists = [], onChanged, 
   // 完全不受影響，新增的預設未完成。
   const addChild = (chapter, kind) => run(() => createNode({
     book_id: book.id, parent_id: chapter.id, kind, title: kind === 'section' ? '新的節' : '新的主題',
-  }));
+  }), addNode);
   const addItem = (node, kind) => run(() => createContentItem({
     node_id: node.id, kind, title: ITEM_LABEL[kind],
-  }));
+  }), addItemToTree);
 
   const nodeProps = (node, label) => ({
     node, label, busy: locked,
     value: valueOf('n', node.id, node.title),
     onChange: v => setLocal('n', node.id, v),
     onBlur: () => saveNode(node, valueOf('n', node.id, node.title)),
-    onDelete: () => run(() => deleteNode(node.id)),
+    onDelete: () => run(() => deleteNode(node.id), current => removeNode(current, node.id)),
   });
 
   return (
@@ -150,43 +223,52 @@ export default function MaterialBookEditor({ book, tree, lists = [], onChanged, 
       <div className="me-book">
         <label className="md-field">
           <span>教材名稱</span>
-          <input value={valueOf('b', 'title', book?.title ?? '')} disabled={locked}
+          <input value={valueOf('b', 'title', bookRef.current?.title ?? '')} disabled={locked}
             onChange={e => setLocal('b', 'title', e.target.value)}
             onBlur={e => {
               const t = e.target.value.trim();
-              if (t && t !== book.title) run(() => updateBook(book.id, { title: t }));
+              if (t && t !== bookRef.current.title) run(() => updateBook(book.id, { title: t }), (current, saved) => {
+                bookRef.current = saved;
+                return { ...current, book: saved };
+              });
             }} />
         </label>
         <label className="md-field">
           <span>科目</span>
-          <select value={book?.subject_list_id ?? ''} disabled={locked}
+          <select value={bookRef.current?.subject_list_id ?? ''} disabled={locked}
             onChange={e => run(() => updateBook(book.id, {
               subject_list_id: e.target.value === '' ? null : Number(e.target.value),
-            }))}>
+            }), (current, saved) => { bookRef.current = saved; return { ...current, book: saved }; })}>
             <option value="">未指定</option>
             {lists.map(l => <option key={l.id} value={l.id}>{l.name}</option>)}
           </select>
         </label>
         <label className="md-field">
           <span>出版社</span>
-          <input value={valueOf('b', 'pub', book?.publisher ?? '')} disabled={locked}
+          <input value={valueOf('b', 'pub', bookRef.current?.publisher ?? '')} disabled={locked}
             onChange={e => setLocal('b', 'pub', e.target.value)}
             onBlur={e => {
               const v = e.target.value.trim();
-              if (v !== (book.publisher || '')) run(() => updateBook(book.id, { publisher: v }));
+              if (v !== (bookRef.current.publisher || '')) run(() => updateBook(book.id, { publisher: v }), (current, saved) => {
+                bookRef.current = saved;
+                return { ...current, book: saved };
+              });
             }} />
         </label>
         <label className="md-field">
           <span>教材類型</span>
-          <select value={book?.book_type ?? ''} disabled={locked}
-            onChange={e => run(() => updateBook(book.id, { book_type: e.target.value }))}>
+          <select value={bookRef.current?.book_type ?? ''} disabled={locked}
+            onChange={e => run(() => updateBook(book.id, { book_type: e.target.value }), (current, saved) => {
+              bookRef.current = saved;
+              return { ...current, book: saved };
+            })}>
             <option value="">未分類</option>
             {['課本', '講義', '測驗卷', '參考書', '自訂'].map(t => <option key={t} value={t}>{t}</option>)}
           </select>
         </label>
       </div>
 
-      {(tree?.nodes || []).map(ch => {
+      {(treeRef.current?.nodes || []).map(ch => {
         const own = ch.content_items || [];
         const chapterLevel = own.filter(i => CHAPTER_LEVEL_KINDS.includes(i.kind));
         const reading = own.filter(i => !CHAPTER_LEVEL_KINDS.includes(i.kind));
@@ -236,7 +318,9 @@ export default function MaterialBookEditor({ book, tree, lists = [], onChanged, 
       })}
 
       <div className="me-foot">
-        <Button variant="primary" onClick={onDone} disabled={busy}>完成編輯</Button>
+        <Button variant="primary" onClick={() => onDone?.(snapshot())} disabled={busy}>
+          {busy ? '儲存中…' : '完成編輯'}
+        </Button>
       </div>
     </div>
   );

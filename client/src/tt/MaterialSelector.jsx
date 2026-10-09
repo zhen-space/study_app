@@ -457,8 +457,18 @@ export default function MaterialSelector({
     return (
       <div className="mt-selector">
         <MaterialBookEditor book={tree.book} tree={tree} lists={lists}
-          onChanged={async () => { await loadTree(openBook).catch(() => {}); await loadShelf().catch(() => {}); }}
-          onDone={() => setView('book')} />
+          onChanged={(_saved, next) => {
+            setRawTree(next.tree);
+            setBooks(current => current.map(item => Number(item.material_book_id) === Number(openBook)
+              ? { ...item, ...next.book, material_book_id: item.material_book_id }
+              : item));
+          }}
+          onDone={next => {
+            setRawTree(next.tree);
+            setView('book');
+            // 先讓學生繼續選範圍；書櫃摘要在背景同步，不顯示阻塞式載入。
+            loadShelf().catch(e => setErr(e.message || '教材已儲存，但背景同步失敗'));
+          }} />
       </div>
     );
   }
