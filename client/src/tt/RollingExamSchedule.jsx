@@ -146,6 +146,12 @@ export default function RollingExamSchedule({
         </div>}
         {!committed && error && <div className="ui-card ui-card--warning" role="alert" style={{ marginBottom: 'var(--sp-3)' }}>{error}</div>}
         {!committed && loading && <div className="ui-meta">預覽中…</div>}
+        {!committed && !loading && !preview && error && (
+          <div className="row" style={{ gap: 'var(--sp-2)' }}>
+            <Button variant="tertiary" onClick={requestClose}>先關閉</Button>
+            <Button variant="primary" style={{ marginLeft: 'auto' }} onClick={() => doPreview(null)}>重新預覽</Button>
+          </div>
+        )}
 
         {!committed && preview && !loading && (
           <>

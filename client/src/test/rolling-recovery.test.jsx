@@ -85,4 +85,13 @@ describe('RollingExamSchedule 套用恢復', () => {
     expect(onClose).not.toHaveBeenCalled();
     expect(api.mock.calls.filter(c => c[0] === '/schedule/rolling/apply')).toHaveLength(1);
   });
+
+  it('初次預覽遇到暫時性 API 失敗，可在原畫面直接重試', async () => {
+    api.mockRejectedValueOnce(new Error('網路暫時中斷')).mockResolvedValueOnce(preview());
+    render(<RollingExamSchedule planId={7} onClose={() => {}} onApplied={() => {}} />);
+    expect(await screen.findByRole('alert')).toHaveTextContent('網路暫時中斷');
+    fireEvent.click(screen.getByRole('button', { name: '重新預覽' }));
+    await waitFor(() => expect(screen.getByRole('button', { name: '套用新版安排' })).toBeEnabled());
+    expect(api.mock.calls.filter(c => c[0] === '/schedule/rolling/preview')).toHaveLength(2);
+  });
 });
