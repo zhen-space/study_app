@@ -162,6 +162,17 @@ describe('RollingExamSchedule 流程', () => {
     expect(previews).toHaveLength(2); // mount + auto re-preview
   });
 
+  it('套用遇到 stale 且自動重新預覽失敗時，不誤稱已完成預覽', async () => {
+    api.mockResolvedValueOnce(feasible());
+    const stale = new Error('stale'); stale.payload = { code: 'STALE_SCHEDULE_PREVIEW' };
+    api.mockRejectedValueOnce(stale).mockRejectedValueOnce(new Error('網路暫時中斷'));
+    render(<RollingExamSchedule planId={7} onClose={() => {}} onApplied={() => {}} />);
+    fireEvent.click(await screen.findByRole('button', { name: '套用新版安排' }));
+    expect(await screen.findByRole('alert')).toHaveTextContent('重新預覽失敗');
+    expect(screen.getByRole('button', { name: '重新預覽' })).toBeEnabled();
+    expect(screen.queryByText(/已為你重新預覽/)).not.toBeInTheDocument();
+  });
+
   it('連續變更段考內容時，較慢的舊預覽不能覆蓋最新安排', async () => {
     let resolveOld;
     const oldPreview = new Promise(resolve => { resolveOld = resolve; });

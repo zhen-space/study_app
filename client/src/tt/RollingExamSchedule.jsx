@@ -52,11 +52,16 @@ export default function RollingExamSchedule({
       const p = await api('/schedule/rolling/preview', { method: 'POST', body });
       // 科目／日期或凍結選項連續變更時，只接受最後一次預覽；較慢的舊回應
       // 不能覆蓋使用者最新選擇，否則最後套用的會是畫面上看不到的舊安排。
-      if (requestId === previewRequest.current) setPreview({ ...p, plan_id: planId });
+      if (requestId === previewRequest.current) {
+        setPreview({ ...p, plan_id: planId });
+        return true;
+      }
+      return false;
     } catch (e) {
       if (requestId === previewRequest.current) {
         setError(e.message || '預覽失敗'); setPreview(null);
       }
+      return false;
     } finally {
       if (requestId === previewRequest.current) setLoading(false);
     }
@@ -86,8 +91,10 @@ export default function RollingExamSchedule({
       // §12 STALE_SCHEDULE_PREVIEW：排程在預覽後被別的變更取代 → 自動重新預覽。
       // 訊息在 doPreview 之後才設，因為 doPreview 一開始會清掉 error。
       if (e.payload?.code === 'STALE_SCHEDULE_PREVIEW' || e.code === 'STALE_SCHEDULE_PREVIEW') {
-        await doPreview(null);
-        setError('排程已被其他變更取代，已為你重新預覽，請再確認一次。');
+        const refreshed = await doPreview(null);
+        setError(refreshed
+          ? '排程已被其他變更取代，已為你重新預覽，請再確認一次。'
+          : '排程已被其他變更取代，但重新預覽失敗。請按「重新預覽」再試一次。');
       } else {
         setError(e.message || '套用失敗');
       }
