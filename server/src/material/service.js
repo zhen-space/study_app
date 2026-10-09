@@ -63,6 +63,7 @@ const mustPlan = async (userId, id) => {
 // 教材名稱正規化：分類／同名判斷用。去頭尾空白、全形空白折成半形、大小寫拉平。
 // 只用於「疑似同名」偵測，不改真正存下來的書名。
 export const normalizeBookName = s => String(s || '').trim().replace(/\s+/g, ' ').toLowerCase();
+const normalizeBookMetadata = s => String(s || '').normalize('NFKC').trim().replace(/\s+/g, ' ').toLowerCase();
 
 // 教材庫清單 + 分類資訊。filters（皆可選）：
 //   subject_list_id：只回這個科目的書
@@ -136,19 +137,20 @@ export async function listBooks(userId, { includeArchived = false, filters = {} 
   return out;
 }
 
-// 疑似同名的既有教材（同名 + 同科目才算）。用於匯入／新增前的三選一：
+// 疑似同一本的既有教材（名稱 + 教材類型 + 出版社皆相同）。用於匯入／新增前的三選一：
 // 合併到現有／另存新教材／取消——在使用者選擇之前，呼叫端不得自動新增或覆寫。
-// subjectListId 為 null 時只比名字（未指定科目的書彼此比較）。
-export async function sameNameBooks(userId, title, subjectListId = null) {
+// 科目不是書的版本身分：同一本教材若曾誤放到另一科，仍要讓使用者看見並自行決定是否合併。
+export async function sameNameBooks(userId, title, bookType = '', publisher = '') {
   const norm = normalizeBookName(title);
   if (!norm) return [];
+  const normalizedType = normalizeBookMetadata(bookType);
+  const normalizedPublisher = normalizeBookMetadata(publisher);
   const rows = await q.all(
     'SELECT * FROM material_books WHERE user_id=? AND COALESCE(archived,0)=0 AND deleted_at IS NULL', [userId]);
   return rows.filter(b =>
     normalizeBookName(b.title) === norm
-    && (subjectListId == null || subjectListId === ''
-      ? (b.subject_list_id == null)
-      : Number(b.subject_list_id) === Number(subjectListId)));
+    && normalizeBookMetadata(b.book_type) === normalizedType
+    && normalizeBookMetadata(b.publisher) === normalizedPublisher);
 }
 
 export async function createBook(userId, body = {}) {
@@ -159,8 +161,9 @@ export async function createBook(userId, body = {}) {
     if (!l) throw new MaterialInputError('找不到這個科目');
   }
   const r = await q.run(
-    'INSERT INTO material_books (user_id,title,publisher,subject_list_id,source) VALUES (?,?,?,?,?)',
-    [userId, title, body.publisher || '', body.subject_list_id ?? null, body.source || 'manual']);
+    'INSERT INTO material_books (user_id,title,publisher,subject_list_id,book_type,source) VALUES (?,?,?,?,?,?)',
+    [userId, title, body.publisher || '', body.subject_list_id ?? null,
+      String(body.book_type || '').trim(), body.source || 'manual']);
   return getBook(userId, r.lastInsertRowid);
 }
 
@@ -839,10 +842,10 @@ export async function writeDraftTree(userId, draft, { sources = [], verifyInTx =
   const bookId = await q.tx(async tx => {
     if (verifyInTx) await verifyInTx(tx);
     const b = await tx.run(
-      `INSERT INTO material_books (user_id,title,publisher,subject_list_id,source)
-       VALUES (?,?,?,?,?)`,
+      `INSERT INTO material_books (user_id,title,publisher,subject_list_id,book_type,source)
+       VALUES (?,?,?,?,?,?)`,
       [userId, draft.book.title, draft.book.publisher || '',
-        draft.book.subject_list_id ?? null, 'ocr_import']);
+        draft.book.subject_list_id ?? null, draft.book.book_type || '', 'ocr_import']);
     const id = Number(b.lastInsertRowid);
 
     const addItems = async (nodeId, nodeKind, list) => {

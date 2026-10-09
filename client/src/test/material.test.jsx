@@ -491,6 +491,27 @@ describe('教材的科目（Subject）', () => {
     expect(post[1].body).toEqual({ title: '沒科目的書' });
   });
 
+  it('快速新增遇到相同名稱、類型、出版社時先詢問，不直接建立重複教材', async () => {
+    setApi({
+      '/material/name-check': {
+        has_conflict: true,
+        same_name_books: [{ ...BOOKS[0], title: '第三冊', book_type: '課本', publisher: '龍騰' }],
+      },
+    });
+    render(<MaterialLibraryView lists={LISTS} />);
+    await waitFor(() => expect(screen.queryByText('新大滿貫')).toBeTruthy());
+    fireEvent.change(screen.getByLabelText('新增教材名稱'), { target: { value: '第三冊' } });
+    fireEvent.change(screen.getByLabelText('教材類型'), { target: { value: '課本' } });
+    fireEvent.change(screen.getByLabelText('出版社'), { target: { value: '龍騰' } });
+    await click(screen.getByRole('button', { name: '新增' }));
+    await flush();
+
+    expect(screen.getByText('名稱、教材類型與出版社都相同。是否合併？')).toBeTruthy();
+    expect(calls.some(([p, o]) => p === '/material/books' && o?.method === 'POST')).toBe(false);
+    expect(calls.some(([p]) => p.includes('title=%E7%AC%AC%E4%B8%89%E5%86%8A')
+      && p.includes('book_type=%E8%AA%B2%E6%9C%AC') && p.includes('publisher=%E9%BE%8D%E9%A8%B0'))).toBe(true);
+  });
+
   it('既有教材可以補科目，走 PATCH 且送 id', async () => {
     setApi({ '/material/books': [{ ...BOOKS[0], subject_list_id: null }] });
     render(<MaterialLibraryView lists={LISTS} />);

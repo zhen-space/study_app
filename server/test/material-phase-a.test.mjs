@@ -279,11 +279,15 @@ describe('A4 Transactional commit', () => {
   test('成功時一次建立完整教材樹', async () => {
     const subject = await ok('POST', '/lists', { name: '數學' });
     const out = await ok('POST', '/material/import/commit', {
-      draft: goodDraft({ book: { title: '完整樹', subject_list_id: subject.id } }),
+      draft: goodDraft({
+        book: { title: '完整樹', publisher: '龍騰', book_type: '課本', subject_list_id: subject.id },
+      }),
     });
     assert.ok(out.book.id);
     assert.equal(Number(out.book.subject_list_id), Number(subject.id));
     assert.equal(out.book.source, 'ocr_import');
+    assert.equal(out.book.publisher, '龍騰');
+    assert.equal(out.book.book_type, '課本');
     assert.equal(out.summary.content_items, 6);
 
     const tree = await ok('GET', `/material/books/${out.book.id}/tree`);

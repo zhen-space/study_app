@@ -67,10 +67,13 @@ export const commitDraft = draft => api('/material/import/commit', { method: 'PO
 
 /* ---------- 同名偵測 + 合併／增補目錄 ---------- */
 
-// 匯入／新增前偵測同名（正規化後同名＋同科目）。回 { same_name_books, has_conflict }。不寫入。
-export const nameCheck = (title, subjectListId = null) => {
-  const qs = [`title=${encodeURIComponent(title || '')}`];
-  if (subjectListId != null && subjectListId !== '') qs.push(`subject_list_id=${subjectListId}`);
+// 匯入／新增前偵測同一本（名稱＋教材類型＋出版社皆相同）。不寫入。
+export const nameCheck = (title, bookType = '', publisher = '') => {
+  const qs = [
+    `title=${encodeURIComponent(title || '')}`,
+    `book_type=${encodeURIComponent(bookType || '')}`,
+    `publisher=${encodeURIComponent(publisher || '')}`,
+  ];
   return api(`/material/name-check?${qs.join('&')}`);
 };
 

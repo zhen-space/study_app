@@ -52,10 +52,15 @@ router.get('/material/books', handle(async (req, res) => {
   }));
 }));
 
-// 匯入／新增前的同名檢查：回傳疑似同名（同名＋同科目）的既有教材，讓前端提供
+// 匯入／新增前的重複檢查：名稱、教材類型與出版社都相同才回傳，讓前端提供
 // 「合併到現有／另存新教材／取消」三選一。這一步不寫任何東西。
 router.get('/material/name-check', handle(async (req, res) => {
-  const books = await material.sameNameBooks(req.userId, req.query.title || '', req.query.subject_list_id ?? null);
+  const books = await material.sameNameBooks(
+    req.userId,
+    req.query.title || '',
+    req.query.book_type || '',
+    req.query.publisher || '',
+  );
   res.json({ same_name_books: books, has_conflict: books.length > 0 });
 }));
 

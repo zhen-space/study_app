@@ -27,7 +27,7 @@ export default function AddMaterialFlow({ lists = [], onCancel, onCreated, onAdd
   const [err, setErr] = useState('');
   const [problems, setProblems] = useState([]);
   const [warnings, setWarnings] = useState([]);   // 非阻擋性提醒（重複頁／重複章節需確認、部分頁沒讀到內容）
-  // 同名同科三選一：conflict＝偵測到的同名教材清單；mergeTarget＝使用者選擇合併的那本。
+  // 名稱、類型、出版社相同時三選一：conflict＝候選教材；mergeTarget＝選擇合併的那本。
   const [conflict, setConflict] = useState(null);   // null | { books: [...] }
   const [mergeTarget, setMergeTarget] = useState(null);
   const [created, setCreated] = useState(null);
@@ -78,7 +78,7 @@ export default function AddMaterialFlow({ lists = [], onCancel, onCreated, onAdd
     finally { setBusy(false); }
   };
 
-  // 建立前先偵測同名同科：有衝突就要求三選一（合併／另存／取消），未選不 commit。
+  // 建立前先偵測相同名稱、類型與出版社：有衝突就要求三選一，未選不 commit。
   const create = async submittedDraft => {
     if (operationBusy.current) return;
     operationBusy.current = true;
@@ -86,7 +86,11 @@ export default function AddMaterialFlow({ lists = [], onCancel, onCreated, onAdd
     if (appendToBook) { setDraft(candidate); setMergeTarget(appendToBook); operationBusy.current = false; return; }
     setBusy(true); setErr(''); setProblems([]);
     try {
-      const chk = await nameCheck(candidate.book.title, candidate.book.subject_list_id);
+      const chk = await nameCheck(
+        candidate.book.title,
+        candidate.book.book_type,
+        candidate.book.publisher,
+      );
       if (chk.has_conflict) {
         setConflict({ books: chk.same_name_books || [] });
         operationBusy.current = false;
@@ -156,12 +160,12 @@ export default function AddMaterialFlow({ lists = [], onCancel, onCreated, onAdd
     );
   }
 
-  // 同名同科三選一畫面。使用者未選之前，什麼都不寫。
+  // 同版本教材三選一畫面。使用者未選之前，什麼都不寫。
   if (conflict) {
     return (
       <div className="am">
-        <h3 className="am-title">已有同名同科目的教材</h3>
-        <p className="am-lead">「{draft.book.title}」已經存在。你要合併到現有教材，還是另存成新的？</p>
+        <h3 className="am-title">找到相同教材</h3>
+        <p className="am-lead">名稱、教材類型與出版社都相同。要合併到現有教材，還是另存成新的？</p>
         {err && <div className="mt-err" role="alert">{err}</div>}
         <div style={{ display: 'grid', gap: 8, margin: '8px 0' }}>
           {conflict.books.map(b => (
@@ -170,7 +174,9 @@ export default function AddMaterialFlow({ lists = [], onCancel, onCreated, onAdd
               <span className="am-choice-icon" aria-hidden="true">🔀</span>
               <span className="am-choice-main">
                 <span className="am-choice-title">合併到「{b.title}」</span>
-                <span className="am-choice-sub">保留既有完成度與計畫選取，只補上新內容</span>
+                <span className="am-choice-sub">
+                  {[b.book_type || '未分類', b.publisher || '未填出版社'].join('・')}；保留既有完成度與計畫選取
+                </span>
               </span>
             </button>
           ))}
@@ -269,6 +275,7 @@ function normalize(d) {
     book: {
       title: d?.book?.title || '',
       publisher: d?.book?.publisher || '',
+      book_type: d?.book?.book_type || '',
       subject_list_id: d?.book?.subject_list_id ?? null,
     },
     chapters: (d?.chapters || []).map(c => {

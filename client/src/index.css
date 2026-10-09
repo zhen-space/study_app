@@ -885,6 +885,12 @@ select { -webkit-appearance: none; appearance: none; padding-right: 26px;
 .ml-addrow { display: flex; gap: var(--sp-2); align-items: center; flex-wrap: wrap; }
 .ml-addrow select { min-height: 44px; }
 .ml-addrow--book input { flex: 1 1 140px; }
+@media (max-width: 480px) {
+  .ml-addrow--book { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); }
+  .ml-addrow--book > * { width: 100%; min-width: 0; box-sizing: border-box; }
+  .ml-addrow--book .ml-quick-title,
+  .ml-addrow--book .ml-quick-publisher { grid-column: 1 / -1; }
+}
 /* 科目：排程的前提，放在教材頁最上面 */
 .ml-subject {
   display: flex; align-items: center; gap: var(--sp-2); flex-wrap: wrap;

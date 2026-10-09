@@ -18,7 +18,7 @@ const CHILD_KINDS = ['reading', 'example', 'example_problem'];
 const CHAPTER_KINDS = ['unit_exercise', 'past_exam'];
 
 export const emptyDraft = () => ({
-  book: { title: '', publisher: '', subject_list_id: null },
+  book: { title: '', publisher: '', book_type: '', subject_list_id: null },
   chapters: [{ title: '', content_items: [], children: [] }],
 });
 
@@ -138,6 +138,14 @@ export default function MaterialDraftEditor({
           <span>出版社</span>
           <input value={d.book.publisher || ''} placeholder="可以不填"
             onChange={e => setBook({ publisher: e.target.value })} />
+        </label>
+        <label className="md-field">
+          <span>教材類型</span>
+          <select value={d.book.book_type || ''} disabled={busy}
+            onChange={e => setBook({ book_type: e.target.value })}>
+            <option value="">未分類</option>
+            {['課本', '講義', '測驗卷', '參考書', '自訂'].map(t => <option key={t} value={t}>{t}</option>)}
+          </select>
         </label>
         {d.book.subject_list_id == null && (
           <p className="md-hint">選了科目才排得進計畫。之後也可以再補。</p>
