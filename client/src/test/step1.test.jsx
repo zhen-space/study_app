@@ -711,6 +711,34 @@ describe('Plan Detail', () => {
     expect(screen.getByLabelText('考試日期')).toHaveValue(PLAN.target_date);
     expect(screen.getByRole('button', { name: '預覽安排' })).toBeDisabled();
   });
+
+  it('段考科目載入失敗時不開放重複加入，重試成功後才恢復入口', async () => {
+    let examCalls = 0;
+    const projection = { plan: PLAN, subjects: [{ subject_list_id: 1, subject_name: '數學', exam_date: fx.TODAY }], material: [], manual_scope: [] };
+    setApi({
+      '/plans': [PLAN], '/tasks': TASKS,
+      '/plans/70/exam': () => {
+        examCalls += 1;
+        // PlanDetail 與範圍投影各自載入一次；兩次都模擬同一波離線。
+        if (examCalls <= 2) throw new Error('網路暫時中斷');
+        return projection;
+      },
+      '/schedule/timeline/70': { items: [], deadlines: [], gaps: [], unscheduled: [], segments: [] },
+    });
+    render(<PlanDetailView planKey="plan:70" tasks={TASKS} lists={fx.lists} apiPlans={[PLAN]}
+      reload={() => {}} onBack={() => {}} goWizard={() => {}} adjustPlan={() => {}} />);
+
+    const addSubject = screen.getByRole('button', { name: '加入科目' });
+    await waitFor(() => expect(screen.getByText('科目資料未載入，暫時不能加入科目。')).toBeTruthy());
+    expect(addSubject).toBeDisabled();
+    expect(screen.queryByLabelText('科目')).toBeNull();
+
+    fireEvent.click(screen.getByRole('button', { name: '重試' }));
+    await waitFor(() => expect(addSubject).toBeEnabled());
+    fireEvent.click(addSubject);
+    expect(screen.getByLabelText('科目')).toHaveValue('');
+    expect(screen.queryByRole('option', { name: '數學' })).toBeNull();
+  });
 });
 
 /* ============ 7. 互動不能等 server round-trip ============ */
