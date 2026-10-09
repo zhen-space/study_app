@@ -17,7 +17,7 @@ import { NODE_KINDS, ITEM_KINDS, ITEM_KIND_LABEL, itemPlacementProblem } from '.
 canonical draft 形狀：
 
 {
-  book: { title, publisher?, subject_list_id? },
+  book: { title, publisher?, book_type?, subject_list_id? },
   chapters: [{
     title, order?,
     content_items: [ ... ],        // 章直屬：reading / unit_exercise / past_exam / workbook_exercise
@@ -138,7 +138,15 @@ export function validateDraft(input) {
   if (chaptersIn.length && total === 0) at('chapters', '整本教材沒有任何內容項目');
 
   return {
-    draft: { book: { title, publisher: str(bookIn.publisher), subject_list_id: subject }, chapters },
+    draft: {
+      book: {
+        title,
+        publisher: str(bookIn.publisher),
+        book_type: str(bookIn.book_type),
+        subject_list_id: subject,
+      },
+      chapters,
+    },
     problems,
   };
 }

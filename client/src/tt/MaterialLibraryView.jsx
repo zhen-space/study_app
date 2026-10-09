@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   listCategories, listBooks, getBookTree, setItemCompletion, createCategory, createBook,
   addBookToCategory, removeBookFromCategory, updateBook, bookNeedsSubject, ITEM_LABEL, CHAPTER_LEVEL_KINDS,
-  collectBlocked, collectCancelled, bookImpact, deleteBook, listDeletedBooks, restoreDeletedBook,
+  collectBlocked, collectCancelled, bookImpact, deleteBook, listDeletedBooks, restoreDeletedBook, nameCheck,
 } from './material';
 import { Button, EmptyState, PageHeader, SegmentedControl, ProgressBar, BottomSheet } from './ui';
 import BlockedNotice from './BlockedNotice';
@@ -104,6 +104,9 @@ export default function MaterialLibraryView({ goPlans = null, lists = [] }) {
   const [editing, setEditing] = useState(false);
   const [adding, setAdding] = useState('');
   const [addSubject, setAddSubject] = useState('');
+  const [addPublisher, setAddPublisher] = useState('');
+  const [addBookType, setAddBookType] = useState('');
+  const [duplicateBooks, setDuplicateBooks] = useState(null);
   const [appendMode, setAppendMode] = useState(false);   // 增加目錄／匯入更多內容
   const [deleteState, setDeleteState] = useState(null);   // null | { loading } | { impact }
   const [deletedBooks, setDeletedBooks] = useState([]);
@@ -209,18 +212,28 @@ export default function MaterialLibraryView({ goPlans = null, lists = [] }) {
     .filter(c => (c.books || []).some(b => b.id === bookId))
     .map(c => c.name), [categories]);
 
-  const addBook = async () => {
+  const addBook = async ({ saveAsNew = false } = {}) => {
     const title = adding.trim();
     if (!title) return;
     setBusy(true);
     try {
+      // 快速新增也不能繞過重複確認。三欄完全相同才詢問；選擇前不寫入。
+      if (!saveAsNew) {
+        const duplicate = await nameCheck(title, addBookType, addPublisher);
+        if (duplicate.has_conflict) {
+          setDuplicateBooks(duplicate.same_name_books || []);
+          return;
+        }
+      }
       // 建立時就把科目一起送出去，不要讓學生在排程最後才發現排不進去。
       const b = await createBook({
         title,
+        ...(addPublisher.trim() ? { publisher: addPublisher.trim() } : {}),
+        ...(addBookType ? { book_type: addBookType } : {}),
         ...(addSubject ? { subject_list_id: Number(addSubject) } : {}),
       });
       if (scope !== 'all') await addBookToCategory(scope, b.id);
-      setAdding(''); setAddSubject('');
+      setAdding(''); setAddSubject(''); setAddPublisher(''); setAddBookType(''); setDuplicateBooks(null);
       await load();
     } catch (e) { setErr(e.message); }
     finally { setBusy(false); }
@@ -407,8 +420,14 @@ export default function MaterialLibraryView({ goPlans = null, lists = [] }) {
       </div>
 
       <div className="ml-addrow ml-addrow--book">
-        <input value={adding} onChange={e => setAdding(e.target.value)} placeholder="新增教材名稱"
+        <input className="ml-quick-title" value={adding} onChange={e => setAdding(e.target.value)} placeholder="新增教材名稱"
           aria-label="新增教材名稱" onKeyDown={e => { if (e.key === 'Enter') addBook(); }} />
+        <select aria-label="教材類型" value={addBookType} onChange={e => setAddBookType(e.target.value)}>
+          <option value="">未分類</option>
+          {['課本', '講義', '測驗卷', '參考書', '自訂'].map(t => <option key={t} value={t}>{t}</option>)}
+        </select>
+        <input className="ml-quick-publisher" value={addPublisher} onChange={e => setAddPublisher(e.target.value)}
+          placeholder="出版社（可不填）" aria-label="出版社" />
         <select aria-label="科目" value={addSubject} onChange={e => setAddSubject(e.target.value)}>
           <option value="">選擇科目…</option>
           {lists.map(l => <option key={l.id} value={l.id}>{l.name}</option>)}
@@ -416,6 +435,28 @@ export default function MaterialLibraryView({ goPlans = null, lists = [] }) {
         <Button size="sm" variant="primary" disabled={!adding.trim() || busy} onClick={addBook}>新增</Button>
       </div>
       <div className="ui-meta">沒有指定科目的教材無法排入計畫（排程以科目分組）。</div>
+
+      {duplicateBooks && (
+        <BottomSheet onClose={() => setDuplicateBooks(null)} label="找到相同教材">
+          <div style={{ display: 'grid', gap: 10 }}>
+            <b>名稱、教材類型與出版社都相同。是否合併？</b>
+            <div className="ui-meta">合併會直接使用現有教材，不建立重複的一本，也不會改掉原本的完成度與計畫。</div>
+            {duplicateBooks.map(b => (
+              <Button key={b.id} variant="primary" disabled={busy} onClick={() => {
+                setDuplicateBooks(null);
+                setAdding(''); setAddSubject(''); setAddPublisher(''); setAddBookType('');
+                openTree(b.id);
+              }}>
+                合併並使用「{b.title}」
+              </Button>
+            ))}
+            <Button variant="secondary" disabled={busy} onClick={() => addBook({ saveAsNew: true })}>
+              不合併，另存新教材
+            </Button>
+            <Button variant="tertiary" disabled={busy} onClick={() => setDuplicateBooks(null)}>取消</Button>
+          </div>
+        </BottomSheet>
+      )}
 
       {!visibleBooks.length ? (
         <EmptyState title="這個分類還沒有教材" description="新增一本教材，或切換到「所有教材」。" />

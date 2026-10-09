@@ -115,7 +115,7 @@ describe('AddMaterialFlow hotfix', () => {
   it('無 defaultSubjectId（教材庫獨立建立）：科目可自由選擇，不鎖定', () => {
     render(<AddMaterialFlow lists={LISTS} onCancel={() => {}} onCreated={() => {}} />);
     fireEvent.click(screen.getByText('自己建立教材'));
-    const select = screen.getByRole('combobox');       // 科目 select
+    const select = screen.getByLabelText('科目');       // 新增教材也有「教材類型」，明確抓科目
     expect(select.disabled).toBe(false);
   });
 
@@ -170,8 +170,9 @@ describe('AddMaterialFlow hotfix', () => {
 
     await waitFor(() => expect(commitDraft).toHaveBeenCalled());
     await waitFor(() => expect(onCreated).toHaveBeenCalledWith({ book: { id: 88, title: '課本3' } }));
+    expect(nameCheck).toHaveBeenLastCalledWith('課本3', '', '龍騰');
     const payload = commitDraft.mock.calls.at(-1)[0];
-    expect(payload.book).toEqual({ title: '課本3', publisher: '龍騰', subject_list_id: 2 });
+    expect(payload.book).toEqual({ title: '課本3', publisher: '龍騰', book_type: '', subject_list_id: 2 });
     expect(payload.chapters.map(c => c.content_items[0])).toEqual([
       { kind: 'reading', title: 'L1 最新名稱' },
       { kind: 'reading', title: '複習 R3' },
