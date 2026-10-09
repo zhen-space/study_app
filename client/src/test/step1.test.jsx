@@ -1165,14 +1165,21 @@ describe('第一次確認之後仍然能編輯教材內容', () => {
     await openBook();
     await click(btn(/編輯教材內容/));
     await flush();
+    setApi({
+      '/material/nodes': opts => ({
+        id: 12, book_id: 1, parent_id: opts.body.parent_id,
+        kind: opts.body.kind, title: opts.body.title, order_index: 1,
+      }),
+    });
     calls.length = 0;
     await click(btn(/單元1 力學：加一節/));
     await flush();
     const post = sent('/material/nodes', 'POST');
     expect(post.length).toBe(1);
     expect(post[0][1].body).toEqual({ book_id: 1, parent_id: 10, kind: 'section', title: '新的節' });
-    // 補完之後重新讀樹，新內容才會出現在選取畫面
-    expect(sent('/material/books/1/tree', 'GET').length).toBeGreaterThan(0);
+    // API 已回傳正式節點，直接合併到畫面，不再為這一筆重抓整本教材。
+    expect(sent('/material/books/1/tree', 'GET')).toHaveLength(0);
+    expect(btn(/新的節：加入例題/)).toBeTruthy();
   });
 
   it('可以補一份漏掉的例題，掛在既有的節底下', async () => {

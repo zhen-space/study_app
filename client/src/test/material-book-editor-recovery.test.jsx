@@ -43,7 +43,7 @@ describe('MaterialBookEditor mutation recovery', () => {
   it('keeps a real create failure retryable and sends the same scoped payload', async () => {
     material.createNode
       .mockRejectedValueOnce(new Error('暫時無法建立'))
-      .mockResolvedValueOnce({ id: 11 });
+      .mockResolvedValueOnce({ id: 11, book_id: 7, parent_id: 10, kind: 'section', title: '新的節' });
     const onChanged = vi.fn().mockResolvedValue(undefined);
     view({ onChanged });
 
@@ -53,7 +53,11 @@ describe('MaterialBookEditor mutation recovery', () => {
     expect(add).toBeEnabled();
 
     fireEvent.click(add);
-    await waitFor(() => expect(onChanged).toHaveBeenCalledWith({ id: 11 }));
+    await waitFor(() => expect(onChanged).toHaveBeenCalled());
+    expect(onChanged.mock.calls[0][0]).toMatchObject({ id: 11, parent_id: 10 });
+    expect(onChanged.mock.calls[0][1].tree.nodes[0].children[0]).toMatchObject({
+      id: 11, parent_id: 10, title: '新的節',
+    });
     expect(material.createNode).toHaveBeenCalledTimes(2);
     expect(material.createNode).toHaveBeenLastCalledWith({
       book_id: 7, parent_id: 10, kind: 'section', title: '新的節',
@@ -68,7 +72,7 @@ describe('MaterialBookEditor mutation recovery', () => {
 
     const add = screen.getByRole('button', { name: '第一章：加一節' });
     fireEvent.click(add);
-    expect(await screen.findByRole('alert')).toHaveTextContent('變更已儲存，但畫面暫時無法更新');
+    expect(await screen.findByRole('alert')).toHaveTextContent('變更已儲存');
     expect(add).toBeDisabled();
     fireEvent.click(add);
     expect(material.createNode).toHaveBeenCalledTimes(1);
@@ -98,6 +102,24 @@ describe('MaterialBookEditor mutation recovery', () => {
 
     resolveCreate({ id: 11 });
     await waitFor(() => expect(onChanged).toHaveBeenCalledOnce());
+  });
+
+  it('does not keep the editor blocked while the outer library refresh runs', async () => {
+    material.createNode.mockResolvedValue({
+      id: 11, book_id: 7, parent_id: 10, kind: 'section', title: '新的節',
+    });
+    const onChanged = vi.fn(() => new Promise(() => {}));
+    const onDone = vi.fn();
+    view({ onChanged, onDone });
+
+    fireEvent.click(screen.getByRole('button', { name: '第一章：加一節' }));
+    await waitFor(() => expect(material.createNode).toHaveBeenCalledOnce());
+
+    const done = await screen.findByRole('button', { name: '完成編輯' });
+    expect(done).toBeEnabled();
+    fireEvent.click(done);
+    expect(onDone).toHaveBeenCalledOnce();
+    expect(onDone.mock.calls[0][0].tree.nodes[0].children[0].id).toBe(11);
   });
 
   it('leaves without writing when the editor is completed unchanged', () => {
