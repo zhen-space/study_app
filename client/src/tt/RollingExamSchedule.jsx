@@ -25,6 +25,13 @@ export default function RollingExamSchedule({
   const [picking, setPicking] = useState(false);      // SELECT_MOVABLE_BLOCKS 選取中
   const [movable, setMovable] = useState([]);          // 使用者勾選可移動的 frozen block id
 
+  // React 的 applying 還沒重繪前，backdrop／Escape 仍可能拿到上一版 onClose。
+  // 套用是會建立新版排程的交易，送出後必須留在畫面上接住成功或錯誤結果。
+  const requestClose = () => {
+    if (applyBusy.current) return;
+    onClose?.();
+  };
+
   const doPreview = useCallback(async (freeze) => {
     setLoading(true); setError('');
     try {
@@ -114,7 +121,7 @@ export default function RollingExamSchedule({
   };
 
   return (
-    <BottomSheet onClose={applying ? undefined : onClose} label="調整段考安排">
+    <BottomSheet onClose={applying ? undefined : requestClose} label="調整段考安排">
       <div className="rolling">
         <h3 style={{ margin: '0 0 var(--sp-3)' }}>
           {examSubject ? `${examSubject.operation === 'update' ? '修改' : '加入'}${examSubject.subject_name || '科目'}並重新安排`
@@ -125,7 +132,7 @@ export default function RollingExamSchedule({
           <div className="ui-meta">畫面尚未更新，請勿再次套用。你可以只重試載入最新資料。</div>
           {error && <div className="ui-card ui-card--warning" role="alert">新版安排已套用，但畫面暫時無法更新。{error}</div>}
           <div className="row" style={{ gap: 'var(--sp-2)' }}>
-            <Button variant="tertiary" disabled={applying} onClick={onClose}>先關閉</Button>
+              <Button variant="tertiary" disabled={applying} onClick={requestClose}>先關閉</Button>
             <Button variant="primary" disabled={applying} onClick={retryApplied}>{applying ? '載入中…' : '重新載入'}</Button>
           </div>
         </div>}
@@ -193,7 +200,7 @@ export default function RollingExamSchedule({
             )}
 
             <div className="row" style={{ marginTop: 'var(--sp-4)', gap: 'var(--sp-2)' }}>
-              <Button variant="tertiary" disabled={applying} onClick={applying ? undefined : onClose}>取消</Button>
+              <Button variant="tertiary" disabled={applying} onClick={requestClose}>取消</Button>
               <Button variant="primary" style={{ marginLeft: 'auto' }}
                 disabled={!canConfirm(preview) || applying} onClick={confirmApply}>
                 {applying ? '套用中…' : '套用新版安排'}

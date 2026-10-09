@@ -70,4 +70,19 @@ describe('RollingExamSchedule 套用恢復', () => {
     await screen.findByText('新版安排已套用');
     expect(api.mock.calls.filter(c => c[0] === '/schedule/rolling/apply')).toHaveLength(1);
   });
+
+  it('送出同一瞬間也不能由 backdrop 關閉，確保套用結果留在畫面上', async () => {
+    const onClose = vi.fn();
+    let backdrop;
+    api.mockResolvedValueOnce(preview()).mockImplementationOnce(() => {
+      // 模擬手機快速連點：apply event 內 state 還沒重繪就碰到 backdrop。
+      fireEvent.click(backdrop);
+      return new Promise(() => {});
+    });
+    const { button } = await mount(vi.fn(), onClose);
+    backdrop = document.querySelector('.sheet-backdrop');
+    fireEvent.click(button);
+    expect(onClose).not.toHaveBeenCalled();
+    expect(api.mock.calls.filter(c => c[0] === '/schedule/rolling/apply')).toHaveLength(1);
+  });
 });
