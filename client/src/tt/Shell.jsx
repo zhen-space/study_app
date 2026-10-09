@@ -182,6 +182,7 @@ export default function Shell({ onLogout }) {
             goWizardMode={m => setView({ type: 'wizard', scheduleMode: m })} />
         : view.type === 'exam-wizard' ? <ExamCreateWizard key="exam-wizard" lists={lists}
             onCancel={() => setView({ type: 'plans' })}
+            onManageSubjects={() => setView({ type: 'settings' })}
             onDone={async pid => { await reload(); setView({ type: 'plan', key: `plan:${pid}` }); }} />
         : view.type === 'plan' ? <PlanDetailView planKey={view.key} tasks={tasks} lists={lists} apiPlans={apiPlans} reload={reload}
             onBack={() => setView({ type: 'plans' })} goWizard={() => setView({ type: 'wizard' })}
