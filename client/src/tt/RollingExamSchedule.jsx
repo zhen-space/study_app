@@ -21,6 +21,7 @@ export default function RollingExamSchedule({
   const [applying, setApplying] = useState(false);
   const [committed, setCommitted] = useState(null);
   const applyBusy = useRef(false);
+  const previewRequest = useRef(0);
   const [error, setError] = useState('');
   const [picking, setPicking] = useState(false);      // SELECT_MOVABLE_BLOCKS 選取中
   const [movable, setMovable] = useState([]);          // 使用者勾選可移動的 frozen block id
@@ -33,6 +34,7 @@ export default function RollingExamSchedule({
   };
 
   const doPreview = useCallback(async (freeze) => {
+    const requestId = ++previewRequest.current;
     setLoading(true); setError('');
     try {
       const body = { plan_id: planId };
@@ -48,10 +50,16 @@ export default function RollingExamSchedule({
         if (external_busy) body.external_busy = external_busy;
       }
       const p = await api('/schedule/rolling/preview', { method: 'POST', body });
-      setPreview({ ...p, plan_id: planId });
+      // 科目／日期或凍結選項連續變更時，只接受最後一次預覽；較慢的舊回應
+      // 不能覆蓋使用者最新選擇，否則最後套用的會是畫面上看不到的舊安排。
+      if (requestId === previewRequest.current) setPreview({ ...p, plan_id: planId });
     } catch (e) {
-      setError(e.message || '預覽失敗'); setPreview(null);
-    } finally { setLoading(false); }
+      if (requestId === previewRequest.current) {
+        setError(e.message || '預覽失敗'); setPreview(null);
+      }
+    } finally {
+      if (requestId === previewRequest.current) setLoading(false);
+    }
   }, [planId, triggerTaskId, addTaskIds, materialSelections, examSubject, scheduleEnd]);
 
   useEffect(() => { doPreview(null); }, [doPreview]);

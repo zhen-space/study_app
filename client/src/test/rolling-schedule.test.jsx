@@ -161,4 +161,25 @@ describe('RollingExamSchedule 流程', () => {
     const previews = api.mock.calls.filter(c => c[0] === '/schedule/rolling/preview');
     expect(previews).toHaveLength(2); // mount + auto re-preview
   });
+
+  it('連續變更段考內容時，較慢的舊預覽不能覆蓋最新安排', async () => {
+    let resolveOld;
+    const oldPreview = new Promise(resolve => { resolveOld = resolve; });
+    api.mockReturnValueOnce(oldPreview);
+    const { rerender } = render(<RollingExamSchedule planId={7} triggerTaskId={10} onClose={() => {}} onApplied={() => {}} />);
+
+    const latest = { ...feasible(), base_version_id: 22 };
+    api.mockResolvedValueOnce(latest);
+    rerender(<RollingExamSchedule planId={7} triggerTaskId={11} onClose={() => {}} onApplied={() => {}} />);
+    await waitFor(() => expect(screen.getByRole('button', { name: '套用新版安排' })).toBeEnabled());
+
+    // 舊請求最後才回來；畫面與 apply payload 仍必須保留最新的 base version。
+    resolveOld({ ...feasible(), base_version_id: 11 });
+    await Promise.resolve();
+    api.mockResolvedValueOnce({ version_id: 50 });
+    fireEvent.click(screen.getByRole('button', { name: '套用新版安排' }));
+    await waitFor(() => expect(api.mock.calls.some(c => c[0] === '/schedule/rolling/apply')).toBe(true));
+    const apply = api.mock.calls.find(c => c[0] === '/schedule/rolling/apply');
+    expect(apply[1].body.base_version_id).toBe(22);
+  });
 });
