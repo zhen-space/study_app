@@ -687,6 +687,30 @@ describe('Plan Detail', () => {
     fireEvent.click(screen.getByRole('button', { name: '取消' }));
     expect(calls.some(([path, opts]) => path === '/schedule/rolling/apply' && opts?.method === 'POST')).toBe(false);
   });
+
+  it('active 段考每次加入科目都重設舊選擇，並預設合法的段考最後一天', async () => {
+    setApi({
+      '/plans': [PLAN], '/tasks': TASKS,
+      '/plans/70/exam': { plan: PLAN, subjects: [{ subject_list_id: 1, subject_name: '數學', exam_date: fx.TODAY }], material: [], manual_scope: [] },
+      '/schedule/timeline/70': { items: [], deadlines: [], gaps: [], unscheduled: [], segments: [] },
+    });
+    render(<PlanDetailView planKey="plan:70" tasks={TASKS} lists={fx.lists} apiPlans={[PLAN]}
+      reload={() => {}} onBack={() => {}} goWizard={() => {}} adjustPlan={() => {}} />);
+    await waitFor(() => expect(screen.getByText('考試科目與日期')).toBeTruthy());
+
+    fireEvent.click(screen.getByRole('button', { name: '加入科目' }));
+    const date = screen.getByLabelText('考試日期');
+    expect(date).toHaveValue(PLAN.target_date);
+    expect(date).toHaveAttribute('min', PLAN.start_date);
+    expect(date).toHaveAttribute('max', PLAN.target_date);
+    fireEvent.change(screen.getByLabelText('科目'), { target: { value: '2' } });
+    fireEvent.click(screen.getByRole('button', { name: '取消' }));
+
+    fireEvent.click(screen.getByRole('button', { name: '加入科目' }));
+    expect(screen.getByLabelText('科目')).toHaveValue('');
+    expect(screen.getByLabelText('考試日期')).toHaveValue(PLAN.target_date);
+    expect(screen.getByRole('button', { name: '預覽安排' })).toBeDisabled();
+  });
 });
 
 /* ============ 7. 互動不能等 server round-trip ============ */

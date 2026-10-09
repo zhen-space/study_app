@@ -184,6 +184,13 @@ export default function PlanDetailView({ planKey, tasks, lists, apiPlans = [], r
   const pct = plan.total ? Math.round(plan.done / plan.total * 100) : 0;
 
   const close = () => { setSheet(null); setErr(''); setRetain(null); };
+  const openAddSubject = () => {
+    // 每次開啟都是一份新的表單；不能沿用上次取消或已套用的科目，否則隱藏的舊值
+    // 會讓按鈕看似可送出，最後卻撞到重複科目。考試日預設沿用整個段考最後一天。
+    setNewSubject({ subject_list_id: '', exam_date: raw?.target_date || '' });
+    setErr('');
+    setSheet('addSubject');
+  };
   // lifecycle 寫入尚未回來時不能讓 backdrop／Escape 把確認畫面藏起來。
   // 否則請求稍後失敗，錯誤會留在已關閉的 sheet，手機上看起來就像什麼都沒發生。
   // 用同步 ref 判斷，不只靠 busy render；點送出到 React 重繪間也不能被 Escape 關掉。
@@ -470,7 +477,7 @@ export default function PlanDetailView({ planKey, tasks, lists, apiPlans = [], r
             <Button size="sm" variant="primary" onClick={() => setSheet('addContent')}>
               <Icon name="plus" size={14} /> 加入內容
             </Button>
-            <Button size="sm" variant="secondary" onClick={() => setSheet('addSubject')}>
+            <Button size="sm" variant="secondary" onClick={openAddSubject}>
               <Icon name="plus" size={14} /> 加入科目
             </Button>
             <Button size="sm" variant="secondary" onClick={() => setShowRolling(true)}>
@@ -874,7 +881,7 @@ export default function PlanDetailView({ planKey, tasks, lists, apiPlans = [], r
               .map(l => <option key={l.id} value={l.id}>{l.name}</option>)}
           </select>
           <label className="ui-meta" htmlFor="exam-new-date" style={{ display: 'block', marginTop: 'var(--sp-3)' }}>考試日期</label>
-          <input id="exam-new-date" type="date" value={newSubject.exam_date} max={raw?.target_date || undefined}
+          <input id="exam-new-date" type="date" value={newSubject.exam_date} min={raw?.start_date || undefined} max={raw?.target_date || undefined}
             style={{ width: '100%', marginTop: 'var(--sp-1)' }} onChange={e => setNewSubject(s => ({ ...s, exam_date: e.target.value }))} />
           <div className="row" style={{ marginTop: 'var(--sp-4)' }}>
             <Button variant="tertiary" onClick={close}>取消</Button>
