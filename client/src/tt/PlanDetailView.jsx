@@ -178,6 +178,8 @@ export default function PlanDetailView({ planKey, tasks, lists, apiPlans = [], r
 
   const isReal = !plan.isLegacy && plan.planId != null;
   const raw = apiPlans.find(p => p.id === plan.planId);
+  const ownSubjects = lists.filter(l => !l.shared_in);
+  const availableExamSubjects = ownSubjects.filter(l => !examSubjectIds.has(Number(l.id)));
   // 暫停的計畫跟封存一樣不接受新任務、也不排程——後端 checkPlan 本來就會擋，
   // UI 不要留一個按下去必定失敗的入口。
   const workable = isReal && ['draft', 'active'].includes(plan.status);
@@ -196,7 +198,7 @@ export default function PlanDetailView({ planKey, tasks, lists, apiPlans = [], r
 
   const close = () => { setSheet(null); setErr(''); setRetain(null); };
   const openAddSubject = () => {
-    if (examSubjectsLoad.loading || examSubjectsLoad.error) return;
+    if (examSubjectsLoad.loading || examSubjectsLoad.error || !availableExamSubjects.length) return;
     // 每次開啟都是一份新的表單；不能沿用上次取消或已套用的科目，否則隱藏的舊值
     // 會讓按鈕看似可送出，最後卻撞到重複科目。考試日預設沿用整個段考最後一天。
     setNewSubject({ subject_list_id: '', exam_date: raw?.target_date || '' });
@@ -489,7 +491,9 @@ export default function PlanDetailView({ planKey, tasks, lists, apiPlans = [], r
             <Button size="sm" variant="primary" onClick={() => setSheet('addContent')}>
               <Icon name="plus" size={14} /> 加入內容
             </Button>
-            <Button size="sm" variant="secondary" disabled={examSubjectsLoad.loading || !!examSubjectsLoad.error} onClick={openAddSubject}>
+            <Button size="sm" variant="secondary"
+              disabled={examSubjectsLoad.loading || !!examSubjectsLoad.error || !availableExamSubjects.length}
+              onClick={openAddSubject}>
               <Icon name="plus" size={14} /> 加入科目
             </Button>
             <Button size="sm" variant="secondary" onClick={() => setShowRolling(true)}>
@@ -502,6 +506,10 @@ export default function PlanDetailView({ planKey, tasks, lists, apiPlans = [], r
               <span className="row" role="alert" style={{ gap: 'var(--sp-2)' }}>
                 <span className="ui-meta">科目資料未載入，暫時不能加入科目。</span>
                 <Button size="sm" variant="tertiary" onClick={() => refreshExamSubjects(plan.planId)}>重試</Button>
+              </span>
+            ) : !availableExamSubjects.length ? (
+              <span className="ui-meta" role="status">
+                {ownSubjects.length ? '所有科目都已加入這次段考。' : '還沒有可用科目，請先到設定新增科目。'}
               </span>
             ) : null}
           </div>
@@ -897,8 +905,7 @@ export default function PlanDetailView({ planKey, tasks, lists, apiPlans = [], r
           <select id="exam-new-subject" value={newSubject.subject_list_id} style={{ width: '100%', marginTop: 'var(--sp-1)' }}
             onChange={e => setNewSubject(s => ({ ...s, subject_list_id: e.target.value }))}>
             <option value="">請選擇科目</option>
-            {lists.filter(l => !l.shared_in && !examSubjectIds.has(Number(l.id)))
-              .map(l => <option key={l.id} value={l.id}>{l.name}</option>)}
+            {availableExamSubjects.map(l => <option key={l.id} value={l.id}>{l.name}</option>)}
           </select>
           <label className="ui-meta" htmlFor="exam-new-date" style={{ display: 'block', marginTop: 'var(--sp-3)' }}>考試日期</label>
           <input id="exam-new-date" type="date" value={newSubject.exam_date} min={raw?.start_date || undefined} max={raw?.target_date || undefined}
