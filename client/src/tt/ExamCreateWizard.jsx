@@ -56,7 +56,7 @@ export default function ExamCreateWizard({ lists = [], onDone, onCancel }) {
   useEffect(() => { saveDraft({ step, name, start, end, subjects, scope, level }); },
     [step, name, start, end, subjects, scope, level]);
 
-  const nameOf = useCallback(id => lists.find(l => Number(l.id) === Number(id))?.name || '科目', [lists]);
+  const nameOf = useCallback(id => lists.find(l => Number(l.id) === Number(id))?.name || '已刪除的科目', [lists]);
   const addSubject = id => {
     if (subjects.some(s => Number(s.listId) === Number(id))) return;
     // 空值才是「沿用整個段考最後一天」的單一真相。
@@ -97,15 +97,19 @@ export default function ExamCreateWizard({ lists = [], onDone, onCancel }) {
   const exitForNow = () => { onCancel?.(); };
 
   // ---- 驗證每一步 ----
+  // 草稿可能跨裝置／跨數天保留；期間若科目已被刪除，不能把失效 id 送去預覽或建立。
+  // 保留該列讓使用者自己移除，不暗中刪掉已選範圍。
+  const missingSubjects = subjects.filter(s => !lists.some(l => Number(l.id) === Number(s.listId)));
   const invalidSubjectDates = subjects.filter(s => s.examDate && (
     (start && s.examDate < start) || (end && s.examDate > end)
   ));
-  const step0ok = name.trim() && end && subjects.length && (!start || end >= start)
+  const step0ok = name.trim() && end && subjects.length && !missingSubjects.length && (!start || end >= start)
     && subjects.every(s => !s.examDate || ((!start || s.examDate >= start) && s.examDate <= end));
   const step0Hint = !name.trim() ? '請先輸入段考名稱。'
     : !end ? '請選擇整個段考的最後一天。'
       : start && end < start ? '段考最後一天不能早於準備開始日。'
         : !subjects.length ? '請至少加入一個考試科目。'
+          : missingSubjects.length ? '草稿中的科目已不存在，請先移除後再重新選擇。'
           : invalidSubjectDates.length ? `${invalidSubjectDates.map(s => nameOf(s.listId)).join('、')}的考試日必須在準備開始日到段考最後一天之間。`
             : '';
   const scopeCount = id => Object.keys(subjScope(id).items).length + subjScope(id).manual.length;
@@ -151,11 +155,11 @@ export default function ExamCreateWizard({ lists = [], onDone, onCancel }) {
       return false;
     } finally { if (requestId === previewRequest.current) setPreviewing(false); }
   }, [requestBody]);
-  useEffect(() => { if (step === 2) runPreview(); }, [step, level, runPreview]);
+  useEffect(() => { if (step === 2 && !missingSubjects.length) runPreview(); }, [step, level, runPreview, missingSubjects.length]);
 
   // daily／timed 只有在「有完整預估、預覽成功、有排出內容、且沒有排不下」時才可建立。
   // 這是 P0-1 的前端防線；伺服器仍會再 fail-closed 一次（單一權威來源）。
-  const scheduleBlocked = !scheduleGate.ok || previewing || !preview || preview.failed || !preview.preview_token
+  const scheduleBlocked = !!missingSubjects.length || !scheduleGate.ok || previewing || !preview || preview.failed || !preview.preview_token
     || (level !== 'progress' && preview.blocks.length === 0);
   const canConfirm = !creating && !scheduleBlocked;
 
@@ -330,7 +334,11 @@ export default function ExamCreateWizard({ lists = [], onDone, onCancel }) {
             {scheduleBlocked && !previewing && (
               <SurfaceCard>
                 <b>{level === 'progress' ? '還不能建立段考計畫' : '還不能建立每天安排'}</b>
-                {!scheduleGate.ok ? (
+                {missingSubjects.length ? (
+                  <div className="ui-meta" style={{ marginTop: 4 }}>
+                    草稿中的科目已不存在。請回到第一步移除「已刪除的科目」，再重新選擇。
+                  </div>
+                ) : !scheduleGate.ok ? (
                   <div className="ui-meta" style={{ marginTop: 4 }}>
                     這些範圍還沒有預估時間，無法排入每天安排：{scheduleGate.missing.slice(0, 6).join('、')}{scheduleGate.missing.length > 6 ? '…' : ''}
                   </div>
@@ -342,9 +350,15 @@ export default function ExamCreateWizard({ lists = [], onDone, onCancel }) {
                   <div className="ui-meta" style={{ marginTop: 4 }}>目前沒有可排入的內容。</div>
                 ) : null}
                 <div className="row" style={{ gap: 8, marginTop: 8, flexWrap: 'wrap' }}>
-                  <Button size="sm" variant="secondary" onClick={() => setStep(1)}>回上一步調整範圍／日期</Button>
-                  {(preview?.failed || !preview) && <Button size="sm" variant="primary" onClick={runPreview}>重新預覽</Button>}
-                  {level !== 'progress' && <Button size="sm" variant="ghost" onClick={() => setLevel('progress')}>改用「只記錄考試範圍與截止日」</Button>}
+                  {missingSubjects.length ? (
+                    <Button size="sm" variant="primary" onClick={() => setStep(0)}>回第一步移除失效科目</Button>
+                  ) : (
+                    <>
+                      <Button size="sm" variant="secondary" onClick={() => setStep(1)}>回上一步調整範圍／日期</Button>
+                      {(preview?.failed || !preview) && <Button size="sm" variant="primary" onClick={runPreview}>重新預覽</Button>}
+                      {level !== 'progress' && <Button size="sm" variant="ghost" onClick={() => setLevel('progress')}>改用「只記錄考試範圍與截止日」</Button>}
+                    </>
+                  )}
                 </div>
               </SurfaceCard>
             )}
