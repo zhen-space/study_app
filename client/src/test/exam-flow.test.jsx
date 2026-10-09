@@ -283,13 +283,24 @@ describe('ExamCreateWizard', () => {
     await waitFor(() => expect(screen.getByText('確認，建立段考計畫').closest('button').disabled).toBe(false));
   });
 
-  it('返回/取消：取消不建立 Plan', async () => {
+  it('稍後繼續：不建立 Plan、保留草稿，重開回到原本內容', async () => {
     const onCancel = vi.fn();
-    render(<ExamCreateWizard lists={LISTS} onDone={() => {}} onCancel={onCancel} />);
-    await click(screen.getByText(/取消/));
+    const first = render(<ExamCreateWizard lists={LISTS} onDone={() => {}} onCancel={onCancel} />);
+    fireEvent.change(screen.getByLabelText('段考名稱'), { target: { value: '第二次段考' } });
+    fireEvent.change(screen.getByLabelText('段考結束日期'), { target: { value: '2099-10-02' } });
+    fireEvent.change(screen.getByLabelText('加入科目'), { target: { value: '1' } });
+    await waitFor(() => expect(JSON.parse(localStorage.getItem('examWizardDraft:v1')).name).toBe('第二次段考'));
+    await click(screen.getByRole('button', { name: /^稍後繼續$/ }));
     expect(onCancel).toHaveBeenCalled();
     expect(posted('/exam-plans').length).toBe(0);
     expect(posted('/plans').length).toBe(0);
+    expect(localStorage.getItem('examWizardDraft:v1')).not.toBeNull();
+
+    first.unmount();
+    render(<ExamCreateWizard lists={LISTS} onDone={() => {}} onCancel={() => {}} />);
+    expect(screen.getByLabelText('段考名稱')).toHaveValue('第二次段考');
+    expect(screen.getByLabelText('段考結束日期')).toHaveValue('2099-10-02');
+    expect(screen.getByText('數學')).toBeInTheDocument();
   });
 
   it('375px 多考科：逐科都要有範圍，明列缺少科目且不能進預覽', async () => {
