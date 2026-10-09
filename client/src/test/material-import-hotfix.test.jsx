@@ -170,7 +170,7 @@ describe('AddMaterialFlow hotfix', () => {
 
     await waitFor(() => expect(commitDraft).toHaveBeenCalled());
     await waitFor(() => expect(onCreated).toHaveBeenCalledWith({ book: { id: 88, title: '課本3' } }));
-    expect(nameCheck).toHaveBeenLastCalledWith('課本3', '', '龍騰');
+    expect(nameCheck).toHaveBeenLastCalledWith('課本3', '', '龍騰', 2);
     const payload = commitDraft.mock.calls.at(-1)[0];
     expect(payload.book).toEqual({ title: '課本3', publisher: '龍騰', book_type: '', subject_list_id: 2 });
     expect(payload.chapters.map(c => c.content_items[0])).toEqual([
