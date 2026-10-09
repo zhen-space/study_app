@@ -92,7 +92,9 @@ export default function ExamCreateWizard({ lists = [], onDone, onCancel }) {
     return { ...sc, [listId]: { ...cur, manual: cur.manual.filter((_, j) => j !== i) } };
   });
 
-  const cancel = () => { clearDraft(); onCancel?.(); };
+  // 離開不是放棄：手機上可能只是暫時切去查考試日期或教材，草稿要留著讓下次接續。
+  // 只有 atomic 建立成功後才清掉草稿，避免誤觸返回／右上關閉就整份消失。
+  const exitForNow = () => { onCancel?.(); };
 
   // ---- 驗證每一步 ----
   const invalidSubjectDates = subjects.filter(s => s.examDate && (
@@ -188,8 +190,8 @@ export default function ExamCreateWizard({ lists = [], onDone, onCancel }) {
   return (
     <div className="main">
       <PageHeader title="建立段考"
-        back={<button className="page-back" onClick={step === 0 ? cancel : () => setStep(step - 1)}>← {step === 0 ? '取消' : '上一步'}</button>}
-        actions={<IconButton label="取消" onClick={cancel}><Icon name="x" size={18} /></IconButton>} />
+        back={<button className="page-back" onClick={step === 0 ? exitForNow : () => setStep(step - 1)}>← {step === 0 ? '稍後繼續' : '上一步'}</button>}
+        actions={<IconButton label="稍後繼續" onClick={exitForNow}><Icon name="x" size={18} /></IconButton>} />
       <div className="main-body" style={{ maxWidth: 560 }}>
         <div className="steps" style={{ marginTop: 4 }}>{STEPS.map((_, i) => <div key={i} className={'step-dot' + (i <= step ? ' on' : '')} />)}</div>
         <div className="ui-meta" style={{ marginBottom: 10 }}>步驟 {step + 1}／3：{STEPS[step]}</div>
