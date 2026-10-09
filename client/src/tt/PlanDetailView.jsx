@@ -86,6 +86,7 @@ export default function PlanDetailView({ planKey, tasks, lists, apiPlans = [], r
   const [rollingAdditions, setRollingAdditions] = useState(null);
   const [newSubject, setNewSubject] = useState({ subject_list_id: '', exam_date: '' });
   const [examSubjectIds, setExamSubjectIds] = useState(() => new Set());
+  const [examSubjectsLoad, setExamSubjectsLoad] = useState({ loading: true, error: '' });
   const [examRefreshKey, setExamRefreshKey] = useState(0);
   const [editSubject, setEditSubject] = useState(null);
   const [busy, setBusy] = useState(false);
@@ -106,12 +107,22 @@ export default function PlanDetailView({ planKey, tasks, lists, apiPlans = [], r
   const sched = useActiveSchedule();
   // 必須在早退前呼叫，避免資料刷新瞬間找不到 Plan 時違反 React Hook 順序。
   const health = usePlanScheduleHealth(plan, apiPlans.find(p => p.id === plan?.planId));
-  const refreshExamSubjects = async planId => {
+  const refreshExamSubjects = async (planId, strict = false) => {
     if (planId == null) return;
+    setExamSubjectsLoad({ loading: true, error: '' });
     try {
       const projection = await api(`/plans/${planId}/exam`);
+      if (!Array.isArray(projection?.subjects)) throw new Error('段考科目資料不完整');
       setExamSubjectIds(new Set((projection.subjects || []).map(s => Number(s.subject_list_id))));
-    } catch { /* 非段考或暫時離線時仍由後端 apply fail closed */ }
+      setExamSubjectsLoad({ loading: false, error: '' });
+    } catch (e) {
+      // 不知道現有科目時不能把所有科目都當成可加入，否則離線／API 失敗會把學生
+      // 帶進必定失敗的重複科目流程。套用成功後刷新失敗也要交給既有 committed
+      // recovery，不能關掉提示後讓畫面假裝已同步。
+      const message = e.message || '暫時無法載入段考科目';
+      setExamSubjectsLoad({ loading: false, error: message });
+      if (strict) throw e;
+    }
   };
   useEffect(() => { refreshExamSubjects(plan?.planId); }, [plan?.planId]);
 
@@ -185,6 +196,7 @@ export default function PlanDetailView({ planKey, tasks, lists, apiPlans = [], r
 
   const close = () => { setSheet(null); setErr(''); setRetain(null); };
   const openAddSubject = () => {
+    if (examSubjectsLoad.loading || examSubjectsLoad.error) return;
     // 每次開啟都是一份新的表單；不能沿用上次取消或已套用的科目，否則隱藏的舊值
     // 會讓按鈕看似可送出，最後卻撞到重複科目。考試日預設沿用整個段考最後一天。
     setNewSubject({ subject_list_id: '', exam_date: raw?.target_date || '' });
@@ -477,13 +489,21 @@ export default function PlanDetailView({ planKey, tasks, lists, apiPlans = [], r
             <Button size="sm" variant="primary" onClick={() => setSheet('addContent')}>
               <Icon name="plus" size={14} /> 加入內容
             </Button>
-            <Button size="sm" variant="secondary" onClick={openAddSubject}>
+            <Button size="sm" variant="secondary" disabled={examSubjectsLoad.loading || !!examSubjectsLoad.error} onClick={openAddSubject}>
               <Icon name="plus" size={14} /> 加入科目
             </Button>
             <Button size="sm" variant="secondary" onClick={() => setShowRolling(true)}>
               <Icon name="calendar" size={14} /> 調整每天安排
             </Button>
             <span className="ui-meta" style={{ marginLeft: 'var(--sp-2)' }}>先預覽再套用；今天、明天不變動</span>
+            {examSubjectsLoad.loading ? (
+              <span className="ui-meta">正在讀取段考科目…</span>
+            ) : examSubjectsLoad.error ? (
+              <span className="row" role="alert" style={{ gap: 'var(--sp-2)' }}>
+                <span className="ui-meta">科目資料未載入，暫時不能加入科目。</span>
+                <Button size="sm" variant="tertiary" onClick={() => refreshExamSubjects(plan.planId)}>重試</Button>
+              </span>
+            ) : null}
           </div>
         )}
         {showRolling && (
@@ -496,7 +516,7 @@ export default function PlanDetailView({ planKey, tasks, lists, apiPlans = [], r
             scheduleEnd={raw?.target_date
               || plan.items.reduce((m, t) => (t.deadline_date && t.deadline_date > m ? t.deadline_date : m), '')
               || null}
-            onApplied={async () => { await reload(); await refreshExamSubjects(plan.planId); setExamRefreshKey(k => k + 1); }} />
+            onApplied={async () => { await reload(); await refreshExamSubjects(plan.planId, true); setExamRefreshKey(k => k + 1); }} />
         )}
 
         {/* 首屏：用白話直接回答「考試哪天、要讀完哪些範圍（哪科→哪本→哪課）、
