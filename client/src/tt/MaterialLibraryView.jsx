@@ -3,6 +3,7 @@ import {
   listCategories, listBooks, getBookTree, setItemCompletion, createCategory, createBook,
   addBookToCategory, removeBookFromCategory, updateBook, bookNeedsSubject, ITEM_LABEL, CHAPTER_LEVEL_KINDS,
   collectBlocked, collectCancelled, bookImpact, deleteBook, listDeletedBooks, restoreDeletedBook, nameCheck,
+  existingMergePreview, existingMergeApply,
 } from './material';
 import { Button, EmptyState, PageHeader, SegmentedControl, ProgressBar, BottomSheet } from './ui';
 import BlockedNotice from './BlockedNotice';
@@ -112,9 +113,11 @@ export default function MaterialLibraryView({ goPlans = null, lists = [] }) {
   const [deletedBooks, setDeletedBooks] = useState([]);
   const [restoringId, setRestoringId] = useState(null);
   const [selectedBooks, setSelectedBooks] = useState(new Set());
-  const [batchAction, setBatchAction] = useState(null); // null | move | delete
+  const [batchAction, setBatchAction] = useState(null); // null | move | delete | merge
   const [batchCategory, setBatchCategory] = useState('');
   const [batchImpacts, setBatchImpacts] = useState(null);
+  const [mergeTarget, setMergeTarget] = useState('');
+  const [mergePreview, setMergePreview] = useState(null);
 
   const load = useCallback(async () => {
     const [c, b, deleted] = await Promise.all([
@@ -255,6 +258,29 @@ export default function MaterialLibraryView({ goPlans = null, lists = [] }) {
       await load();
     } catch (e) { setErr(e.message || '批次刪除未完成，請重新整理後確認'); }
     finally { setBusy(false); }
+  };
+
+  const previewSelectedMerge = async (target = null) => {
+    const ids = [...selectedBooks].map(Number);
+    const keep = Number(target || mergeTarget || ids[0]);
+    setBatchAction('merge'); setMergeTarget(String(keep)); setMergePreview(null); setBusy(true); setErr('');
+    try { setMergePreview(await existingMergePreview(keep, ids.filter(id => id !== keep))); }
+    catch (e) { setErr(e.message || '無法預覽合併結果'); setBatchAction(null); }
+    finally { setBusy(false); }
+  };
+
+  const mergeSelected = async () => {
+    if (!mergePreview) return;
+    const keep = Number(mergeTarget);
+    setBusy(true); setErr('');
+    try {
+      await existingMergeApply(keep, [...selectedBooks].map(Number).filter(id => id !== keep), mergePreview.fingerprint);
+      setSelectedBooks(new Set()); setBatchAction(null); setMergePreview(null); setMergeTarget('');
+      await load();
+    } catch (e) {
+      setErr(e.message || '合併未完成，資料沒有變動');
+      if (e.payload?.stale) await previewSelectedMerge(keep);
+    } finally { setBusy(false); }
   };
 
   const addBook = async ({ saveAsNew = false } = {}) => {
@@ -501,6 +527,7 @@ export default function MaterialLibraryView({ goPlans = null, lists = [] }) {
           {selectedBooks.size > 0 && <>
             <span className="ui-meta">已選 {selectedBooks.size} 本</span>
             <Button size="sm" variant="secondary" onClick={() => { setBatchAction('move'); setBatchCategory(''); }}>移動到分類</Button>
+            {selectedBooks.size > 1 && <Button size="sm" variant="secondary" onClick={() => previewSelectedMerge()}>合併</Button>}
             <Button size="sm" variant="ghost" onClick={prepareBatchDelete}>刪除</Button>
           </>}
         </div>
@@ -595,6 +622,34 @@ export default function MaterialLibraryView({ goPlans = null, lists = [] }) {
               </div>
             </div>;
           })()}
+        </BottomSheet>
+      )}
+
+      {batchAction === 'merge' && (
+        <BottomSheet onClose={() => !busy && setBatchAction(null)} label="合併教材">
+          <div style={{ display: 'grid', gap: 10 }}>
+            <b>先確認合併結果</b>
+            <div className="ui-meta">只有名稱、教材類型、出版社與科目都相同才能合併。內容、完成度與計畫引用都會保留。</div>
+            <label>保留哪一本？
+              <select aria-label="保留教材" value={mergeTarget} disabled={busy}
+                onChange={e => previewSelectedMerge(e.target.value)}>
+                {[...selectedBooks].map(id => { const b = books.find(x => Number(x.id) === Number(id)); return (
+                  <option key={id} value={id}>{b?.title}（{b?.progress?.completed_items || 0}/{b?.progress?.total_items || 0}）</option>
+                ); })}
+              </select>
+            </label>
+            {!mergePreview ? <div className="mt-loading">計算合併結果中…</div> : <>
+              <div className="ui-card">
+                <div>合併後共 <b>{mergePreview.result.total_items}</b> 個內容項目</div>
+                <div>已完成 <b>{mergePreview.result.completed_items}</b> 個，全部保留</div>
+                <div className="ui-meta">其餘 {mergePreview.source_books.length} 本會從教材庫移除；原有 Task、段考範圍及歷史仍指向相同內容。</div>
+              </div>
+              <div className="row" style={{ gap: 8 }}>
+                <Button variant="primary" disabled={busy} onClick={mergeSelected}>{busy ? '合併中…' : '確認合併'}</Button>
+                <Button variant="tertiary" disabled={busy} onClick={() => setBatchAction(null)}>取消，不合併</Button>
+              </div>
+            </>}
+          </div>
         </BottomSheet>
       )}
 

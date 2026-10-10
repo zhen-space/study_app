@@ -153,6 +153,91 @@ export async function sameNameBooks(userId, title, bookType = '', publisher = ''
     && (b.subject_list_id == null ? subjectListId == null : Number(b.subject_list_id) === Number(subjectListId)));
 }
 
+const sameBookIdentity = (a, b) =>
+  normalizeBookName(a.title) === normalizeBookName(b.title)
+  && normalizeBookMetadata(a.book_type) === normalizeBookMetadata(b.book_type)
+  && normalizeBookMetadata(a.publisher) === normalizeBookMetadata(b.publisher)
+  && (a.subject_list_id == null ? b.subject_list_id == null : Number(a.subject_list_id) === Number(b.subject_list_id));
+
+const identityMergeFingerprint = (books, counts) => [...books]
+  .sort((a, b) => Number(a.id) - Number(b.id))
+  .map(b => `${b.id}:${b.updated_at || ''}:${counts.get(Number(b.id))?.nodes || 0}:${counts.get(Number(b.id))?.items || 0}`)
+  .join('|');
+
+async function readIdentityMerge(qx, userId, targetId, sourceIds) {
+  const ids = [...new Set([Number(targetId), ...(sourceIds || []).map(Number)])].filter(Number.isInteger);
+  if (ids.length < 2 || !ids.includes(Number(targetId))) throw new MaterialInputError('請至少選擇兩本教材');
+  const marks = ids.map(() => '?').join(',');
+  const books = await qx.all(
+    `SELECT * FROM material_books WHERE user_id=? AND deleted_at IS NULL AND id IN (${marks})`, [userId, ...ids]);
+  if (books.length !== ids.length) throw new MaterialInputError('有教材已不存在，請重新整理後再試', 409);
+  const target = books.find(b => Number(b.id) === Number(targetId));
+  if (!books.every(b => sameBookIdentity(target, b))) {
+    throw new MaterialInputError('只能合併名稱、教材類型、出版社與科目都相同的教材', 409);
+  }
+  const rows = await qx.all(
+    `SELECT b.id,
+            (SELECT COUNT(*) FROM material_nodes n WHERE n.user_id=b.user_id AND n.book_id=b.id) nodes,
+            (SELECT COUNT(*) FROM material_content_items i WHERE i.user_id=b.user_id AND i.book_id=b.id) items,
+            (SELECT COUNT(*) FROM material_progress p JOIN material_content_items i ON i.id=p.content_item_id AND i.user_id=p.user_id WHERE i.user_id=b.user_id AND i.book_id=b.id AND p.completed=1) completed
+       FROM material_books b WHERE b.user_id=? AND b.id IN (${marks})`, [userId, ...ids]);
+  const counts = new Map(rows.map(r => [Number(r.id), { nodes: Number(r.nodes), items: Number(r.items), completed: Number(r.completed) }]));
+  return { books, target, sources: books.filter(b => Number(b.id) !== Number(targetId)), counts,
+    fingerprint: identityMergeFingerprint(books, counts) };
+}
+
+// 既有教材合併預覽：只合併完整 identity 相同（含科目）的書，完全不寫資料。
+export async function previewExistingBookMerge(userId, targetId, sourceIds) {
+  const state = await readIdentityMerge(q, userId, targetId, sourceIds);
+  const sum = key => state.books.reduce((n, b) => n + state.counts.get(Number(b.id))[key], 0);
+  return {
+    target_book: state.target,
+    source_books: state.sources,
+    result: { total_items: sum('items'), completed_items: sum('completed'), total_nodes: sum('nodes') },
+    fingerprint: state.fingerprint,
+  };
+}
+
+// 保留所有 node / content item identity，僅把它們搬進保留書；因此進度、Plan、Task、
+// progress segment 與歷史排程的引用都原封不動。整筆在同一交易完成。
+export async function applyExistingBookMerge(userId, targetId, sourceIds, expectedFingerprint) {
+  let result;
+  await q.tx(async tx => {
+    const state = await readIdentityMerge(tx, userId, targetId, sourceIds);
+    if (!expectedFingerprint || expectedFingerprint !== state.fingerprint) {
+      const err = new MaterialInputError('教材在預覽後有變動，請重新預覽再合併', 409);
+      err.code = 'STALE'; err.stale = true;
+      throw err;
+    }
+    let row = await tx.get(
+      'SELECT COALESCE(MAX(order_index),-1) max_order FROM material_nodes WHERE user_id=? AND book_id=? AND parent_id IS NULL',
+      [userId, targetId]);
+    let offset = Number(row?.max_order ?? -1) + 1;
+    for (const source of state.sources) {
+      const rootCount = await tx.get(
+        'SELECT COUNT(*) n FROM material_nodes WHERE user_id=? AND book_id=? AND parent_id IS NULL', [userId, source.id]);
+      await tx.run(
+        'UPDATE material_nodes SET order_index=order_index+? WHERE user_id=? AND book_id=? AND parent_id IS NULL',
+        [offset, userId, source.id]);
+      await tx.run('UPDATE material_nodes SET book_id=? WHERE user_id=? AND book_id=?', [targetId, userId, source.id]);
+      await tx.run('UPDATE material_content_items SET book_id=? WHERE user_id=? AND book_id=?', [targetId, userId, source.id]);
+      await tx.run('UPDATE tasks SET material_book_id=? WHERE user_id=? AND material_book_id=?', [targetId, userId, source.id]);
+      const cats = await tx.all('SELECT category_id,order_index FROM material_category_books WHERE user_id=? AND book_id=?', [userId, source.id]);
+      for (const c of cats) await tx.run(
+        'INSERT OR IGNORE INTO material_category_books (user_id,category_id,book_id,order_index) VALUES (?,?,?,?)',
+        [userId, c.category_id, targetId, c.order_index]);
+      await tx.run('DELETE FROM material_category_books WHERE user_id=? AND book_id=?', [userId, source.id]);
+      await tx.run('UPDATE material_book_sources SET book_id=? WHERE user_id=? AND book_id=?', [targetId, userId, source.id]);
+      await tx.run('UPDATE material_books SET deleted_at=?,archived=1,updated_at=CURRENT_TIMESTAMP WHERE user_id=? AND id=?',
+        [now(), userId, source.id]);
+      offset += Number(rootCount?.n || 0);
+    }
+    await tx.run('UPDATE material_books SET updated_at=CURRENT_TIMESTAMP WHERE user_id=? AND id=?', [userId, targetId]);
+    result = { book_id: Number(targetId), merged_book_ids: state.sources.map(b => Number(b.id)) };
+  });
+  return result;
+}
+
 export async function createBook(userId, body = {}) {
   const title = String(body.title || '').trim();
   if (!title) throw new MaterialInputError('請輸入教材名稱');
