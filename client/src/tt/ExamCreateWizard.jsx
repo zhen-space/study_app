@@ -19,12 +19,12 @@ import Icon from './Icons';
 const DRAFT_KEY = 'examWizardDraft:v1';
 const STEPS = ['這次考試', '每科考什麼', '希望怎麼安排'];
 const LEVELS = [
-  ['progress', '設定幾號到幾號要讀完什麼', '依科目建立一段完成範圍；不產生每日待辦，也不會排到行事曆'],
+  ['progress', '幫我切成幾段完成範圍', '依預估時間切出「幾號到幾號完成什麼」；不建立每日待辦'],
   ['daily', '幫我排出每天要完成什麼', '自動分配到每天並出現在每日待辦，但不指定幾點'],
   ['timed', '幫我排到每天的具體時間', '依可用時間與既有行程排出起訖時間，顯示在行事曆'],
 ];
 const LEVEL_OUTCOME = {
-  progress: '依科目建立「開始準備日到考試日」的完成範圍，不產生每日待辦或行事曆時段。',
+  progress: '把各科內容切成連續的日期區間；每段清楚顯示要完成什麼，但不建立每日待辦。',
   daily: '建立每天要完成的待辦，但不指定幾點開始。',
   timed: '建立有起訖時間的每日安排，並顯示在行事曆。',
 };
@@ -349,7 +349,17 @@ export default function ExamCreateWizard({ lists = [], onDone, onCancel, onManag
               <b>確認一下</b>
               <div className="ui-meta" style={{ marginBottom: 6 }}>{name}｜{start ? md(start) : ''}–{md(end)}</div>
               <div aria-label="建立結果摘要" style={{ marginBottom: 8 }}><b>這次會：</b>{LEVEL_OUTCOME[level]}</div>
-              {subjects.map(s => {
+              {level === 'progress' && preview?.progress_segments?.length > 0 ? (
+                <div style={{ marginTop: 10 }}>
+                  <div className="ui-meta" style={{ fontWeight: 600 }}>完成區間（預覽）</div>
+                  {preview.progress_segments.map((seg, i) => (
+                    <div key={`${seg.subject_list_id}-${i}`} style={{ marginTop: 8 }}>
+                      <div style={{ fontWeight: 600 }}>{md(seg.start_date)}–{md(seg.end_date)} · {seg.subject_name || nameOf(seg.subject_list_id)}</div>
+                      {seg.items.map((item, j) => <div key={j} className="ui-meta" style={{ marginLeft: 6 }}>・{item.title}（{item.minutes} 分）</div>)}
+                    </div>
+                  ))}
+                </div>
+              ) : subjects.map(s => {
                 const canonical = (preview?.scope || []).filter(x => Number(x.subject_list_id) === Number(s.listId));
                 return (
                   <div key={s.listId} style={{ marginTop: 8 }}>

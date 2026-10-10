@@ -10,6 +10,7 @@ import { verifyMaterialSnapshotToken } from './material-token.js';
 import { verifyExamSubjectToken } from './exam-subject-token.js';
 import { signMaterialScopeRemovalToken, verifyMaterialScopeRemovalToken } from './material-scope-removal-token.js';
 import { verifyExamPlanPreview } from './exam-plan-token.js';
+import { buildExamProgressSegments } from './exam-progress.js';
 import { createHash } from 'node:crypto';
 
 // 手動調整的說法：使用者是「現在正要放」，不是「想恢復舊安排」。
@@ -1658,27 +1659,16 @@ export async function createExamPlanAtomic(userId, {
     // 起訖進度目標。教材項目放進 scope_json；老師指定範圍仍由
     // plan_manual_scope 保存，兩者都在同一筆建立交易內，不會留下半套資料。
     if (level === 'progress') {
-      oi = 0;
-      for (const s of scope.orderedSubjects) {
-        const materialRows = scope.materialIds.length ? await tx.all(
-          `SELECT i.id,i.title FROM material_content_items i
-             JOIN material_books b ON b.id=i.book_id AND b.user_id=i.user_id
-            WHERE i.user_id=? AND b.subject_list_id=?
-              AND i.id IN (${scope.materialIds.map(() => '?').join(',')})`,
-          [userId, s.subject_list_id, ...scope.materialIds]) : [];
-        const materialScope = materialRows.map(row => Number(row.id));
-        const subject = await tx.get('SELECT name FROM lists WHERE id=? AND user_id=?', [s.subject_list_id, userId]);
-        const scopeNames = [
-          ...materialRows.map(row => row.title),
-          ...scope.manualEntries.filter(m => Number(m.subject_list_id) === Number(s.subject_list_id)).map(m => m.label),
-        ];
-        const summary = `${scopeNames.slice(0, 3).join('、')}${scopeNames.length > 3 ? `等 ${scopeNames.length} 項` : ''}`;
+      const rows = await tx.all('SELECT id,name FROM lists WHERE user_id=?', [userId]);
+      const segments = buildExamProgressSegments(scope, startDate || todayTW(),
+        new Map(rows.map(row => [Number(row.id), row.name])));
+      for (const segment of segments) {
         await tx.run(
           `INSERT INTO plan_progress_segments
              (user_id,plan_id,start_date,end_date,subject_list_id,title,scope_json,kind,order_index)
            VALUES (?,?,?,?,?,?,?,?,?)`,
-          [userId, planId, startDate || null, s.exam_date, s.subject_list_id,
-            `${subject?.name || '科目'}：${summary}`, JSON.stringify(materialScope), 'study', oi++]);
+          [userId, planId, segment.start_date, segment.end_date, segment.subject_list_id,
+            segment.title, JSON.stringify(segment.scope), 'study', segment.order_index]);
       }
     }
 
