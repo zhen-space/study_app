@@ -100,6 +100,16 @@ router.post('/material/books/:id/merge', handle(async (req, res) => {
   }));
 }));
 
+// 已存在的多本教材合併：preview 不寫入；apply 以 preview fingerprint 防 stale。
+router.post('/material/books/:id/identity-merge/preview', handle(async (req, res) => {
+  res.json(await material.previewExistingBookMerge(req.userId, req.params.id, req.body?.source_book_ids));
+}));
+
+router.post('/material/books/:id/identity-merge', handle(async (req, res) => {
+  res.json(await material.applyExistingBookMerge(
+    req.userId, req.params.id, req.body?.source_book_ids, req.body?.expected_fingerprint));
+}));
+
 // 最近刪除：只看得到自己的 tombstone。復原只清 deleted_at，不重選 Plan 內容。
 router.get('/material/books/deleted', handle(async (req, res) => {
   res.json(await material.listDeletedBooks(req.userId));

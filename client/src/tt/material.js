@@ -90,6 +90,16 @@ export const mergeApply = (bookId, draft, { expectedFingerprint = null, confirmO
     body: { draft, expected_fingerprint: expectedFingerprint, confirm_order: confirmOrder, confirm_duplicates: confirmDuplicates },
   });
 
+export const existingMergePreview = (targetBookId, sourceBookIds) =>
+  api(`/material/books/${targetBookId}/identity-merge/preview`, {
+    method: 'POST', body: { source_book_ids: sourceBookIds },
+  });
+
+export const existingMergeApply = (targetBookId, sourceBookIds, expectedFingerprint) =>
+  api(`/material/books/${targetBookId}/identity-merge`, {
+    method: 'POST', body: { source_book_ids: sourceBookIds, expected_fingerprint: expectedFingerprint },
+  });
+
 /* ---------- 寫入 ---------- */
 
 // 教材完成度。**只有**教材庫的完成操作可以呼叫這支；
