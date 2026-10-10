@@ -62,6 +62,32 @@ describe('POST /exam-plans（server-authoritative 原子建立）', () => {
     assert.equal(p.manual_scope[0].label, '老師講義第三章');
     assert.ok(p.manual_scope.every(x => x.task_id == null), 'progress 不建 Task');
     assert.ok(!(await tasksNow()).some(t => t.title === '老師講義第三章'), '手動範圍不得建成 Task');
+    const progress = await get(`/plans/${p.plan.id}/progress-segments`);
+    assert.equal(progress.status, 200);
+    assert.ok(progress.body.segments.length >= 2, '不同內容應切成可執行的日期區間，不是每科只有一個大範圍');
+    assert.equal(progress.body.segments[0].start_date, day(0));
+    assert.equal(progress.body.segments.at(-1).end_date, day(14));
+    for (const sid of [math.id, eng.id]) {
+      const rows = progress.body.segments.filter(seg => Number(seg.subject_list_id) === Number(sid));
+      assert.ok(rows.every((seg, i) => i === 0 || seg.start_date > rows[i - 1].end_date),
+        '同科完成區間要依序且不重疊');
+    }
+  });
+
+  test('EP1-preview：建立前就顯示與正式資料一致的分段結果', async () => {
+    const math = await subject('數學EP1-preview');
+    const first = await contentItem(math.id, '第一章', 30);
+    const second = await contentItem(math.id, '第二章', 60);
+    const body = {
+      name: '第一次段考', start_date: day(0), end_date: day(5), level: 'progress',
+      subjects: [{ subject_list_id: math.id }], material_scope: [first.it.id, second.it.id], manual_scope: [],
+    };
+    const preview = await call('/exam-plans/preview', { method: 'POST', body });
+    assert.equal(preview.status, 200, JSON.stringify(preview.body));
+    assert.equal(preview.body.progress_segments.length, 2);
+    assert.equal(preview.body.progress_segments[0].start_date, day(0));
+    assert.equal(preview.body.progress_segments.at(-1).end_date, day(5));
+    assert.deepEqual(preview.body.progress_segments.flatMap(seg => seg.scope), [first.it.id, second.it.id]);
   });
 
   test('EP2 daily：伺服器自排；Task deadline＝該科考試日，且沒有 block 超過它', async () => {

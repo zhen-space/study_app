@@ -17,7 +17,8 @@ const setApi = () => {
     if (path === '/exam-plans' && opts?.method === 'POST') return Promise.resolve({ plan: { id: 99 } });
     if (path === '/exam-plans/preview') return Promise.resolve({ preview_token: 'signed', blocks: [], scope: [
       { kind: 'manual', subject_list_id: 1, title: '講義第三章', estimated_minutes: null },
-    ] });
+    ], progress_segments: [{ subject_list_id: 1, subject_name: '數學', start_date: '2099-09-20', end_date: '2099-10-02',
+      items: [{ title: '講義第三章', minutes: 30 }] }] });
     return Promise.resolve({});
   });
 };
@@ -82,11 +83,12 @@ describe('ExamCreateWizard', () => {
     }));
     render(<ExamCreateWizard lists={LISTS} onDone={() => {}} onCancel={() => {}} />);
 
-    expect(await screen.findByText('設定幾號到幾號要讀完什麼')).toBeTruthy();
-    expect(screen.getByText(/不產生每日待辦，也不會排到行事曆/)).toBeTruthy();
+    expect(await screen.findByText('幫我切成幾段完成範圍')).toBeTruthy();
+    expect(screen.getAllByText(/不建立每日待辦/).length).toBeGreaterThan(0);
     expect(screen.getByText(/出現在每日待辦，但不指定幾點/)).toBeTruthy();
     expect(screen.getByText(/排出起訖時間，顯示在行事曆/)).toBeTruthy();
-    expect(screen.getByLabelText('建立結果摘要')).toHaveTextContent('開始準備日到考試日');
+    expect(screen.getByLabelText('建立結果摘要')).toHaveTextContent('切成連續的日期區間');
+    expect(screen.getByText('9/20–10/2 · 數學')).toBeTruthy();
 
     await click(screen.getAllByRole('radio')[1]);
     expect(screen.getByLabelText('建立結果摘要')).toHaveTextContent('建立每天要完成的待辦');

@@ -6,6 +6,7 @@ import { runPreview } from './schedule.js';
 import { getPlanSelection } from '../material/service.js';
 import { todayTW } from '../util/date.js';
 import { signExamPlanPreview, verifyExamPlanPreview } from '../schedule/exam-plan-token.js';
+import { buildExamProgressSegments } from '../schedule/exam-progress.js';
 
 // 段考計畫（Exam Plan）——不是第二套 Plan，就是既有 Plan 加兩個 additive 層：
 //   ・plan_exam_subjects：每一科自己的考試日（plan.target_date＝整個段考最後一天）。
@@ -55,8 +56,14 @@ async function authoritativePreview(userId, b) {
   if (level === 'progress') for (const m of scope.manualEntries) canonicalScope.push({ kind: 'manual',
     subject_list_id: m.subject_list_id, title: m.label, estimated_minutes: m.estimated_minutes,
     content_item_id: null, deadline: scope.examBySubject.get(Number(m.subject_list_id)) ?? endDate });
+  let progress_segments = [];
+  if (level === 'progress') {
+    const rows = await q.all('SELECT id,name FROM lists WHERE user_id=?', [userId]);
+    progress_segments = buildExamProgressSegments(scope, startDate || todayTW(),
+      new Map(rows.map(row => [Number(row.id), row.name])));
+  }
   return { level, start_date: startDate, end_date: endDate, subjects: scope.orderedSubjects,
-    scope: canonicalScope,
+    scope: canonicalScope, progress_segments,
     blocks, check, unplaced_tasks, base_version_id: snapshot.base_version_id,
     preview_token: signExamPlanPreview(snapshot) };
 }
