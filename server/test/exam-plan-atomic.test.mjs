@@ -174,4 +174,34 @@ describe('createExamPlanAtomic 單一交易原子性（P0-4）', () => {
       subjects: [{ subject_list_id: subjId }], materialIds: [], manual: [],
     }), e => e.code === 'EXAM_SCOPE_EMPTY' && e.status === 422);
   });
+
+  test('教材 ID 順序與目錄順序不同時，三種段考安排都採正式教材階層順序', async () => {
+    const book = await q.run(`INSERT INTO material_books (user_id,title,subject_list_id)
+      VALUES (?,?,?)`, [USER, '數學課本', subjId]);
+    // 先建立第二章，讓它拿到較小 id；正式目錄仍以 order_index 判定第一章在前。
+    const chapter2 = await q.run(`INSERT INTO material_nodes
+      (user_id,book_id,kind,title,order_index) VALUES (?,?,?,?,?)`,
+    [USER, Number(book.lastInsertRowid), 'chapter', '第二章', 2]);
+    const item2 = await q.run(`INSERT INTO material_content_items
+      (user_id,book_id,node_id,kind,title,estimated_minutes,order_index) VALUES (?,?,?,?,?,?,?)`,
+    [USER, Number(book.lastInsertRowid), Number(chapter2.lastInsertRowid), 'reading', '第二章內容', 30, 0]);
+    const chapter1 = await q.run(`INSERT INTO material_nodes
+      (user_id,book_id,kind,title,order_index) VALUES (?,?,?,?,?)`,
+    [USER, Number(book.lastInsertRowid), 'chapter', '第一章', 1]);
+    const item1 = await q.run(`INSERT INTO material_content_items
+      (user_id,book_id,node_id,kind,title,estimated_minutes,order_index) VALUES (?,?,?,?,?,?,?)`,
+    [USER, Number(book.lastInsertRowid), Number(chapter1.lastInsertRowid), 'reading', '第一章內容', 30, 0]);
+
+    for (const level of ['progress', 'daily', 'timed']) {
+      const scope = await sched.buildExamScope(q, USER, {
+        endDate: rel(10), startDate: rel(0), level,
+        subjects: [{ subject_list_id: subjId }],
+        materialIds: [Number(item2.lastInsertRowid), Number(item1.lastInsertRowid)], manual: [],
+      });
+      assert.deepEqual(scope.scopeItems.map(item => item.contentItemId),
+        [Number(item1.lastInsertRowid), Number(item2.lastInsertRowid)]);
+      assert.deepEqual(scope.scopeItems.map(item => item.title),
+        ['數學課本｜第一章｜第一章內容', '數學課本｜第二章｜第二章內容']);
+    }
+  });
 });
