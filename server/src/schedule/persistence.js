@@ -1475,6 +1475,7 @@ export async function buildExamScope(runner, userId, {
   }
 
   const scopeItems = [];        // { kind, subjectId, title, minutes, contentItemId, bookId, deadline, label }
+  const materialScopeItems = [];
   const subjectsWithScope = new Set();
   const sigParts = [];
   const uniqTitle = new Set();
@@ -1485,10 +1486,13 @@ export async function buildExamScope(runner, userId, {
 
   // ② 教材項目（CURRENT 重讀）
   const matIds = [...new Set((materialIds || []).map(Number).filter(Number.isInteger))];
-  for (const cid of matIds) {
+  for (const [requestIndex, cid] of matIds.entries()) {
     const it = await runner.get(
       `SELECT i.id, i.title, i.estimated_minutes, i.book_id, b.subject_list_id,
               b.title AS book_title, COALESCE(ch.title, n.title) AS chapter_title,
+              COALESCE(ch.order_index,n.order_index) AS chapter_order,
+              CASE WHEN n.parent_id IS NULL THEN -1 ELSE n.order_index END AS node_order,
+              i.order_index AS item_order,
               COALESCE(p.completed,0) AS completed
          FROM material_content_items i
          JOIN material_books b ON b.id=i.book_id AND b.user_id=i.user_id
@@ -1504,10 +1508,39 @@ export async function buildExamScope(runner, userId, {
     const est = Number(it.estimated_minutes) > 0 ? Number(it.estimated_minutes) : null;
     if (scheduled && est == null) throw new ExamPlanError(`教材項目缺少估計時間，無法排入每天安排：${title}`, 'MATERIAL_ESTIMATE_MISSING', 422);
     if (scheduled) requireUniqueTitle(`${sid}\u0000${title}`);
-    scopeItems.push({ kind: 'material', subjectId: sid, title, minutes: est ?? 30, contentItemId: cid, bookId: it.book_id ?? null, deadline: examBySubject.get(sid), label: null });
+    materialScopeItems.push({
+      kind: 'material', subjectId: sid, title, minutes: est ?? 30,
+      contentItemId: cid, bookId: it.book_id ?? null,
+      deadline: examBySubject.get(sid), label: null,
+      _requestIndex: requestIndex,
+      _chapterOrder: Number(it.chapter_order) || 0,
+      _nodeOrder: Number(it.node_order) || 0,
+      _itemOrder: Number(it.item_order) || 0,
+    });
     subjectsWithScope.add(sid);
     sigParts.push(`m:${cid}:${est ?? ''}:${sid}:${title}`);
   }
+
+  // 前端以 content_item_id 當選取 map 的 key；整數 key 會被瀏覽器按數值排序，
+  // 不能代表學生在教材樹裡看到的先後。段考預覽、progress 區間與 daily／timed
+  // 排程都必須共用正式教材階層順序，否則後建立但排在前面的章節會被倒著安排。
+  // 跨書仍保留 request 中第一次出現的書序，只在同一本書內 canonicalize。
+  const firstBookRequestIndex = new Map();
+  for (const item of materialScopeItems) {
+    const key = `${item.subjectId}\u0000${item.bookId}`;
+    if (!firstBookRequestIndex.has(key)) firstBookRequestIndex.set(key, item._requestIndex);
+  }
+  materialScopeItems.sort((a, b) =>
+    (firstBookRequestIndex.get(`${a.subjectId}\u0000${a.bookId}`)
+      - firstBookRequestIndex.get(`${b.subjectId}\u0000${b.bookId}`))
+    || (a._chapterOrder - b._chapterOrder)
+    || (a._nodeOrder - b._nodeOrder)
+    || (a._itemOrder - b._itemOrder)
+    || (a.contentItemId - b.contentItemId));
+  scopeItems.push(...materialScopeItems.map(item => {
+    const { _requestIndex, _chapterOrder, _nodeOrder, _itemOrder, ...scopeItem } = item;
+    return scopeItem;
+  }));
 
   // ③ 手動範圍
   const manualEntries = [];
