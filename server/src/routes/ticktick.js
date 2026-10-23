@@ -3,7 +3,7 @@ import { q } from '../db/init.js';
 import { requireAuth } from '../middleware/auth.js';
 import { calculateScheduleDiff } from '../schedule/diff.js';
 import { todayTW, twDayOf } from '../util/date.js';
-import { transitionTaskOutcome } from '../schedule/persistence.js';
+import { transitionTaskDeletion, transitionTaskOutcome } from '../schedule/persistence.js';
 import { setCompletion } from '../material/service.js';
 import {
   TASK_KINDS, DEFAULT_TASK_KIND, REMINDER_DAYS_BEFORE,
@@ -503,6 +503,17 @@ router.post('/tasks/:id/reopen', async (req, res) => {
 router.delete('/tasks/:id', async (req, res) => {
   const t = await q.get('SELECT * FROM tasks WHERE id=?', [req.params.id]);
   if (!(await canTouch(req.userId, t))) return res.status(404).json({ error: 'not found' });
+  // Plan Task 的 id 會被 immutable ScheduleVersion 歷史引用，永遠不得 hard delete。
+  // 軟刪除若有 active future block，也必須和新版排程在同一筆交易完成。
+  if (t.plan_id != null) {
+    if (req.query.hard) return res.status(409).json({ error: '計畫任務保留排程歷史，不能永久刪除' });
+    try {
+      const out = await transitionTaskDeletion(req.userId, t.id);
+      return res.json({ ok: true, task: parseTask(out.task), schedule_version: out.version });
+    } catch (err) {
+      return res.status(err.status || 400).json({ error: err.message, conflicts: err.conflicts });
+    }
+  }
   // 預設軟刪除進垃圾桶；?hard=1 才真的刪
   if (req.query.hard) await q.run('DELETE FROM tasks WHERE id=?', [t.id]);
   else await q.run('UPDATE tasks SET deleted=1 WHERE id=?', [t.id]);

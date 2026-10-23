@@ -630,6 +630,20 @@ describe('Phase 1：Plan／Task lifecycle 與 user-level ScheduleVersion', () =>
     assert.equal((await sched.getBlocks(userId, initial.version_id)).length, 1, '歷史版本不可改寫');
   });
 
+  test('刪除 Plan Task 會原子建立新版移除 block，歷史版本仍保留', async () => {
+    const userId = 541;
+    await q.run('INSERT INTO users (id,email,password_hash) VALUES (?,?,?)', [userId, 'delete-version@test', 'x']);
+    const plan = await q.run('INSERT INTO plans (user_id,name,status) VALUES (?,?,?)', [userId, '刪除任務', 'active']);
+    const task = await q.run('INSERT INTO tasks (user_id,title,plan_id) VALUES (?,?,?)', [userId, '刪除後不排程', plan.lastInsertRowid]);
+    const initial = await sched.createScheduleVersion(userId, { source: sched.SOURCE.INITIAL, effectiveFrom: '2099-01-01', blocks: [
+      { task_id: task.lastInsertRowid, date: '2099-08-15', start_time: '18:00', end_time: '19:00' },
+    ] });
+    const deleted = await sched.transitionTaskDeletion(userId, task.lastInsertRowid);
+    assert.equal(deleted.task.deleted, 1);
+    assert.equal((await sched.getBlocks(userId, deleted.version.version_id)).length, 0);
+    assert.equal((await sched.getBlocks(userId, initial.version_id)).length, 1, '歷史版本不可改寫');
+  });
+
   test('cancelled Task restore 時列為 skip，preview 與 apply 都不會重新寫入 block 或 unplaced', async () => {
     const userId = 55;
     await q.run('INSERT INTO users (id,email,password_hash) VALUES (?,?,?)', [userId, 'restore-cancelled@test', 'x']);

@@ -166,12 +166,22 @@ describe('版本是 immutable snapshot', () => {
   test('任務軟刪除之後，歷史 block 仍在而且仍讀得懂', async () => {
     const v = (await active()).body;
     const target = v.blocks[0];
-    await api(`/tasks/${target.task_id}`, { method: 'DELETE' });
+    const removed = await api(`/tasks/${target.task_id}`, { method: 'DELETE' });
+    assert.equal(removed.status, 200);
+    assert.ok(removed.body.schedule_version?.version_id, '刪除已排程任務必須建立新版');
+
+    const current = (await active()).body;
+    assert.equal(current.version.id, removed.body.schedule_version.version_id);
+    assert.equal(current.blocks.some(b => b.task_id === target.task_id), false,
+      '★ active version 不得殘留已刪除任務的幽靈 block');
 
     const after = (await api(`/schedule/versions/${v.version.id}`)).body;
     const still = after.blocks.find(b => b.task_id === target.task_id);
     assert.ok(still, '★ 歷史 block 不得因為任務被刪就消失');
     assert.ok(still.task_title_snapshot, '★ 還要看得懂當初排的是什麼');
+
+    const hard = await api(`/tasks/${target.task_id}?hard=1`, { method: 'DELETE' });
+    assert.equal(hard.status, 409, 'Plan Task 的歷史身分不可永久刪除');
   });
 });
 
