@@ -106,6 +106,7 @@ export default function ReplanSheet({ plan, health, raw, lists = [], reload, onC
         mode: 'edit',
         planId: plan.planId,
         blocks: preview.blocks,
+        baseVersionId: preview.base_version_id,
         existingTasks: plan.items,
         // 重排只是把東西搬到新的日子：排不進去的留在原地，不刪
         removeUnscheduled: false,
@@ -113,7 +114,14 @@ export default function ReplanSheet({ plan, health, raw, lists = [], reload, onC
         updatePlanDates: false,
       });
     } catch (e) {
-      setErr(e.message); setStage('preview'); applyBusy.current = false; return;
+      if (e.status === 409 && e.payload?.code === 'STALE_SCHEDULE_PREVIEW') {
+        setPreview(null);
+        setErr('排程已在預覽後更新，請重新產生安排。');
+        setStage('confirm');
+      } else {
+        setErr(e.message); setStage('preview');
+      }
+      applyBusy.current = false; return;
     }
     // 寫入成功後就不能再送一次。父層刷新失敗是讀取恢復問題，不是套用失敗。
     setApplied(true);

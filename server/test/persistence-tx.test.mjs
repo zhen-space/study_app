@@ -785,6 +785,54 @@ describe('P3 Restore：版本是 template，套用永遠建立新版本', () => 
   });
 });
 
+describe('Replan preview optimistic base', () => {
+  test('舊 base 與成功後重送都回 409，且不建立版本或改動 Task mirror', async () => {
+    const userId = 81;
+    await q.run('INSERT INTO users (id,email,password_hash) VALUES (?,?,?)', [userId, 'replan-stale@test', 'x']);
+    const plan = await q.run('INSERT INTO plans (user_id,name,status) VALUES (?,?,?)', [userId, '重排防覆蓋', 'active']);
+    const task = await q.run('INSERT INTO tasks (user_id,title,plan_id) VALUES (?,?,?)', [userId, '力學', plan.lastInsertRowid]);
+    const v1 = await sched.createScheduleVersion(userId, {
+      source: sched.SOURCE.INITIAL, effectiveFrom: rel(1),
+      blocks: [{ task_id: task.lastInsertRowid, date: rel(7) }],
+    });
+    const staleCandidate = [{ task_id: task.lastInsertRowid, date: rel(9) }];
+
+    // 使用者預覽 V1 後，另一頁先完成手動調整成 V2。
+    const v2 = await sched.createScheduleVersion(userId, {
+      source: sched.SOURCE.MANUAL, effectiveFrom: rel(1), parentVersionId: v1.version_id,
+      blocks: [{ task_id: task.lastInsertRowid, date: rel(8) }],
+    });
+    const countBeforeStale = Number((await q.get('SELECT COUNT(*) c FROM schedule_versions WHERE user_id=?', [userId])).c);
+    await assert.rejects(() => sched.applySchedule(userId, {
+      planId: plan.lastInsertRowid, source: sched.SOURCE.AI_REPLAN,
+      blocks: staleCandidate, expectedBaseVersionId: v1.version_id,
+    }), error => error.status === 409 && error.code === 'STALE_SCHEDULE_PREVIEW'
+      && Number(error.active_version_id) === Number(v2.version_id));
+    assert.equal(Number((await q.get('SELECT COUNT(*) c FROM schedule_versions WHERE user_id=?', [userId])).c), countBeforeStale,
+      '舊 preview 不得另建版本');
+    assert.equal(await sched.getActiveVersionId(userId), v2.version_id);
+    assert.equal((await q.get('SELECT due_date FROM tasks WHERE id=?', [task.lastInsertRowid])).due_date, rel(8),
+      '舊 preview 不得覆蓋目前 mirror');
+
+    // 正常以 V2 套用成功後，同一 request 若因回應遺失而重送，active 已是 V3，
+    // 必須以同一道 stale gate 去重，不能產生內容相同的 V4。
+    const applied = await sched.applySchedule(userId, {
+      planId: plan.lastInsertRowid, source: sched.SOURCE.AI_REPLAN,
+      blocks: staleCandidate, expectedBaseVersionId: v2.version_id,
+    });
+    const countAfterApply = Number((await q.get('SELECT COUNT(*) c FROM schedule_versions WHERE user_id=?', [userId])).c);
+    await assert.rejects(() => sched.applySchedule(userId, {
+      planId: plan.lastInsertRowid, source: sched.SOURCE.AI_REPLAN,
+      blocks: staleCandidate, expectedBaseVersionId: v2.version_id,
+    }), error => error.status === 409 && error.code === 'STALE_SCHEDULE_PREVIEW'
+      && Number(error.active_version_id) === Number(applied.version_id));
+    assert.equal(Number((await q.get('SELECT COUNT(*) c FROM schedule_versions WHERE user_id=?', [userId])).c), countAfterApply,
+      '成功 request 重送不得建立重複版本');
+    assert.equal(await sched.getActiveVersionId(userId), applied.version_id);
+    assert.equal((await q.get('SELECT due_date FROM tasks WHERE id=?', [task.lastInsertRowid])).due_date, rel(9));
+  });
+});
+
 describe('P5 歷史 diff：immutable version 即時計算', () => {
   test('child 對 parent 比較；restore 一律比較 restore 前 active，不比較 template', async () => {
     const userId = 13;
