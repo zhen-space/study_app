@@ -18,14 +18,14 @@ function error(message, status, payload) {
   return e;
 }
 
-function mount(reload = vi.fn().mockResolvedValue(undefined)) {
+function mount(reload = vi.fn().mockResolvedValue(undefined), { apiPlan = plan, onBack = vi.fn() } = {}) {
   render(<PlanDetailView
     planKey="plan:12"
     tasks={tasks}
     lists={fx.lists}
-    apiPlans={[plan]}
+    apiPlans={[apiPlan]}
     reload={reload}
-    onBack={vi.fn()}
+    onBack={onBack}
     goWizard={vi.fn()}
     adjustPlan={vi.fn()}
   />);
@@ -72,6 +72,96 @@ describe('Plan mutation recovery', () => {
 
     expect(handlers['/plans/12/pause']).toHaveBeenCalledTimes(2);
     expect(reload).toHaveBeenCalledOnce();
+  });
+
+  it('暫停已提交但回應遺失時以 GET 核對，只刷新而不重送 POST', async () => {
+    const reload = vi.fn().mockResolvedValue(undefined);
+    handlers['/plans/12/pause'] = vi.fn().mockRejectedValue(new Error('連線中斷'));
+    handlers['/plans/12'] = vi.fn().mockResolvedValue({ plan: { ...plan, status: 'paused' } });
+    mount(reload);
+
+    await click(await openPause());
+
+    expect(handlers['/plans/12/pause']).toHaveBeenCalledOnce();
+    expect(handlers['/plans/12']).toHaveBeenCalledOnce();
+    expect(reload).toHaveBeenCalledOnce();
+    expect(screen.queryByRole('dialog', { name: '暫停這個計畫' })).not.toBeInTheDocument();
+    expect(screen.queryByText('連線中斷')).not.toBeInTheDocument();
+  });
+
+  it('GET 確認暫停尚未提交時保留原錯誤與重試入口', async () => {
+    handlers['/plans/12/pause'] = vi.fn().mockRejectedValue(new Error('連線中斷'));
+    handlers['/plans/12'] = vi.fn().mockResolvedValue({ plan: { ...plan, status: 'active' } });
+    const reload = mount();
+    const pause = await openPause();
+
+    await click(pause);
+
+    expect(await screen.findByText('連線中斷')).toBeInTheDocument();
+    expect(pause).toBeEnabled();
+    expect(reload).not.toHaveBeenCalled();
+    expect(handlers['/plans/12/pause']).toHaveBeenCalledOnce();
+  });
+
+  it('明確 4xx lifecycle 拒絕直接呈現，不做狀態核對', async () => {
+    handlers['/plans/12/pause'] = vi.fn().mockRejectedValue(error('目前不能暫停', 409));
+    handlers['/plans/12'] = vi.fn();
+    mount();
+
+    await click(await openPause());
+
+    expect(await screen.findByText('目前不能暫停')).toBeInTheDocument();
+    expect(handlers['/plans/12']).not.toHaveBeenCalled();
+  });
+
+  it('刪除已提交但回應遺失時以 GET 404 確認，只返回列表而不重送', async () => {
+    const onBack = vi.fn();
+    const reload = vi.fn().mockResolvedValue(undefined);
+    handlers['/plans/12/delete'] = vi.fn().mockRejectedValue(new Error('連線中斷'));
+    handlers['/plans/12'] = vi.fn().mockRejectedValue(error('找不到這個計畫', 404));
+    mount(reload, { onBack });
+    await click(screen.getByRole('button', { name: '計畫選項' }));
+    await click(screen.getByText('刪除計畫'));
+    await click(screen.getByRole('button', { name: '下一步' }));
+
+    await click(screen.getByRole('button', { name: '確定刪除' }));
+
+    expect(handlers['/plans/12/delete']).toHaveBeenCalledOnce();
+    expect(handlers['/plans/12']).toHaveBeenCalledOnce();
+    expect(reload).toHaveBeenCalledOnce();
+    expect(onBack).toHaveBeenCalledOnce();
+  });
+
+  it.each([
+    ['resume', 'active', { status: 'paused' }, '繼續計畫'],
+    ['complete', 'completed', { status: 'active' }, '標記完成'],
+    ['end', 'ended', { status: 'active' }, '結束計畫'],
+  ])('%s 已提交但回應遺失時，以 GET 的 %s 狀態完成恢復', async (endpoint, expectedStatus, planPatch, action) => {
+    const currentPlan = { ...plan, ...planPatch };
+    const reload = vi.fn().mockResolvedValue(undefined);
+    handlers[`/plans/12/${endpoint}`] = vi.fn().mockRejectedValue(new Error('連線中斷'));
+    handlers['/plans/12'] = vi.fn().mockResolvedValue({ plan: { ...currentPlan, status: expectedStatus } });
+    mount(reload, { apiPlan: currentPlan });
+    await click(screen.getByRole('button', { name: '計畫選項' }));
+
+    await click(screen.getByText(action));
+
+    expect(handlers[`/plans/12/${endpoint}`]).toHaveBeenCalledOnce();
+    expect(handlers['/plans/12']).toHaveBeenCalledOnce();
+    expect(reload).toHaveBeenCalledOnce();
+  });
+
+  it('狀態核對也失敗時鎖住 mutation，只允許安全重新載入', async () => {
+    handlers['/plans/12/pause'] = vi.fn().mockRejectedValue(new Error('連線中斷'));
+    handlers['/plans/12'] = vi.fn().mockRejectedValue(new Error('仍然離線'));
+    mount();
+
+    await click(await openPause());
+
+    expect(await screen.findByText('暫時無法確認變更結果')).toBeInTheDocument();
+    expect(screen.getByText(/為避免重送，請先重新載入最新資料/)).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: '暫停計畫' })).not.toBeInTheDocument();
+    expect(handlers['/plans/12/pause']).toHaveBeenCalledOnce();
   });
 
   it('keeps the 375px lifecycle confirmation visible while pause is pending', async () => {
