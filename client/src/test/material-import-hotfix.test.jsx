@@ -6,8 +6,10 @@ import { render, screen, fireEvent, cleanup, waitFor } from '@testing-library/re
 import { act } from 'react';
 
 // jsdom 沒有 object URL：補上，讓縮圖 <img> 有 src、卸載時可 revoke。
+let objectUrlSeq = 0;
 beforeEach(() => {
-  globalThis.URL.createObjectURL = vi.fn(() => 'blob:mock');
+  objectUrlSeq = 0;
+  globalThis.URL.createObjectURL = vi.fn(() => `blob:mock-${++objectUrlSeq}`);
   globalThis.URL.revokeObjectURL = vi.fn();
 });
 afterEach(() => { cleanup(); vi.restoreAllMocks(); });
@@ -60,6 +62,33 @@ describe('PhotoQueue', () => {
   it('沒有照片時不能確認送出', () => {
     render(<PhotoQueue onConfirm={() => {}} onCancel={() => {}} />);
     expect(screen.getByRole('button', { name: /確認送出/ }).disabled).toBe(true);
+  });
+
+  it('追加與排序不會提前釋放仍在佇列的縮圖 URL', () => {
+    render(<PhotoQueue onConfirm={() => {}} onCancel={() => {}} />);
+    setFiles(screen.getByLabelText('選多張照片'), [file('a.jpg'), file('b.jpg')]);
+    setFiles(screen.getByLabelText('拍下一張'), [file('c.jpg')]);
+    fireEvent.click(screen.getByLabelText('第 1 頁下移'));
+
+    expect(URL.revokeObjectURL).not.toHaveBeenCalled();
+    expect(screen.getAllByRole('img').map(img => img.getAttribute('src'))).toEqual([
+      'blob:mock-2', 'blob:mock-1', 'blob:mock-3',
+    ]);
+  });
+
+  it('移除只釋放該頁 URL，卸載才釋放其餘縮圖', () => {
+    const { unmount } = render(<PhotoQueue onConfirm={() => {}} onCancel={() => {}} />);
+    setFiles(screen.getByLabelText('選多張照片'), [file('a.jpg'), file('b.jpg'), file('c.jpg')]);
+
+    fireEvent.click(screen.getByLabelText('移除第 2 頁'));
+    expect(URL.revokeObjectURL).toHaveBeenCalledTimes(1);
+    expect(URL.revokeObjectURL).toHaveBeenLastCalledWith('blob:mock-2');
+
+    unmount();
+    expect(URL.revokeObjectURL).toHaveBeenCalledTimes(3);
+    expect(URL.revokeObjectURL.mock.calls.map(([url]) => url).sort()).toEqual([
+      'blob:mock-1', 'blob:mock-2', 'blob:mock-3',
+    ]);
   });
 });
 
