@@ -22,9 +22,15 @@ export default function PhotoQueue({
   const [items, setItems] = useState([]);   // [{ id, file, url }]
   const [err, setErr] = useState('');
   const seq = useRef(0);
+  const liveUrls = useRef(new Set());
 
   // object URL 生命週期：卸載時全部釋放，避免手機記憶體累積。
-  useEffect(() => () => { for (const it of items) if (it.url) URL.revokeObjectURL(it.url); }, [items]);
+  // 不能依賴 items 做 cleanup：追加、排序或移除會觸發上一輪 cleanup，
+  // 把仍在佇列中的縮圖 URL 也提前釋放。
+  useEffect(() => () => {
+    for (const url of liveUrls.current) URL.revokeObjectURL(url);
+    liveUrls.current.clear();
+  }, []);
 
   const totalBytes = items.reduce((n, it) => n + (it.file.size || 0), 0);
   const isImage = f => (f?.type || '').startsWith('image/');
@@ -38,12 +44,21 @@ export default function PhotoQueue({
       if (next.length >= max) { setErr(`一次最多 ${max} 張，超過的沒有加入`); break; }
       if (f.size > maxFileMB * MB) { setErr(`「${f.name || '照片'}」超過單張 ${maxFileMB}MB 上限，沒有加入`); continue; }
       if (next.reduce((n, it) => n + it.file.size, 0) + f.size > maxTotalMB * MB) { setErr(`全部照片合計超過 ${maxTotalMB}MB 上限，後面的沒有加入`); break; }
-      next.push({ id: ++seq.current, file: f, url: isImage(f) ? URL.createObjectURL(f) : null });
+      const url = isImage(f) ? URL.createObjectURL(f) : null;
+      if (url) liveUrls.current.add(url);
+      next.push({ id: ++seq.current, file: f, url });
     }
     setItems(next);
   };
 
-  const removeAt = i => setItems(list => { const it = list[i]; if (it?.url) URL.revokeObjectURL(it.url); return list.filter((_, x) => x !== i); });
+  const removeAt = i => setItems(list => {
+    const it = list[i];
+    if (it?.url) {
+      URL.revokeObjectURL(it.url);
+      liveUrls.current.delete(it.url);
+    }
+    return list.filter((_, x) => x !== i);
+  });
   const move = (i, dir) => setItems(list => {
     const j = i + dir;
     if (j < 0 || j >= list.length) return list;
