@@ -9,9 +9,91 @@ import { todayTW } from '../util/date.js';
 import { planTocWrite, deleteScope } from '../import/toc-replace.js';
 
 const TIME_RE = /^([01]\d|2[0-3]):[0-5]\d$/;
+const MAX_EXCEL_BYTES = 15 * 1024 * 1024;
+const MAX_EXCEL_TEXT = 50000;
+const POLLUTION_KEYS = new Set(['__proto__', 'prototype', 'constructor']);
+const CELL_ADDRESS_RE = /^[A-Z]{1,3}[1-9]\d*$/;
 
 const router = Router();
 router.use(requireAuth);
+
+const hasPollutionKey = value => value && typeof value === 'object'
+  && Object.keys(value).some(k => POLLUTION_KEYS.has(k));
+
+function excelBuffer(data) {
+  const raw = String(data || '');
+  if (!raw || !/^[A-Za-z0-9+/]*={0,2}$/.test(raw) || raw.length % 4 === 1) {
+    throw new Error('Excel 檔案內容損壞，請重新選擇檔案');
+  }
+  const buffer = Buffer.from(raw, 'base64');
+  if (buffer.length > MAX_EXCEL_BYTES) {
+    throw new Error('Excel 檔案太大（上限 15MB），請拆成較小的檔案再匯入');
+  }
+  return buffer;
+}
+
+const csvCell = value => {
+  const s = String(value ?? '');
+  return /[",\r\n]/.test(s) ? `"${s.replaceAll('"', '""')}"` : s;
+};
+
+// 不直接呼叫 sheet_to_csv：惡意檔案只要把 !ref 宣告成極遠的列／欄，函式就會先
+// 展開整個巨大空白範圍，最後的 slice(0, 50000) 已經來不及阻止記憶體與 CPU 放大。
+// 這裡只走工作表實際存在的儲存格，並在既有 50,000 字 AI 輸入預算內停止。
+export function worksheetToBoundedCsv(sheet, maxChars = MAX_EXCEL_TEXT) {
+  if (!sheet || typeof sheet !== 'object' || hasPollutionKey(sheet)) {
+    throw new Error('Excel 工作表格式不安全，請另存新檔後再試');
+  }
+  const rows = new Map();
+  for (const key of Object.keys(sheet)) {
+    if (key.startsWith('!')) continue;
+    if (POLLUTION_KEYS.has(key) || !CELL_ADDRESS_RE.test(key)) {
+      throw new Error('Excel 工作表格式不安全，請另存新檔後再試');
+    }
+    const cell = sheet[key];
+    if (hasPollutionKey(cell)) throw new Error('Excel 儲存格格式不安全，請另存新檔後再試');
+    const { r, c } = XLSX.utils.decode_cell(key);
+    if (!rows.has(r)) rows.set(r, []);
+    rows.get(r).push([c, csvCell(XLSX.utils.format_cell(cell))]);
+  }
+
+  let out = '';
+  let previousRow = -1;
+  for (const [row, cells] of [...rows.entries()].sort((a, b) => a[0] - b[0])) {
+    if (out.length >= maxChars) break;
+    const newlines = Math.min(previousRow < 0 ? row : row - previousRow, maxChars - out.length);
+    if (newlines > 0) out += '\n'.repeat(newlines);
+    cells.sort((a, b) => a[0] - b[0]);
+    let previousCol = -1;
+    for (const [col, value] of cells) {
+      if (out.length >= maxChars) break;
+      const commas = Math.min(previousCol < 0 ? col : col - previousCol, maxChars - out.length);
+      if (commas > 0) out += ','.repeat(commas);
+      out += value.slice(0, Math.max(0, maxChars - out.length));
+      previousCol = col;
+    }
+    previousRow = row;
+  }
+  return out.slice(0, maxChars);
+}
+
+export function excelToText(data, maxChars = MAX_EXCEL_TEXT) {
+  const wb = XLSX.read(excelBuffer(data));
+  if (!wb || hasPollutionKey(wb) || hasPollutionKey(wb.Sheets)) {
+    throw new Error('Excel 活頁簿格式不安全，請另存新檔後再試');
+  }
+  let text = '';
+  for (const name of wb.SheetNames || []) {
+    if (POLLUTION_KEYS.has(name) || !Object.hasOwn(wb.Sheets || {}, name)) {
+      throw new Error('Excel 工作表名稱不安全，請重新命名後再試');
+    }
+    const header = `${text ? '\n\n' : ''}[工作表 ${name}]\n`;
+    text += header.slice(0, Math.max(0, maxChars - text.length));
+    if (text.length >= maxChars) break;
+    text += worksheetToBoundedCsv(wb.Sheets[name], maxChars - text.length);
+  }
+  return text.slice(0, maxChars);
+}
 
 // 把上傳檔案轉成 Claude 內容區塊（PDF/圖片/Excel/Word/文字）
 export async function toContentBlock(filename, mime, data) {
@@ -27,9 +109,7 @@ export async function toContentBlock(filename, mime, data) {
     return { type: 'image', source: { type: 'base64', media_type: mediaType, data } };
   }
   if (['xlsx', 'xls', 'csv'].includes(ext)) {
-    const wb = XLSX.read(Buffer.from(data, 'base64'));
-    const text = wb.SheetNames.map(n => `[工作表 ${n}]\n` + XLSX.utils.sheet_to_csv(wb.Sheets[n])).join('\n\n');
-    return { type: 'text', text: `檔案內容（CSV 格式）：\n${text.slice(0, 50000)}` };
+    return { type: 'text', text: `檔案內容（CSV 格式）：\n${excelToText(data)}` };
   }
   if (ext === 'docx') {
     const { value } = await mammoth.extractRawText({ buffer: Buffer.from(data, 'base64') });
