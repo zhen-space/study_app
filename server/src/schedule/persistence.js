@@ -950,6 +950,52 @@ export async function transitionTaskOutcome(userId, taskId, outcome) {
   })));
 }
 
+// 刪除 Plan Task 也屬於排程 lifecycle：Task tombstone 與新版 future schedule
+// 必須在同一筆交易完成。舊版本保留原 block 作歷史；active version 則移除它。
+// 沒有未來 placement（例如尚未安排、已完成或已取消）時不製造空的版本紀錄。
+export async function transitionTaskDeletion(userId, taskId) {
+  return serializeWrite(() => withVersionNoRetry(() => q.tx(async tx => {
+    const task = await tx.get('SELECT * FROM tasks WHERE id=? AND user_id=?', [taskId, userId]);
+    if (!task || task.deleted) throw new ScheduleInputError('找不到可刪除的任務');
+    if (task.plan_id == null) throw new ScheduleInputError('一般待辦不需要排程版本交易');
+
+    const state = await tx.get('SELECT active_version_id FROM user_schedule_state WHERE user_id=?', [userId]);
+    const activeId = state?.active_version_id ?? null;
+    const effectiveFrom = todayTW();
+    const placed = activeId == null ? null : await tx.get(
+      `SELECT id FROM scheduled_blocks
+        WHERE user_id=? AND schedule_version_id=? AND task_id=? AND date>=? LIMIT 1`,
+      [userId, activeId, task.id, effectiveFrom]);
+
+    await tx.run('UPDATE tasks SET deleted=1 WHERE id=? AND user_id=?', [task.id, userId]);
+    if (!placed) {
+      return { task: await tx.get('SELECT * FROM tasks WHERE id=?', [task.id]), version: null };
+    }
+
+    const candidate = (await tx.all(
+      `SELECT b.task_id,b.date,b.start_time,b.end_time,b.planned_minutes
+         FROM scheduled_blocks b
+         JOIN tasks t ON t.id=b.task_id AND t.user_id=b.user_id
+         JOIN plans p ON p.id=t.plan_id AND p.user_id=t.user_id
+        WHERE b.user_id=? AND b.schedule_version_id=? AND b.date>=?
+          AND COALESCE(t.deleted,0)=0 AND t.completed=0 AND COALESCE(t.cancelled,0)=0
+          AND p.status IN ('draft','active')
+        ORDER BY b.date,COALESCE(b.start_time,''),b.id`,
+      [userId, activeId, effectiveFrom])).map(canonicalizeBlockTiming);
+    validateTimedBlockOverlaps(candidate);
+    await assertCandidateLocks(tx, userId, activeId, candidate);
+    const version = await createScheduleVersionInTx(tx, userId, {
+      source: SOURCE.LIFECYCLE,
+      reason: `任務「${task.title}」已移到垃圾桶`,
+      effectiveFrom,
+      parentVersionId: activeId,
+      blocks: candidate,
+      expectedActiveVersionId: activeId,
+    });
+    return { task: await tx.get('SELECT * FROM tasks WHERE id=?', [task.id]), version };
+  })));
+}
+
 // 給 P2 的「任務身分異動＋新版排程」共用。呼叫端已經握有同一筆 transaction
 // 時，不能再開巢狀交易；版本本體仍然只由這個檔案寫入。
 async function createScheduleVersionInTx(tx, userId, {
