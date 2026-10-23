@@ -65,6 +65,43 @@ test('P1 regression：preview 不接受 paused Plan 的既有 Task', async () =>
   assert.match(preview.body.error, /未完成任務/);
 });
 
+test('P1 regression：一般 Replan 過期 preview 回傳可辨識 409，且不建立重複版本', async () => {
+  const list = await api('/lists', { method: 'POST', body: { name: '重排基線科目' } });
+  const plan = await api('/plans', { method: 'POST', body: { name: '重排基線計畫', status: 'active' } });
+  const task = await api('/tasks', { method: 'POST', body: {
+    title: '重排任務', list_id: list.body.id, plan_id: plan.body.id,
+  } });
+  const block = date => ({ task_id: task.body.id, date, start_time: null, end_time: null, planned_minutes: null });
+  assert.equal((await api('/schedule/apply', { method: 'POST', body: {
+    plan_id: plan.body.id, source: 'initial', blocks: [block('2099-06-01')],
+  } })).status, 200);
+
+  const preview = await api('/schedule/preview', { method: 'POST', body: {
+    plan_id: plan.body.id, timed: false, startDate: '2099-06-02', endDate: '2099-06-05',
+    items: [{ task_id: task.body.id, subject_id: list.body.id, title: '重排任務', spread: false,
+      start: '2099-06-02', end: '2099-06-05' }],
+  } });
+  assert.equal(preview.status, 200);
+  assert.ok(preview.body.base_version_id, 'preview 必須綁定它實際讀到的 active version');
+
+  const newer = await api('/schedule/apply', { method: 'POST', body: {
+    plan_id: plan.body.id, source: 'manual', blocks: [block('2099-06-03')],
+  } });
+  assert.equal(newer.status, 200);
+  const before = (await api('/schedule/versions')).body.length;
+  const stale = await api('/schedule/apply', { method: 'POST', body: {
+    plan_id: plan.body.id, source: 'ai_replan', base_version_id: preview.body.base_version_id,
+    blocks: [block('2099-06-04')],
+  } });
+  assert.equal(stale.status, 409);
+  assert.equal(stale.body.code, 'STALE_SCHEDULE_PREVIEW');
+  assert.equal(Number(stale.body.active_version_id), Number(newer.body.version_id));
+  assert.equal((await api('/schedule/versions')).body.length, before, 'stale request 不得新增版本');
+  const active = await api('/schedule/active');
+  assert.equal(active.body.version.id, newer.body.version_id);
+  assert.equal(active.body.blocks[0].date, '2099-06-03');
+});
+
 test('Master F：StudySession 綁 Task，不改動 ScheduledBlock', async () => {
   const plan = await api('/plans', { method: 'POST', body: { name: '讀書紀錄' } });
   const task = await api('/tasks', { method: 'POST', body: { title: '讀一章', plan_id: plan.body.id } });

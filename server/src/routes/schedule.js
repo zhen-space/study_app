@@ -267,7 +267,11 @@ export async function runPreview(userId, body, previewOpts = {}) {
   const dayLocked = new Set(effectiveLocks.filter(l=>l.type==='day').map(l=>l.date));
   for (const d of dayLocked) if (!excludeDates.includes(d)) excludeDates.push(d);
   for (const l of effectiveLocks.filter(l=>l.type==='time')) events.push({ date:l.date,start_time:l.start_time,end_time:l.end_time,recurring:null,_lock:true });
+  // 這一份 active snapshot 同時是 preview 的 optimistic base。後續 busy interval、
+  // Lock pin 與回傳的 base_version_id 都必須沿用同一版；不能在預覽途中再讀一次
+  // active pointer，否則併發切版時會組出混合兩版的 candidate。
   const activeForLocks = await sched.getActiveSchedule(userId);
+  const previewBaseVersionId = activeForLocks.version?.id ?? null;
   const activeTasks = await q.all('SELECT id,plan_id,deleted,completed,cancelled FROM tasks WHERE user_id=?', [userId]);
   const activeTaskById = new Map(activeTasks.map(t => [Number(t.id), t]));
   const currentPlanId = Number(body.plan_id);
@@ -300,13 +304,13 @@ export async function runPreview(userId, body, previewOpts = {}) {
   if (timed) events.push(...pinned.filter(b => b.start_time && b.end_time)
     .map(b => ({ date:b.date, start_time:b.start_time, end_time:b.end_time, recurring:null, _pinned_lock:true })));
   for (let i=items.length-1;i>=0;i--) if (pinnedIds.has(Number(items[i].task_id))) items.splice(i,1);
-  if (!items.length && pinned.length) return { status: 200, body: { blocks: pinned.map(b => ({ ...b, _pinned:true })), check:{ tight:[], warnings:[], subjects:[], dailyMin:0, dailyMax:0 }, unplaced:false } };
+  if (!items.length && pinned.length) return { status: 200, body: { base_version_id: previewBaseVersionId, blocks: pinned.map(b => ({ ...b, _pinned:true })), check:{ tight:[], warnings:[], subjects:[], dailyMin:0, dailyMax:0 }, unplaced:false } };
   // 全域排程：其他 Plan 已經生效的「有明確起迄時間」block 必須佔住時段。
   // 本次正在重排的 Plan 可釋出自己的舊 block，讓演算法重新安插；建立新 Plan
   // 沒有 plan_id 時則不排除任何既有 block。untimed block 不代表特定時段，不能
   // 在這裡把整天封死。
   if (timed) {
-    const activeVersionId = await sched.getActiveVersionId(userId);
+    const activeVersionId = previewBaseVersionId;
     if (activeVersionId != null) {
       const currentPlanId = body.plan_id ?? null;
       const scheduledBusy = await q.all(
@@ -1220,6 +1224,7 @@ export async function runPreview(userId, body, previewOpts = {}) {
   blocks.forEach(b => { b.deadline = b._we || null; delete b._bk; delete b._ws; delete b._we; delete b._one; });
   blocks.sort((a, b) => a.date === b.date ? (a.start_time || '').localeCompare(b.start_time || '') : a.date.localeCompare(b.date));
   return { status: 200, body: {
+    base_version_id: previewBaseVersionId,
     blocks, check, feasibility, unplaced: failed.length > 0,
     unplaced_tasks: unplacedTasks,
     message: failed.length ? `空檔不足，排不進去：${[...new Set(failed)].slice(0, 5).join('、')}${failed.length > 5 ? '…' : ''}（請延長日期或減少內容）` : undefined,
@@ -2020,9 +2025,18 @@ router.post('/apply', async (req, res) => {
       taskCreates: b.task_creates || [],
       taskDeleteIds: b.task_delete_ids || [],
       blocks: b.blocks || [],
+      // Wizard／Replan 的 preview 必須把看過的 active version 原樣帶回。
+      // 欄位缺失維持 legacy caller 相容；有帶時一律由 transaction 做 stale gate。
+      expectedBaseVersionId: Object.prototype.hasOwnProperty.call(b, 'base_version_id')
+        ? b.base_version_id
+        : undefined,
     }));
   } catch (e) {
-    res.status(e.status || 500).json({ error: e.message });
+    res.status(e.status || 500).json({
+      error: e.message,
+      ...(e.code ? { code: e.code } : {}),
+      ...(e.active_version_id !== undefined ? { active_version_id: e.active_version_id } : {}),
+    });
   }
 });
 

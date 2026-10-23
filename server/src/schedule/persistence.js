@@ -1112,8 +1112,7 @@ export async function otherPlanCarryForwardBlocks(runner, userId, activeVersionI
 export async function applySchedule(userId, {
   planId, source, reason = '', effectiveFrom = null,
   taskUpdates = [], taskCreates = [], taskDeleteIds = [], blocks = [],
-  // ---- Rolling（段考滾動排程）的可選 defence-in-depth。全部預設關閉，
-  //      既有 caller（Wizard／Replan）完全不受影響。 ----
+  // ---- 可選的 optimistic stale guard 與 Rolling（段考滾動排程）防線。 ----
   expectedBaseVersionId = undefined,   // §12 stale preview 防護：!== undefined 才檢查
   attachTaskIds = [],                   // §9 pending attachment：把 plan_id=NULL 的 Task 原子掛進本計畫
   freezeBlocks = null,                  // §3 freeze：這些既有 placement 必須原封不動出現在 candidate
@@ -1143,7 +1142,7 @@ export async function applySchedule(userId, {
     }
 
     // §12 STALE_SCHEDULE_PREVIEW：preview 帶的 base_version_id 必須等於此刻的 active，
-    // 否則 preview 已過時，禁止 silent rebase。undefined = 非 rolling caller，不檢查。
+    // 否則 preview 已過時，禁止 silent rebase。undefined = legacy caller，不檢查。
     if (expectedBaseVersionId !== undefined) {
       const st = await tx.get('SELECT active_version_id FROM user_schedule_state WHERE user_id=?', [userId]);
       if (Number(st?.active_version_id ?? -1) !== Number(expectedBaseVersionId ?? -1)) {

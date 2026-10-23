@@ -524,6 +524,16 @@ describe('reconcile 對應規則', () => {
     expect(r.update).toEqual([]);
   });
 
+  it('34. Edit apply 原樣帶回 preview base_version_id，讓後端阻止過期重排', async () => {
+    await applyWizardSchedule({
+      mode: 'edit', planId: 12, baseVersionId: 41,
+      blocks: [{ task_id: 7, subject_id: 1, title: 'A', date: '2026-01-02' }],
+      existingTasks: [{ id: 7, list_id: 1, title: 'A', completed: 0, deleted: 0 }],
+    });
+    const apply = calls.find(([path, opts]) => path === '/schedule/apply' && opts?.method === 'POST');
+    expect(apply?.[1].body.base_version_id).toBe(41);
+  });
+
   // apply layer 是第二道防線：就算呼叫端把不該刪的東西傳進來，它也要擋下來。
   // （第一道是 Wizard 只把 legacy 任務放進 leftover）
   it('33. 就算把正式 Plan 的任務傳進 legacyMerged，apply layer 也不會刪它', async () => {

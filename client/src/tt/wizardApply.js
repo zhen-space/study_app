@@ -60,6 +60,7 @@ export function reconcile(blocks, existing = []) {
 // mode='edit'  ：只調整既有計畫，任務身分盡量保留
 export async function applyWizardSchedule({
   mode = 'create', planId = null, name = '', blocks = [],
+  baseVersionId = undefined,
   existingTasks = [], legacyMerged = [], removeUnscheduled = true, updatePlanDates = true,
   // block → material_content_item_id。呼叫端在同一次 session 內自己組出來的，
   // 不是全域的標題猜測，也不會用來對應 legacy 資料。
@@ -87,6 +88,7 @@ export async function applyWizardSchedule({
       body: {
         plan_id: planId,
         source: 'ai_replan',
+        ...(baseVersionId !== undefined ? { base_version_id: baseVersionId } : {}),
         task_updates: update.map(({ task, block }) => {
           const { notes, deadline_date } = blockFields(block);
           return { task_id: task.id, notes, deadline_date };
@@ -125,6 +127,7 @@ export async function applyWizardSchedule({
     body: {
       plan_id: plan.id,
       source: 'initial',
+      ...(baseVersionId !== undefined ? { base_version_id: baseVersionId } : {}),
       task_creates: newTasks.map(({ client_key, block }) => ({
         client_key, ...blockFields(block), tags: ['讀書計劃'],
         material_content_item_id: materialOf(block),

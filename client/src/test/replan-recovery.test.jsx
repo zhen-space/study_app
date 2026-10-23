@@ -14,7 +14,7 @@ const { fetchExternalBusy } = await import('../tt/calendarBusy');
 const { applyWizardSchedule } = await import('../tt/wizardApply');
 const ReplanSheet = (await import('../tt/ReplanSheet')).default;
 const plan = { planId: 7, name: '段考', items: [{ id: 11, list_id: 2, title: '力學', completed: 0, deleted: 0 }] };
-const preview = { blocks: [{ task_id: 11, subject_id: 2, title: '力學', date: '2026-10-03' }] };
+const preview = { base_version_id: 41, blocks: [{ task_id: 11, subject_id: 2, title: '力學', date: '2026-10-03' }] };
 
 function mount(reload = vi.fn().mockResolvedValue(), onClose = vi.fn()) {
   render(<ReplanSheet plan={plan} health={{ reasons: [] }} raw={{ target_date: '2026-10-10' }}
@@ -135,6 +135,23 @@ describe('ReplanSheet 套用後恢復', () => {
     expect(await screen.findByText('套用失敗')).toBeInTheDocument();
     fireEvent.click(button);
     await waitFor(() => expect(applyWizardSchedule).toHaveBeenCalledTimes(2));
+  });
+
+  it('過期預覽不會重送，回到重新預覽並保留明確提示', async () => {
+    const stale = Object.assign(new Error('排程已更新'), {
+      status: 409,
+      payload: { code: 'STALE_SCHEDULE_PREVIEW', active_version_id: 42 },
+    });
+    applyWizardSchedule.mockRejectedValue(stale);
+    mount();
+    const button = await openPreview();
+    fireEvent.click(button);
+
+    expect(await screen.findByText('排程已在預覽後更新，請重新產生安排。')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: '重新安排' })).toBeEnabled();
+    expect(screen.queryByRole('button', { name: '套用新版安排' })).not.toBeInTheDocument();
+    expect(applyWizardSchedule).toHaveBeenCalledOnce();
+    expect(applyWizardSchedule).toHaveBeenCalledWith(expect.objectContaining({ baseVersionId: 41 }));
   });
 
   it('同步 guard 阻止快速重入', async () => {

@@ -464,6 +464,9 @@ export default function WizardView({
         name: planNameInput.trim() || planName(
           preview.blocks.map(b => ({ title: b.title, list_id: b.subject_id, due_date: b.date })), lists),
         blocks: preview.blocks,
+        // 建立新 Plan 目前先建立 Plan 再套排程，尚未是單一交易；stale gate 只套用
+        // 已存在 Plan 的編輯／重排，避免 apply 拒絕後留下空 Plan。
+        baseVersionId: isEdit ? preview.base_version_id : undefined,
         materialByBlock: materialBlockMap,
         existingTasks: livePlanTasks,
         legacyMerged: isEdit ? [] : mergedLeftover.filter(t =>
