@@ -254,6 +254,28 @@ describe('新增／編輯表單', () => {
     await waitFor(() => expect(onClose).toHaveBeenCalledTimes(1));
   });
 
+  it('同一輪事件內重入 submit 也只建立一筆作業', async () => {
+    let form;
+    let reentered = false;
+    api.mockImplementation(() => {
+      if (!reentered) {
+        reentered = true;
+        fireEvent.submit(form);
+      }
+      return Promise.resolve({ id: 91 });
+    });
+    const onClose = vi.fn();
+    render(<SchoolAssignmentForm lists={lists} onClose={onClose} onSaved={vi.fn()} />);
+    await fillMinimum();
+    form = document.querySelector('.sa-form');
+
+    fireEvent.submit(form);
+
+    await waitFor(() => expect(onClose).toHaveBeenCalledTimes(1));
+    expect(api).toHaveBeenCalledTimes(1);
+    expect(api).toHaveBeenCalledWith('/tasks', expect.objectContaining({ method: 'POST' }));
+  });
+
   it('送出前取消為零寫入', () => {
     const onClose = vi.fn();
     render(<SchoolAssignmentForm lists={lists} onClose={onClose} onSaved={vi.fn()} />);
