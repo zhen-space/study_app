@@ -91,6 +91,7 @@ export default function PlanDetailView({ planKey, tasks, lists, apiPlans = [], r
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState('');
   const [refreshStale, setRefreshStale] = useState(false);
+  const [refreshUnknown, setRefreshUnknown] = useState(false);
   const mutationBusy = useRef(false);
   const taskToggleBusyRef = useRef(false);
   const [taskToggleState, setTaskToggleState] = useState(null); // { taskId, committed, error }
@@ -132,6 +133,7 @@ export default function PlanDetailView({ planKey, tasks, lists, apiPlans = [], r
     try {
       await reload();
       setRefreshStale(false);
+      setRefreshUnknown(false);
     } catch (e) {
       setErr(e.message || '仍然無法重新載入，請稍後再試。');
     } finally {
@@ -158,9 +160,11 @@ export default function PlanDetailView({ planKey, tasks, lists, apiPlans = [], r
         <PageHeader back={<button className="page-back" onClick={onBack}>← 計畫列表</button>} title={plan.name} />
         <div className="main-body">
           <SurfaceCard tone="accent">
-            <div role="alert"><b>變更已儲存，但畫面暫時無法更新</b></div>
+            <div role="alert"><b>{refreshUnknown ? '暫時無法確認變更結果' : '變更已儲存，但畫面暫時無法更新'}</b></div>
             <div className="ui-meta" style={{ marginTop: 'var(--sp-2)' }}>
-              為避免重複新增任務或重送計畫動作，請先重新載入最新資料。
+              {refreshUnknown
+                ? '連線中斷後無法確認伺服器是否已完成操作。為避免重送，請先重新載入最新資料。'
+                : '為避免重複新增任務或重送計畫動作，請先重新載入最新資料。'}
             </div>
             {err && <div className="error" role="alert" style={{ marginTop: 'var(--sp-3)' }}>{err}</div>}
             <div className="row" style={{ marginTop: 'var(--sp-4)' }}>
@@ -287,6 +291,62 @@ export default function PlanDetailView({ planKey, tasks, lists, apiPlans = [], r
       setBusy(false);
     }
   };
+  // lifecycle POST 可能已在伺服器提交，只是行動網路把回應弄丟。這種 5xx／網路錯誤
+  // 不能直接鼓勵重送：先用唯讀 Plan detail 核對 CURRENT 狀態。已達成就只刷新；
+  // 明確仍是舊狀態才保留原錯誤供重試。4xx 是明確業務拒絕，不做額外猜測。
+  const runLifecycle = async (fn, expectedStatus, afterReload, { deleted = false } = {}) => {
+    if (mutationBusy.current) return;
+    mutationBusy.current = true;
+    setBusy(true); setErr('');
+    let result;
+    try {
+      result = await fn();
+    } catch (e) {
+      if (e.status >= 400 && e.status < 500) {
+        setErr(e.message);
+        mutationBusy.current = false;
+        setBusy(false);
+        return;
+      }
+      let committed = false;
+      try {
+        const current = await api(`/plans/${plan.planId}`);
+        committed = !deleted && current?.plan?.status === expectedStatus;
+        if (!committed) {
+          setErr(e.message || '操作失敗，請稍後再試。');
+          mutationBusy.current = false;
+          setBusy(false);
+          return;
+        }
+      } catch (checkError) {
+        committed = deleted && checkError.status === 404;
+        if (!committed) {
+          setRefreshUnknown(true);
+          setRefreshStale(true);
+          setErr(checkError.message || '目前無法確認最新狀態');
+          mutationBusy.current = false;
+          setBusy(false);
+          return;
+        }
+      }
+    }
+    if (result === NO_COMMIT) {
+      mutationBusy.current = false;
+      setBusy(false);
+      return;
+    }
+    try {
+      await reload();
+      afterReload?.();
+    } catch (e) {
+      setRefreshUnknown(false);
+      setRefreshStale(true);
+      setErr(e.message || '重新載入失敗');
+    } finally {
+      mutationBusy.current = false;
+      setBusy(false);
+    }
+  };
   const hasPending = tasks.some(t => Number(t.plan_id) === Number(plan.planId)
     && !t.completed && !t.cancelled && !t.deleted);
   // 封存功能已從產品移除——沒有 archive／restore 動作。既有 archived 舊資料仍
@@ -295,9 +355,9 @@ export default function PlanDetailView({ planKey, tasks, lists, apiPlans = [], r
   // 但 PATCH 的白名單根本不含 status，所以那個請求其實什麼都沒改——畫面看起來
   // 成功了，計畫還停在 completed。lifecycle 轉換必須走專用端點，才會一併處理
   // 允許的狀態轉換、新的 ScheduleVersion 與 lock。
-  const restart = () => run(async () => {
+  const restart = () => runLifecycle(async () => {
     await api(`/plans/${plan.planId}/restart`, { method: 'POST', body: {} });
-  }, close);
+  }, 'active', close);
 
   // §C：以此（已結束／完成）計畫建立一個新計畫，並複製「未完成」的教材內容。
   // 不 reopen／不 mutate 舊計畫：讀舊計畫未完成任務的 material_content_item_id →
@@ -317,15 +377,15 @@ export default function PlanDetailView({ planKey, tasks, lists, apiPlans = [], r
   });
 
   // 暫停／刪除：retain 沒選之前不會送出，後端也會再擋一次（缺 boolean 一律 400）。
-  const pausePlan = () => run(async () => {
+  const pausePlan = () => runLifecycle(async () => {
     await api(`/plans/${plan.planId}/pause`, { method: 'POST', body: { retain_incomplete_tasks: retain } });
-  }, close);
-  const resumePlan = () => run(async () => {
+  }, 'paused', close);
+  const resumePlan = () => runLifecycle(async () => {
     await api(`/plans/${plan.planId}/resume`, { method: 'POST', body: {} });
-  }, () => { close(); if (hasPending) setReplan(true); });
-  const deletePlan = () => run(async () => {
+  }, 'active', () => { close(); if (hasPending) setReplan(true); });
+  const deletePlan = () => runLifecycle(async () => {
     await api(`/plans/${plan.planId}/delete`, { method: 'POST', body: {} });
-  }, () => { close(); onBack(); });
+  }, 'deleted', () => { close(); onBack(); }, { deleted: true });
 
   // 走既有的 POST /tasks，自動帶上目前的 plan_id——使用者不用再選一次計畫。
   // 不給 due_date：加進計畫不等於已經排好時間，所以它會出現在「尚未安排」。
@@ -353,7 +413,7 @@ export default function PlanDetailView({ planKey, tasks, lists, apiPlans = [], r
   // 後端兩者都不存在：未完成時它回 409 unresolved_tasks，而且沒有任何 force 路徑。
   // 所以那顆「仍然完成」按下去只會失敗。完成率是不能被繞過的東西：使用者若不再
   // 繼續，正確的出口是「結束計畫」，不是把沒做完的計畫標成完成。
-  const complete = () => run(async () => {
+  const complete = () => runLifecycle(async () => {
     try {
       await api(`/plans/${plan.planId}/complete`, { method: 'POST', body: {} });
     } catch (e) {
@@ -364,11 +424,11 @@ export default function PlanDetailView({ planKey, tasks, lists, apiPlans = [], r
       }
       throw e;
     }
-  }, close);
+  }, 'completed', close);
 
   // 結束計畫：保留未完成任務，計畫退出排程，但不算完成。
   // 後端在有未完成任務時會先要求明確確認（409 end_confirmation_required）。
-  const endPlan = (confirm = false) => run(async () => {
+  const endPlan = (confirm = false) => runLifecycle(async () => {
     try {
       await api(`/plans/${plan.planId}/end`, { method: 'POST', body: confirm ? { confirm: true } : {} });
     } catch (e) {
@@ -379,7 +439,7 @@ export default function PlanDetailView({ planKey, tasks, lists, apiPlans = [], r
       }
       throw e;
     }
-  }, close);
+  }, 'ended', close);
 
   const saveInfo = () => run(async () => {
     const body = {};
