@@ -330,15 +330,26 @@ describe('PlanDetail 的「調整計畫」入口', () => {
     noCrash();
   });
 
-  it('13. 底部選單列出各段入口，排程鎖定可進入正式 Lock UI', async () => {
+  it('13. 教材範圍改走安全預覽流程，排程鎖定可進入正式 Lock UI', async () => {
     const goLocks = vi.fn();
-    mountDetail({ adjustPlan: () => {}, goLocks });
+    const adjustPlan = vi.fn();
+    mountDetail({ adjustPlan, goLocks });
     await click(btn(/調整計畫/));
     const sheet = document.querySelector('.sheet-panel');
-    for (const s of ['學習內容', '完成期限', '可用時間', '排程條件', '全部設定']) {
+    for (const s of ['新增學習內容', '完成期限', '可用時間', '排程條件']) {
       expect(within(sheet).getByText(s)).toBeInTheDocument();
     }
-    const lock = within(sheet).getByText('排程鎖定').closest('.ui-row');
+    expect(within(sheet).queryByText('全部設定')).not.toBeInTheDocument();
+    expect(within(sheet).getByText(/要移除範圍/)).toBeInTheDocument();
+    await click(within(sheet).getByText('新增學習內容').closest('.ui-row'));
+    expect(await screen.findByRole('dialog', { name: '加入內容' })).toBeInTheDocument();
+    expect(screen.getByText('加入這次段考')).toBeInTheDocument();
+    expect(adjustPlan).not.toHaveBeenCalled();
+
+    await click(screen.getByRole('button', { name: '取消' }));
+    await click(btn(/調整計畫/));
+    const reopenedSheet = document.querySelector('.sheet-panel');
+    const lock = within(reopenedSheet).getByText('排程鎖定').closest('.ui-row');
     expect(lock).toBeTruthy();
     expect(lock.getAttribute('role')).toBe('button');
     await click(lock);
@@ -352,6 +363,17 @@ describe('PlanDetail 的「調整計畫」入口', () => {
     await click(btn(/調整計畫/));
     await click(within(document.querySelector('.sheet-panel')).getByText('排程條件').closest('.ui-row'));
     expect(adjustPlan).toHaveBeenCalledWith(12, 'cond');
+    noCrash();
+  });
+
+  it('14a. 正式計畫調整排程時不能返回舊教材編輯器', async () => {
+    await mountWizard({
+      mode: 'edit', planId: 12, planTitle: '第二次段考準備',
+      planTasks: fx.planTasks, initialSection: 'cond', onDone: () => {},
+    });
+    expect(screen.queryByRole('button', { name: '上一步' })).not.toBeInTheDocument();
+    expect(screen.queryByText('這次要準備什麼？')).not.toBeInTheDocument();
+    expect(calls.filter(([p, o]) => p.includes('/material-items') && o?.method !== undefined)).toHaveLength(0);
     noCrash();
   });
 
@@ -453,9 +475,9 @@ describe('Edit Mode', () => {
 
   it('21. 選「維持原本日期不動」時，這次沒排到的任務一筆都不刪', async () => {
     setApi({ '/schedule/preview': editPreview });
-    await mountEdit();
-    // 回第 1 步加一點內容，否則這次根本沒有東西可排
-    await click(btn(/^上一步$/));
+    // initialSection 為空是「建立新一輪」草稿流程，仍允許挑內容；
+    // 正式計畫的調整入口都會帶 section，已由 14a 守住不能回舊編輯器。
+    await mountEdit({ initialSection: '' });
     await pickChapter('新大滿貫', '單元1 力學');
     await click(btn(/^下一步$/));
     await click(screen.getByText(/維持原本日期不動/).closest('label').querySelector('input'));

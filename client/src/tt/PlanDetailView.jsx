@@ -42,14 +42,13 @@ const RETAIN_CHOICES = {
   ],
 };
 
-// 「調整計畫」的入口：先問要調整哪一段，再深連結到排程精靈對應的位置。
-// 一次只調一件事，不用每次都從頭走一遍精靈。
+// 「調整計畫」的入口：學習內容只能走「先預覽、再套用」的安全流程；
+// 其餘排程設定才深連結到排程精靈。舊精靈的 Edit MaterialSelector 會在點選時
+// 直接寫正式 selection，返回或預覽失敗可能留下半套狀態，所以不能再從這裡進入。
 const ADJUST = [
-  ['content', '學習內容', '加、減或換讀的範圍'],
   ['deadline', '完成期限', '改開始日、目標日與分配方式'],
   ['time', '可用時間', '看目前的行程與作息（要改請到行事曆）'],
   ['cond', '排程條件', '題型、順序、每天幾項'],
-  ['all', '全部設定', '從頭走一次精靈'],
 ];
 
 // 未完成任務怎麼辦。用 radio 而不是勾選框：兩個選項都是明確的決定，
@@ -982,6 +981,13 @@ export default function PlanDetailView({ planKey, tasks, lists, apiPlans = [], r
           <b style={{ fontSize: 17 }}>想調整什麼？</b>
           <div className="ui-meta" style={{ marginTop: 2 }}>調整的是「{plan.name}」，不會建立新的計畫</div>
           <div style={{ marginTop: 'var(--sp-3)' }}>
+            <ListRow title="新增學習內容" subtitle="選好後先預覽新的安排，再確認套用"
+              trailing={<Icon name="chevron" size={16} />} role="button" tabIndex={0} style={{ cursor: 'pointer' }}
+              onClick={() => setSheet('addContent')}
+              onKeyDown={e => { if (e.key === 'Enter') setSheet('addContent'); }} />
+            <div className="ui-meta" style={{ padding: 'var(--sp-2) var(--sp-3)' }}>
+              要移除範圍，請回到本頁「要讀完的範圍」逐項操作；系統也會先預覽影響。
+            </div>
             {ADJUST.map(([sec, label, hint]) => (
               <ListRow key={sec} title={label} subtitle={hint}
                 trailing={<Icon name="chevron" size={16} />} role="button" tabIndex={0} style={{ cursor: 'pointer' }}
