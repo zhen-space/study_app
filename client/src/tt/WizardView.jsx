@@ -59,6 +59,10 @@ export default function WizardView({
   scheduleMode = 'timed',
 }) {
   const isEdit = mode === 'edit' && planId != null;
+  // 從正式計畫的「調整計畫」進來時，教材範圍一律留在 Plan Detail 的安全流程處理。
+  // 這些入口直接落在步驟 2，也不能再用「上一步」回到會立即寫 selection API 的舊畫面。
+  // initialSection 為空的是「以舊計畫建立新一輪」的草稿流程，仍需選教材，不能一起鎖住。
+  const materialScopeLocked = isEdit && Boolean(initialSection);
   const [step, setStep] = useState(SECTION_STEP[initialSection] ?? 0);
   // 第 3 步的檢視方式：清單／日曆。只是換看法，不是換排法
   const [resultView, setResultView] = useState('list');
@@ -875,7 +879,7 @@ export default function WizardView({
           <>
             {err && <div className="error" style={{ marginTop: 8 }}>{err}</div>}
             <div className="row" style={{ marginTop: 14 }}>
-              <button className="btn ghost" onClick={() => setStep(0)}>上一步</button>
+              {!materialScopeLocked && <button className="btn ghost" onClick={() => setStep(0)}>上一步</button>}
               <button className="btn" onClick={genPreview}>產生排程</button>
             </div>
           </>
@@ -946,7 +950,7 @@ export default function WizardView({
                 <FeasibilityGap feasibility={preview.feasibility} />
                 <div className="muted">想怎麼處理？</div>
                 <div className="row" style={{ marginTop: 6, flexWrap: 'wrap' }}>
-                  <button className="btn sm" onClick={() => setStep(0)}>刪掉一些內容</button>
+                  {!materialScopeLocked && <button className="btn sm" onClick={() => setStep(0)}>刪掉一些內容</button>}
                   <button className="btn sm ghost" onClick={() => setStep(1)}>增加讀書天數/延長日期</button>
                   {timed && <button className="btn sm ghost" onClick={() => { setTimed(false); genPreview(); }}>改成「不計時、只排進度」</button>}
                 </div>
