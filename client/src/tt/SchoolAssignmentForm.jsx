@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react';
+import { useMemo, useRef, useState } from 'react';
 import { api } from '../api';
 import { BottomSheet, Button, SegmentedControl } from './ui';
 import {
@@ -28,6 +28,9 @@ export default function SchoolAssignmentForm({ lists = [], task = null, defaultR
   }));
   const [err, setErr] = useState('');
   const [busy, setBusy] = useState(false);
+  // state 要等 React 重新 render 才會更新；手機連點或同一輪事件內重複 submit
+  // 可能在 busy 變成 true 前再進來。ref 在第一個請求前同步上鎖。
+  const submitBusy = useRef(false);
   const up = patch => setF(v => ({ ...v, ...patch }));
 
   const needsCustomDate = f.reminder_sel === 'custom';
@@ -35,7 +38,7 @@ export default function SchoolAssignmentForm({ lists = [], task = null, defaultR
 
   async function submit(e) {
     e.preventDefault();
-    if (busy) return;
+    if (submitBusy.current) return;
     setErr('');
     if (!f.title.trim()) return setErr('請輸入標題');
     if (!f.list_id) return setErr('請選擇科目');
@@ -56,6 +59,7 @@ export default function SchoolAssignmentForm({ lists = [], task = null, defaultR
       estimated_minutes: f.estimated_minutes === '' ? null : Number(f.estimated_minutes),
       ...rem,
     };
+    submitBusy.current = true;
     setBusy(true);
     let saved;
     try {
@@ -64,6 +68,7 @@ export default function SchoolAssignmentForm({ lists = [], task = null, defaultR
         : await api('/tasks', { method: 'POST', body });
     } catch (e2) {
       setErr(e2.message || '儲存失敗');
+      submitBusy.current = false;
       setBusy(false);
       return;
     }
