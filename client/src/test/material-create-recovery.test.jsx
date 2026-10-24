@@ -101,8 +101,9 @@ describe('AddMaterialFlow committed recovery', () => {
   });
 
   it('keeps the draft editable and retryable after a real commit failure', async () => {
+    const serverError = Object.assign(new Error('建立失敗'), { status: 500 });
     commitDraft
-      .mockRejectedValueOnce(new Error('建立失敗'))
+      .mockRejectedValueOnce(serverError)
       .mockResolvedValueOnce({ book: { id: 77, title: '英文課本' } });
     const onCreated = vi.fn();
     const submit = readyManual({ onCreated });
@@ -115,6 +116,37 @@ describe('AddMaterialFlow committed recovery', () => {
 
     await waitFor(() => expect(commitDraft).toHaveBeenCalledTimes(2));
     expect(await screen.findByText('教材已建立')).toBeInTheDocument();
+  });
+
+  it('回應遺失時鎖住再次建立，要求先回教材庫確認', async () => {
+    const onCancel = vi.fn();
+    commitDraft.mockRejectedValueOnce(new TypeError('Failed to fetch'));
+    const submit = readyManual({ onCancel, onCreated: vi.fn() });
+
+    fireEvent.click(submit);
+
+    expect(await screen.findByText('請先確認教材庫')).toBeInTheDocument();
+    expect(screen.getByRole('alert')).toHaveTextContent('無法確認教材是否已建立');
+    expect(screen.queryByRole('button', { name: '建立教材' })).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: '返回教材庫' }));
+    expect(onCancel).toHaveBeenCalledOnce();
+    expect(commitDraft).toHaveBeenCalledOnce();
+  });
+
+  it('同名教材選擇另存時回應遺失也不允許重送', async () => {
+    nameCheck.mockResolvedValueOnce({
+      has_conflict: true,
+      same_name_books: [{ id: 9, title: '英文課本', book_type: '', publisher: '' }],
+    });
+    commitDraft.mockRejectedValueOnce(new TypeError('Failed to fetch'));
+    const submit = readyManual({ onCreated: vi.fn() });
+
+    fireEvent.click(submit);
+    fireEvent.click(await screen.findByRole('button', { name: /另存成新教材/ }));
+
+    expect(await screen.findByText('請先確認教材庫')).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /另存成新教材/ })).not.toBeInTheDocument();
+    expect(commitDraft).toHaveBeenCalledOnce();
   });
 
   it('取消只有標題的葉章草稿不會寫入任何教材', () => {

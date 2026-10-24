@@ -503,6 +503,7 @@ function SubjectMaterialPicker({ subjectId, subjectName, lists, selectedIds, onA
   const [treeError, setTreeError] = useState('');
   const [checked, setChecked] = useState(new Set());
   const [importing, setImporting] = useState(false);
+  const treeRequest = useRef(0);
 
   const loadBooks = useCallback(async () => {
     setBooks(null); setBooksError('');
@@ -518,9 +519,19 @@ function SubjectMaterialPicker({ subjectId, subjectName, lists, selectedIds, onA
   useEffect(() => { loadBooks(); }, [loadBooks]);
 
   const open = async b => {
+    const requestId = ++treeRequest.current;
     setOpenBook(b); setTree(null); setTreeError(''); setChecked(new Set());
-    try { setTree(await getBookTree(b.material_book_id)); }
-    catch (e) { setTreeError(e.message || '暫時無法載入教材目錄'); }
+    try {
+      const nextTree = await getBookTree(b.material_book_id);
+      if (requestId === treeRequest.current) setTree(nextTree);
+    } catch (e) {
+      if (requestId === treeRequest.current) setTreeError(e.message || '暫時無法載入教材目錄');
+    }
+  };
+  const closeBook = () => {
+    // 返回書單時撤銷仍在途中的目錄請求，避免較慢的舊回應覆蓋下一本書。
+    treeRequest.current += 1;
+    setOpenBook(null); setTree(null); setTreeError(''); setChecked(new Set());
   };
   const items = useMemo(() => (tree ? flattenItems(tree) : []), [tree]);
   const toggle = it => setChecked(s => { const n = new Set(s); if (n.has(it.id)) n.delete(it.id); else n.add(it.id); return n; });
@@ -544,7 +555,7 @@ function SubjectMaterialPicker({ subjectId, subjectName, lists, selectedIds, onA
   if (openBook) {
     return (
       <div style={{ display: 'grid', gap: 8 }}>
-        <div className="row"><b>{openBook.title}</b><Button size="sm" variant="ghost" style={{ marginLeft: 'auto' }} onClick={() => { setOpenBook(null); setTree(null); }}>返回書單</Button></div>
+        <div className="row"><b>{openBook.title}</b><Button size="sm" variant="ghost" style={{ marginLeft: 'auto' }} onClick={closeBook}>返回書單</Button></div>
         {treeError ? <div className="ui-card ui-card--warning" role="alert">
           <div>{treeError}</div>
           <Button size="sm" variant="secondary" style={{ marginTop: 6 }} onClick={() => open(openBook)}>重試載入目錄</Button>

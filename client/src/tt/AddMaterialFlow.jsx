@@ -31,6 +31,7 @@ export default function AddMaterialFlow({ lists = [], onCancel, onCreated, onAdd
   const [conflict, setConflict] = useState(null);   // null | { books: [...] }
   const [mergeTarget, setMergeTarget] = useState(null);
   const [created, setCreated] = useState(null);
+  const [commitUnknown, setCommitUnknown] = useState(false);
   const parseBusy = useRef(false);
   const operationBusy = useRef(false);
 
@@ -113,8 +114,13 @@ export default function AddMaterialFlow({ lists = [], onCancel, onCreated, onAdd
       try { await onCreated?.(r); }
       catch { setErr('教材已建立，但畫面暫時無法更新。請重新載入，請勿再次建立。'); }
     } catch (e2) {
-      setErr(readable(e2));
-      setProblems(e2.payload?.problems || []);
+      if (e2.status == null) {
+        setCommitUnknown(true);
+        setErr('連線中斷，無法確認教材是否已建立。請返回教材庫重新載入，確認前請勿再次建立。');
+      } else {
+        setErr(readable(e2));
+        setProblems(e2.payload?.problems || []);
+      }
     } finally {
       operationBusy.current = false;
       setBusy(false);
@@ -131,7 +137,14 @@ export default function AddMaterialFlow({ lists = [], onCancel, onCreated, onAdd
       try { await onCreated?.(r); }
       catch { setErr('教材已建立，但畫面暫時無法更新。請重新載入，請勿再次建立。'); }
     }
-    catch (e2) { setErr(readable(e2)); setProblems(e2.payload?.problems || []); }
+    catch (e2) {
+      if (e2.status == null) {
+        setCommitUnknown(true);
+        setErr('連線中斷，無法確認教材是否已建立。請返回教材庫重新載入，確認前請勿再次建立。');
+      } else {
+        setErr(readable(e2)); setProblems(e2.payload?.problems || []);
+      }
+    }
     finally { operationBusy.current = false; setBusy(false); }
   };
 
@@ -148,6 +161,18 @@ export default function AddMaterialFlow({ lists = [], onCancel, onCreated, onAdd
     if (operationBusy.current) return;
     setDraft(null); setMode(null); setErr(''); setProblems([]); setWarnings([]);
   };
+
+  if (commitUnknown) {
+    return (
+      <div className="am">
+        <h3 className="am-title">請先確認教材庫</h3>
+        <div className="mt-err" role="alert">{err}</div>
+        <div className="am-foot">
+          <Button variant="primary" onClick={onCancel}>返回教材庫</Button>
+        </div>
+      </div>
+    );
+  }
 
   if (created) {
     return (
