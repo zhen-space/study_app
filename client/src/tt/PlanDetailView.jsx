@@ -510,7 +510,8 @@ export default function PlanDetailView({ planKey, tasks, lists, apiPlans = [], r
   return (
     <div className="main">
       <PageHeader
-        back={<button className="page-back" onClick={onBack}>← 計畫列表</button>}
+        back={<button className="page-back" disabled={busy}
+          onClick={() => { if (!mutationBusy.current) onBack(); }}>← 計畫列表</button>}
         title={plan.name}
         subtitle={plan.start ? `${md(plan.start)} – ${md(plan.end)}` : ''}
         actions={<>

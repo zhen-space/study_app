@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { render, screen, fireEvent, waitFor } from '@testing-library/react';
+import { act, render, screen, fireEvent, waitFor } from '@testing-library/react';
 
 vi.mock('../tt/material', () => ({
   listShelf: vi.fn(), getBookTree: vi.fn(),
@@ -14,6 +14,12 @@ const tasks = [
   { id: 3, title: '已在計畫', list_id: 10, plan_id: 9, task_kind: 'standard' },
 ];
 const lists = [{ id: 10, name: '數學' }, { id: 11, name: '物理' }];
+
+function deferred() {
+  let resolve;
+  const promise = new Promise(res => { resolve = res; });
+  return { promise, resolve };
+}
 
 describe('PlanContentPicker', () => {
   beforeEach(() => {
@@ -76,5 +82,31 @@ describe('PlanContentPicker', () => {
     fireEvent.click(screen.getByRole('button', { name: '重試載入內容' }));
     expect(await screen.findByText('第一章')).toBeInTheDocument();
     expect(material.getBookTree).toHaveBeenCalledTimes(2);
+  });
+
+  it('返回後改選另一本教材時，較慢的舊回應不會覆蓋目前範圍', async () => {
+    const first = deferred();
+    const second = deferred();
+    material.listShelf.mockResolvedValue({ books: [
+      { material_book_id: 5, title: '數學第一冊' },
+      { material_book_id: 6, title: '數學第二冊' },
+    ] });
+    material.getBookTree.mockImplementation(id => id === 5 ? first.promise : second.promise);
+    render(<PlanContentPicker planId={9} tasks={tasks} lists={lists} onClose={() => {}} onPreview={() => {}} />);
+    fireEvent.click(screen.getByRole('button', { name: '教材範圍' }));
+    fireEvent.click(await screen.findByText('數學第一冊'));
+    fireEvent.click(screen.getByRole('button', { name: '← 選其他教材' }));
+    fireEvent.click(screen.getByText('數學第二冊'));
+
+    await act(async () => second.resolve({ items: [
+      { id: 82, title: '第二冊目前範圍', estimated_minutes: 40, path: ['Ch2'], completed: false, selected: false },
+    ] }));
+    expect(await screen.findByText('第二冊目前範圍')).toBeInTheDocument();
+
+    await act(async () => first.resolve({ items: [
+      { id: 81, title: '第一冊過期範圍', estimated_minutes: 60, path: ['Ch1'], completed: false, selected: false },
+    ] }));
+    expect(screen.getByText('第二冊目前範圍')).toBeInTheDocument();
+    expect(screen.queryByText('第一冊過期範圍')).not.toBeInTheDocument();
   });
 });
