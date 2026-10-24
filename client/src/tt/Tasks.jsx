@@ -21,6 +21,16 @@ export function SubjectCounts({ list }) {
     </>
   );
 }
+
+// 任務頁的 Quick Find 只做畫面內篩選，不改 route、也不發 API。
+// NFKC 讓全形英數與一般英數能互相找到；標題、備註、標籤、科目都可搜。
+export function taskMatchesQuery(task, query, listName = '') {
+  const q = String(query || '').normalize('NFKC').trim().toLocaleLowerCase('zh-Hant');
+  if (!q) return true;
+  return [task.title, task.notes, ...(task.tags || []), listName]
+    .filter(Boolean)
+    .some(value => String(value).normalize('NFKC').toLocaleLowerCase('zh-Hant').includes(q));
+}
 export function repeatLabel(r, dueDate) {
   if (!r) return '不重複';
   if (r === 'daily') return '每天';
@@ -562,6 +572,9 @@ export default function Tasks({ view, tasks, lists, filters, habits = [], reload
   const pickFilter = v => { setTaskFilter(v); try { localStorage.setItem('taskFilter', v); } catch {} };
   // §K：科目過濾（''＝全部科目）。custom lists 從側欄移到這裡。
   const [subjFilter, setSubjFilter] = useState('');
+  // 成熟待辦 App 都把 Quick Find 放在清單本身。手機不必先開側欄，
+  // 而且可和日期、科目、排序疊加使用。
+  const [quickFind, setQuickFind] = useState('');
   // 排序方式記起來：下次開啟還是同一個（default | time | priority | title）
   const [sortBy, setSortBy] = useState(() => {
     try { return localStorage.getItem('taskSort') || 'default'; } catch { return 'default'; }
@@ -635,7 +648,10 @@ export default function Tasks({ view, tasks, lists, filters, habits = [], reload
   };
   // §K：科目（清單）過濾移進「任務」頁（取代側欄的 per-subject 清單）
   const subjFiltered = showChips && subjFilter ? shownAll.filter(t => String(t.list_id) === subjFilter) : shownAll;
-  const shown = showChips ? subjFiltered.filter(chipFn[taskFilter] || chipFn.all) : shownAll;
+  const chipFiltered = showChips ? subjFiltered.filter(chipFn[taskFilter] || chipFn.all) : shownAll;
+  const shown = showChips
+    ? chipFiltered.filter(t => taskMatchesQuery(t, quickFind, lists.find(l => Number(l.id) === Number(t.list_id))?.name))
+    : chipFiltered;
   const chipCount = k => (subjFilter ? shownAll.filter(t => String(t.list_id) === subjFilter) : shownAll).filter(chipFn[k]).length;
   const sel = tv.find(t => t.id === selId);
   const trashMutationIds = useRef(new Set());
@@ -965,8 +981,15 @@ export default function Tasks({ view, tasks, lists, filters, habits = [], reload
           </div>
         )}
         {showChips && (
-          <div className="row" style={{ gap: 'var(--sp-2)', alignItems: 'center', flexWrap: 'wrap' }}>
-            <div className="task-filter" role="tablist" aria-label="任務篩選">
+          <>
+            <div className="task-quick-find" role="search">
+              <span aria-hidden="true">⌕</span>
+              <input aria-label="搜尋目前任務" placeholder="搜尋標題、備註、標籤或科目" value={quickFind}
+                onChange={e => setQuickFind(e.target.value)} />
+              {quickFind && <button type="button" className="icon-btn" aria-label="清除任務搜尋" onClick={() => setQuickFind('')}>✕</button>}
+            </div>
+            <div className="row" style={{ gap: 'var(--sp-2)', alignItems: 'center', flexWrap: 'wrap' }}>
+              <div className="task-filter" role="tablist" aria-label="任務篩選">
               {[['all', '全部'], ['today', '今天'], ['week', '本週'], ['overdue', '逾期'], ['unscheduled', '未排程']].map(([k, label]) => {
                 const n = k === 'all' ? 0 : chipCount(k);
                 return (
@@ -976,15 +999,16 @@ export default function Tasks({ view, tasks, lists, filters, habits = [], reload
                   </button>
                 );
               })}
+              </div>
+              {lists.length > 0 && (
+                <select aria-label="依科目篩選" value={subjFilter} onChange={e => setSubjFilter(e.target.value)}
+                  style={{ marginLeft: 'auto', fontSize: 13 }}>
+                  <option value="">全部科目</option>
+                  {lists.map(l => <option key={l.id} value={String(l.id)}>{l.name}</option>)}
+                </select>
+              )}
             </div>
-            {lists.length > 0 && (
-              <select aria-label="依科目篩選" value={subjFilter} onChange={e => setSubjFilter(e.target.value)}
-                style={{ marginLeft: 'auto', fontSize: 13 }}>
-                <option value="">全部科目</option>
-                {lists.map(l => <option key={l.id} value={String(l.id)}>{l.name}</option>)}
-              </select>
-            )}
-          </div>
+          </>
         )}
         {!['completed', 'trash', 'search'].includes(view.type) && (
           <div className="row" style={{ gap: 'var(--sp-2)', alignItems: 'center' }}>
@@ -1060,7 +1084,9 @@ export default function Tasks({ view, tasks, lists, filters, habits = [], reload
                 </div>
               );
             })}
-          {shown.length === 0 && <div className="muted" style={{ marginTop: 30, textAlign: 'center' }}>沒有任務</div>}
+          {shown.length === 0 && <div className="muted" style={{ marginTop: 30, textAlign: 'center' }}>
+            {showChips && quickFind.trim() ? '找不到符合搜尋的任務' : '沒有任務'}
+          </div>}
 
           {view.type === 'today' && habits.length > 0 && (
             <div className="tgroup" style={{ marginTop: 24, borderTop: '2px dashed var(--border)', paddingTop: 12 }}>
