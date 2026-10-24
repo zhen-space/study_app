@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { act } from 'react';
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 
 vi.mock('../api', () => ({ api: vi.fn(() => Promise.resolve([])) }));
@@ -94,5 +95,32 @@ describe('學校作業編輯', () => {
     await waitFor(() => expect(api.mock.calls.filter(([, o]) => o?.method === 'PATCH')).toHaveLength(2));
     const patches = api.mock.calls.filter(([, o]) => o?.method === 'PATCH');
     expect(patches.map(([, o]) => o.body.deadline_date)).toEqual(['2026-10-11', '2026-10-12']);
+  });
+
+  it('舊 PATCH 失敗後新版成功，不會在關閉時復活舊草稿覆蓋新版', async () => {
+    let rejectFirst;
+    const first = new Promise((_, reject) => { rejectFirst = reject; });
+    let patchCount = 0;
+    const reload = vi.fn().mockResolvedValue(undefined);
+    api.mockImplementation((path, opts) => {
+      if (opts?.method === 'PATCH') return ++patchCount === 1 ? first : Promise.resolve({ ok: true });
+      return Promise.resolve([]);
+    });
+    render(<Tasks view={{ type: 'tasks' }} tasks={[assignment()]} lists={lists} filters={[]} reload={reload} title="任務" />);
+    fireEvent.click(screen.getByText('數學習作'));
+    fireEvent.change(screen.getByLabelText('繳交日期'), { target: { value: '2026-10-11' } });
+    await waitFor(() => expect(api.mock.calls.filter(([, o]) => o?.method === 'PATCH')).toHaveLength(1), { timeout: 1000 });
+
+    fireEvent.change(screen.getByLabelText('繳交日期'), { target: { value: '2026-10-12' } });
+    await new Promise(resolve => setTimeout(resolve, 450));
+    await act(async () => { rejectFirst(new Error('舊版本儲存失敗')); });
+    await waitFor(() => expect(api.mock.calls.filter(([, o]) => o?.method === 'PATCH')).toHaveLength(2));
+
+    fireEvent.click(screen.getByRole('button', { name: '✓ 完成' }));
+    await waitFor(() => expect(screen.queryByLabelText('繳交日期')).toBeNull());
+    const patches = api.mock.calls.filter(([, o]) => o?.method === 'PATCH');
+    expect(patches).toHaveLength(2);
+    expect(patches.map(([, o]) => o.body.deadline_date)).toEqual(['2026-10-11', '2026-10-12']);
+    expect(reload).toHaveBeenCalledOnce();
   });
 });

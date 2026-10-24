@@ -21,6 +21,22 @@ beforeEach(() => {
 });
 
 describe('LocksView recoverable mutations', () => {
+  it('任務刷新成不可鎖定時清除 stale 選取，不送出舊 task id', async () => {
+    api.mockResolvedValue([]);
+    const view = render(<LocksView tasks={tasks} />);
+    const select = await screen.findByLabelText('選擇已排入時間的任務');
+    fireEvent.change(select, { target: { value: '7' } });
+    expect(select).toHaveValue('7');
+    expect(screen.getByRole('button', { name: '鎖定' })).toBeEnabled();
+
+    view.rerender(<LocksView tasks={[{ ...tasks[0], completed: true }]} />);
+
+    await waitFor(() => expect(select).toHaveValue(''));
+    expect(screen.getByRole('button', { name: '鎖定' })).toBeDisabled();
+    fireEvent.click(screen.getByRole('button', { name: '鎖定' }));
+    expect(api.mock.calls.filter(([, options]) => options?.method === 'POST')).toHaveLength(0);
+  });
+
   it('375px：鎖定清單載入失敗不冒充空清單，禁止 mutation 並可原地重試', async () => {
     let reads = 0;
     let retry;

@@ -114,6 +114,11 @@ afterEach(() => { vi.restoreAllMocks(); });
 
 const flush = () => act(async () => { await new Promise(r => setTimeout(r, 0)); });
 const click = el => act(async () => { el.click(); });
+const deferred = () => {
+  let resolve;
+  const promise = new Promise(res => { resolve = res; });
+  return { promise, resolve };
+};
 const sent = (prefix, method) =>
   calls.filter(([p, o]) => p.startsWith(prefix) && (o?.method || 'GET') === method);
 const completionCalls = () => calls.filter(([p]) => p.includes('/completion'));
@@ -386,6 +391,37 @@ describe('Category 與 Book identity', () => {
     const note = document.querySelector('.ml-samebook');
     expect(note.textContent).toContain('「第一次段考」、「複習」');
     expect(note.textContent).toContain('只有一份目錄與一份完成度');
+  });
+
+  it('返回教材庫後改開另一本書，較慢的舊樹狀回應不會覆蓋目前教材', async () => {
+    const first = deferred();
+    const second = deferred();
+    const books = [
+      BOOKS[0],
+      { id: 2, title: '英文講義', publisher: '翰林', subject_list_id: 2, progress: prog(1, 0) },
+    ];
+    setApi({
+      '/material/books': books,
+      '/material/books/1/tree': () => first.promise,
+      '/material/books/2/tree': () => second.promise,
+    });
+    render(<MaterialLibraryView lists={LISTS} />);
+    await waitFor(() => expect(screen.getByText('英文講義')).toBeInTheDocument());
+    fireEvent.click(screen.getByRole('button', { name: /新大滿貫/ }));
+    fireEvent.click(screen.getByRole('button', { name: '← 教材庫' }));
+    fireEvent.click(screen.getByRole('button', { name: /英文講義/ }));
+
+    await act(async () => second.resolve(makeTree({
+      book: { id: 2, title: '英文講義', publisher: '翰林' },
+      nodes: [{ ...makeTree().nodes[0], id: 20, title: '英文目前目錄' }],
+    })));
+    expect(await screen.findByText('英文目前目錄')).toBeInTheDocument();
+
+    await act(async () => first.resolve(makeTree({
+      nodes: [{ ...makeTree().nodes[0], title: '數學過期目錄' }],
+    })));
+    expect(screen.getByText('英文目前目錄')).toBeInTheDocument();
+    expect(screen.queryByText('數學過期目錄')).not.toBeInTheDocument();
   });
 });
 
