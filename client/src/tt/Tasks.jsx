@@ -192,7 +192,7 @@ function TaskRow({ t, lists, sel, onSel, onToggle, onDragStart, onDropOn, onSwip
   // 不是「逾期」（danger）。逾期紅只留給非計畫任務的使用者截止。
   const overdue = pastDue && t.plan_id == null;
   const missedProgress = pastDue && t.plan_id != null;
-  // 右滑刪除：滑超過 90px 放開就刪（可用底部的「復原」救回）
+  // 依 iOS 清單慣例，破壞性動作從列尾端向左滑出；刪除後仍可用底部的「復原」救回。
   const sw = useRef(null);
   const [dx, setDx] = useState(0);
   const rowRef = useRef(null);
@@ -202,18 +202,18 @@ function TaskRow({ t, lists, sel, onSel, onToggle, onDragStart, onDropOn, onSwip
     const p = e.touches[0];
     const ax = p.clientX - s.x, ay = p.clientY - s.y;
     if (!s.on) { if (Math.abs(ax) > 12 && Math.abs(ax) > Math.abs(ay) * 1.5) s.on = true; else if (Math.abs(ay) > 12) { sw.current = null; return; } }
-    if (s.on) { e.preventDefault(); setDx(Math.max(0, ax)); }   // 只往右滑
+    if (s.on) { e.preventDefault(); setDx(Math.min(0, ax)); }   // 只往左滑
   };
   const end = () => {
     const s = sw.current; sw.current = null;
-    if (s?.on && dx > 90) { setDx(0); onSwipeDelete(t); return; }
+    if (s?.on && dx < -90) { setDx(0); onSwipeDelete(t); return; }
     setDx(0);
   };
   return (
     <div style={{ position: 'relative', overflow: 'hidden' }}>
-      {dx > 0 && (
-        <div style={{ position: 'absolute', inset: 0, display: 'flex', alignItems: 'center', paddingLeft: 14, borderRadius: 10, background: dx > 90 ? 'var(--red)' : 'var(--fill-strong)', color: dx > 90 ? '#fff' : 'var(--muted)', fontSize: 13, fontWeight: 600 }}>
-          🗑 {dx > 90 ? '放開就刪除' : '再滑一點'}
+      {dx < 0 && (
+        <div style={{ position: 'absolute', inset: 0, display: 'flex', alignItems: 'center', justifyContent: 'flex-end', paddingRight: 14, borderRadius: 10, background: dx < -90 ? 'var(--red)' : 'var(--fill-strong)', color: dx < -90 ? '#fff' : 'var(--muted)', fontSize: 13, fontWeight: 600 }}>
+          {dx < -90 ? '放開就刪除' : '再滑一點'} 🗑
         </div>
       )}
       <div ref={rowRef} className={'trow' + (t.completed ? ' done' : '') + (sel ? ' sel' : '')} onClick={() => { if (dx < 6) onSel(t); }}
