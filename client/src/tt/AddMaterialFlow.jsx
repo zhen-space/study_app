@@ -31,6 +31,7 @@ export default function AddMaterialFlow({ lists = [], onCancel, onCreated, onAdd
   const [conflict, setConflict] = useState(null);   // null | { books: [...] }
   const [mergeTarget, setMergeTarget] = useState(null);
   const [created, setCreated] = useState(null);
+  const parseBusy = useRef(false);
   const operationBusy = useRef(false);
 
   const withContext = d => {
@@ -54,6 +55,9 @@ export default function AddMaterialFlow({ lists = [], onCancel, onCreated, onAdd
 
   // PhotoQueue 確認後：逐張正向＋壓縮 → 一次送 AI 解析。部分頁沒讀到內容會如實標示，不假裝全部成功。
   const parsePhotos = async files => {
+    // React state 要到下一次 render 才會鎖住按鈕；ref 同步阻擋同一拍的快速連點／重入。
+    if (parseBusy.current) return;
+    parseBusy.current = true;
     setBusy(true); setErr(''); setProblems([]); setWarnings([]);
     setStatus(`AI 讀取 ${files.length} 張照片中，大約 30 秒～1 分鐘…`);
     try {
@@ -75,7 +79,7 @@ export default function AddMaterialFlow({ lists = [], onCancel, onCreated, onAdd
       setWarnings(r.warnings || []);
       setStatus('');
     } catch (e2) { setErr(readable(e2)); setProblems(e2.payload?.problems || []); setStatus(''); }
-    finally { setBusy(false); }
+    finally { parseBusy.current = false; setBusy(false); }
   };
 
   // 建立前先偵測相同名稱、類型、出版社與科目：有衝突就要求三選一，未選不 commit。

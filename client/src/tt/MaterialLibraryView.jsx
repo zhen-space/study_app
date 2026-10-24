@@ -503,7 +503,12 @@ export default function MaterialLibraryView({ goPlans = null, lists = [] }) {
 
       <div className="ml-addrow ml-addrow--book">
         <input className="ml-quick-title" value={adding} onChange={e => setAdding(e.target.value)} placeholder="新增教材名稱"
-          aria-label="新增教材名稱" onKeyDown={e => { if (e.key === 'Enter') addBook(); }} />
+          aria-label="新增教材名稱" onKeyDown={e => {
+            if (e.key === 'Enter' && !e.isComposing && !e.nativeEvent?.isComposing) {
+              e.preventDefault();
+              addBook();
+            }
+          }} />
         <select aria-label="教材類型" value={addBookType} onChange={e => setAddBookType(e.target.value)}>
           <option value="">未分類</option>
           {['課本', '講義', '測驗卷', '參考書', '自訂'].map(t => <option key={t} value={t}>{t}</option>)}
@@ -687,7 +692,12 @@ function CategoryAdder({ onAdd }) {
   return (
     <div className="ml-addrow ml-addrow--cat">
       <input value={name} onChange={e => setName(e.target.value)} placeholder="新增分類（例：第一次段考）"
-        aria-label="新增分類名稱" onKeyDown={e => { if (e.key === 'Enter') submit(); }} />
+        aria-label="新增分類名稱" onKeyDown={e => {
+          if (e.key === 'Enter' && !e.isComposing && !e.nativeEvent?.isComposing) {
+            e.preventDefault();
+            submit();
+          }
+        }} />
       <Button size="sm" variant="secondary" disabled={!name.trim() || busy} onClick={submit}>新增分類</Button>
     </div>
   );

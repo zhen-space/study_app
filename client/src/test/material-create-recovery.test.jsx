@@ -136,6 +136,58 @@ describe('AddMaterialFlow committed recovery', () => {
     expect(commitDraft).toHaveBeenCalledOnce();
   });
 
+  it('同步阻擋照片／PDF 預覽的重複送出', async () => {
+    let confirm;
+    let nested = false;
+    fileToPayload.mockImplementation(file => {
+      if (!nested) {
+        nested = true;
+        fireEvent.click(confirm);
+      }
+      return Promise.resolve({ filename: file.name, mime: file.type, data: 'AAAA' });
+    });
+    render(<AddMaterialFlow lists={[{ id: 1, name: '英文' }]} onCancel={vi.fn()} onCreated={vi.fn()} />);
+    fireEvent.click(screen.getByText('拍照／匯入教材目錄'));
+    const files = [new File(['pdf'], 'toc.pdf', { type: 'application/pdf' })];
+    fireEvent.change(screen.getByLabelText('選多張照片'), { target: { files } });
+    confirm = screen.getByRole('button', { name: /確認送出/ });
+    fireEvent.click(confirm);
+
+    expect(await screen.findByRole('button', { name: '建立教材' })).toBeInTheDocument();
+    expect(fileToPayload).toHaveBeenCalledOnce();
+    expect(importPreview).toHaveBeenCalledOnce();
+  });
+
+  it('AI 預覽失敗後保留多張檔案並可安全重試', async () => {
+    importPreview
+      .mockRejectedValueOnce(new Error('網路中斷'))
+      .mockResolvedValueOnce({
+        draft: {
+          book: { title: '英文課本', publisher: '龍騰', subject_list_id: 1 },
+          chapters: [{ title: '第一課', content_items: [{ kind: 'reading', title: 'L1' }], children: [] }],
+        },
+        problems: [], warnings: [],
+      });
+    render(<AddMaterialFlow lists={[{ id: 1, name: '英文' }]} onCancel={vi.fn()} onCreated={vi.fn()} />);
+    fireEvent.click(screen.getByText('拍照／匯入教材目錄'));
+    const files = [
+      new File(['a'], 'one.jpg', { type: 'image/jpeg' }),
+      new File(['pdf'], 'toc.pdf', { type: 'application/pdf' }),
+    ];
+    fireEvent.change(screen.getByLabelText('選多張照片'), { target: { files } });
+    const confirm = screen.getByRole('button', { name: /確認送出/ });
+    fireEvent.click(confirm);
+
+    expect(await screen.findByRole('alert')).toHaveTextContent('網路中斷');
+    expect(screen.getByText((_, el) => el?.classList.contains('md-total') && el.textContent.includes('共 2 頁'))).toBeInTheDocument();
+    expect(confirm).toBeEnabled();
+    fireEvent.click(confirm);
+
+    expect(await screen.findByRole('button', { name: '建立教材' })).toBeInTheDocument();
+    expect(importPreview).toHaveBeenCalledTimes(2);
+    expect(fileToPayload).toHaveBeenCalledTimes(4);
+  });
+
   it.each([
     ['單張照片', [new File(['a'], 'one.jpg', { type: 'image/jpeg' })]],
     ['多張照片', [new File(['a'], 'one.jpg', { type: 'image/jpeg' }), new File(['b'], 'two.png', { type: 'image/png' })]],

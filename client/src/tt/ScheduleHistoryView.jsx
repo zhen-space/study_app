@@ -143,6 +143,18 @@ export default function ScheduleHistoryView({ onRestored }) {
         // 取得自己的同步鎖，避免把成功寫入誤當成可以再次 POST。
         applyBusy.current = false;
         await finishRestore(r);
+      } else if (r.preview) {
+        // active version 沒變時，Task／期限／固定行程仍可能在確認期間改變。
+        // 後端會在交易內重新評估並拒絕寫入；此時必須用 CURRENT preview
+        // 取代舊提案，避免使用者持續重送已不可能套用的 mutation。
+        setPreview(r.preview);
+        setRestoreError(r.preview.status === 'impossible'
+          ? '套用前重新檢查時，已沒有可安全恢復的安排，因此沒有建立新版本。'
+          : '套用前重新檢查時，這個版本已沒有需要恢復的安排，因此沒有建立新版本。');
+      } else {
+        // 非預期回應也要 fail closed：關閉舊提案，不能讓它繼續被重送。
+        setPreview(null);
+        setError('無法確認恢復結果，請重新載入排程紀錄後再試。');
       }
     } catch (e) {
       if (e.status === 409 && e.payload?.code === 'STALE_SCHEDULE_PREVIEW') {

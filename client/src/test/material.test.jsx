@@ -467,6 +467,39 @@ describe('legacy 共存邊界', () => {
 /* ============ Subject linkage（第一輪 Audit 必修） ============ */
 
 describe('教材的科目（Subject）', () => {
+  it('新增教材與分類用中文輸入法選字時，Enter 不會提早送出', async () => {
+    render(<MaterialLibraryView lists={LISTS} />);
+    await waitFor(() => expect(screen.queryByText('新大滿貫')).toBeTruthy());
+
+    const book = screen.getByLabelText('新增教材名稱');
+    fireEvent.compositionStart(book);
+    fireEvent.change(book, { target: { value: '數學講' } });
+    fireEvent.keyDown(book, { key: 'Enter', isComposing: true });
+    await flush();
+    expect(sent('/material/books', 'POST')).toHaveLength(0);
+    expect(book).toHaveValue('數學講');
+
+    fireEvent.compositionEnd(book, { data: '義' });
+    fireEvent.change(book, { target: { value: '數學講義' } });
+    fireEvent.keyDown(book, { key: 'Enter' });
+    await flush();
+    expect(sent('/material/books', 'POST')).toHaveLength(1);
+
+    const category = screen.getByLabelText('新增分類名稱');
+    fireEvent.compositionStart(category);
+    fireEvent.change(category, { target: { value: '第二次段' } });
+    fireEvent.keyDown(category, { key: 'Enter', isComposing: true });
+    await flush();
+    expect(sent('/material/categories', 'POST')).toHaveLength(0);
+    expect(category).toHaveValue('第二次段');
+
+    fireEvent.compositionEnd(category, { data: '考' });
+    fireEvent.change(category, { target: { value: '第二次段考' } });
+    fireEvent.keyDown(category, { key: 'Enter' });
+    await flush();
+    expect(sent('/material/categories', 'POST')).toHaveLength(1);
+  });
+
   it('新增教材時把 subject_list_id 一起送出，而且用 id 不用名稱', async () => {
     render(<MaterialLibraryView lists={LISTS} />);
     await waitFor(() => expect(screen.queryByText('新大滿貫')).toBeTruthy());

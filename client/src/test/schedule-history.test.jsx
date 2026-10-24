@@ -206,6 +206,44 @@ describe('ScheduleHistory restore recovery', () => {
     post.resolve({ applied: false });
   });
 
+  it('交易內重新評估為不可恢復時更新 preview，不重送舊提案', async () => {
+    let restoreAttempts = 0;
+    const currentPreview = {
+      ...preview,
+      status: 'impossible',
+      conflicts: [{ task_id: 1, type: 'fixed_event', message: '與目前的固定行程衝突' }],
+    };
+    standardApi({
+      '/schedule/versions/1/restore': async () => {
+        restoreAttempts += 1;
+        return { applied: false, preview: currentPreview };
+      },
+    });
+    render(<ScheduleHistoryView />);
+    await selectVersion();
+    fireEvent.click(screen.getByRole('button', { name: '恢復這個版本' }));
+    const dialog = await screen.findByRole('dialog', { name: '恢復排程版本' });
+    fireEvent.click(within(dialog).getByRole('button', { name: '確認恢復' }));
+
+    expect(await within(dialog).findByRole('alert')).toHaveTextContent('已沒有可安全恢復的安排');
+    expect(within(dialog).getByText('沒有可恢復的安排。')).toBeTruthy();
+    expect(within(dialog).getByText('與目前的固定行程衝突')).toBeTruthy();
+    expect(within(dialog).queryByRole('button', { name: '確認恢復' })).toBeNull();
+    expect(restoreAttempts).toBe(1);
+  });
+
+  it('後端回傳未套用但缺少 CURRENT preview 時關閉舊提案', async () => {
+    standardApi({ '/schedule/versions/1/restore': async () => ({ applied: false }) });
+    render(<ScheduleHistoryView />);
+    await selectVersion();
+    fireEvent.click(screen.getByRole('button', { name: '恢復這個版本' }));
+    const dialog = await screen.findByRole('dialog', { name: '恢復排程版本' });
+    fireEvent.click(within(dialog).getByRole('button', { name: '確認恢復' }));
+
+    expect(await screen.findByRole('alert')).toHaveTextContent('無法確認恢復結果');
+    expect(screen.queryByRole('dialog', { name: '恢復排程版本' })).toBeNull();
+  });
+
   it('恢復已寫入但刷新失敗時只重試投影，不會再次建立版本', async () => {
     let listAttempts = 0;
     let restoreAttempts = 0;
