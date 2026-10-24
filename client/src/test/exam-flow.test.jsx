@@ -23,6 +23,11 @@ const setApi = () => {
   });
 };
 const posted = p => calls.filter(([path, o]) => path === p && (o?.method === 'POST'));
+const deferred = () => {
+  let resolve;
+  const promise = new Promise(res => { resolve = res; });
+  return { promise, resolve };
+};
 beforeEach(() => { localStorage.clear(); vi.spyOn(console, 'error').mockImplementation(() => {}); setApi(); });
 afterEach(() => { vi.restoreAllMocks(); cleanup(); });
 const click = el => act(async () => { el.click(); });
@@ -95,6 +100,41 @@ describe('ExamCreateWizard', () => {
 
     await click(screen.getAllByRole('radio')[2]);
     expect(screen.getByLabelText('建立結果摘要')).toHaveTextContent('建立有起訖時間的每日安排');
+  });
+
+  it('375px 快速修改同一範圍的預估時間時，依序儲存且最後保留最新值', async () => {
+    Object.defineProperty(window, 'innerWidth', { configurable: true, value: 375 });
+    localStorage.setItem('examWizardDraft:v1', JSON.stringify({
+      step: 1, name: '第二次段考', start: '2099-09-20', end: '2099-10-02', level: 'daily',
+      subjects: [{ listId: 1, examDate: '' }],
+      scope: { 1: { items: { 81: { title: '第一章', chapter: 'Ch1', book_title: '數學第一冊', minutes: 20 } }, manual: [] } },
+    }));
+    const first = deferred();
+    const second = deferred();
+    api.mockImplementation((path, opts) => {
+      calls.push([path, opts]);
+      if (path === '/material/content-items/81') {
+        const writes = calls.filter(([p]) => p === path).length;
+        return writes === 1 ? first.promise : second.promise;
+      }
+      return Promise.resolve({});
+    });
+    render(<ExamCreateWizard lists={LISTS} onDone={() => {}} onCancel={() => {}} />);
+    const input = screen.getByLabelText('第一章預估分鐘');
+
+    fireEvent.change(input, { target: { value: '30' } });
+    fireEvent.blur(input);
+    fireEvent.change(input, { target: { value: '60' } });
+    fireEvent.blur(input);
+    await waitFor(() => expect(calls.filter(([p]) => p === '/material/content-items/81')).toHaveLength(1));
+
+    await act(async () => first.resolve({ ok: true }));
+    await waitFor(() => expect(calls.filter(([p]) => p === '/material/content-items/81')).toHaveLength(2));
+    const writes = calls.filter(([p]) => p === '/material/content-items/81');
+    expect(writes.map(([, opts]) => opts.body.estimated_minutes)).toEqual([30, 60]);
+    await act(async () => second.resolve({ ok: true }));
+    await waitFor(() => expect(screen.queryByText('正在儲存預估時間…')).toBeNull());
+    expect(input).toHaveValue(60);
   });
 
   it('只記錄範圍的預覽失敗時，不會誤稱為「每天安排」失敗', async () => {

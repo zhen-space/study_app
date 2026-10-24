@@ -42,17 +42,25 @@ export default function Shell({ onLogout }) {
   const [habits, setHabits] = useState([]);
   const [petData, setPetData] = useState(null);
   const [apiPlans, setApiPlans] = useState([]);   // 正式 Plan（Phase 2A）
+  const plansReloadRequest = useRef(0);
 
   // 改一筆任務不需要把清單／篩選／習慣整包重抓——之前每個動作都打 5 支 API，
   // 手機上就是每按一下等好幾百毫秒。scope='tasks' 只抓真正會變的（任務＋金幣）。
   // 回傳 Promise：建立計畫之後要等清單真的更新，才能開它的明細
   const reload = (scope) => {
+    const planRequest = ++plansReloadRequest.current;
     const jobs = [
       api('/tasks').then(setTasks).catch(() => {}),
       api('/pet').then(setPetData).catch(() => {}),   // 完成任務會加金幣
       // 帶 includeArchived：計畫頁要能顯示（並恢復）已封存的計畫。
-      // 舊後端沒有這支也要能跑，所以失敗就退回空陣列走 legacy 推導。
-      api('/plans?includeArchived=1').then(setApiPlans).catch(() => setApiPlans([])),
+      // 較舊 reload 晚回來時不能覆蓋 CURRENT 狀態；CURRENT 讀取失敗也不能把
+      // 最後已知的正式 Plan 清空。錯誤往上交給 lifecycle committed recovery，
+      // 初次載入則由 effect 安靜保留空陣列，仍可走 legacy 推導。
+      api('/plans?includeArchived=1').then(value => {
+        if (planRequest === plansReloadRequest.current) setApiPlans(value);
+      }).catch(error => {
+        if (planRequest === plansReloadRequest.current) throw error;
+      }),
     ];
     if (scope !== 'tasks') jobs.push(
       api('/lists').then(setLists).catch(() => {}),
@@ -61,7 +69,7 @@ export default function Shell({ onLogout }) {
     );
     return Promise.all(jobs);
   };
-  useEffect(() => { reload(); }, []);
+  useEffect(() => { reload().catch(() => {}); }, []);
   useEffect(() => { api('/pet').then(setPetData).catch(() => {}); }, [view.type]);
   // 通知權限改成使用者自己到「設定」按才要。一進 App 就跳系統對話框，
   // 大部分人會直接按拒絕——之後就再也問不到了。
