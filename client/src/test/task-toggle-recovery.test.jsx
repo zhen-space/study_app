@@ -97,4 +97,25 @@ describe('Task mutation recovery at 375px', () => {
     expect(screen.getByDisplayValue('今天複習英文')).toBeInTheDocument();
     expect(screen.queryByText(/已刪除「今天複習英文」/)).not.toBeInTheDocument();
   });
+
+  it('沿用 iOS 慣例：向左滑過門檻才刪除，向右滑不觸發破壞性操作', async () => {
+    api.mockResolvedValue({});
+    const reload = mount();
+    const row = screen.getByText('今天複習英文').closest('.trow');
+
+    fireEvent.touchStart(row, { touches: [{ clientX: 80, clientY: 100 }] });
+    fireEvent.touchMove(row, { touches: [{ clientX: 200, clientY: 102 }] });
+    fireEvent.touchEnd(row);
+    expect(api.mock.calls.filter(([path, options]) => path === '/tasks/501' && options?.method === 'DELETE')).toHaveLength(0);
+    expect(screen.getByText('今天複習英文')).toBeInTheDocument();
+
+    fireEvent.touchStart(row, { touches: [{ clientX: 220, clientY: 100 }] });
+    fireEvent.touchMove(row, { touches: [{ clientX: 110, clientY: 102 }] });
+    expect(screen.getByText(/放開就刪除/)).toBeInTheDocument();
+    fireEvent.touchEnd(row);
+
+    await waitFor(() => expect(screen.queryByText('今天複習英文')).not.toBeInTheDocument());
+    expect(api.mock.calls.filter(([path, options]) => path === '/tasks/501' && options?.method === 'DELETE')).toHaveLength(1);
+    expect(reload).toHaveBeenCalledOnce();
+  });
 });
