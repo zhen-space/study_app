@@ -449,6 +449,30 @@ describe('暫停的計畫仍然看得見', () => {
 });
 
 describe('暫停確認', () => {
+  it('mutation 已提交但正式 Plan 刷新失敗時保留最後投影，進入安全重新載入', async () => {
+    let planReads = 0;
+    withPlan({
+      '/plans': () => {
+        planReads += 1;
+        if (planReads === 1) return [fx.plans[0]];
+        return Promise.reject(new Error('計畫刷新失敗'));
+      },
+      '/plans/12/pause': { plan: { ...fx.plans[0], status: 'paused' } },
+    });
+    await openManage();
+    await click(sheetRow('暫停計畫'));
+    await chooseRetain('保留未完成的任務');
+
+    await click(within(sheet()).getByRole('button', { name: '暫停計畫' }));
+
+    expect(await screen.findByText('變更已儲存，但畫面暫時無法更新')).toBeInTheDocument();
+    expect(screen.getByText('計畫刷新失敗')).toBeInTheDocument();
+    expect(screen.queryByText(/找不到這個計畫/)).toBeNull();
+    expect(sent('POST', '/plans/12/pause')).toHaveLength(1);
+    expect(planReads).toBe(2);
+    noCrash();
+  });
+
   it('沒選「未完成的任務怎麼辦」就不能送出', async () => {
     withPlan();
     await openManage();

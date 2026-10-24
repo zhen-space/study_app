@@ -50,6 +50,7 @@ export default function ExamCreateWizard({ lists = [], onDone, onCancel, onManag
   const [picking, setPicking] = useState(null);   // { listId } → 開教材選取
   const [preview, setPreview] = useState(null);    // 每日/時段的排程預覽 blocks
   const previewRequest = useRef(0);
+  const estimateSaves = useRef(new Map());
   // React state 在同一個 event turn 不會同步更新；用 ref 擋住手機快速連點造成的重複建立。
   const creatingRef = useRef(false);
 
@@ -93,9 +94,18 @@ export default function ExamCreateWizard({ lists = [], onDone, onCancel, onManag
   const saveItemMinutes = async (listId, cid) => {
     const minutes = subjScope(listId).items[cid]?.minutes ?? null;
     setSavingEstimate(n => n + 1); setErr('');
-    try { await updateContentItem(cid, { estimated_minutes: minutes }); }
-    catch (e) { setErr(e.message || '預估時間儲存失敗，請再試一次'); }
-    finally { setSavingEstimate(n => Math.max(0, n - 1)); }
+    // 同一項在手機上可能快速修改、失焦兩次。寫入必須依操作順序排隊，否則較慢的
+    // 舊請求最後抵達伺服器時，會把畫面上的新分鐘數覆蓋回舊值。
+    const previous = estimateSaves.current.get(cid) || Promise.resolve();
+    const request = previous.catch(() => {}).then(() => updateContentItem(cid, { estimated_minutes: minutes }));
+    estimateSaves.current.set(cid, request);
+    try { await request; }
+    catch (e) {
+      if (estimateSaves.current.get(cid) === request) setErr(e.message || '預估時間儲存失敗，請再試一次');
+    } finally {
+      if (estimateSaves.current.get(cid) === request) estimateSaves.current.delete(cid);
+      setSavingEstimate(n => Math.max(0, n - 1));
+    }
   };
   const addManual = (listId, label, est) => setScope(sc => {
     const cur = sc[listId] || { items: {}, manual: [] };
