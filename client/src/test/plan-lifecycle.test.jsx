@@ -163,6 +163,34 @@ describe('••• 選單', () => {
     noCrash();
   });
 
+  it('生命週期請求 pending 時不能從頁首返回藏掉失敗訊息', async () => {
+    let rejectPause;
+    let pageBack;
+    setApi({
+      '/plans': [fx.plans[0]],
+      '/tasks': [...fx.tasks, ...fx.planTasks],
+      '/plans/12/pause': () => {
+        // 模擬手機上送出後立刻誤觸頁首返回；此刻 React 還不一定已重繪 disabled，
+        // 所以必須由同步 mutation ref 擋住，不能只依賴 busy 屬性。
+        pageBack.click();
+        return new Promise((resolve, reject) => { rejectPause = reject; });
+      },
+    });
+    await openManage();
+    pageBack = screen.getByRole('button', { name: '← 計畫列表' });
+    await click(sheetRow('暫停計畫'));
+    await chooseRetain('保留未完成的任務');
+
+    within(sheet()).getByRole('button', { name: '暫停計畫' }).click();
+
+    expect(screen.getByRole('heading', { name: '第二次段考準備' })).toBeInTheDocument();
+    expect(sheet()).not.toBeNull();
+    await act(async () => { rejectPause(new Error('暫停失敗')); });
+    expect(await within(sheet()).findByRole('alert')).toHaveTextContent('暫停失敗');
+    expect(sent('POST', '/plans/12/pause')).toHaveLength(1);
+    noCrash();
+  });
+
   it('暫停的計畫不顯示排程／新增任務入口——那些按下去必定失敗', async () => {
     withPlan({}, { ...fx.plans[0], status: 'paused' });
     await openPlan('第二次段考準備', '已暫停');

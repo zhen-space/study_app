@@ -553,6 +553,7 @@ export default function Tasks({ view, tasks, lists, filters, habits = [], reload
   const [quick, setQuick] = useState('');
   const [quickErr, setQuickErr] = useState('');
   const [quickBusy, setQuickBusy] = useState(false);
+  const quickBusyRef = useRef(false);
   const quickComposing = useRef(false);
   // §E 第一層 filters（只在「任務」總表出現）：全部／今天／逾期／未排程。記在 localStorage。
   const [taskFilter, setTaskFilter] = useState(() => {
@@ -770,21 +771,30 @@ export default function Tasks({ view, tasks, lists, filters, habits = [], reload
   }
   async function quickAdd(e) {
     e.preventDefault();
-    if (quickComposing.current || !quick.trim() || quickBusy) return;
+    if (quickComposing.current || !quick.trim() || quickBusyRef.current) return;
     const body = { title: quick.trim() };
     if (view.type === 'list') body.list_id = view.id;
     if (view.type === 'today') body.due_date = today();
     if (view.type === 'tag') body.tags = [view.tag];
+    // React state 要等重新 render 才生效；同步 ref 先上鎖，避免手機連點或同一輪
+    // submit 重入建立兩筆相同任務。
+    quickBusyRef.current = true;
     setQuickBusy(true); setQuickErr('');
     try {
       await api('/tasks', { method: 'POST', body });
-      setQuick('');
-      await reload('tasks');
     } catch (err) {
       setQuickErr(err.message || '新增任務失敗');
-    } finally {
+      quickBusyRef.current = false;
       setQuickBusy(false);
+      return;
     }
+    // 寫入成功和重新載入是兩個邊界。refresh 失敗時任務已存在，不能把它
+    // 誤報成新增失敗或讓使用者重送 POST。
+    setQuick('');
+    try { await reload('tasks'); }
+    catch { setRefreshError('任務已新增，但畫面暫時無法重新載入。'); }
+    quickBusyRef.current = false;
+    setQuickBusy(false);
   }
   // 儲存去抖動：不再每敲一個字就打 API＋全量重載（造成又慢又容易出錯）
   const saveTimer = useRef(null);

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { getBookTree, listShelf, flattenItems } from './material';
 import { BottomSheet, Button, EmptyState } from './ui';
 
@@ -15,6 +15,7 @@ export default function PlanContentPicker({ planId, tasks = [], lists = [], onCl
   const [loading, setLoading] = useState(false);
   const [booksError, setBooksError] = useState('');
   const [itemsError, setItemsError] = useState('');
+  const bookRequest = useRef(0);
 
   const standalone = useMemo(() => tasks.filter(t => t.plan_id == null && !t.deleted && !t.completed && !t.cancelled), [tasks]);
   const shownTasks = standalone.filter(t => tab === 'school' ? t.task_kind === 'school_assignment' : t.task_kind !== 'school_assignment');
@@ -38,14 +39,17 @@ export default function PlanContentPicker({ planId, tasks = [], lists = [], onCl
   }, [tab, books, booksError, loading, loadBooks]);
 
   const openBook = async id => {
+    const requestId = ++bookRequest.current;
     setBookId(id); setItems([]); setLoading(true); setItemsError('');
     try {
       const tree = await getBookTree(id, { planId });
-      setItems(flattenItems(tree).filter(i => !i.completed && !i.selected));
+      if (requestId === bookRequest.current) {
+        setItems(flattenItems(tree).filter(i => !i.completed && !i.selected));
+      }
     } catch (e) {
-      setItemsError(e.message || '教材內容讀取失敗，請再試一次。');
+      if (requestId === bookRequest.current) setItemsError(e.message || '教材內容讀取失敗，請再試一次。');
     } finally {
-      setLoading(false);
+      if (requestId === bookRequest.current) setLoading(false);
     }
   };
   const toggle = (setter, id) => setter(s => {
@@ -81,7 +85,7 @@ export default function PlanContentPicker({ planId, tasks = [], lists = [], onCl
               : <EmptyState title="沒有可用教材" description="請先到教材庫加入教材。" />)}
         {tab === 'materials' && bookId && (
           <>
-            <button className="page-back" onClick={() => { setBookId(null); setItems([]); setItemsError(''); }}>← 選其他教材</button>
+            <button className="page-back" onClick={() => { bookRequest.current += 1; setBookId(null); setItems([]); setItemsError(''); setLoading(false); }}>← 選其他教材</button>
             {loading ? <div className="ui-meta">讀取內容中…</div> : itemsError ? <div className="error" role="alert"><div>{itemsError}</div><Button size="sm" variant="secondary" style={{ marginTop: 'var(--sp-2)' }} onClick={() => openBook(bookId)}>重試載入內容</Button></div> : items.length ? items.map(i => (
               <label key={i.id} className="ui-row" style={{ cursor: 'pointer' }}>
                 <input type="checkbox" checked={materialIds.has(i.id)} onChange={() => toggle(setMaterialIds, i.id)} />
