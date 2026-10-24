@@ -256,6 +256,45 @@ describe('ExamCreateWizard', () => {
     expect(screen.queryByText('正在準備安排預覽…')).toBeNull();
   });
 
+  it('返回調整後撤銷舊 preview token，重新預覽完成前不能建立', async () => {
+    localStorage.setItem('examWizardDraft:v1', JSON.stringify({
+      step: 2, name: '第二次段考', start: '2099-09-20', end: '2099-10-02', level: 'progress',
+      subjects: [{ listId: 1, examDate: '' }],
+      scope: { 1: { items: {}, manual: [{ label: '講義第三章', est: null }] } },
+    }));
+    const nextPreview = deferred();
+    let previews = 0;
+    api.mockImplementation((path, opts) => {
+      calls.push([path, opts]);
+      if (path === '/exam-plans/preview') {
+        previews += 1;
+        if (previews === 1) return Promise.resolve({
+          preview_token: 'old-token', blocks: [], scope: [{ kind: 'manual', subject_list_id: 1, title: '講義第三章' }],
+          progress_segments: [],
+        });
+        return nextPreview.promise;
+      }
+      if (path === '/exam-plans' && opts?.method === 'POST') return Promise.resolve({ plan: { id: 99 } });
+      return Promise.resolve({});
+    });
+    render(<ExamCreateWizard lists={LISTS} onDone={() => {}} onCancel={() => {}} />);
+    expect(await screen.findByRole('button', { name: '確認，建立段考計畫' })).toBeEnabled();
+
+    await click(screen.getByRole('button', { name: '← 上一步' }));
+    await click(screen.getByRole('button', { name: '下一步：選擇怎麼安排' }));
+
+    expect(screen.getByRole('button', { name: '正在產生預覽…' })).toBeDisabled();
+    fireEvent.click(screen.getByRole('button', { name: '正在產生預覽…' }));
+    expect(posted('/exam-plans')).toHaveLength(0);
+    expect(posted('/exam-plans/preview')).toHaveLength(2);
+
+    await act(async () => nextPreview.resolve({
+      preview_token: 'current-token', blocks: [], scope: [{ kind: 'manual', subject_list_id: 1, title: '講義第三章' }],
+      progress_segments: [],
+    }));
+    expect(await screen.findByRole('button', { name: '確認，建立段考計畫' })).toBeEnabled();
+  });
+
   it('375px 多科時，安排預覽逐項顯示科目與完整時段', async () => {
     Object.defineProperty(window, 'innerWidth', { configurable: true, value: 375 });
     localStorage.setItem('examWizardDraft:v1', JSON.stringify({
