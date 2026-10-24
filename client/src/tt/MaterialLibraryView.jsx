@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   listCategories, listBooks, getBookTree, setItemCompletion, createCategory, createBook,
   addBookToCategory, removeBookFromCategory, updateBook, bookNeedsSubject, ITEM_LABEL, CHAPTER_LEVEL_KINDS,
@@ -118,6 +118,7 @@ export default function MaterialLibraryView({ goPlans = null, lists = [] }) {
   const [batchImpacts, setBatchImpacts] = useState(null);
   const [mergeTarget, setMergeTarget] = useState('');
   const [mergePreview, setMergePreview] = useState(null);
+  const treeRequest = useRef(0);
 
   const load = useCallback(async () => {
     const [c, b, deleted] = await Promise.all([
@@ -130,10 +131,17 @@ export default function MaterialLibraryView({ goPlans = null, lists = [] }) {
   useEffect(() => { load().catch(e => setErr(e.message)); }, [load]);
 
   const openTree = async bookId => {
+    const requestId = ++treeRequest.current;
     setOpenBook(bookId);
     setEditing(false);
     setTree(null);
-    try { setTree(await getBookTree(bookId)); } catch (e) { setErr(e.message); }
+    setErr('');
+    try {
+      const next = await getBookTree(bookId);
+      if (requestId === treeRequest.current) setTree(next);
+    } catch (e) {
+      if (requestId === treeRequest.current) setErr(e.message);
+    }
   };
 
   // 手動標記完成／未完成一律走正式 completion endpoint。
@@ -336,7 +344,7 @@ export default function MaterialLibraryView({ goPlans = null, lists = [] }) {
         <PageHeader title={tree?.book?.title || book?.title || '教材'}
           subtitle={book?.publisher || ''}
           back={<button className="page-back"
-            onClick={() => { setOpenBook(null); setTree(null); setEditing(false); }}>← 教材庫</button>}
+            onClick={() => { treeRequest.current += 1; setOpenBook(null); setTree(null); setEditing(false); setErr(''); }}>← 教材庫</button>}
           actions={tree ? (
             <Button size="sm" variant="tertiary" onClick={() => setEditing(v => !v)}>
               {editing ? '完成編輯' : '編輯'}

@@ -24,6 +24,14 @@ export default function LocksView({ tasks = [] }) {
   const addingRef = useRef(false);
   const deletingRef = useRef(false);
   const loadingRef = useRef(false);
+  const lockableTasks = tasks.filter(item => item.plan_id && onActivePlan(item)
+    && !item.deleted && !item.completed && item.due_date);
+
+  // Shell 刷新後，原本選取的任務可能已完成、刪除、退出 active Plan 或失去排程。
+  // 下拉選項消失時也要清掉 React state；否則畫面看似空白，送出時卻仍會帶舊 id。
+  useEffect(() => {
+    if (task && !lockableTasks.some(item => Number(item.id) === Number(task))) setTask('');
+  }, [task, lockableTasks]);
 
   const load = useCallback(async () => {
     if (loadingRef.current) return;
@@ -44,6 +52,7 @@ export default function LocksView({ tasks = [] }) {
 
   const add = async () => {
     if (loading || listError || addBusy || addingRef.current) return;
+    if (type === 'task' && !lockableTasks.some(item => Number(item.id) === Number(task))) return;
     addingRef.current = true;
     setAddBusy(true);
     setErr('');
@@ -84,7 +93,7 @@ export default function LocksView({ tasks = [] }) {
   };
 
   const invalid = type === 'task'
-    ? !task
+    ? !task || !lockableTasks.some(item => Number(item.id) === Number(task))
     : !date || (type === 'time' && (!start || !end || start >= end));
 
   return <div className="main">
@@ -111,8 +120,7 @@ export default function LocksView({ tasks = [] }) {
         {type === 'task'
           ? <select aria-label="選擇已排入時間的任務" value={task} disabled={loading || Boolean(listError) || addBusy} onChange={e => setTask(e.target.value)}>
               <option value="">選擇已排入時間的任務</option>
-              {tasks.filter(item => item.plan_id && onActivePlan(item) && !item.deleted && !item.completed && item.due_date)
-                .map(item => <option key={item.id} value={item.id}>{item.title}</option>)}
+              {lockableTasks.map(item => <option key={item.id} value={item.id}>{item.title}</option>)}
             </select>
           : <>
               <input aria-label="鎖定日期" type="date" value={date} disabled={loading || Boolean(listError) || addBusy} onChange={e => setDate(e.target.value)} />

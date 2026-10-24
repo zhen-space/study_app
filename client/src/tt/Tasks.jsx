@@ -825,7 +825,10 @@ export default function Tasks({ view, tasks, lists, filters, habits = [], reload
     return request.then(() => {
       setSaveError('');
     }).catch(err => {
-      if (!pendingSave.current) pendingSave.current = t;
+      // 只有「目前最後一筆」失敗才能把自己的草稿放回待存區。若後面已有
+      // 較新的 PATCH 排隊，舊失敗回應不能復活舊草稿，否則關閉明細時會再送
+      // 舊內容並覆蓋已成功寫入的新版本。
+      if (saveChain.current === request && !pendingSave.current) pendingSave.current = t;
       setSaveError(err?.message || '儲存失敗');
       throw err;
     }).finally(() => {
