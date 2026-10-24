@@ -563,6 +563,9 @@ export default function Tasks({ view, tasks, lists, filters, habits = [], reload
   const [quick, setQuick] = useState('');
   const [quickErr, setQuickErr] = useState('');
   const [quickBusy, setQuickBusy] = useState(false);
+  const [quickDue, setQuickDue] = useState('');
+  const [quickListId, setQuickListId] = useState('');
+  const [quickPriority, setQuickPriority] = useState(0);
   const quickBusyRef = useRef(false);
   const quickComposing = useRef(false);
   // §E 第一層 filters（只在「任務」總表出現）：全部／今天／逾期／未排程。記在 localStorage。
@@ -795,6 +798,11 @@ export default function Tasks({ view, tasks, lists, filters, habits = [], reload
     if (view.type === 'list') body.list_id = view.id;
     if (view.type === 'today') body.due_date = today();
     if (view.type === 'tag') body.tags = [view.tag];
+    // 先套目前檢視的預設值，再讓使用者於快速新增列明確覆寫。
+    // 只送既有 Task 欄位，不引入文字猜測或新的資料語意。
+    if (quickDue) body.due_date = quickDue;
+    if (quickListId) body.list_id = Number(quickListId);
+    if (quickPriority) body.priority = quickPriority;
     // React state 要等重新 render 才生效；同步 ref 先上鎖，避免手機連點或同一輪
     // submit 重入建立兩筆相同任務。
     quickBusyRef.current = true;
@@ -810,6 +818,9 @@ export default function Tasks({ view, tasks, lists, filters, habits = [], reload
     // 寫入成功和重新載入是兩個邊界。refresh 失敗時任務已存在，不能把它
     // 誤報成新增失敗或讓使用者重送 POST。
     setQuick('');
+    setQuickDue('');
+    setQuickListId('');
+    setQuickPriority(0);
     try { await reload('tasks'); }
     catch { setRefreshError('任務已新增，但畫面暫時無法重新載入。'); }
     quickBusyRef.current = false;
@@ -1012,13 +1023,34 @@ export default function Tasks({ view, tasks, lists, filters, habits = [], reload
         )}
         {!['completed', 'trash', 'search'].includes(view.type) && (
           <div className="row" style={{ gap: 'var(--sp-2)', alignItems: 'center' }}>
-            <form className="quick-add" style={{ flex: 1 }} onSubmit={quickAdd}>
+            <form className="quick-add task-quick-add" style={{ flex: 1 }} onSubmit={quickAdd}>
               <input placeholder="＋ 新增任務，按 Enter 儲存" value={quick}
                 onChange={e => { setQuick(e.target.value); if (quickErr) setQuickErr(null); }}
                 onCompositionStart={() => { quickComposing.current = true; }}
                 onCompositionEnd={() => { quickComposing.current = false; }}
                 onKeyDown={e => { if (e.key === 'Enter' && (e.isComposing || e.nativeEvent?.isComposing)) e.preventDefault(); }}
                 aria-invalid={quickErr ? 'true' : undefined} disabled={quickBusy} />
+              {quick.trim() && (
+                <div className="task-quick-actions" aria-label="快速新增選項">
+                  <button type="button" className={'chip' + (quickDue === today() ? ' on' : '')}
+                    aria-pressed={quickDue === today()} onClick={() => setQuickDue(d => d === today() ? '' : today())}>今天</button>
+                  <button type="button" className={'chip' + (quickDue === addDays(today(), 1) ? ' on' : '')}
+                    aria-pressed={quickDue === addDays(today(), 1)} onClick={() => setQuickDue(d => d === addDays(today(), 1) ? '' : addDays(today(), 1))}>明天</button>
+                  <input type="date" aria-label="快速新增日期" value={quickDue} onChange={e => setQuickDue(e.target.value)} />
+                  {lists.length > 0 && (
+                    <select aria-label="快速新增科目" value={quickListId} onChange={e => setQuickListId(e.target.value)}>
+                      <option value="">不分科目</option>
+                      {lists.map(l => <option key={l.id} value={String(l.id)}>{l.name}</option>)}
+                    </select>
+                  )}
+                  <select aria-label="快速新增優先級" value={quickPriority} onChange={e => setQuickPriority(Number(e.target.value))}>
+                    <option value="0">一般</option>
+                    <option value="3">高優先</option>
+                    <option value="2">中優先</option>
+                    <option value="1">低優先</option>
+                  </select>
+                </div>
+              )}
               {quickErr && <div role="alert" className="ui-error" style={{ marginTop: 6 }}>{quickErr}</div>}
             </form>
           </div>

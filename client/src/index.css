@@ -205,6 +205,14 @@ select { -webkit-appearance: none; appearance: none; padding-right: 26px;
 .task-quick-find input { flex: 1; min-width: 0; border: 0; padding: 10px 0; background: transparent; box-shadow: none; }
 .task-quick-find input:focus { outline: 0; box-shadow: none; }
 .task-quick-find .icon-btn { width: 32px; height: 32px; min-width: 32px; }
+.task-quick-add { flex-wrap: wrap; }
+.task-quick-add > input:first-child { flex: 1 0 100%; }
+.task-quick-actions { display: flex; align-items: center; gap: var(--sp-2); width: 100%; overflow-x: auto; padding: var(--sp-2) 0 1px; scrollbar-width: none; }
+.task-quick-actions::-webkit-scrollbar { display: none; }
+.task-quick-actions .chip { flex: 0 0 auto; min-height: 36px; }
+.task-quick-actions .chip.on { background: var(--primary); color: #fff; border-color: var(--primary); }
+.task-quick-actions input, .task-quick-actions select { flex: 0 0 auto; min-height: 36px; width: auto; padding-top: 6px; padding-bottom: 6px; font-size: 13px; }
+.task-quick-actions input[type="date"] { max-width: 142px; }
 /* §K 任務視圖切換列（學校作業／已完成／垃圾桶等，取代側欄舊 Todo IA） */
 .task-viewtabs { display: flex; gap: 2px; flex-wrap: wrap; padding: var(--sp-1) 0; border-bottom: 1px solid var(--separator, var(--border)); margin-bottom: var(--sp-2); }
 .seg-tab { cursor: pointer; background: none; border: none; padding: 6px 10px; font-size: 14px; color: var(--text-2); border-radius: var(--radius-sm, 8px); }
