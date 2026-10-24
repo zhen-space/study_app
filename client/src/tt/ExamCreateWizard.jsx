@@ -190,6 +190,14 @@ export default function ExamCreateWizard({ lists = [], onDone, onCancel, onManag
       return false;
     } finally { if (requestId === previewRequest.current) setPreviewing(false); }
   }, [requestBody]);
+  // 離開確認頁就撤銷舊 preview/token。使用者回上一步調整範圍或日期後再前進，
+  // 必須等 CURRENT body 的新預覽，不能在 effect 啟動前短暫沿用上一份 token。
+  useEffect(() => {
+    if (step === 2) return;
+    previewRequest.current += 1;
+    setPreview(null);
+    setPreviewing(false);
+  }, [step]);
   useEffect(() => { if (step === 2 && !missingSubjects.length) runPreview(); }, [step, level, runPreview, missingSubjects.length]);
 
   // daily／timed 只有在「有完整預估、預覽成功、有排出內容、且沒有排不下」時才可建立。

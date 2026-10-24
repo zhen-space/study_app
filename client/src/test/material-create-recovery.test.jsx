@@ -6,6 +6,8 @@ vi.mock('../tt/material', () => ({
   importPreview: vi.fn(),
   commitDraft: vi.fn(),
   nameCheck: vi.fn(),
+  mergePreview: vi.fn(),
+  mergeApply: vi.fn(),
   ITEM_LABEL: {
     reading: '課本內容', example: '範例', example_problem: '例題',
     unit_exercise: '單元練習', past_exam: '歷屆試題',
@@ -14,7 +16,7 @@ vi.mock('../tt/material', () => ({
 vi.mock('../tt/vocabImport', () => ({ fileToPayload: vi.fn() }));
 
 import AddMaterialFlow from '../tt/AddMaterialFlow';
-import { commitDraft, importPreview, nameCheck } from '../tt/material';
+import { commitDraft, importPreview, mergePreview, nameCheck } from '../tt/material';
 import { fileToPayload } from '../tt/vocabImport';
 
 function deferred() {
@@ -44,6 +46,10 @@ describe('AddMaterialFlow committed recovery', () => {
         chapters: [{ title: '第一課', content_items: [{ kind: 'reading', title: 'L1' }], children: [] }],
       },
       problems: [], warnings: [],
+    });
+    mergePreview.mockResolvedValue({
+      chapters: [], counts: { new: 1, exists: 0 }, has_suspected_duplicates: false,
+      order_status: 'ok', fingerprint: 'FP',
     });
   });
 
@@ -134,6 +140,24 @@ describe('AddMaterialFlow committed recovery', () => {
 
     await waitFor(() => expect(screen.getByText('教材已建立')).toBeInTheDocument());
     expect(commitDraft).toHaveBeenCalledOnce();
+  });
+
+  it('增補目錄切換到合併預覽的同一拍不能被舊取消按鈕清掉草稿', async () => {
+    render(<AddMaterialFlow lists={[{ id: 1, name: '英文' }]}
+      appendToBook={{ id: 77, title: '既有英文課本', subject_list_id: 1 }}
+      onCancel={vi.fn()} onCreated={vi.fn()} />);
+    fireEvent.click(screen.getByText('自己建立教材'));
+    fireEvent.change(screen.getByLabelText('第 1 章名稱'), { target: { value: '第一課' } });
+    const submit = screen.getByRole('button', { name: '預覽合併' });
+    const cancel = screen.getByRole('button', { name: '取消' });
+
+    await act(async () => { submit.click(); cancel.click(); });
+    expect(await screen.findByText('合併到「既有英文課本」')).toBeInTheDocument();
+    expect(mergePreview).toHaveBeenCalledOnce();
+    expect(mergePreview.mock.calls[0][1]).toMatchObject({
+      book: { title: '既有英文課本', subject_list_id: 1 },
+      chapters: [expect.objectContaining({ title: '第一課' })],
+    });
   });
 
   it('同步阻擋照片／PDF 預覽的重複送出', async () => {

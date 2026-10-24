@@ -93,6 +93,10 @@ export default function PlanDetailView({ planKey, tasks, lists, apiPlans = [], r
   const [refreshStale, setRefreshStale] = useState(false);
   const [refreshUnknown, setRefreshUnknown] = useState(false);
   const mutationBusy = useRef(false);
+  // lifecycle 請求期間底部導覽仍可切走；刪除完成後只能刷新全域資料，不能讓已卸載
+  // 的明細頁再執行 onBack，把使用者從較新的目的地拉回計畫列表。
+  const mounted = useRef(true);
+  useEffect(() => () => { mounted.current = false; }, []);
   const taskToggleBusyRef = useRef(false);
   const [taskToggleState, setTaskToggleState] = useState(null); // { taskId, committed, error }
   const [replan, setReplan] = useState(false);
@@ -337,7 +341,7 @@ export default function PlanDetailView({ planKey, tasks, lists, apiPlans = [], r
     }
     try {
       await reload();
-      afterReload?.();
+      if (mounted.current) afterReload?.();
     } catch (e) {
       setRefreshUnknown(false);
       setRefreshStale(true);

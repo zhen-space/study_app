@@ -132,6 +132,34 @@ describe('Plan mutation recovery', () => {
     expect(onBack).toHaveBeenCalledOnce();
   });
 
+  it('刪除送出後若已切到其他頁，成功回應不會用舊 onBack 覆蓋新的導覽', async () => {
+    let resolveDelete;
+    const onBack = vi.fn();
+    const reload = vi.fn().mockResolvedValue(undefined);
+    handlers['/plans/12/delete'] = vi.fn(() => new Promise(resolve => { resolveDelete = resolve; }));
+    const view = render(<PlanDetailView
+      planKey="plan:12"
+      tasks={tasks}
+      lists={fx.lists}
+      apiPlans={[plan]}
+      reload={reload}
+      onBack={onBack}
+      goWizard={vi.fn()}
+      adjustPlan={vi.fn()}
+    />);
+    await click(screen.getByRole('button', { name: '計畫選項' }));
+    await click(screen.getByText('刪除計畫'));
+    await click(screen.getByRole('button', { name: '下一步' }));
+
+    fireEvent.click(screen.getByRole('button', { name: '確定刪除' }));
+    view.unmount();
+    await act(async () => { resolveDelete({}); });
+
+    expect(handlers['/plans/12/delete']).toHaveBeenCalledOnce();
+    expect(reload).toHaveBeenCalledOnce();
+    expect(onBack).not.toHaveBeenCalled();
+  });
+
   it.each([
     ['resume', 'active', { status: 'paused' }, '繼續計畫'],
     ['complete', 'completed', { status: 'active' }, '標記完成'],

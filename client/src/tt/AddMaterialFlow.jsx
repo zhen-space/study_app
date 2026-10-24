@@ -1,4 +1,4 @@
-import { useRef, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { importPreview, commitDraft, nameCheck } from './material';
 import { fileToPayload } from './vocabImport';
 import MaterialDraftEditor, { emptyDraft } from './MaterialDraftEditor';
@@ -33,6 +33,12 @@ export default function AddMaterialFlow({ lists = [], onCancel, onCreated, onAdd
   const [created, setCreated] = useState(null);
   const parseBusy = useRef(false);
   const operationBusy = useRef(false);
+
+  // 增補模式從編輯器切到合併預覽時，等新畫面真的提交後才解除同步鎖。
+  // 否則同一拍快速點「預覽合併」又點舊畫面的「取消」，會留下 mergeTarget 但清掉 draft。
+  useEffect(() => {
+    if (mergeTarget) operationBusy.current = false;
+  }, [mergeTarget]);
 
   const withContext = d => {
     if (!d?.book) return d;
@@ -87,7 +93,7 @@ export default function AddMaterialFlow({ lists = [], onCancel, onCreated, onAdd
     if (operationBusy.current) return;
     operationBusy.current = true;
     const candidate = canonicalizeLeafContent(submittedDraft || draft);
-    if (appendToBook) { setDraft(candidate); setMergeTarget(appendToBook); operationBusy.current = false; return; }
+    if (appendToBook) { setDraft(candidate); setMergeTarget(appendToBook); return; }
     setBusy(true); setErr(''); setProblems([]);
     try {
       const chk = await nameCheck(
@@ -136,6 +142,11 @@ export default function AddMaterialFlow({ lists = [], onCancel, onCreated, onAdd
     try { await onCreated?.(created); }
     catch { setErr('教材已建立，但仍無法更新畫面。請稍後再試。'); }
     finally { operationBusy.current = false; setBusy(false); }
+  };
+
+  const cancelDraft = () => {
+    if (operationBusy.current) return;
+    setDraft(null); setMode(null); setErr(''); setProblems([]); setWarnings([]);
   };
 
   if (created) {
@@ -225,7 +236,7 @@ export default function AddMaterialFlow({ lists = [], onCancel, onCreated, onAdd
           lockSubjectId={defaultSubjectId}
           busy={busy} error={err} problems={problems}
           submitLabel={appendToBook ? '預覽合併' : '建立教材'} onSubmit={create}
-          onCancel={() => { setDraft(null); setMode(null); setErr(''); setProblems([]); setWarnings([]); }} />
+          onCancel={cancelDraft} />
       </div>
     );
   }
