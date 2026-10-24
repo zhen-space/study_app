@@ -645,6 +645,9 @@ export default function Tasks({ view, tasks, lists, filters, habits = [], reload
   const [emptyTrashBusy, setEmptyTrashBusy] = useState(false);
   const [emptyTrashError, setEmptyTrashError] = useState('');
   const beginTrashMutation = id => {
+    // 清空垃圾桶和單筆還原／永久刪除會改同一批資料，必須同步互斥；只靠 disabled
+    // 會留下一個 React 尚未重繪前的快速連點視窗，結果會由請求抵達順序決定。
+    if (emptyTrashBusyRef.current) return false;
     if (trashMutationIds.current.has(id)) return false;
     trashMutationIds.current.add(id);
     setTrashPendingIds(ids => new Set([...ids, id]));
@@ -685,7 +688,7 @@ export default function Tasks({ view, tasks, lists, filters, habits = [], reload
   }
   async function emptyTrash() {
     if (!window.confirm('清空垃圾桶？所有項目將永久刪除')) return;
-    if (emptyTrashBusyRef.current) return;
+    if (emptyTrashBusyRef.current || trashMutationIds.current.size > 0) return;
     emptyTrashBusyRef.current = true;
     setEmptyTrashBusy(true);
     setEmptyTrashError('');
@@ -948,7 +951,7 @@ export default function Tasks({ view, tasks, lists, filters, habits = [], reload
             </select>
           )}
           {view.type === 'trash' && shown.length > 0 && (
-            <button className="btn sm ghost" style={{ marginLeft: 'auto' }} disabled={emptyTrashBusy}
+            <button className="btn sm ghost" style={{ marginLeft: 'auto' }} disabled={emptyTrashBusy || trashPendingIds.size > 0}
               onClick={emptyTrash}>{emptyTrashBusy ? '清空中…' : '清空垃圾桶'}</button>
           )}
         </div>
@@ -1031,10 +1034,10 @@ export default function Tasks({ view, tasks, lists, filters, habits = [], reload
                 <div className="trow" style={{ cursor: 'default' }}>
                   <span className="title" style={{ color: 'var(--muted)' }}>{t.title}</span>
                   {t.due_date && <span className="muted">{zhDateShort(t.due_date)}</span>}
-                  <button className="btn sm ghost" disabled={trashPendingIds.has(t.id)}
+                  <button className="btn sm ghost" disabled={emptyTrashBusy || trashPendingIds.has(t.id)}
                     onClick={() => restore(t)}>{trashPendingIds.has(t.id) ? '處理中…' : '還原'}</button>
                   <button className="icon-btn" aria-label={`永久刪除「${t.title}」`}
-                    disabled={trashPendingIds.has(t.id)} onClick={() => hardDel(t)}>✕</button>
+                    disabled={emptyTrashBusy || trashPendingIds.has(t.id)} onClick={() => hardDel(t)}>✕</button>
                 </div>
                 {trashErrors[t.id] && <div role="alert" className="ui-error" style={{ margin: '4px 8px 0' }}>{trashErrors[t.id]}</div>}
               </div>

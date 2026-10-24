@@ -1,5 +1,5 @@
 import { act } from 'react';
-import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import * as fx from './fixtures';
 
@@ -100,5 +100,49 @@ describe('375px 任務垃圾桶 mutation recovery', () => {
     await waitFor(() => expect(screen.queryByText('待刪講義')).not.toBeInTheDocument());
     expect(screen.queryByText('舊作業')).not.toBeInTheDocument();
     expect(api.mock.calls.filter(([path]) => path === '/trash')).toHaveLength(2);
+  });
+
+  it('單筆還原與清空垃圾桶同步互斥，不讓快速連點結果由請求順序決定', async () => {
+    let resolveRestore;
+    let resolveEmpty;
+    let emptyButton;
+    let restoreButton;
+    api.mockImplementation((path, options = {}) => {
+      if (path === '/tasks/701' && options.method === 'PATCH') {
+        // 還原剛開始、disabled 尚未重繪前立刻點清空，也不能送第二個衝突 mutation。
+        fireEvent.click(emptyButton);
+        return new Promise(resolve => { resolveRestore = resolve; });
+      }
+      if (path === '/trash' && options.method === 'DELETE') {
+        // 清空剛開始時反向誤觸還原，同樣要由同步 ref 擋住。
+        fireEvent.click(restoreButton);
+        return new Promise(resolve => { resolveEmpty = resolve; });
+      }
+      return Promise.resolve({});
+    });
+    const reload = mount();
+    emptyButton = screen.getByRole('button', { name: '清空垃圾桶' });
+    restoreButton = screen.getByRole('button', { name: '還原' });
+
+    fireEvent.click(restoreButton);
+    expect(api.mock.calls.filter(([path]) => path === '/tasks/701')).toHaveLength(1);
+    expect(api.mock.calls.filter(([path]) => path === '/trash')).toHaveLength(0);
+    expect(emptyButton).toBeDisabled();
+    await act(async () => { resolveRestore({ ok: true }); });
+    await waitFor(() => expect(reload).toHaveBeenCalledOnce());
+
+    // 用新的 render 重建垃圾桶，驗證相反的點擊順序。
+    cleanup();
+    api.mockClear();
+    reload.mockClear();
+    mount(reload);
+    emptyButton = screen.getByRole('button', { name: '清空垃圾桶' });
+    restoreButton = screen.getByRole('button', { name: '還原' });
+    fireEvent.click(emptyButton);
+    expect(api.mock.calls.filter(([path]) => path === '/trash')).toHaveLength(1);
+    expect(api.mock.calls.filter(([path]) => path === '/tasks/701')).toHaveLength(0);
+    expect(restoreButton).toBeDisabled();
+    await act(async () => { resolveEmpty({ ok: true }); });
+    await waitFor(() => expect(reload).toHaveBeenCalledOnce());
   });
 });

@@ -10,6 +10,12 @@ const material = await import('../tt/material');
 const ExamCreateWizard = (await import('../tt/ExamCreateWizard')).default;
 
 const LISTS = [{ id: 1, name: '數學' }];
+const deferred = () => {
+  let resolve;
+  let reject;
+  const promise = new Promise((res, rej) => { resolve = res; reject = rej; });
+  return { promise, resolve, reject };
+};
 
 beforeEach(() => {
   localStorage.clear();
@@ -56,5 +62,31 @@ describe('段考教材載入失敗恢復', () => {
     fireEvent.click(screen.getByRole('button', { name: '重試載入目錄' }));
     await waitFor(() => expect(screen.getByText('第一章')).toBeInTheDocument());
     expect(material.getBookTree).toHaveBeenCalledTimes(2);
+  });
+
+  it('目錄載入中返回再開另一本時，較慢的舊回應不會覆蓋目前教材', async () => {
+    material.listShelf.mockResolvedValue({ books: [
+      { material_book_id: 5, subject_list_id: 1, title: '數學第一冊' },
+      { material_book_id: 6, subject_list_id: 1, title: '數學第二冊' },
+    ] });
+    const firstTree = deferred();
+    const secondTree = deferred();
+    material.getBookTree.mockImplementation(id => id === 5 ? firstTree.promise : secondTree.promise);
+
+    await openMaterialPicker();
+    fireEvent.click(await screen.findByText('數學第一冊'));
+    expect(screen.getByText('載入中…')).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: '返回書單' }));
+    fireEvent.click(screen.getByText('數學第二冊'));
+
+    firstTree.resolve({ items: [{ id: 81, title: '第一冊舊目錄', path: ['第一冊'] }] });
+    await Promise.resolve();
+    expect(screen.queryByText('第一冊舊目錄')).not.toBeInTheDocument();
+    expect(screen.getByText('數學第二冊')).toBeInTheDocument();
+    expect(screen.getByText('載入中…')).toBeInTheDocument();
+
+    secondTree.resolve({ items: [{ id: 91, title: '第二冊目前目錄', path: ['第二冊'] }] });
+    expect(await screen.findByText('第二冊目前目錄')).toBeInTheDocument();
+    expect(screen.queryByText('第一冊舊目錄')).not.toBeInTheDocument();
   });
 });
