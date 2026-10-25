@@ -661,6 +661,7 @@ export default function Tasks({ view, tasks, lists, filters, habits = [], reload
     today: t => t.due_date === tdF,
     week: t => t.due_date && t.due_date >= tdF && t.due_date <= weekEnd,
     overdue: t => t.due_date && t.due_date < tdF && !t.completed,
+    priority: t => Number(t.priority) > 0,
     unscheduled: t => !t.due_date,
   };
   const availableTags = [...new Set(shownAll.flatMap(t => t.tags || []))]
@@ -1024,7 +1025,7 @@ export default function Tasks({ view, tasks, lists, filters, habits = [], reload
             </div>
             <div className="row" style={{ gap: 'var(--sp-2)', alignItems: 'center', flexWrap: 'wrap' }}>
               <div className="task-filter" role="tablist" aria-label="任務篩選">
-              {[['all', '全部'], ['today', '今天'], ['week', '本週'], ['overdue', '逾期'], ['unscheduled', '未排程']].map(([k, label]) => {
+              {[['all', '全部'], ['today', '今天'], ['week', '本週'], ['overdue', '逾期'], ['priority', '有優先級'], ['unscheduled', '未排程']].map(([k, label]) => {
                 const n = k === 'all' ? 0 : chipCount(k);
                 return (
                   <button key={k} role="tab" aria-selected={taskFilter === k}
