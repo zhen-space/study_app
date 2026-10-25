@@ -13,6 +13,7 @@ const tasks = [
   mk(1, { title: '今天要做', due_date: TD, list_id: 1, priority: 3 }),
   mk(2, { title: '逾期沒做', due_date: addDays(TD, -2), list_id: 1 }),
   mk(3, { title: '還沒排時間' }),
+  mk(4, { title: '每天背單字', due_date: addDays(TD, 2), recurring: 'daily' }),
 ];
 
 beforeEach(() => { try { localStorage.clear(); } catch {} });
@@ -28,6 +29,7 @@ describe('§E 任務第一層 filters', () => {
     expect(screen.getByText('今天要做')).toBeTruthy();
     expect(screen.getByText('逾期沒做')).toBeTruthy();
     expect(screen.getByText('還沒排時間')).toBeTruthy();
+    expect(screen.getByText('每天背單字')).toBeTruthy();
   });
 
   it('點「逾期」只留逾期那一筆', () => {
@@ -44,6 +46,17 @@ describe('§E 任務第一層 filters', () => {
     const tabs = screen.getByRole('tablist', { name: '任務篩選' });
     fireEvent.click(within(tabs).getByRole('tab', { name: /有優先級/ }));
     expect(screen.getByText('今天要做')).toBeTruthy();
+    expect(screen.queryByText('逾期沒做')).toBeNull();
+    expect(screen.queryByText('還沒排時間')).toBeNull();
+    expect(screen.queryByText('每天背單字')).toBeNull();
+  });
+
+  it('點「重複」只顯示有重複規則的任務', () => {
+    mount();
+    const tabs = screen.getByRole('tablist', { name: '任務篩選' });
+    fireEvent.click(within(tabs).getByRole('tab', { name: /重複/ }));
+    expect(screen.getByText('每天背單字')).toBeTruthy();
+    expect(screen.queryByText('今天要做')).toBeNull();
     expect(screen.queryByText('逾期沒做')).toBeNull();
     expect(screen.queryByText('還沒排時間')).toBeNull();
   });
