@@ -567,6 +567,7 @@ export default function Tasks({ view, tasks, lists, filters, habits = [], reload
   const [quickListId, setQuickListId] = useState('');
   const [quickPriority, setQuickPriority] = useState(0);
   const [quickTag, setQuickTag] = useState('');
+  const [quickRecurring, setQuickRecurring] = useState('');
   const [collapsedGroups, setCollapsedGroups] = useState(() => new Set());
   const quickBusyRef = useRef(false);
   const quickComposing = useRef(false);
@@ -827,6 +828,11 @@ export default function Tasks({ view, tasks, lists, filters, habits = [], reload
     if (quickPriority) body.priority = quickPriority;
     if (quickTag) quickTags.add(quickTag);
     if (quickTags.size) body.tags = [...quickTags];
+    if (quickRecurring) {
+      body.recurring = quickRecurring;
+      // 重複規則需要一個起算日；未選日期時從今天開始，避免建立後無法產生下一筆。
+      if (!body.due_date) body.due_date = today();
+    }
     // React state 要等重新 render 才生效；同步 ref 先上鎖，避免手機連點或同一輪
     // submit 重入建立兩筆相同任務。
     quickBusyRef.current = true;
@@ -846,6 +852,7 @@ export default function Tasks({ view, tasks, lists, filters, habits = [], reload
     setQuickListId('');
     setQuickPriority(0);
     setQuickTag('');
+    setQuickRecurring('');
     try { await reload('tasks'); }
     catch { setRefreshError('任務已新增，但畫面暫時無法重新載入。'); }
     quickBusyRef.current = false;
@@ -1080,6 +1087,14 @@ export default function Tasks({ view, tasks, lists, filters, habits = [], reload
                     <option value="3">高優先</option>
                     <option value="2">中優先</option>
                     <option value="1">低優先</option>
+                  </select>
+                  <select aria-label="快速新增重複規則" value={quickRecurring} onChange={e => setQuickRecurring(e.target.value)}>
+                    <option value="">不重複</option>
+                    <option value="daily">每天</option>
+                    <option value="weekly">每週</option>
+                    <option value="monthly">每月</option>
+                    <option value="yearly">每年</option>
+                    <option value="weekdays">平日</option>
                   </select>
                   {availableTags.length > 0 && (
                     <select aria-label="快速新增標籤" value={quickTag} onChange={e => setQuickTag(e.target.value)}>
