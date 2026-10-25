@@ -60,6 +60,24 @@ describe('任務快速新增', () => {
     expect(screen.queryByLabelText('快速新增選項')).not.toBeInTheDocument();
   });
 
+  it('可直接建立重複任務，未選日期時自動從今天起算', async () => {
+    api.mockResolvedValue({ id: 103 });
+    props.reload.mockResolvedValue();
+    render(<Tasks {...props} />);
+    const input = screen.getByPlaceholderText('＋ 新增任務，按 Enter 儲存');
+
+    fireEvent.change(input, { target: { value: '每週整理筆記' } });
+    fireEvent.change(screen.getByLabelText('快速新增重複規則'), { target: { value: 'weekly' } });
+    await act(async () => { fireEvent.submit(input.closest('form')); });
+
+    expect(api).toHaveBeenCalledWith('/tasks', {
+      method: 'POST',
+      body: { title: '每週整理筆記', recurring: 'weekly', due_date: expect.any(String) },
+    });
+    expect(input).toHaveValue('');
+    expect(screen.queryByLabelText('快速新增選項')).not.toBeInTheDocument();
+  });
+
   it('API 失敗時保留內容並顯示錯誤，可再次編輯重試', async () => {
     api.mockRejectedValueOnce(new Error('暫時無法新增'));
     render(<Tasks {...props} />);
