@@ -566,6 +566,7 @@ export default function Tasks({ view, tasks, lists, filters, habits = [], reload
   const [quickDue, setQuickDue] = useState('');
   const [quickListId, setQuickListId] = useState('');
   const [quickPriority, setQuickPriority] = useState(0);
+  const [quickTag, setQuickTag] = useState('');
   const [collapsedGroups, setCollapsedGroups] = useState(() => new Set());
   const quickBusyRef = useRef(false);
   const quickComposing = useRef(false);
@@ -816,12 +817,14 @@ export default function Tasks({ view, tasks, lists, filters, habits = [], reload
     const body = { title: quick.trim() };
     if (view.type === 'list') body.list_id = view.id;
     if (view.type === 'today') body.due_date = today();
-    if (view.type === 'tag') body.tags = [view.tag];
+    const quickTags = new Set(view.type === 'tag' ? [view.tag] : []);
     // 先套目前檢視的預設值，再讓使用者於快速新增列明確覆寫。
     // 只送既有 Task 欄位，不引入文字猜測或新的資料語意。
     if (quickDue) body.due_date = quickDue;
     if (quickListId) body.list_id = Number(quickListId);
     if (quickPriority) body.priority = quickPriority;
+    if (quickTag) quickTags.add(quickTag);
+    if (quickTags.size) body.tags = [...quickTags];
     // React state 要等重新 render 才生效；同步 ref 先上鎖，避免手機連點或同一輪
     // submit 重入建立兩筆相同任務。
     quickBusyRef.current = true;
@@ -840,6 +843,7 @@ export default function Tasks({ view, tasks, lists, filters, habits = [], reload
     setQuickDue('');
     setQuickListId('');
     setQuickPriority(0);
+    setQuickTag('');
     try { await reload('tasks'); }
     catch { setRefreshError('任務已新增，但畫面暫時無法重新載入。'); }
     quickBusyRef.current = false;
@@ -1075,6 +1079,12 @@ export default function Tasks({ view, tasks, lists, filters, habits = [], reload
                     <option value="2">中優先</option>
                     <option value="1">低優先</option>
                   </select>
+                  {availableTags.length > 0 && (
+                    <select aria-label="快速新增標籤" value={quickTag} onChange={e => setQuickTag(e.target.value)}>
+                      <option value="">不加標籤</option>
+                      {availableTags.map(tag => <option key={tag} value={tag}>標籤：{tag}</option>)}
+                    </select>
+                  )}
                 </div>
               )}
               {quickErr && <div role="alert" className="ui-error" style={{ marginTop: 6 }}>{quickErr}</div>}
