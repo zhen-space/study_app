@@ -576,6 +576,12 @@ export default function Tasks({ view, tasks, lists, filters, habits = [], reload
   const pickFilter = v => { setTaskFilter(v); try { localStorage.setItem('taskFilter', v); } catch {} };
   // §K：科目過濾（''＝全部科目）。custom lists 從側欄移到這裡。
   const [subjFilter, setSubjFilter] = useState('');
+  // Todoist／Things 都把標籤當成清單的第二個切面；沿用既有 tags domain，
+  // 只做畫面內篩選，不新增 API 或改動任務資料。
+  const [tagFilter, setTagFilter] = useState(() => {
+    try { return localStorage.getItem('taskTagFilter') || ''; } catch { return ''; }
+  });
+  const pickTagFilter = v => { setTagFilter(v); try { localStorage.setItem('taskTagFilter', v); } catch {} };
   // 成熟待辦 App 都把 Quick Find 放在清單本身。手機不必先開側欄，
   // 而且可和日期、科目、排序疊加使用。
   const [quickFind, setQuickFind] = useState('');
@@ -656,12 +662,18 @@ export default function Tasks({ view, tasks, lists, filters, habits = [], reload
     overdue: t => t.due_date && t.due_date < tdF && !t.completed,
     unscheduled: t => !t.due_date,
   };
+  const availableTags = [...new Set(shownAll.flatMap(t => t.tags || []))]
+    .sort((a, b) => a.localeCompare(b, 'zh-Hant'));
+  const tagOptions = tagFilter && !availableTags.includes(tagFilter)
+    ? [tagFilter, ...availableTags]
+    : availableTags;
   // §K：科目（清單）過濾移進「任務」頁（取代側欄的 per-subject 清單）
   const subjFiltered = showChips && subjFilter ? shownAll.filter(t => String(t.list_id) === subjFilter) : shownAll;
   const chipFiltered = showChips ? subjFiltered.filter(chipFn[taskFilter] || chipFn.all) : shownAll;
+  const tagFiltered = showChips && tagFilter ? chipFiltered.filter(t => (t.tags || []).includes(tagFilter)) : chipFiltered;
   const shown = showChips
-    ? chipFiltered.filter(t => taskMatchesQuery(t, quickFind, lists.find(l => Number(l.id) === Number(t.list_id))?.name))
-    : chipFiltered;
+    ? tagFiltered.filter(t => taskMatchesQuery(t, quickFind, lists.find(l => Number(l.id) === Number(t.list_id))?.name))
+    : tagFiltered;
   const chipCount = k => (subjFilter ? shownAll.filter(t => String(t.list_id) === subjFilter) : shownAll).filter(chipFn[k]).length;
   const sel = tv.find(t => t.id === selId);
   const trashMutationIds = useRef(new Set());
@@ -1023,6 +1035,13 @@ export default function Tasks({ view, tasks, lists, filters, habits = [], reload
                   style={{ marginLeft: 'auto', fontSize: 13 }}>
                   <option value="">全部科目</option>
                   {lists.map(l => <option key={l.id} value={String(l.id)}>{l.name}</option>)}
+                </select>
+              )}
+              {tagOptions.length > 0 && (
+                <select aria-label="依標籤篩選" value={tagFilter} onChange={e => pickTagFilter(e.target.value)}
+                  style={{ fontSize: 13 }}>
+                  <option value="">全部標籤</option>
+                  {tagOptions.map(tag => <option key={tag} value={tag}>標籤：{tag}</option>)}
                 </select>
               )}
             </div>
