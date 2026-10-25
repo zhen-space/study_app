@@ -78,6 +78,24 @@ describe('任務快速新增', () => {
     expect(screen.queryByLabelText('快速新增選項')).not.toBeInTheDocument();
   });
 
+  it('可直接設定時間，未選日期時自動排在今天', async () => {
+    api.mockResolvedValue({ id: 104 });
+    props.reload.mockResolvedValue();
+    render(<Tasks {...props} />);
+    const input = screen.getByPlaceholderText('＋ 新增任務，按 Enter 儲存');
+
+    fireEvent.change(input, { target: { value: '晚間複習' } });
+    fireEvent.change(screen.getByLabelText('快速新增時間'), { target: { value: '20:30' } });
+    await act(async () => { fireEvent.submit(input.closest('form')); });
+
+    expect(api).toHaveBeenCalledWith('/tasks', {
+      method: 'POST',
+      body: { title: '晚間複習', due_time: '20:30', due_date: expect.any(String) },
+    });
+    expect(input).toHaveValue('');
+    expect(screen.queryByLabelText('快速新增選項')).not.toBeInTheDocument();
+  });
+
   it('API 失敗時保留內容並顯示錯誤，可再次編輯重試', async () => {
     api.mockRejectedValueOnce(new Error('暫時無法新增'));
     render(<Tasks {...props} />);

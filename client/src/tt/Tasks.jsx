@@ -564,6 +564,7 @@ export default function Tasks({ view, tasks, lists, filters, habits = [], reload
   const [quickErr, setQuickErr] = useState('');
   const [quickBusy, setQuickBusy] = useState(false);
   const [quickDue, setQuickDue] = useState('');
+  const [quickTime, setQuickTime] = useState('');
   const [quickListId, setQuickListId] = useState('');
   const [quickPriority, setQuickPriority] = useState(0);
   const [quickTag, setQuickTag] = useState('');
@@ -824,6 +825,11 @@ export default function Tasks({ view, tasks, lists, filters, habits = [], reload
     // 先套目前檢視的預設值，再讓使用者於快速新增列明確覆寫。
     // 只送既有 Task 欄位，不引入文字猜測或新的資料語意。
     if (quickDue) body.due_date = quickDue;
+    if (quickTime) {
+      body.due_time = quickTime;
+      // 時間必須落在某一天；只選時間時視為今天，和行動清單的快速輸入習慣一致。
+      if (!body.due_date) body.due_date = today();
+    }
     if (quickListId) body.list_id = Number(quickListId);
     if (quickPriority) body.priority = quickPriority;
     if (quickTag) quickTags.add(quickTag);
@@ -849,6 +855,7 @@ export default function Tasks({ view, tasks, lists, filters, habits = [], reload
     // 誤報成新增失敗或讓使用者重送 POST。
     setQuick('');
     setQuickDue('');
+    setQuickTime('');
     setQuickListId('');
     setQuickPriority(0);
     setQuickTag('');
@@ -1076,6 +1083,7 @@ export default function Tasks({ view, tasks, lists, filters, habits = [], reload
                   <button type="button" className={'chip' + (quickDue === addDays(today(), 1) ? ' on' : '')}
                     aria-pressed={quickDue === addDays(today(), 1)} onClick={() => setQuickDue(d => d === addDays(today(), 1) ? '' : addDays(today(), 1))}>明天</button>
                   <input type="date" aria-label="快速新增日期" value={quickDue} onChange={e => setQuickDue(e.target.value)} />
+                  <input type="time" aria-label="快速新增時間" value={quickTime} onChange={e => setQuickTime(e.target.value)} />
                   {lists.length > 0 && (
                     <select aria-label="快速新增科目" value={quickListId} onChange={e => setQuickListId(e.target.value)}>
                       <option value="">不分科目</option>
