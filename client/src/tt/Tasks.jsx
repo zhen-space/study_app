@@ -566,6 +566,7 @@ export default function Tasks({ view, tasks, lists, filters, habits = [], reload
   const [quickDue, setQuickDue] = useState('');
   const [quickListId, setQuickListId] = useState('');
   const [quickPriority, setQuickPriority] = useState(0);
+  const [collapsedGroups, setCollapsedGroups] = useState(() => new Set());
   const quickBusyRef = useRef(false);
   const quickComposing = useRef(false);
   // §E 第一層 filters（只在「任務」總表出現）：全部／今天／逾期／未排程。記在 localStorage。
@@ -583,6 +584,12 @@ export default function Tasks({ view, tasks, lists, filters, habits = [], reload
     try { return localStorage.getItem('taskSort') || 'default'; } catch { return 'default'; }
   });
   const pickSort = v => { setSortBy(v); try { localStorage.setItem('taskSort', v); } catch {} };
+  const toggleGroup = label => setCollapsedGroups(groups => {
+    const next = new Set(groups);
+    if (next.has(label)) next.delete(label);
+    else next.add(label);
+    return next;
+  });
 
   // 科目（＝清單）在側邊欄的順序，拿來當「依科目」的第一層排序
   const subjOrd = {};
@@ -1101,15 +1108,18 @@ export default function Tasks({ view, tasks, lists, filters, habits = [], reload
             : (sortBy === 'subjectGroup' ? groupBySubject(shown) : groupTasks(shown, view.type)).map(([label, list]) => {
               const sorted = applySort(list);
               const canDrag = sortBy === 'default';
+              const collapsed = collapsedGroups.has(label);
               return (
                 <div className="tgroup" key={label}>
-                  <div className="glabel">
+                  <button type="button" className="glabel task-group-toggle" aria-expanded={!collapsed}
+                    aria-label={`${collapsed ? '展開' : '收合'}${label}`} onClick={() => toggleGroup(label)}>
+                    <span className="task-group-chevron" aria-hidden="true">⌄</span>
                     {label}
                     {/* 照科目分堆時，日期分組不見了，「這一科欠了幾項」就沒地方看。
                         分堆的用途正是這個，所以把每一科的項數與逾期數寫在標頭上。 */}
                     {sortBy === 'subjectGroup' && <SubjectCounts list={sorted} />}
-                  </div>
-                  {sorted.map(t => <TaskRow key={t.id} t={t} lists={lists} sel={t.id === selId} onSel={x => setSelId(x.id)} onToggle={toggle}
+                  </button>
+                  {!collapsed && sorted.map(t => <TaskRow key={t.id} t={t} lists={lists} sel={t.id === selId} onSel={x => setSelId(x.id)} onToggle={toggle}
                     onDragStart={canDrag ? setDragT : undefined}
                     onDropOn={canDrag ? x => dropOn(x, sorted) : undefined}
                     onSwipeDelete={del} mutationBusy={pendingIds.has(t.id)} mutationError={mutationErrors[t.id]} />)}

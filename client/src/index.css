@@ -179,6 +179,10 @@ select { -webkit-appearance: none; appearance: none; padding-right: 26px;
 /* task rows — iOS inset grouped list */
 .tgroup { margin-top: 18px; }
 .tgroup > .glabel { font-size: 13px; color: var(--muted); font-weight: 600; padding: 4px 4px 8px; text-transform: uppercase; letter-spacing: .02em; }
+.task-group-toggle { display: flex; align-items: center; width: 100%; border: 0; background: transparent; text-align: left; cursor: pointer; }
+.task-group-toggle:focus-visible { outline: 2px solid var(--primary); outline-offset: 2px; border-radius: var(--radius-sm); }
+.task-group-chevron { display: inline-block; margin-right: 6px; font-size: 16px; line-height: 1; transform: rotate(0deg); transition: transform .16s ease; }
+.task-group-toggle[aria-expanded="false"] .task-group-chevron { transform: rotate(-90deg); }
 .tgroup .trow:first-of-type { border-radius: var(--radius-md) var(--radius-md) 0 0; }
 .tgroup .trow:last-of-type { border-radius: 0 0 var(--radius-md) var(--radius-md); border-bottom: none; }
 .tgroup .trow:only-of-type { border-radius: var(--radius-md); }
