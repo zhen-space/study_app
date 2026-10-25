@@ -33,10 +33,14 @@ describe('任務快速新增', () => {
     expect(input).toHaveValue('');
   });
 
-  it('輸入標題後可直接加日期、科目與優先級，成功後重設選項', async () => {
+  it('輸入標題後可直接加日期、科目、優先級與標籤，成功後重設選項', async () => {
     api.mockResolvedValue({ id: 102 });
     props.reload.mockResolvedValue();
-    render(<Tasks {...props} />);
+    render(<Tasks {...props} tasks={[{
+      id: 8, title: '既有任務', tags: ['複習'], list_id: fx.lists[0].id,
+      completed: false, deleted: false, due_date: '2099-01-01', due_time: null,
+      priority: 0, subtasks: [], notes: '',
+    }]} />);
     const input = screen.getByPlaceholderText('＋ 新增任務，按 Enter 儲存');
 
     fireEvent.change(input, { target: { value: '準備數學小考' } });
@@ -44,12 +48,13 @@ describe('任務快速新增', () => {
     fireEvent.click(screen.getByRole('button', { name: '明天' }));
     fireEvent.change(screen.getByLabelText('快速新增科目'), { target: { value: String(fx.lists[0].id) } });
     fireEvent.change(screen.getByLabelText('快速新增優先級'), { target: { value: '3' } });
+    fireEvent.change(screen.getByLabelText('快速新增標籤'), { target: { value: '複習' } });
 
     await act(async () => { fireEvent.submit(input.closest('form')); });
 
     expect(api).toHaveBeenCalledWith('/tasks', {
       method: 'POST',
-      body: { title: '準備數學小考', due_date: expect.any(String), list_id: fx.lists[0].id, priority: 3 },
+      body: { title: '準備數學小考', due_date: expect.any(String), list_id: fx.lists[0].id, priority: 3, tags: ['複習'] },
     });
     expect(input).toHaveValue('');
     expect(screen.queryByLabelText('快速新增選項')).not.toBeInTheDocument();
