@@ -61,6 +61,31 @@ describe('§E 任務第一層 filters', () => {
     expect(screen.queryByText('還沒排時間')).toBeNull();
   });
 
+  it('可一鍵清除疊加的搜尋、日期與科目篩選', () => {
+    mount();
+    fireEvent.change(screen.getByLabelText('搜尋目前任務'), { target: { value: '今天' } });
+    fireEvent.click(within(screen.getByRole('tablist', { name: '任務篩選' })).getByRole('tab', { name: /今天/ }));
+    fireEvent.change(screen.getByLabelText('依科目篩選'), { target: { value: '1' } });
+
+    fireEvent.click(screen.getByRole('button', { name: '清除篩選' }));
+
+    expect(screen.getByLabelText('搜尋目前任務')).toHaveValue('');
+    expect(screen.getByLabelText('依科目篩選')).toHaveValue('');
+    expect(within(screen.getByRole('tablist', { name: '任務篩選' })).getByRole('tab', { name: /全部/ })).toHaveAttribute('aria-selected', 'true');
+    expect(screen.getByText('今天要做')).toBeTruthy();
+    expect(screen.getByText('逾期沒做')).toBeTruthy();
+    expect(screen.getByText('還沒排時間')).toBeTruthy();
+  });
+
+  it('會記住科目篩選，清除後也同步移除記憶', () => {
+    mount();
+    fireEvent.change(screen.getByLabelText('依科目篩選'), { target: { value: '1' } });
+    expect(localStorage.getItem('taskSubjectFilter')).toBe('1');
+
+    fireEvent.click(screen.getByRole('button', { name: '清除篩選' }));
+    expect(localStorage.getItem('taskSubjectFilter')).toBe('');
+  });
+
   it('列第二層直接寫科目名，不是只有一顆要記色碼的圓點', () => {
     mount();
     // 兩筆掛在「數學」，科目名應該看得到
