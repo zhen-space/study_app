@@ -570,7 +570,12 @@ export default function Tasks({ view, tasks, lists, filters, habits = [], reload
   const [quickTag, setQuickTag] = useState('');
   const [quickNotes, setQuickNotes] = useState('');
   const [quickRecurring, setQuickRecurring] = useState('');
-  const [collapsedGroups, setCollapsedGroups] = useState(() => new Set());
+  const [collapsedGroups, setCollapsedGroups] = useState(() => {
+    try {
+      const saved = JSON.parse(localStorage.getItem('taskCollapsedGroups') || '[]');
+      return new Set(Array.isArray(saved) ? saved.filter(x => typeof x === 'string') : []);
+    } catch { return new Set(); }
+  });
   const quickBusyRef = useRef(false);
   const quickComposing = useRef(false);
   // §E 第一層 filters（只在「任務」總表出現）：全部／今天／逾期／未排程。記在 localStorage。
@@ -608,6 +613,7 @@ export default function Tasks({ view, tasks, lists, filters, habits = [], reload
     const next = new Set(groups);
     if (next.has(label)) next.delete(label);
     else next.add(label);
+    try { localStorage.setItem('taskCollapsedGroups', JSON.stringify([...next])); } catch {}
     return next;
   });
 
