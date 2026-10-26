@@ -78,6 +78,23 @@ describe('任務快速新增', () => {
     expect(screen.queryByLabelText('快速新增選項')).not.toBeInTheDocument();
   });
 
+  it('沒有既有標籤時也能在快速新增直接建立新標籤', async () => {
+    api.mockResolvedValue({ id: 105 });
+    props.reload.mockResolvedValue();
+    render(<Tasks {...props} />);
+    const input = screen.getByPlaceholderText('＋ 新增任務，按 Enter 儲存');
+
+    fireEvent.change(input, { target: { value: '整理化學錯題' } });
+    fireEvent.change(screen.getByLabelText('快速新增標籤'), { target: { value: ' 錯題 ' } });
+    await act(async () => { fireEvent.submit(input.closest('form')); });
+
+    expect(api).toHaveBeenCalledWith('/tasks', {
+      method: 'POST',
+      body: { title: '整理化學錯題', tags: ['錯題'] },
+    });
+    expect(input).toHaveValue('');
+  });
+
   it('可直接設定時間，未選日期時自動排在今天', async () => {
     api.mockResolvedValue({ id: 104 });
     props.reload.mockResolvedValue();
