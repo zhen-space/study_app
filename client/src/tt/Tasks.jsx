@@ -616,6 +616,10 @@ export default function Tasks({ view, tasks, lists, filters, habits = [], reload
     try { localStorage.setItem('taskCollapsedGroups', JSON.stringify([...next])); } catch {}
     return next;
   });
+  const expandAllGroups = () => {
+    setCollapsedGroups(new Set());
+    try { localStorage.setItem('taskCollapsedGroups', '[]'); } catch {}
+  };
 
   // 科目（＝清單）在側邊欄的順序，拿來當「依科目」的第一層排序
   const subjOrd = {};
@@ -1037,6 +1041,9 @@ export default function Tasks({ view, tasks, lists, filters, habits = [], reload
               <option value="title">依標題</option>
             </select>
           )}
+          {!listLabel && collapsedGroups.size > 0 && !['trash'].includes(view.type) && (
+            <button type="button" className="btn sm ghost" onClick={expandAllGroups}>展開全部分組</button>
+          )}
           {view.type === 'trash' && shown.length > 0 && (
             <button className="btn sm ghost" style={{ marginLeft: 'auto' }} disabled={emptyTrashBusy || trashPendingIds.size > 0}
               onClick={emptyTrash}>{emptyTrashBusy ? '清空中…' : '清空垃圾桶'}</button>
@@ -1168,6 +1175,9 @@ export default function Tasks({ view, tasks, lists, filters, habits = [], reload
                   <option value="priority">依優先級</option>
                   <option value="title">依標題</option>
                 </select>
+              )}
+              {collapsedGroups.size > 0 && !['trash'].includes(view.type) && (
+                <button type="button" className="btn sm ghost" onClick={expandAllGroups}>展開全部分組</button>
               )}
             </div>
           )}

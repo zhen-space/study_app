@@ -40,4 +40,18 @@ describe('任務群組收合', () => {
     expect(screen.getByRole('button', { name: '展開物理' })).toHaveAttribute('aria-expanded', 'false');
     expect(screen.queryByText('牛頓運動定律')).not.toBeInTheDocument();
   });
+
+  it('可一鍵展開所有已收合分組並清除保存狀態', () => {
+    render(<Tasks view={{ type: 'tasks' }} tasks={tasks} lists={lists} filters={[]} reload={vi.fn()} title="任務" />);
+    fireEvent.change(screen.getByLabelText('排序方式'), { target: { value: 'subjectGroup' } });
+    fireEvent.click(screen.getByRole('button', { name: '收合物理' }));
+    fireEvent.click(screen.getByRole('button', { name: '收合英文' }));
+
+    fireEvent.click(screen.getByRole('button', { name: '展開全部分組' }));
+
+    expect(screen.getByText('牛頓運動定律')).toBeInTheDocument();
+    expect(screen.getByText('閱讀第二課')).toBeInTheDocument();
+    expect(localStorage.getItem('taskCollapsedGroups')).toBe('[]');
+    expect(screen.queryByRole('button', { name: '展開全部分組' })).not.toBeInTheDocument();
+  });
 });
