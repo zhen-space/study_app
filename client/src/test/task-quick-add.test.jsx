@@ -95,6 +95,23 @@ describe('任務快速新增', () => {
     expect(input).toHaveValue('');
   });
 
+  it('可在快速新增直接附上備註', async () => {
+    api.mockResolvedValue({ id: 106 });
+    props.reload.mockResolvedValue();
+    render(<Tasks {...props} />);
+    const input = screen.getByPlaceholderText('＋ 新增任務，按 Enter 儲存');
+
+    fireEvent.change(input, { target: { value: '準備英文報告' } });
+    fireEvent.change(screen.getByLabelText('快速新增備註'), { target: { value: ' 帶講義第 3 頁 ' } });
+    await act(async () => { fireEvent.submit(input.closest('form')); });
+
+    expect(api).toHaveBeenCalledWith('/tasks', {
+      method: 'POST',
+      body: { title: '準備英文報告', notes: '帶講義第 3 頁' },
+    });
+    expect(screen.queryByLabelText('快速新增選項')).not.toBeInTheDocument();
+  });
+
   it('可直接設定時間，未選日期時自動排在今天', async () => {
     api.mockResolvedValue({ id: 104 });
     props.reload.mockResolvedValue();
