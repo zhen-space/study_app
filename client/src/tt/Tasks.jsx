@@ -844,7 +844,7 @@ export default function Tasks({ view, tasks, lists, filters, habits = [], reload
     }
     if (quickListId) body.list_id = Number(quickListId);
     if (quickPriority) body.priority = quickPriority;
-    if (quickTag) quickTags.add(quickTag);
+    if (quickTag.trim()) quickTags.add(quickTag.trim());
     if (quickTags.size) body.tags = [...quickTags];
     if (quickRecurring) {
       body.recurring = quickRecurring;
@@ -1120,12 +1120,11 @@ export default function Tasks({ view, tasks, lists, filters, habits = [], reload
                     <option value="yearly">每年</option>
                     <option value="weekdays">平日</option>
                   </select>
-                  {availableTags.length > 0 && (
-                    <select aria-label="快速新增標籤" value={quickTag} onChange={e => setQuickTag(e.target.value)}>
-                      <option value="">不加標籤</option>
-                      {availableTags.map(tag => <option key={tag} value={tag}>標籤：{tag}</option>)}
-                    </select>
-                  )}
+                  <input aria-label="快速新增標籤" list="task-quick-tag-options" placeholder="標籤（可新增）"
+                    value={quickTag} onChange={e => setQuickTag(e.target.value)} />
+                  <datalist id="task-quick-tag-options">
+                    {availableTags.map(tag => <option key={tag} value={tag} />)}
+                  </datalist>
                 </div>
               )}
               {quickErr && <div role="alert" className="ui-error" style={{ marginTop: 6 }}>{quickErr}</div>}
