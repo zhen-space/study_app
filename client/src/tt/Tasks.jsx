@@ -568,6 +568,7 @@ export default function Tasks({ view, tasks, lists, filters, habits = [], reload
   const [quickListId, setQuickListId] = useState('');
   const [quickPriority, setQuickPriority] = useState(0);
   const [quickTag, setQuickTag] = useState('');
+  const [quickNotes, setQuickNotes] = useState('');
   const [quickRecurring, setQuickRecurring] = useState('');
   const [collapsedGroups, setCollapsedGroups] = useState(() => new Set());
   const quickBusyRef = useRef(false);
@@ -846,6 +847,7 @@ export default function Tasks({ view, tasks, lists, filters, habits = [], reload
     if (quickPriority) body.priority = quickPriority;
     if (quickTag.trim()) quickTags.add(quickTag.trim());
     if (quickTags.size) body.tags = [...quickTags];
+    if (quickNotes.trim()) body.notes = quickNotes.trim();
     if (quickRecurring) {
       body.recurring = quickRecurring;
       // 重複規則需要一個起算日；未選日期時從今天開始，避免建立後無法產生下一筆。
@@ -871,6 +873,7 @@ export default function Tasks({ view, tasks, lists, filters, habits = [], reload
     setQuickListId('');
     setQuickPriority(0);
     setQuickTag('');
+    setQuickNotes('');
     setQuickRecurring('');
     try { await reload('tasks'); }
     catch { setRefreshError('任務已新增，但畫面暫時無法重新載入。'); }
@@ -1125,6 +1128,8 @@ export default function Tasks({ view, tasks, lists, filters, habits = [], reload
                   <datalist id="task-quick-tag-options">
                     {availableTags.map(tag => <option key={tag} value={tag} />)}
                   </datalist>
+                  <input aria-label="快速新增備註" placeholder="備註（選填）" value={quickNotes}
+                    onChange={e => setQuickNotes(e.target.value)} />
                 </div>
               )}
               {quickErr && <div role="alert" className="ui-error" style={{ marginTop: 6 }}>{quickErr}</div>}
