@@ -576,6 +576,7 @@ export default function Tasks({ view, tasks, lists, filters, habits = [], reload
       return new Set(Array.isArray(saved) ? saved.filter(x => typeof x === 'string') : []);
     } catch { return new Set(); }
   });
+  const [showCompletedInList, setShowCompletedInList] = useState(false);
   const quickBusyRef = useRef(false);
   const quickComposing = useRef(false);
   // §E 第一層 filters（只在「任務」總表出現）：全部／今天／逾期／未排程。記在 localStorage。
@@ -674,6 +675,9 @@ export default function Tasks({ view, tasks, lists, filters, habits = [], reload
     setOver({});
   }, [tasks]);
   const tv = Object.keys(over).length ? tasks.map(t => over[t.id] ? { ...t, ...over[t.id] } : t) : tasks;
+  const completedInList = view.type === 'list'
+    ? tv.filter(t => !t.deleted && t.completed && Number(t.list_id) === Number(view.id) && !hidden.has(t.id))
+    : [];
   const shownAll = tv.filter(t => matchView(t, view, { filters }) && !hidden.has(t.id));
   // 第一層 filters 只用在「任務」總表（tasks/all）；其餘視圖語意已由 view 決定，不套。
   const showChips = ['tasks', 'all'].includes(view.type);
@@ -700,7 +704,7 @@ export default function Tasks({ view, tasks, lists, filters, habits = [], reload
   const tagFiltered = showChips && tagFilter ? chipFiltered.filter(t => (t.tags || []).includes(tagFilter)) : chipFiltered;
   const shown = showChips
     ? tagFiltered.filter(t => taskMatchesQuery(t, quickFind, lists.find(l => Number(l.id) === Number(t.list_id))?.name))
-    : tagFiltered;
+    : (view.type === 'list' && showCompletedInList ? [...tagFiltered, ...completedInList] : tagFiltered);
   const chipCount = k => (subjFilter ? shownAll.filter(matchesSubjectFilter) : shownAll).filter(chipFn[k]).length;
   const hasUnassigned = shownAll.some(t => t.list_id == null);
   const sel = tv.find(t => t.id === selId);
@@ -829,7 +833,11 @@ export default function Tasks({ view, tasks, lists, filters, habits = [], reload
       finishMutation(t.id);
       return;
     }
-    setHidden(h => new Set([...h, t.id]));
+    if (!(view.type === 'list' && showCompletedInList)) {
+      setHidden(h => new Set([...h, t.id]));
+    } else {
+      setOver(o => ({ ...o, [t.id]: { ...t, completed: !t.completed } }));
+    }
     if (!t.completed) showToast(`已完成「${t.title}」`, async () => {
       await api(`/tasks/${t.id}`, { method: 'PATCH', body: { completed: false } });
       setHidden(h => { const n = new Set(h); n.delete(t.id); return n; });
@@ -1044,6 +1052,12 @@ export default function Tasks({ view, tasks, lists, filters, habits = [], reload
           {!listLabel && collapsedGroups.size > 0 && !['trash'].includes(view.type) && (
             <button type="button" className="btn sm ghost" onClick={expandAllGroups}>展開全部分組</button>
           )}
+          {!listLabel && view.type === 'list' && completedInList.length > 0 && (
+            <button type="button" className="btn sm ghost" aria-pressed={showCompletedInList}
+              onClick={() => setShowCompletedInList(v => !v)}>
+              {showCompletedInList ? '隱藏已完成' : `顯示已完成（${completedInList.length}）`}
+            </button>
+          )}
           {view.type === 'trash' && shown.length > 0 && (
             <button className="btn sm ghost" style={{ marginLeft: 'auto' }} disabled={emptyTrashBusy || trashPendingIds.size > 0}
               onClick={emptyTrash}>{emptyTrashBusy ? '清空中…' : '清空垃圾桶'}</button>
@@ -1195,7 +1209,9 @@ export default function Tasks({ view, tasks, lists, filters, habits = [], reload
                 {trashErrors[t.id] && <div role="alert" className="ui-error" style={{ margin: '4px 8px 0' }}>{trashErrors[t.id]}</div>}
               </div>
             ))
-            : (sortBy === 'subjectGroup' ? groupBySubject(shown) : groupTasks(shown, view.type)).map(([label, list]) => {
+            : (view.type === 'list' && showCompletedInList
+              ? [...groupTasks(shown.filter(t => !t.completed), view.type), ['已完成', shown.filter(t => t.completed)]]
+              : (sortBy === 'subjectGroup' ? groupBySubject(shown) : groupTasks(shown, view.type))).map(([label, list]) => {
               const sorted = applySort(list);
               const canDrag = sortBy === 'default';
               const collapsed = collapsedGroups.has(label);
