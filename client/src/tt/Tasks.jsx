@@ -578,7 +578,10 @@ export default function Tasks({ view, tasks, lists, filters, habits = [], reload
   });
   const pickFilter = v => { setTaskFilter(v); try { localStorage.setItem('taskFilter', v); } catch {} };
   // §K：科目過濾（''＝全部科目）。custom lists 從側欄移到這裡。
-  const [subjFilter, setSubjFilter] = useState('');
+  const [subjFilter, setSubjFilter] = useState(() => {
+    try { return localStorage.getItem('taskSubjectFilter') || ''; } catch { return ''; }
+  });
+  const pickSubjectFilter = v => { setSubjFilter(v); try { localStorage.setItem('taskSubjectFilter', v); } catch {} };
   // Todoist／Things 都把標籤當成清單的第二個切面；沿用既有 tags domain，
   // 只做畫面內篩選，不新增 API 或改動任務資料。
   const [tagFilter, setTagFilter] = useState(() => {
@@ -588,6 +591,13 @@ export default function Tasks({ view, tasks, lists, filters, habits = [], reload
   // 成熟待辦 App 都把 Quick Find 放在清單本身。手機不必先開側欄，
   // 而且可和日期、科目、排序疊加使用。
   const [quickFind, setQuickFind] = useState('');
+  const hasActiveFilters = taskFilter !== 'all' || subjFilter || tagFilter || quickFind.trim();
+  const clearTaskFilters = () => {
+    pickFilter('all');
+    pickSubjectFilter('');
+    pickTagFilter('');
+    setQuickFind('');
+  };
   // 排序方式記起來：下次開啟還是同一個（default | time | priority | title）
   const [sortBy, setSortBy] = useState(() => {
     try { return localStorage.getItem('taskSort') || 'default'; } catch { return 'default'; }
@@ -1051,7 +1061,7 @@ export default function Tasks({ view, tasks, lists, filters, habits = [], reload
               })}
               </div>
               {lists.length > 0 && (
-                <select aria-label="依科目篩選" value={subjFilter} onChange={e => setSubjFilter(e.target.value)}
+                <select aria-label="依科目篩選" value={subjFilter} onChange={e => pickSubjectFilter(e.target.value)}
                   style={{ marginLeft: 'auto', fontSize: 13 }}>
                   <option value="">全部科目</option>
                   {lists.map(l => <option key={l.id} value={String(l.id)}>{l.name}</option>)}
@@ -1063,6 +1073,9 @@ export default function Tasks({ view, tasks, lists, filters, habits = [], reload
                   <option value="">全部標籤</option>
                   {tagOptions.map(tag => <option key={tag} value={tag}>標籤：{tag}</option>)}
                 </select>
+              )}
+              {hasActiveFilters && (
+                <button type="button" className="btn sm ghost" onClick={clearTaskFilters}>清除篩選</button>
               )}
             </div>
           </>
