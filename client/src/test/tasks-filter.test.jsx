@@ -86,6 +86,17 @@ describe('§E 任務第一層 filters', () => {
     expect(localStorage.getItem('taskSubjectFilter')).toBe('');
   });
 
+  it('可只看未分科目的收件匣任務', () => {
+    mount();
+    fireEvent.change(screen.getByLabelText('依科目篩選'), { target: { value: '__none__' } });
+
+    expect(screen.getByText('還沒排時間')).toBeTruthy();
+    expect(screen.getByText('每天背單字')).toBeTruthy();
+    expect(screen.queryByText('今天要做')).toBeNull();
+    expect(screen.queryByText('逾期沒做')).toBeNull();
+    expect(localStorage.getItem('taskSubjectFilter')).toBe('__none__');
+  });
+
   it('列第二層直接寫科目名，不是只有一顆要記色碼的圓點', () => {
     mount();
     // 兩筆掛在「數學」，科目名應該看得到

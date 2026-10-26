@@ -683,13 +683,15 @@ export default function Tasks({ view, tasks, lists, filters, habits = [], reload
     ? [tagFilter, ...availableTags]
     : availableTags;
   // §K：科目（清單）過濾移進「任務」頁（取代側欄的 per-subject 清單）
-  const subjFiltered = showChips && subjFilter ? shownAll.filter(t => String(t.list_id) === subjFilter) : shownAll;
+  const matchesSubjectFilter = t => subjFilter === '__none__' ? t.list_id == null : String(t.list_id) === subjFilter;
+  const subjFiltered = showChips && subjFilter ? shownAll.filter(matchesSubjectFilter) : shownAll;
   const chipFiltered = showChips ? subjFiltered.filter(chipFn[taskFilter] || chipFn.all) : shownAll;
   const tagFiltered = showChips && tagFilter ? chipFiltered.filter(t => (t.tags || []).includes(tagFilter)) : chipFiltered;
   const shown = showChips
     ? tagFiltered.filter(t => taskMatchesQuery(t, quickFind, lists.find(l => Number(l.id) === Number(t.list_id))?.name))
     : tagFiltered;
-  const chipCount = k => (subjFilter ? shownAll.filter(t => String(t.list_id) === subjFilter) : shownAll).filter(chipFn[k]).length;
+  const chipCount = k => (subjFilter ? shownAll.filter(matchesSubjectFilter) : shownAll).filter(chipFn[k]).length;
+  const hasUnassigned = shownAll.some(t => t.list_id == null);
   const sel = tv.find(t => t.id === selId);
   const trashMutationIds = useRef(new Set());
   const [trashPendingIds, setTrashPendingIds] = useState(new Set());
@@ -1060,10 +1062,11 @@ export default function Tasks({ view, tasks, lists, filters, habits = [], reload
                 );
               })}
               </div>
-              {lists.length > 0 && (
+              {(lists.length > 0 || hasUnassigned) && (
                 <select aria-label="依科目篩選" value={subjFilter} onChange={e => pickSubjectFilter(e.target.value)}
                   style={{ marginLeft: 'auto', fontSize: 13 }}>
                   <option value="">全部科目</option>
+                  {hasUnassigned && <option value="__none__">未分科目</option>}
                   {lists.map(l => <option key={l.id} value={String(l.id)}>{l.name}</option>)}
                 </select>
               )}
