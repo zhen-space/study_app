@@ -750,6 +750,12 @@ export default function Tasks({ view, tasks, lists, filters, habits = [], reload
   const clearableCompleted = shown.filter(t => t.completed && t.plan_id == null && t.task_kind !== 'school_assignment');
   const chipCount = k => (subjFilter ? shownAll.filter(matchesSubjectFilter) : shownAll).filter(chipFn[k]).length;
   const hasUnassigned = shownAll.some(t => t.list_id == null);
+  // 和標籤篩選一樣：目前的篩選值即使不在選項裡（科目被刪、清單還沒載入、最後一筆未分科目
+  // 被移走）也要保留成選項。否則下拉會視覺上退回「全部科目」但清單仍被濾空，再選「全部科目」
+  // 也不會觸發 change。不自動清除，因為可能只是暫時零結果的合法篩選。
+  const showUnassignedOption = hasUnassigned || subjFilter === '__none__';
+  const subjFilterMissing = subjFilter && subjFilter !== '__none__'
+    && !lists.some(l => String(l.id) === subjFilter);
   const sel = tv.find(t => t.id === selId);
   const trashMutationIds = useRef(new Set());
   const [trashPendingIds, setTrashPendingIds] = useState(new Set());
@@ -1218,11 +1224,12 @@ export default function Tasks({ view, tasks, lists, filters, habits = [], reload
                 );
               })}
               </div>
-              {(lists.length > 0 || hasUnassigned) && (
+              {(lists.length > 0 || showUnassignedOption || subjFilterMissing) && (
                 <select aria-label="依科目篩選" value={subjFilter} onChange={e => pickSubjectFilter(e.target.value)}
                   style={{ marginLeft: 'auto', fontSize: 13 }}>
                   <option value="">全部科目</option>
-                  {hasUnassigned && <option value="__none__">未分科目</option>}
+                  {subjFilterMissing && <option value={subjFilter}>找不到的科目</option>}
+                  {showUnassignedOption && <option value="__none__">未分科目</option>}
                   {lists.map(l => <option key={l.id} value={String(l.id)}>{l.name}</option>)}
                 </select>
               )}
