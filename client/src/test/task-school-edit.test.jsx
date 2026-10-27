@@ -37,7 +37,7 @@ describe('學校作業編輯', () => {
     expect(onSave.mock.lastCall[0]).toMatchObject({ estimated_minutes: 55 });
   });
 
-  it('375px 可用日期快捷選項設定今天、明天或清除繳交日', () => {
+  it('375px 可用日期快捷選項設定常用日期或清除繳交日', () => {
     Object.defineProperty(window, 'innerWidth', { configurable: true, value: 375 });
     const onSave = vi.fn();
     render(<Detail task={assignment()} lists={lists} onSave={onSave} onDelete={() => {}} onClose={() => {}} />);
@@ -48,6 +48,12 @@ describe('學校作業編輯', () => {
 
     fireEvent.click(screen.getByRole('button', { name: '明天' }));
     expect(onSave.mock.lastCall[0].deadline_date).not.toBeNull();
+
+    fireEvent.click(screen.getByRole('button', { name: '本週末' }));
+    expect(onSave.mock.lastCall[0].deadline_date).toMatch(/^\d{4}-\d{2}-\d{2}$/);
+
+    fireEvent.click(screen.getByRole('button', { name: '下週' }));
+    expect(onSave.mock.lastCall[0].deadline_date).toMatch(/^\d{4}-\d{2}-\d{2}$/);
 
     fireEvent.click(screen.getByRole('button', { name: '清除日期' }));
     expect(onSave.mock.lastCall[0]).toMatchObject({ deadline_date: null, due_date: null });

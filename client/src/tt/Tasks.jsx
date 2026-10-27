@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { api } from '../api';
-import { matchView, groupTasks, defaultSort, PRI, today, addDays } from './helpers';
+import { matchView, groupTasks, defaultSort, PRI, today, addDays, thisWeekend, nextWeek } from './helpers';
 import { relativeDay, zhDateShort } from './dateSemantics';
 import VocabCard from './VocabCard';
 import MemoCard from './MemoCard';
@@ -494,6 +494,8 @@ export function Detail({ task, lists, onSave, onDelete, onDuplicate, onClose, sa
             {[
               ['今天', today()],
               ['明天', addDays(today(), 1)],
+              ['本週末', thisWeekend()],
+              ['下週', nextWeek()],
               ['清除日期', null],
             ].map(([label, value]) => {
               const field = isSchoolAssignment ? 'deadline_date' : 'due_date';
@@ -1214,6 +1216,10 @@ export default function Tasks({ view, tasks, lists, filters, habits = [], reload
                     aria-pressed={quickDue === today()} onClick={() => setQuickDue(d => d === today() ? '' : today())}>今天</button>
                   <button type="button" className={'chip' + (quickDue === addDays(today(), 1) ? ' on' : '')}
                     aria-pressed={quickDue === addDays(today(), 1)} onClick={() => setQuickDue(d => d === addDays(today(), 1) ? '' : addDays(today(), 1))}>明天</button>
+                  <button type="button" className={'chip' + (quickDue === thisWeekend() ? ' on' : '')}
+                    aria-pressed={quickDue === thisWeekend()} onClick={() => setQuickDue(d => d === thisWeekend() ? '' : thisWeekend())}>本週末</button>
+                  <button type="button" className={'chip' + (quickDue === nextWeek() ? ' on' : '')}
+                    aria-pressed={quickDue === nextWeek()} onClick={() => setQuickDue(d => d === nextWeek() ? '' : nextWeek())}>下週</button>
                   <input type="date" aria-label="快速新增日期" value={quickDue} onChange={e => setQuickDue(e.target.value)} />
                   <input type="time" aria-label="快速新增時間" value={quickTime} onChange={e => setQuickTime(e.target.value)} />
                   {lists.length > 0 && (
