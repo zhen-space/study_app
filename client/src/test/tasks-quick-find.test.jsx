@@ -29,4 +29,19 @@ describe('任務 Quick Find', () => {
     expect(screen.getByText('數學第三章')).toBeInTheDocument();
     expect(screen.getByText('整理講義')).toBeInTheDocument();
   });
+
+  it.each([
+    ['completed', { ...tasks[0], completed: true }, '已完成'],
+    ['trash', { ...tasks[0], deleted: true }, '垃圾桶'],
+  ])('在 %s 視圖也能搜尋歷史任務', (type, task, title) => {
+    render(<Tasks view={{ type }} tasks={[task, { ...task, id: 9, title: '英文作文', list_id: 20 }]} lists={lists}
+      filters={[]} reload={() => {}} title={title} />);
+
+    fireEvent.change(screen.getByLabelText('搜尋目前任務'), { target: { value: '數學' } });
+    expect(screen.getByText('數學第三章')).toBeInTheDocument();
+    expect(screen.queryByText('英文作文')).not.toBeInTheDocument();
+
+    fireEvent.change(screen.getByLabelText('搜尋目前任務'), { target: { value: '不存在' } });
+    expect(screen.getByText('找不到符合搜尋的任務')).toBeInTheDocument();
+  });
 });
