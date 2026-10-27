@@ -43,7 +43,10 @@ export async function mergeSubjects(tx, userId, targetId, sourceIds, expectedFin
   const impact = await subjectMergeImpact(tx, userId, targetId, sourceIds);
   if (!expectedFingerprint || expectedFingerprint !== impact.fingerprint) throw Object.assign(new Error('科目內容在預覽後有變動，請重新確認影響範圍'), { status: 409, code: 'merge_preview_stale', impact });
   const target = Number(targetId), sources = impact.sources.map(r => Number(r.id));
-  for (const [table, column] of REFS) await tx.run(`UPDATE ${table} SET ${column}=? WHERE user_id=? AND ${column} IN (${marks(sources)})`, [target, userId, ...sources]);
+  for (const [table, column] of REFS) {
+    const touchedAt = table === 'tasks' ? ',updated_at=CURRENT_TIMESTAMP' : '';
+    await tx.run(`UPDATE ${table} SET ${column}=?${touchedAt} WHERE user_id=? AND ${column} IN (${marks(sources)})`, [target, userId, ...sources]);
+  }
   const all = [target, ...sources];
   const exams = await tx.all(`SELECT id,plan_id,subject_list_id,exam_date,order_index FROM plan_exam_subjects WHERE user_id=? AND subject_list_id IN (${marks(all)}) ORDER BY id`, [userId, ...all]);
   for (const planId of [...new Set(exams.map(r => Number(r.plan_id)))]) {
