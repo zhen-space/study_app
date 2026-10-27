@@ -221,7 +221,9 @@ export async function applyExistingBookMerge(userId, targetId, sourceIds, expect
         [offset, userId, source.id]);
       await tx.run('UPDATE material_nodes SET book_id=? WHERE user_id=? AND book_id=?', [targetId, userId, source.id]);
       await tx.run('UPDATE material_content_items SET book_id=? WHERE user_id=? AND book_id=?', [targetId, userId, source.id]);
-      await tx.run('UPDATE tasks SET material_book_id=? WHERE user_id=? AND material_book_id=?', [targetId, userId, source.id]);
+      await tx.run(
+        'UPDATE tasks SET material_book_id=?,updated_at=CURRENT_TIMESTAMP WHERE user_id=? AND material_book_id=?',
+        [targetId, userId, source.id]);
       const cats = await tx.all('SELECT category_id,order_index FROM material_category_books WHERE user_id=? AND book_id=?', [userId, source.id]);
       for (const c of cats) await tx.run(
         'INSERT OR IGNORE INTO material_category_books (user_id,category_id,book_id,order_index) VALUES (?,?,?,?)',
