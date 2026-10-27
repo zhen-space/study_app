@@ -235,7 +235,9 @@ describe('schedule/apply（Wizard 與 Replan 的唯一寫入入口）', () => {
 
   test('Replan 建立新版本並以原 active 當 parent，Task 不直接寫 due_date', async () => {
     const before = (await active()).body.version;
-    const taskId = (await api('/tasks')).body.find(t => t.title === '第一章').id;
+    const original = (await api('/tasks')).body.find(t => t.title === '第一章');
+    const taskId = original.id;
+    await new Promise(resolve => setTimeout(resolve, 5));
     const r = await api('/schedule/apply', {
       method: 'POST',
       body: {
@@ -253,6 +255,7 @@ describe('schedule/apply（Wizard 與 Replan 的唯一寫入入口）', () => {
     assert.equal(t.due_date, day(5));
     assert.equal(t.due_time, '20:00');
     assert.equal(t.notes, '讀書時段 20:00–21:30');
+    assert.ok(t.updated_at > original.updated_at, 'Replan 改動 Task metadata 後不得保留 stale updated_at');
   });
 
   test('找不到 block 對應的新任務時，Task 與新版排程都必須 rollback', async () => {

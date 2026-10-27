@@ -1194,7 +1194,7 @@ export async function applySchedule(userId, {
       if (!t) throw new ScheduleInputError(`找不到要掛入的任務：${rawId}`);
       if (t.deleted || t.completed || t.cancelled) throw new ScheduleInputError(`已結束的任務不能掛入計畫：${rawId}`);
       if (t.plan_id != null && Number(t.plan_id) !== Number(planId)) throw new ScheduleInputError(`任務已屬於其他計畫：${rawId}`);
-      if (t.plan_id == null) await tx.run('UPDATE tasks SET plan_id=? WHERE id=? AND user_id=?', [planId, tid, userId]);
+      if (t.plan_id == null) await tx.run('UPDATE tasks SET plan_id=?,updated_at=? WHERE id=? AND user_id=?', [planId, updatedAt, tid, userId]);
     }
 
     const assertLivePlanTask = async taskId => {
@@ -1215,6 +1215,7 @@ export async function applySchedule(userId, {
         if (key in u) { fields.push(`${key}=?`); args.push(u[key] || null); }
       }
       if (fields.length) {
+        fields.push('updated_at=?'); args.push(updatedAt);
         args.push(u.task_id, userId);
         await tx.run(`UPDATE tasks SET ${fields.join(',')} WHERE id=? AND user_id=?`, args);
       }

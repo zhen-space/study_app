@@ -162,8 +162,9 @@ describe('Phase 2. Atomic Content Attachment', () => {
     const res = await applyFromPreview(u, plan, pv);
     assert.ok(res.version_id);
     // deadline_date/deadline_time 一字不動（mirror 只寫 due_date/due_time）。
-    const a1 = await q.get('SELECT plan_id,deadline_date,deadline_time FROM tasks WHERE id=?', [sa1]);
+    const a1 = await q.get('SELECT plan_id,deadline_date,deadline_time,updated_at FROM tasks WHERE id=?', [sa1]);
     assert.equal(a1.plan_id, plan, 'School Assignment 已掛入本計畫');
+    assert.ok(a1.updated_at, '既有 Task 掛入 Plan 時必須留下異動時間');
     assert.equal(a1.deadline_date, D(4), 'deadline_date 不得被覆寫');
     assert.equal(a1.deadline_time, '18:00', 'deadline_time 不得被覆寫');
     assert.equal((await q.get('SELECT deadline_date FROM tasks WHERE id=?', [sa2])).deadline_date, D(6));
