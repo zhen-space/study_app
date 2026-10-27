@@ -39,6 +39,18 @@ test('Goal progress 排除取消任務的分母，完成與取消分開呈現', 
   assert.equal(child.cancelled_task_count, 1);
 });
 
+test('P1 regression：Plan Task 取消與重新開啟都會更新 updated_at', async () => {
+  const plan = await api('/plans', { method: 'POST', body: { name: '任務結果時間戳', status: 'active' } });
+  const task = await api('/tasks', { method: 'POST', body: { title: '待決定任務', plan_id: plan.body.id } });
+  const cancelled = await api(`/tasks/${task.body.id}/cancel`, { method: 'POST', body: {} });
+  assert.equal(cancelled.status, 200);
+  assert.notEqual(cancelled.body.updated_at, task.body.updated_at, '取消後不得保留建立時的 stale updated_at');
+
+  const reopened = await api(`/tasks/${task.body.id}/reopen`, { method: 'POST', body: {} });
+  assert.equal(reopened.status, 200);
+  assert.notEqual(reopened.body.updated_at, cancelled.body.updated_at, '重新開啟後必須留下新的異動時間');
+});
+
 test('P1 regression：取消任務不再是 preview 的排程項目或有效 Task Lock', async () => {
   const plan = await api('/plans', { method: 'POST', body: { name: '取消後退出排程', status: 'active' } });
   const task = await api('/tasks', { method: 'POST', body: { title: '已取消任務', plan_id: plan.body.id } });
