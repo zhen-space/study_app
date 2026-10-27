@@ -711,6 +711,9 @@ export default function Tasks({ view, tasks, lists, filters, habits = [], reload
   const shownAll = tv.filter(t => matchView(t, view, { filters }) && !hidden.has(t.id));
   // 第一層 filters 只用在「任務」總表（tasks/all）；其餘視圖語意已由 view 決定，不套。
   const showChips = ['tasks', 'all'].includes(view.type);
+  // 已完成與垃圾桶會累積大量歷史資料，也要能在手機上直接查找；只開搜尋，
+  // 不把進行中任務的日期／科目／標籤篩選語意帶進封存視圖。
+  const showQuickFind = ['tasks', 'all', 'completed', 'trash'].includes(view.type);
   const tdF = today();
   const weekEnd = addDays(tdF, 6);
   const chipFn = {
@@ -732,9 +735,10 @@ export default function Tasks({ view, tasks, lists, filters, habits = [], reload
   const subjFiltered = showChips && subjFilter ? shownAll.filter(matchesSubjectFilter) : shownAll;
   const chipFiltered = showChips ? subjFiltered.filter(chipFn[taskFilter] || chipFn.all) : shownAll;
   const tagFiltered = showChips && tagFilter ? chipFiltered.filter(t => (t.tags || []).includes(tagFilter)) : chipFiltered;
-  const shown = showChips
-    ? tagFiltered.filter(t => taskMatchesQuery(t, quickFind, lists.find(l => Number(l.id) === Number(t.list_id))?.name))
-    : (view.type === 'list' && showCompletedInList ? [...tagFiltered, ...completedInList] : tagFiltered);
+  const searchable = view.type === 'list' && showCompletedInList ? [...tagFiltered, ...completedInList] : tagFiltered;
+  const shown = showQuickFind
+    ? searchable.filter(t => taskMatchesQuery(t, quickFind, lists.find(l => Number(l.id) === Number(t.list_id))?.name))
+    : searchable;
   // 排程計畫與學校作業各自有專屬日期 domain，不能用一般任務 PATCH 批次繞過。
   const reschedulableOverdue = shown.filter(t => !t.completed && t.due_date && t.due_date < tdF
     && t.plan_id == null && t.task_kind !== 'school_assignment');
@@ -1188,7 +1192,7 @@ export default function Tasks({ view, tasks, lists, filters, habits = [], reload
             ))}
           </div>
         )}
-        {showChips && (
+        {showQuickFind && (
           <>
             <div className="task-quick-find" role="search">
               <span aria-hidden="true">⌕</span>
@@ -1196,7 +1200,7 @@ export default function Tasks({ view, tasks, lists, filters, habits = [], reload
                 onChange={e => setQuickFind(e.target.value)} />
               {quickFind && <button type="button" className="icon-btn" aria-label="清除任務搜尋" onClick={() => setQuickFind('')}>✕</button>}
             </div>
-            <div className="row" style={{ gap: 'var(--sp-2)', alignItems: 'center', flexWrap: 'wrap' }}>
+            {showChips && <div className="row" style={{ gap: 'var(--sp-2)', alignItems: 'center', flexWrap: 'wrap' }}>
               <div className="task-filter" role="tablist" aria-label="任務篩選">
               {[['all', '全部'], ['today', '今天'], ['week', '本週'], ['overdue', '逾期'], ['priority', '有優先級'], ['recurring', '重複'], ['unscheduled', '未排程']].map(([k, label]) => {
                 const n = k === 'all' ? 0 : chipCount(k);
@@ -1232,7 +1236,7 @@ export default function Tasks({ view, tasks, lists, filters, habits = [], reload
                   {overdueRescheduleBusy ? '重新安排中…' : `全部移到今天（${reschedulableOverdue.length}）`}
                 </button>
               )}
-            </div>
+            </div>}
           </>
         )}
         {!['completed', 'trash', 'search'].includes(view.type) && (
@@ -1359,7 +1363,7 @@ export default function Tasks({ view, tasks, lists, filters, habits = [], reload
               );
             })}
           {shown.length === 0 && <div className="muted" style={{ marginTop: 30, textAlign: 'center' }}>
-            {showChips && quickFind.trim() ? '找不到符合搜尋的任務' : '沒有任務'}
+            {showQuickFind && quickFind.trim() ? '找不到符合搜尋的任務' : '沒有任務'}
           </div>}
 
           {view.type === 'today' && habits.length > 0 && (
