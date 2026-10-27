@@ -667,7 +667,14 @@ router.patch('/habits/:id', async (req, res) => {
   const h = await q.get('SELECT id FROM habits WHERE id=? AND user_id=?', [req.params.id, req.userId]);
   if (!h) return res.status(404).json({ error: 'not found' });
   const allowed = ['name', 'icon', 'color', 'miss_policy', 'category'];
-  for (const k of allowed) if (k in req.body) await q.run(`UPDATE habits SET ${k}=? WHERE id=?`, [req.body[k], h.id]);
+  const fields = allowed.filter(k => k in req.body);
+  // 多欄位編輯必須是單一寫入，避免中途失敗時只套用前半段設定。
+  if (fields.length) {
+    await q.run(
+      `UPDATE habits SET ${fields.map(k => `${k}=?`).join(', ')} WHERE id=?`,
+      [...fields.map(k => req.body[k]), h.id],
+    );
+  }
   res.json({ ok: true });
 });
 router.delete('/habits/:id', async (req, res) => {
