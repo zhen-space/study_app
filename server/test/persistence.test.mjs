@@ -204,6 +204,11 @@ describe('版本是 immutable snapshot', () => {
 
     const hard = await api(`/tasks/${target.task_id}?hard=1`, { method: 'DELETE' });
     assert.equal(hard.status, 409, 'Plan Task 的歷史身分不可永久刪除');
+
+    assert.equal((await api('/trash', { method: 'DELETE' })).status, 200);
+    const afterEmptyTrash = (await api('/tasks')).body.find(t => t.id === target.task_id);
+    assert.ok(afterEmptyTrash, '★ 清空垃圾桶也不得繞過保護，永久刪除 Plan Task tombstone');
+    assert.equal(afterEmptyTrash.deleted, 1);
   });
 });
 

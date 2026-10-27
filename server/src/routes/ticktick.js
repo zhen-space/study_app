@@ -619,7 +619,9 @@ router.delete('/attachments/:id', async (req, res) => {
 });
 // 清空垃圾桶
 router.delete('/trash', async (req, res) => {
-  const r = await q.run('DELETE FROM tasks WHERE user_id=? AND deleted=1', [req.userId]);
+  // Plan Task 會被 immutable ScheduleVersion 歷史引用，只能保留 tombstone；
+  // 清空垃圾桶僅永久刪除沒有排程身分的一般待辦。
+  const r = await q.run('DELETE FROM tasks WHERE user_id=? AND deleted=1 AND plan_id IS NULL', [req.userId]);
   res.json({ removed: r.rowsAffected ?? 0 });
 });
 // 清掉上一次讀書計劃建立的待辦（已完成的保留當紀錄），建立新排程前呼叫
