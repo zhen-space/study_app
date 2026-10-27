@@ -1,5 +1,6 @@
 import { test, before, after } from 'node:test';
 import assert from 'node:assert/strict';
+import { createClient } from '@libsql/client';
 import { startServer } from './helpers.mjs';
 
 let S;
@@ -202,6 +203,29 @@ test('P1 regression：批次建立與重新排序都維護 updated_at', async ()
   for (const task of current) {
     const before = created.find(t => t.id === task.id);
     assert.ok(task.updated_at > before.updated_at, `#${task.id} 重新排序後不得保留 stale updated_at`);
+  }
+});
+
+test('P1 regression：重新排序中途失敗時不得留下半套順序', async () => {
+  const first = await api('/tasks', { method: 'POST', body: { title: '原子排序甲' } });
+  const second = await api('/tasks', { method: 'POST', body: { title: '原子排序乙' } });
+  const db = createClient({ url: 'file:' + S.dbFile });
+  try {
+    await db.execute({ sql: `CREATE TRIGGER fail_second_reorder BEFORE UPDATE OF order_index ON tasks
+      WHEN NEW.id=${Number(second.body.id)} BEGIN SELECT RAISE(ABORT, 'reorder failure'); END` });
+    const failed = await fetch(S.base + '/tasks/reorder', {
+      method: 'POST', headers: S.H,
+      body: JSON.stringify({ ids: [first.body.id, second.body.id] }),
+    });
+    assert.equal(failed.status, 500);
+    const rows = await db.execute({
+      sql: 'SELECT id,order_index FROM tasks WHERE id IN (?,?) ORDER BY id',
+      args: [first.body.id, second.body.id],
+    });
+    assert.ok(rows.rows.every(row => Number(row.order_index) === 0), '任一更新失敗時，前面的排序也必須回滾');
+  } finally {
+    await db.execute('DROP TRIGGER IF EXISTS fail_second_reorder');
+    db.close();
   }
 });
 

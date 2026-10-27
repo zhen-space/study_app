@@ -580,9 +580,10 @@ router.post('/tasks/bulk', async (req, res) => {
 router.post('/tasks/reorder', async (req, res) => {
   const ids = req.body.ids || [];
   const updatedAt = new Date().toISOString();
-  for (let i = 0; i < ids.length; i++) {
-    await q.run('UPDATE tasks SET order_index=?,updated_at=? WHERE id=? AND user_id=?', [i, updatedAt, ids[i], req.userId]);
-  }
+  await q.batch(ids.map((id, i) => [
+    'UPDATE tasks SET order_index=?,updated_at=? WHERE id=? AND user_id=?',
+    [i, updatedAt, id, req.userId],
+  ]));
   res.json({ ok: true });
 });
 // ---- 附件 ----
