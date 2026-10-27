@@ -1,9 +1,10 @@
 // §E：任務總表第一層 filters（全部／今天／逾期／未排程）＋ 列的兩層資訊（科目名，非神秘色點）。
 import { describe, it, expect, beforeEach, vi } from 'vitest';
-import { render, screen, fireEvent, within } from '@testing-library/react';
+import { render, screen, fireEvent, within, waitFor } from '@testing-library/react';
 import { today, addDays } from '../tt/helpers';
 
 vi.mock('../api', () => ({ api: vi.fn(() => Promise.resolve([])) }));
+const { api } = await import('../api');
 const Tasks = (await import('../tt/Tasks')).default;
 
 const TD = today();
@@ -16,7 +17,7 @@ const tasks = [
   mk(4, { title: '每天背單字', due_date: addDays(TD, 2), recurring: 'daily' }),
 ];
 
-beforeEach(() => { try { localStorage.clear(); } catch {} });
+beforeEach(() => { try { localStorage.clear(); } catch {} api.mockReset(); api.mockResolvedValue([]); });
 const mount = () => render(<Tasks view={{ type: 'tasks' }} tasks={tasks} lists={lists} filters={[]} reload={() => {}} title="任務" />);
 
 describe('§E 任務第一層 filters', () => {
@@ -39,6 +40,26 @@ describe('§E 任務第一層 filters', () => {
     expect(screen.getByText('逾期沒做')).toBeTruthy();
     expect(screen.queryByText('今天要做')).toBeNull();
     expect(screen.queryByText('還沒排時間')).toBeNull();
+  });
+
+  it('逾期篩選可將一般任務安全批次移到今天', async () => {
+    const reload = vi.fn().mockResolvedValue();
+    render(<Tasks view={{ type: 'tasks' }} tasks={tasks} lists={lists} filters={[]} reload={reload} title="任務" />);
+    fireEvent.click(within(screen.getByRole('tablist', { name: '任務篩選' })).getByRole('tab', { name: /逾期/ }));
+    fireEvent.click(screen.getByRole('button', { name: '全部移到今天（1）' }));
+
+    await waitFor(() => expect(api).toHaveBeenCalledWith('/tasks/2', { method: 'PATCH', body: { due_date: TD } }));
+    expect(reload).toHaveBeenCalledWith('tasks');
+  });
+
+  it('批次重新安排不包含計畫管理任務與學校作業', () => {
+    const protectedTasks = [
+      mk(7, { title: '計畫進度', due_date: addDays(TD, -1), plan_id: 9 }),
+      mk(8, { title: '學校作業', due_date: addDays(TD, -1), task_kind: 'school_assignment' }),
+    ];
+    render(<Tasks view={{ type: 'tasks' }} tasks={protectedTasks} lists={lists} filters={[]} reload={vi.fn()} title="任務" />);
+    fireEvent.click(within(screen.getByRole('tablist', { name: '任務篩選' })).getByRole('tab', { name: /逾期/ }));
+    expect(screen.queryByRole('button', { name: /全部移到今天/ })).toBeNull();
   });
 
   it('點「有優先級」只顯示已設定優先級的任務', () => {
