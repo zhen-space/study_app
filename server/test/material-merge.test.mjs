@@ -182,11 +182,13 @@ describe('既有教材 identity 合併', () => {
     const n2 = (await post('/material/nodes', { book_id: b2.id, kind: 'chapter', title: '第二課' })).body;
     const i1 = (await post('/material/content-items', { node_id: n1.id, kind: 'reading', title: 'A' })).body;
     const i2 = (await post('/material/content-items', { node_id: n2.id, kind: 'reading', title: 'B' })).body;
+    const i3 = (await post('/material/content-items', { node_id: n2.id, kind: 'reading', title: 'C' })).body;
     await call(`/material/content-items/${i2.id}/completion`, { method: 'PUT', body: { completed: true } });
+    const task = (await post('/tasks', { title: '第二課複習', material_content_item_id: i3.id })).body;
 
     const pv = await post(`/material/books/${b1.id}/identity-merge/preview`, { source_book_ids: [b2.id] });
     assert.equal(pv.status, 200);
-    assert.deepEqual(pv.body.result, { total_items: 2, completed_items: 1, total_nodes: 2 });
+    assert.deepEqual(pv.body.result, { total_items: 3, completed_items: 1, total_nodes: 2 });
     assert.equal((await get('/material/books')).body.filter(b => b.title === '第三冊').length, 2, 'preview 零寫入');
 
     const applied = await post(`/material/books/${b1.id}/identity-merge`, {
@@ -195,10 +197,13 @@ describe('既有教材 identity 合併', () => {
     assert.equal(applied.status, 200);
     const books = (await get('/material/books')).body.filter(b => b.title === '第三冊');
     assert.equal(books.length, 1);
-    assert.equal(books[0].progress.total_items, 2);
+    assert.equal(books[0].progress.total_items, 3);
     assert.equal(books[0].progress.completed_items, 1);
     const items = treeItems((await get(`/material/books/${b1.id}/tree`)).body);
-    assert.deepEqual(new Set(items.map(i => Number(i.id))), new Set([Number(i1.id), Number(i2.id)]));
+    assert.deepEqual(new Set(items.map(i => Number(i.id))), new Set([Number(i1.id), Number(i2.id), Number(i3.id)]));
+    const mergedTask = (await get('/tasks')).body.find(t => Number(t.id) === Number(task.id));
+    assert.equal(Number(mergedTask.material_book_id), Number(b1.id), 'Task linkage 搬到保留教材');
+    assert.notEqual(mergedTask.updated_at, task.updated_at, 'Task linkage 異動要刷新 updated_at');
   });
 
   test('MG-existing-2 科目不同拒絕，兩本都不變', async () => {
