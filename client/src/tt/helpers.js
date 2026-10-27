@@ -2,6 +2,14 @@
 export const localISO = d => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
 export const today = () => localISO(new Date());
 export const addDays = (s, n) => { const d = new Date(s + 'T00:00:00'); d.setDate(d.getDate() + n); return localISO(d); };
+export const thisWeekend = (s = today()) => {
+  const day = new Date(s + 'T00:00:00').getDay();
+  return day === 0 || day === 6 ? s : addDays(s, 6 - day);
+};
+export const nextWeek = (s = today()) => {
+  const day = new Date(s + 'T00:00:00').getDay();
+  return addDays(s, day === 0 ? 1 : 8 - day);
+};
 export const PRI = { 0: ['無', ''], 1: ['低', 'p1'], 2: ['中', 'p2'], 3: ['高', 'p3'] };
 
 // 任務是否應該出現在「執行面」上。
