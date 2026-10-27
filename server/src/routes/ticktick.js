@@ -470,16 +470,7 @@ router.patch('/tasks/:id', async (req, res) => {
   if (f.completed) { f.cancelled = 0; f.cancelled_at = null; }
   if (f.cancelled) { f.completed = 0; f.completed_at = null; }
   if (f.estimated_minutes === undefined) return res.status(400).json({ error: '預估時間需介於 1 到 1440 分鐘' });
-  await q.run(`UPDATE tasks SET list_id=?,title=?,notes=?,due_date=?,due_time=?,priority=?,tags=?,subtasks=?,
-    recurring=?,miss_policy=?,completed=?,completed_at=?,cancelled=?,cancelled_at=?,order_index=?,deleted=?,plan_id=?,deadline_date=?,estimated_minutes=?,
-    task_kind=?,school_assignment_type=?,deadline_time=?,reminder_kind=?,reminder_days_before=?,reminder_custom_date=?,reminder_time_override=?,updated_at=? WHERE id=?`,
-    [f.list_id, f.title, f.notes, f.due_date, f.due_time, f.priority, f.tags, f.subtasks,
-      f.recurring, f.miss_policy, f.completed, f.completed_at, f.cancelled, f.cancelled_at, f.order_index, f.deleted,
-      f.plan_id, f.deadline_date, f.estimated_minutes,
-      f.task_kind, f.school_assignment_type, f.deadline_time,
-      f.reminder_kind, f.reminder_days_before, f.reminder_custom_date, f.reminder_time_override,
-      new Date().toISOString(), t.id]);
-
+  let recurringNext = null;
   if (b.completed && !t.completed && t.recurring && t.due_date) {
     let cfg = null;
     try { cfg = t.recurring.startsWith('{') ? JSON.parse(t.recurring) : null; } catch {}
@@ -498,12 +489,25 @@ router.patch('/tasks/:id', async (req, res) => {
       if (cfg.end?.date && nd && nd > cfg.end.date) nd = null;               // 超過結束日期
       nextRule = JSON.stringify(c2);
     }
-    if (nd) await q.run(`INSERT INTO tasks (user_id,list_id,title,notes,due_date,due_time,priority,tags,subtasks,recurring,miss_policy,updated_at)
-      VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`,
-      [req.userId, t.list_id, t.title, t.notes, nd, t.due_time, t.priority, t.tags,
-        JSON.stringify(JSON.parse(t.subtasks).map(s => ({ ...s, done: false }))), nextRule, t.miss_policy || 'keep',
-        new Date().toISOString()]);
+    if (nd) recurringNext = { dueDate: nd, rule: nextRule };
   }
+  // 完成重複任務與建立下一次必須同成同敗，避免中途失敗後只留下已完成舊任務。
+  await q.tx(async tx => {
+    await tx.run(`UPDATE tasks SET list_id=?,title=?,notes=?,due_date=?,due_time=?,priority=?,tags=?,subtasks=?,
+      recurring=?,miss_policy=?,completed=?,completed_at=?,cancelled=?,cancelled_at=?,order_index=?,deleted=?,plan_id=?,deadline_date=?,estimated_minutes=?,
+      task_kind=?,school_assignment_type=?,deadline_time=?,reminder_kind=?,reminder_days_before=?,reminder_custom_date=?,reminder_time_override=?,updated_at=? WHERE id=?`,
+      [f.list_id, f.title, f.notes, f.due_date, f.due_time, f.priority, f.tags, f.subtasks,
+        f.recurring, f.miss_policy, f.completed, f.completed_at, f.cancelled, f.cancelled_at, f.order_index, f.deleted,
+        f.plan_id, f.deadline_date, f.estimated_minutes,
+        f.task_kind, f.school_assignment_type, f.deadline_time,
+        f.reminder_kind, f.reminder_days_before, f.reminder_custom_date, f.reminder_time_override,
+        new Date().toISOString(), t.id]);
+    if (recurringNext) await tx.run(`INSERT INTO tasks (user_id,list_id,title,notes,due_date,due_time,priority,tags,subtasks,recurring,miss_policy,updated_at)
+      VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`,
+      [req.userId, t.list_id, t.title, t.notes, recurringNext.dueDate, t.due_time, t.priority, t.tags,
+        JSON.stringify(JSON.parse(t.subtasks).map(s => ({ ...s, done: false }))), recurringNext.rule, t.miss_policy || 'keep',
+        new Date().toISOString()]);
+  });
   let earned = 0;
   if (b.completed && !t.completed) earned = await award(req.userId, 'task', t.id, 10);
   res.json({ ok: true, earned });
