@@ -671,6 +671,10 @@ export default function Tasks({ view, tasks, lists, filters, habits = [], reload
     subjectGroup: (a, b) => byLesson(a.title, b.title) || defaultSort(a, b),
   };
   const applySort = list => sortFns[sortBy] ? [...list].sort(sortFns[sortBy]) : list;
+  // 已完成是歷史時間線，不應承接「任務」頁記住的科目分堆或優先級排序。
+  // completed_at 是伺服器完成任務時寫入的 ISO 時間；舊資料沒有時間時以 id 新到舊穩定退化。
+  const sortCompleted = list => [...list].sort((a, b) =>
+    String(b.completed_at || '').localeCompare(String(a.completed_at || '')) || Number(b.id) - Number(a.id));
 
   // 「照科目分堆」用科目當分組標題，不看日期（日期還是顯示在每一列右邊）
   const groupBySubject = list => {
@@ -1341,8 +1345,9 @@ export default function Tasks({ view, tasks, lists, filters, habits = [], reload
             ))
             : (view.type === 'list' && showCompletedInList
               ? [...groupTasks(shown.filter(t => !t.completed), view.type), ['已完成', shown.filter(t => t.completed)]]
-              : (sortBy === 'subjectGroup' ? groupBySubject(shown) : groupTasks(shown, view.type))).map(([label, list]) => {
-              const sorted = applySort(list);
+              : (sortBy === 'subjectGroup' && !['completed', 'trash'].includes(view.type)
+                ? groupBySubject(shown) : groupTasks(shown, view.type))).map(([label, list]) => {
+              const sorted = view.type === 'completed' ? sortCompleted(list) : applySort(list);
               const canDrag = sortBy === 'default';
               const collapsed = collapsedGroups.has(label);
               return (
@@ -1353,7 +1358,7 @@ export default function Tasks({ view, tasks, lists, filters, habits = [], reload
                     {label}
                     {/* 照科目分堆時，日期分組不見了，「這一科欠了幾項」就沒地方看。
                         分堆的用途正是這個，所以把每一科的項數與逾期數寫在標頭上。 */}
-                    {sortBy === 'subjectGroup' && <SubjectCounts list={sorted} />}
+                    {sortBy === 'subjectGroup' && !['completed', 'trash'].includes(view.type) && <SubjectCounts list={sorted} />}
                   </button>
                   {!collapsed && sorted.map(t => <TaskRow key={t.id} t={t} lists={lists} sel={t.id === selId} onSel={x => setSelId(x.id)} onToggle={toggle}
                     onDragStart={canDrag ? setDragT : undefined}
