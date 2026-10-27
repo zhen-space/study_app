@@ -7,6 +7,7 @@
 
 import { test, describe, before, after } from 'node:test';
 import assert from 'node:assert/strict';
+import { createClient } from '@libsql/client';
 import { startServer, day } from './helpers.mjs';
 
 let S;
@@ -240,6 +241,31 @@ describe('Plan selection lifecycle（契約 4、6、9）', () => {
       { content_item_ids: [B.reading.id], selected: true });
     assert.equal(r.status, 409);
     assert.deepEqual(r.json.completed_item_ids.map(Number), [Number(B.reading.id)]);
+  });
+
+  test('Task 建立後若 selection 連結失敗，兩邊都必須回滾', async () => {
+    const B = await seedBook('原子連結');
+    const plan = await mkPlan('原子連結計畫');
+    await ok('POST', `/plans/${plan.id}/material-items`, { content_item_ids: [B.reading.id], selected: true });
+    const db = createClient({ url: 'file:' + S.dbFile });
+    try {
+      await db.execute({ sql: `CREATE TRIGGER fail_material_task_link BEFORE UPDATE OF task_id ON plan_material_items
+        WHEN NEW.content_item_id=${Number(B.reading.id)} BEGIN SELECT RAISE(ABORT, 'link failure'); END` });
+      const failed = await api('POST', '/tasks', {
+        title: '不該殘留的教材任務', plan_id: plan.id, material_content_item_id: B.reading.id,
+      });
+      assert.equal(failed.status, 500);
+      const tasks = await db.execute({ sql: 'SELECT COUNT(*) n FROM tasks WHERE title=?', args: ['不該殘留的教材任務'] });
+      assert.equal(Number(tasks.rows[0].n), 0, 'selection 連結失敗時不得留下孤兒 Task');
+      const selection = await db.execute({
+        sql: 'SELECT task_id FROM plan_material_items WHERE plan_id=? AND content_item_id=?',
+        args: [plan.id, B.reading.id],
+      });
+      assert.equal(selection.rows[0].task_id, null);
+    } finally {
+      await db.execute('DROP TRIGGER IF EXISTS fail_material_task_link');
+      db.close();
+    }
   });
 
   test('取消選取不是完成、不 hard delete Task，Task 安全退出排程並保留 provenance', async () => {
