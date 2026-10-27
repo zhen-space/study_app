@@ -1888,16 +1888,26 @@ function isBusy(e) {
 const MIRROR_WHERE = `user_id=? AND plan_id IS NOT NULL AND COALESCE(deleted,0)=0 AND completed=0 AND COALESCE(cancelled,0)=0`;
 
 async function mirrorDueDates(tx, userId, versionId) {
+  const updatedAt = new Date().toISOString();
   await tx.run(
-    `UPDATE tasks SET
-       due_date = (SELECT b.date FROM scheduled_blocks b
-                    WHERE b.schedule_version_id=? AND b.task_id=tasks.id
-                    ORDER BY b.date, COALESCE(b.start_time,''), b.id LIMIT 1),
-       due_time = (SELECT b.start_time FROM scheduled_blocks b
-                    WHERE b.schedule_version_id=? AND b.task_id=tasks.id
-                    ORDER BY b.date, COALESCE(b.start_time,''), b.id LIMIT 1)
-     WHERE ${MIRROR_WHERE}`,
-    [versionId, versionId, userId]);
+    `WITH next_due AS (
+       SELECT t.id, t.due_date AS old_date, t.due_time AS old_time,
+         (SELECT b.date FROM scheduled_blocks b
+           WHERE b.schedule_version_id=? AND b.task_id=t.id
+           ORDER BY b.date, COALESCE(b.start_time,''), b.id LIMIT 1) AS next_date,
+         (SELECT b.start_time FROM scheduled_blocks b
+           WHERE b.schedule_version_id=? AND b.task_id=t.id
+           ORDER BY b.date, COALESCE(b.start_time,''), b.id LIMIT 1) AS next_time
+       FROM tasks t
+       WHERE t.user_id=? AND t.plan_id IS NOT NULL AND COALESCE(t.deleted,0)=0
+         AND t.completed=0 AND COALESCE(t.cancelled,0)=0
+     )
+     UPDATE tasks SET
+       due_date=(SELECT next_date FROM next_due WHERE next_due.id=tasks.id),
+       due_time=(SELECT next_time FROM next_due WHERE next_due.id=tasks.id),
+       updated_at=?
+     WHERE id IN (SELECT id FROM next_due WHERE old_date IS NOT next_date OR old_time IS NOT next_time)`,
+    [versionId, versionId, userId, updatedAt]);
 }
 
 /* ============================================================
