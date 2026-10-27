@@ -576,7 +576,16 @@ export default function Tasks({ view, tasks, lists, filters, habits = [], reload
       return new Set(Array.isArray(saved) ? saved.filter(x => typeof x === 'string') : []);
     } catch { return new Set(); }
   });
-  const [showCompletedInList, setShowCompletedInList] = useState(false);
+  // 科目清單是否顯示已完成任務是使用者的檢視偏好；切換科目或重新開啟 App
+  // 時保留，避免每次都要重新點一次。
+  const [showCompletedInList, setShowCompletedInList] = useState(() => {
+    try { return localStorage.getItem('taskShowCompletedInList') === 'true'; } catch { return false; }
+  });
+  const toggleCompletedInList = () => setShowCompletedInList(value => {
+    const next = !value;
+    try { localStorage.setItem('taskShowCompletedInList', String(next)); } catch {}
+    return next;
+  });
   const quickBusyRef = useRef(false);
   const quickComposing = useRef(false);
   // §E 第一層 filters（只在「任務」總表出現）：全部／今天／逾期／未排程。記在 localStorage。
@@ -1054,7 +1063,7 @@ export default function Tasks({ view, tasks, lists, filters, habits = [], reload
           )}
           {!listLabel && view.type === 'list' && completedInList.length > 0 && (
             <button type="button" className="btn sm ghost" aria-pressed={showCompletedInList}
-              onClick={() => setShowCompletedInList(v => !v)}>
+              onClick={toggleCompletedInList}>
               {showCompletedInList ? '隱藏已完成' : `顯示已完成（${completedInList.length}）`}
             </button>
           )}
