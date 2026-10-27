@@ -11,7 +11,7 @@ import { render, screen, fireEvent, waitFor } from '@testing-library/react';
 import {
   isOverdue, groupSchoolAssignments, formatDeadline, deadlineLabelText,
   reminderSelectionToFields, reminderFieldsToSelection, effectiveDeadlineTime,
-  nowTW,
+  nowTW, bySchoolDeadline,
 } from '../tt/schoolAssignment';
 import { matchView, onActivePlan, today } from '../tt/helpers';
 import { pickStudyTasks } from '../tt/StudyView';
@@ -98,6 +98,18 @@ describe('期限顯示', () => {
   });
   it('有時間才顯示時間', () => {
     expect(formatDeadline(sa({ deadline_date: '2026-09-10', deadline_time: '18:30' }))).toContain('18:30');
+  });
+});
+
+describe('期限排序', () => {
+  it('先依截止日、同日依截止時間，缺日期放最後', () => {
+    const rows = [
+      sa({ id: 1, deadline_date: '2026-09-12', deadline_time: null }),
+      sa({ id: 2, deadline_date: '2026-09-11', deadline_time: '18:00' }),
+      sa({ id: 3, deadline_date: '2026-09-11', deadline_time: '08:00' }),
+      sa({ id: 4, deadline_date: null }),
+    ];
+    expect([...rows].sort(bySchoolDeadline).map(t => t.id)).toEqual([3, 2, 1, 4]);
   });
 });
 

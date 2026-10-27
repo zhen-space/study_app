@@ -6,7 +6,7 @@ import SchoolAssignmentForm from './SchoolAssignmentForm';
 import RollingExamSchedule from './RollingExamSchedule';
 import {
   TYPE_LABEL, isSchoolAssignment, isOverdue, groupSchoolAssignments,
-  formatDeadline, deadlineLabelText, nowTW,
+  formatDeadline, deadlineLabelText, nowTW, bySchoolDeadline,
 } from './schoolAssignment';
 
 function useAssignmentMutations(reload) {
@@ -199,12 +199,14 @@ export default function SchoolAssignmentView({ tasks, lists, plans = [], reload 
   // 期限導向的分組（逾期／今天／即將／之後）是執行語意：掛在非進行中計畫的作業
   // 不應宣稱這些狀態，退出（改由該計畫的 Plan Detail 管理）。已完成／已取消歷史照留。
   const active = all.filter(t => !t.completed && !t.cancelled && onActivePlan(t));
-  const overdue = active.filter(t => isOverdue(t, now));
-  const dueToday = active.filter(t => !isOverdue(t, now) && t.deadline_date === now.date);
+  const overdue = active.filter(t => isOverdue(t, now)).sort(bySchoolDeadline);
+  const dueToday = active.filter(t => !isOverdue(t, now) && t.deadline_date === now.date).sort(bySchoolDeadline);
   const upcoming = active.filter(t => !isOverdue(t, now) && t.deadline_date > now.date
-    && t.deadline_date <= addDaysStr(now.date, 7));
-  const later = active.filter(t => !overdue.includes(t) && !dueToday.includes(t) && !upcoming.includes(t));
-  const doneOrCancelled = all.filter(t => t.completed || t.cancelled);
+    && t.deadline_date <= addDaysStr(now.date, 7)).sort(bySchoolDeadline);
+  const later = active.filter(t => !overdue.includes(t) && !dueToday.includes(t) && !upcoming.includes(t)).sort(bySchoolDeadline);
+  const doneOrCancelled = all.filter(t => t.completed || t.cancelled).sort((a, b) =>
+    String(b.completed_at || b.cancelled_at || '').localeCompare(String(a.completed_at || a.cancelled_at || ''))
+    || Number(b.id) - Number(a.id));
   const [showDone, setShowDone] = useState(false);
   const showHistory = showDone || Boolean(normalizedQuery);
   const activePlans = plans.filter(p => p.status === 'active');
