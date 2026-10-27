@@ -485,6 +485,23 @@ export function Detail({ task, lists, onSave, onDelete, onClose, saveBusy = fals
           value={(isSchoolAssignment ? t.deadline_date : t.due_date) || ''}
           onChange={e => up(isSchoolAssignment ? { deadline_date: e.target.value || null } : { due_date: e.target.value || null })} />
       </div>
+      {!scheduleManaged && (
+        <div className="drow" aria-label="日期快捷選項">
+          <label />
+          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
+            {[
+              ['今天', today()],
+              ['明天', addDays(today(), 1)],
+              ['清除日期', null],
+            ].map(([label, value]) => {
+              const field = isSchoolAssignment ? 'deadline_date' : 'due_date';
+              const active = (isSchoolAssignment ? t.deadline_date : t.due_date) === value;
+              return <button key={label} type="button" className={'chip' + (active ? ' on' : '')}
+                aria-pressed={active} onClick={() => up({ [field]: value })}>{label}</button>;
+            })}
+          </div>
+        </div>
+      )}
       <div className="drow">
         <label>{isSchoolAssignment ? '繳交時間' : '時間'}</label>
         <input type="time" aria-label={isSchoolAssignment ? '繳交時間' : '時間'} disabled={scheduleManaged}
