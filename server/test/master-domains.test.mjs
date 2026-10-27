@@ -184,6 +184,27 @@ test('P1 regression：一般任務移到垃圾桶時會更新 updated_at', async
   assert.ok(deleted.updated_at > task.body.updated_at, '軟刪除必須留下比建立時間新的異動時間');
 });
 
+test('P1 regression：批次建立與重新排序都維護 updated_at', async () => {
+  const bulk = await api('/tasks/bulk', { method: 'POST', body: { tasks: [
+    { title: '批次任務甲' }, { title: '批次任務乙' },
+  ] } });
+  assert.equal(bulk.status, 200);
+  const created = (await api('/tasks')).body.filter(t => t.title.startsWith('批次任務'));
+  assert.equal(created.length, 2);
+  assert.ok(created.every(t => t.updated_at), '批次建立的每一筆都必須留下異動時間');
+
+  await new Promise(resolve => setTimeout(resolve, 5));
+  const reordered = await api('/tasks/reorder', {
+    method: 'POST', body: { ids: created.map(t => t.id).reverse() },
+  });
+  assert.equal(reordered.status, 200);
+  const current = (await api('/tasks')).body.filter(t => t.title.startsWith('批次任務'));
+  for (const task of current) {
+    const before = created.find(t => t.id === task.id);
+    assert.ok(task.updated_at > before.updated_at, `#${task.id} 重新排序後不得保留 stale updated_at`);
+  }
+});
+
 test('Master C：只有確認後的 supported constraint 會保存，unsupported 不可 silently ignore', async () => {
   const plan = await api('/plans', { method: 'POST', body: { name: '條件計畫' } });
   const saved = await api(`/plans/${plan.body.id}/constraints`, { method: 'PUT', body: { intent: { exclude_weekdays: [3], strict_dependency: [{ before: 'A', after: 'B' }] } } });

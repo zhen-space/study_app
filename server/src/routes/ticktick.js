@@ -539,20 +539,22 @@ router.post('/tasks/bulk', async (req, res) => {
     return res.status(409).json({ error: '計畫任務的排定時間必須透過排程器建立' });
   }
   if (list.some(t => estimate(t.estimated_minutes) === undefined)) return res.status(400).json({ error: '預估時間需介於 1 到 1440 分鐘' });
+  const updatedAt = new Date().toISOString();
   await q.batch(list.map(t => [
-    `INSERT INTO tasks (user_id,list_id,title,notes,due_date,due_time,priority,tags,subtasks,recurring,miss_policy,plan_id,deadline_date,estimated_minutes)
-     VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+    `INSERT INTO tasks (user_id,list_id,title,notes,due_date,due_time,priority,tags,subtasks,recurring,miss_policy,plan_id,deadline_date,estimated_minutes,updated_at)
+     VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
     [req.userId, t.list_id || null, t.title, t.notes || '', t.due_date || null, t.due_time || null,
       t.priority || 0, JSON.stringify(cleanTags(asArr(t.tags || []))), JSON.stringify(t.subtasks || []), t.recurring || null, t.miss_policy || 'keep',
-      t.plan_id ?? null, t.deadline_date || null, estimate(t.estimated_minutes)],
+      t.plan_id ?? null, t.deadline_date || null, estimate(t.estimated_minutes), updatedAt],
   ]));
   res.json({ added: list.length });
 });
 // 拖曳排序：一次寫入一批任務的順序
 router.post('/tasks/reorder', async (req, res) => {
   const ids = req.body.ids || [];
+  const updatedAt = new Date().toISOString();
   for (let i = 0; i < ids.length; i++) {
-    await q.run('UPDATE tasks SET order_index=? WHERE id=? AND user_id=?', [i, ids[i], req.userId]);
+    await q.run('UPDATE tasks SET order_index=?,updated_at=? WHERE id=? AND user_id=?', [i, updatedAt, ids[i], req.userId]);
   }
   res.json({ ok: true });
 });
