@@ -38,6 +38,7 @@ describe('同名科目偵測與安全合併', () => {
     const source = (await api('/lists', 'POST', { name: ' 物理 ', allow_duplicate: true })).body.id;
     const plan = (await api('/plans', 'POST', { name: '段考', primary_list_id: source, target_date: '2030-06-30' })).body.id;
     const task = (await api('/tasks', 'POST', { title: '作業', list_id: source, plan_id: plan, deadline_date: '2030-06-20', estimated_minutes: 45, task_kind: 'school_assignment', school_assignment_type: 'homework' })).body.id;
+    await db.execute({ sql: 'UPDATE tasks SET updated_at=? WHERE id=?', args: ['2000-01-01T00:00:00.000Z', task] });
     const otherUser = Number((await db.execute({ sql: "INSERT INTO users (email,password_hash) VALUES (?,?)", args: ['share@test.local', 'x'] })).lastInsertRowid);
     await db.batch([
       { sql: 'INSERT INTO toc_items (user_id,list_id,title) VALUES (?,?,?)', args: [userId,source,'章'] },
@@ -71,11 +72,12 @@ describe('同名科目偵測與安全合併', () => {
     );
     const shares = await db.execute({ sql: 'SELECT list_id FROM list_shares WHERE owner_id=? AND member_id=?', args: [userId,otherUser] });
     assert.deepEqual(shares.rows.map(r => Number(r[0])), [target]);
-    const keptTask = await db.execute({ sql: 'SELECT completed,deadline_date FROM tasks WHERE id=?', args: [task] });
+    const keptTask = await db.execute({ sql: 'SELECT completed,deadline_date,updated_at FROM tasks WHERE id=?', args: [task] });
     assert.deepEqual(
       [Number(keptTask.rows[0].completed), keptTask.rows[0].deadline_date],
       [0, '2030-06-20'],
     );
+    assert.notEqual(keptTask.rows[0].updated_at, '2000-01-01T00:00:00.000Z', 'Task 科目異動要刷新 updated_at');
     assert.equal((await db.execute({ sql: 'SELECT COUNT(*) FROM study_sessions WHERE task_id=?', args: [task] })).rows[0][0], 1);
   });
 

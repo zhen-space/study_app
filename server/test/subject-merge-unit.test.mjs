@@ -19,7 +19,7 @@ async function fixture() {
   const c = createClient({ url: 'file:' + file });
   for (const sql of [
     'CREATE TABLE lists(id INTEGER PRIMARY KEY,user_id INTEGER,name TEXT,color TEXT,order_index INTEGER)',
-    'CREATE TABLE tasks(id INTEGER PRIMARY KEY,user_id INTEGER,list_id INTEGER,completed INTEGER,deadline_date TEXT)',
+    'CREATE TABLE tasks(id INTEGER PRIMARY KEY,user_id INTEGER,list_id INTEGER,completed INTEGER,deadline_date TEXT,updated_at TEXT)',
     'CREATE TABLE toc_items(id INTEGER PRIMARY KEY,user_id INTEGER,list_id INTEGER)',
     'CREATE TABLE plans(id INTEGER PRIMARY KEY,user_id INTEGER,primary_list_id INTEGER)',
     'CREATE TABLE material_books(id INTEGER PRIMARY KEY,user_id INTEGER,subject_list_id INTEGER)',
@@ -45,7 +45,7 @@ test('preview is read-only; merge preserves task/history and moves every list re
   const { c, db, close } = await fixture();
   await c.batch([
     "INSERT INTO lists VALUES (1,7,'物理','#1',0)", "INSERT INTO lists VALUES (2,7,' 物理 ','#2',1)",
-    "INSERT INTO tasks VALUES (10,7,2,0,'2030-06-20')", 'INSERT INTO study_sessions VALUES (20,7,10,30)',
+    "INSERT INTO tasks VALUES (10,7,2,0,'2030-06-20','2000-01-01T00:00:00Z')", 'INSERT INTO study_sessions VALUES (20,7,10,30)',
     'INSERT INTO toc_items VALUES (30,7,2)', 'INSERT INTO plans VALUES (40,7,2)', 'INSERT INTO material_books VALUES (50,7,2)',
     'INSERT INTO plan_progress_segments VALUES (60,7,2)', 'INSERT INTO plan_manual_scope VALUES (70,7,2,10)',
     "INSERT INTO plan_exam_subjects VALUES (80,7,40,1,'2030-06-25',3,NULL)",
@@ -63,6 +63,7 @@ test('preview is read-only; merge preserves task/history and moves every list re
   assert.equal((await db.all('SELECT * FROM list_shares')).length, 1);
   assert.equal((await db.get('SELECT actual_minutes FROM study_sessions WHERE task_id=10')).actual_minutes, 30);
   assert.deepEqual(await db.get('SELECT completed,deadline_date FROM tasks WHERE id=10'), { completed: 0, deadline_date: '2030-06-20' });
+  assert.notEqual((await db.get('SELECT updated_at FROM tasks WHERE id=10')).updated_at, '2000-01-01T00:00:00Z');
   close();
 });
 
@@ -71,7 +72,7 @@ test('ownership and stale preview fail closed', async () => {
   await c.batch(["INSERT INTO lists VALUES (1,7,'化學','#1',0)", "INSERT INTO lists VALUES (2,7,'化學','#2',1)", "INSERT INTO lists VALUES (3,9,'化學','#3',0)"], 'write');
   await assert.rejects(() => subjectMergeImpact(db, 7, 1, [3]), /不屬於你/);
   const preview = await subjectMergeImpact(db, 7, 1, [2]);
-  await c.execute('INSERT INTO tasks VALUES (10,7,2,0,NULL)');
+  await c.execute('INSERT INTO tasks VALUES (10,7,2,0,NULL,NULL)');
   const t = await c.transaction('write'), tx = wrap(t);
   await assert.rejects(() => mergeSubjects(tx, 7, 1, [2], preview.fingerprint), /預覽後有變動/);
   await t.rollback();
