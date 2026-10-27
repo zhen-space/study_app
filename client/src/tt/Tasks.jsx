@@ -263,7 +263,7 @@ function TaskRow({ t, lists, sel, onSel, onToggle, onDragStart, onDropOn, onSwip
 // §F 任務明細：分成「任務資訊／安排／實際讀書／其他」四區，不再是一長條扁平表單。
 // 刪除收進右上「•••」（不再一顆紅按鈕擺在最下面誤觸）；標籤改 chips（非開發者式逗號字串）；
 // 多出一個「實際讀書」摘要（讀了多久），把 generic 的「日期」歸到「安排」語意底下。
-export function Detail({ task, lists, onSave, onDelete, onClose, saveBusy = false, saveError = '', refreshCommitted = false, onRetryRefresh }) {
+export function Detail({ task, lists, onSave, onDelete, onDuplicate, onClose, saveBusy = false, saveError = '', refreshCommitted = false, onRetryRefresh }) {
   const [t, setT] = useState(task);
   const [composing, setComposing] = useState(false);
   const composingRef = useRef(false);
@@ -407,6 +407,7 @@ export function Detail({ task, lists, onSave, onDelete, onClose, saveBusy = fals
   const addTag = raw => { const v = raw.trim(); if (!v || t.tags.includes(v)) return; up({ tags: [...t.tags, v] }); };
   const isSchoolAssignment = t.task_kind === 'school_assignment';
   const scheduleManaged = !isSchoolAssignment && t.plan_id != null;
+  const canDuplicate = !isSchoolAssignment && t.plan_id == null;
 
   return (
     <div className="detail">
@@ -420,6 +421,7 @@ export function Detail({ task, lists, onSave, onDelete, onClose, saveBusy = fals
             <>
               <div style={{ position: 'fixed', inset: 0, zIndex: 40 }} onClick={() => setMenu(false)} />
               <div className="sa-menu" role="menu">
+                {canDuplicate && <button role="menuitem" onClick={() => { setMenu(false); onDuplicate(t); }}>複製任務</button>}
                 <button role="menuitem" className="sa-menu-danger" onClick={() => { setMenu(false); onDelete(t); }}>刪除任務</button>
               </div>
             </>
@@ -813,6 +815,7 @@ export default function Tasks({ view, tasks, lists, filters, habits = [], reload
   const [mutationErrors, setMutationErrors] = useState({});
   const [refreshError, setRefreshError] = useState('');
   const [refreshBusy, setRefreshBusy] = useState(false);
+  const duplicateBusyRef = useRef(false);
   const beginMutation = id => {
     if (mutationIds.current.has(id)) return false;
     mutationIds.current.add(id);
@@ -845,6 +848,38 @@ export default function Tasks({ view, tasks, lists, filters, habits = [], reload
     });
     await reload('tasks').catch(() => setRefreshError('任務已更新，但畫面暫時無法重新載入。'));
     finishMutation(t.id);
+  }
+  async function duplicateTask(t) {
+    if (duplicateBusyRef.current) return;
+    duplicateBusyRef.current = true;
+    const body = {
+      title: t.title,
+      list_id: t.list_id ?? null,
+      notes: t.notes || '',
+      due_date: t.due_date || null,
+      due_time: t.due_time || null,
+      priority: Number(t.priority) || 0,
+      tags: [...(t.tags || [])],
+      subtasks: (t.subtasks || []).filter(s => !s.done).map(s => ({ ...s, done: false })),
+      recurring: t.recurring || null,
+      miss_policy: t.miss_policy || 'keep',
+      estimated_minutes: t.estimated_minutes ?? null,
+      task_kind: 'task',
+    };
+    try {
+      await api('/tasks', { method: 'POST', body });
+    } catch (e) {
+      setRefreshError(e.message || '複製任務失敗，請再試一次。');
+      duplicateBusyRef.current = false;
+      return;
+    }
+    showToast(`已複製「${t.title}」`);
+    try {
+      await reload('tasks');
+    } catch {
+      setRefreshError('任務已複製，但畫面暫時無法重新載入。');
+    }
+    duplicateBusyRef.current = false;
   }
   async function quickAdd(e) {
     e.preventDefault();
@@ -1280,7 +1315,7 @@ export default function Tasks({ view, tasks, lists, filters, habits = [], reload
           {view.type === 'today' && <VocabCard goVocab={goVocab} />}
         </div>
       </div>
-      {sel && <Detail key={sel.id} task={sel} lists={lists} onSave={save} onDelete={del} onClose={closeDetail}
+      {sel && <Detail key={sel.id} task={sel} lists={lists} onSave={save} onDelete={del} onDuplicate={duplicateTask} onClose={closeDetail}
         saveBusy={saveBusy} saveError={saveError} refreshCommitted={closeRefreshCommitted} onRetryRefresh={retryCloseRefresh} />}
       {toast && (
         <div className="toast" role={toast.error ? 'alert' : 'status'}>
