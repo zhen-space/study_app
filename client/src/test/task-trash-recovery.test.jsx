@@ -102,6 +102,34 @@ describe('375px 任務垃圾桶 mutation recovery', () => {
     expect(api.mock.calls.filter(([path]) => path === '/trash')).toHaveLength(2);
   });
 
+  it('搜尋中清空垃圾桶：搜尋外已被伺服器刪除的項目，刷新失敗後清除搜尋也不會冒出來', async () => {
+    api.mockResolvedValue({ removed: 2 });
+    // Shell 的 reload 會吞掉 /tasks 失敗：Promise 照樣 resolve，但任務資料仍是舊的。
+    mount(vi.fn().mockResolvedValue(undefined), [trashed(701, '數學講義'), trashed(702, '英文作文')]);
+    fireEvent.change(screen.getByLabelText('搜尋目前任務'), { target: { value: '數學' } });
+    expect(screen.queryByText('英文作文')).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('button', { name: '清空垃圾桶' }));
+    await waitFor(() => expect(screen.queryByText('數學講義')).not.toBeInTheDocument());
+    fireEvent.click(screen.getByRole('button', { name: '清除任務搜尋' }));
+
+    expect(screen.queryByText('英文作文')).not.toBeInTheDocument();
+    expect(api.mock.calls.filter(([path]) => path === '/trash')).toHaveLength(1);
+  });
+
+  it('清空垃圾桶後，伺服器保留的計畫任務仍留在垃圾桶可還原', async () => {
+    api.mockResolvedValue({ removed: 1 });
+    const planTask = { ...trashed(703, '計畫單元一'), plan_id: 9 };
+    const reload = mount(undefined, [trashed(701, '待刪講義'), planTask]);
+
+    fireEvent.click(screen.getByRole('button', { name: '清空垃圾桶' }));
+    await waitFor(() => expect(screen.queryByText('待刪講義')).not.toBeInTheDocument());
+    await waitFor(() => expect(reload).toHaveBeenCalledOnce());
+
+    expect(screen.getByText('計畫單元一')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: '還原' })).toBeEnabled();
+  });
+
   it('單筆還原與清空垃圾桶同步互斥，不讓快速連點結果由請求順序決定', async () => {
     let resolveRestore;
     let resolveEmpty;

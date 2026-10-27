@@ -815,7 +815,9 @@ export default function Tasks({ view, tasks, lists, filters, habits = [], reload
       setEmptyTrashBusy(false);
       return;
     }
-    setHidden(ids => new Set([...ids, ...shown.map(t => t.id)]));
+    // 本地投影要和伺服器實際刪除的範圍一致：整個垃圾桶（不受 Quick Find 影響）
+    // 的一般待辦；計畫任務伺服器會保留 tombstone，畫面也必須留著可還原。
+    setHidden(ids => new Set([...ids, ...shownAll.filter(t => t.plan_id == null).map(t => t.id)]));
     await reload('tasks').catch(() => setRefreshError('垃圾桶已清空，但畫面暫時無法重新載入。'));
     emptyTrashBusyRef.current = false;
     setEmptyTrashBusy(false);
