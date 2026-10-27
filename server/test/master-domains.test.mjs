@@ -161,6 +161,17 @@ test('P3 regression：Task hard delete 後 StudySession history 仍可讀且保�
   assert.equal(stats.body.actualTotal >= 12, true);
 });
 
+test('P1 regression：一般任務移到垃圾桶時會更新 updated_at', async () => {
+  const task = await api('/tasks', { method: 'POST', body: { title: '移到垃圾桶的任務' } });
+  assert.ok(task.body.updated_at);
+  await new Promise(resolve => setTimeout(resolve, 5));
+
+  assert.equal((await api(`/tasks/${task.body.id}`, { method: 'DELETE' })).status, 200);
+  const deleted = (await api('/tasks')).body.find(row => row.id === task.body.id);
+  assert.equal(deleted.deleted, 1);
+  assert.ok(deleted.updated_at > task.body.updated_at, '軟刪除必須留下比建立時間新的異動時間');
+});
+
 test('Master C：只有確認後的 supported constraint 會保存，unsupported 不可 silently ignore', async () => {
   const plan = await api('/plans', { method: 'POST', body: { name: '條件計畫' } });
   const saved = await api(`/plans/${plan.body.id}/constraints`, { method: 'PUT', body: { intent: { exclude_weekdays: [3], strict_dependency: [{ before: 'A', after: 'B' }] } } });

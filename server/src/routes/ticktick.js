@@ -516,7 +516,7 @@ router.delete('/tasks/:id', async (req, res) => {
   }
   // 預設軟刪除進垃圾桶；?hard=1 才真的刪
   if (req.query.hard) await q.run('DELETE FROM tasks WHERE id=?', [t.id]);
-  else await q.run('UPDATE tasks SET deleted=1 WHERE id=?', [t.id]);
+  else await q.run('UPDATE tasks SET deleted=1, updated_at=? WHERE id=?', [new Date().toISOString(), t.id]);
   res.json({ ok: true });
 });
 // 批次建立任務（排程精靈一次建立整份讀書計劃用，逐筆打 API 太慢）
