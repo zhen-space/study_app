@@ -12,6 +12,7 @@
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { createClient } from '@libsql/client';
 import { startServer, day } from './helpers.mjs';
 
 const mk = async (base, H, body) => {
@@ -43,6 +44,26 @@ test('完成每天重複的任務會長出隔天那一筆，原本那筆維持�
     assert.equal(next.recurring, 'daily', '重複規則要跟著傳下去');
     assert.ok(next.updated_at, '新長出的下一次也必須留下異動時間');
   } finally { stop(); }
+});
+
+test('建立下一次失敗時，原任務完成狀態也必須回滾', async () => {
+  const { base, H, stop, dbFile } = await startServer();
+  const db = createClient({ url: 'file:' + dbFile });
+  try {
+    const id = await mk(base, H, { title: '原子重複', due_date: day(0), recurring: 'daily' });
+    // 模擬舊資料損壞：下一次建立時解析 subtasks 會失敗。
+    await db.execute({ sql: 'UPDATE tasks SET subtasks=? WHERE id=?', args: ['{壞資料', id] });
+    const response = await done(base, H, id);
+    assert.equal(response.status, 500);
+    const row = (await db.execute({ sql: 'SELECT completed,completed_at FROM tasks WHERE id=?', args: [id] })).rows[0];
+    assert.equal(Number(row.completed), 0, '下一次沒建立成功時，不得只留下已完成的舊任務');
+    assert.equal(row.completed_at, null);
+    const count = await db.execute({ sql: 'SELECT COUNT(*) n FROM tasks WHERE title=?', args: ['原子重複'] });
+    assert.equal(Number(count.rows[0].n), 1);
+  } finally {
+    db.close();
+    stop();
+  }
 });
 
 test('drop 重複任務自動滾到今天時會同步更新異動時間', async () => {
