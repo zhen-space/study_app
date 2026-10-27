@@ -20,6 +20,7 @@ vi.mock('../api', () => ({ api: vi.fn() }));
 const { api } = await import('../api');
 const SchoolAssignmentForm = (await import('../tt/SchoolAssignmentForm')).default;
 const { SARow, SchoolAssignmentToday } = await import('../tt/SchoolAssignmentView');
+const SchoolAssignmentView = (await import('../tt/SchoolAssignmentView')).default;
 const CalendarView = (await import('../tt/CalendarView')).default;
 
 const sa = (o = {}) => ({
@@ -408,5 +409,31 @@ describe('Today 只收進行中計畫（含 standalone）的作業', () => {
     await waitFor(() => expect(screen.queryByRole('button', { name: '重新載入' })).not.toBeInTheDocument());
     expect(api).toHaveBeenCalledTimes(1);
     expect(reload).toHaveBeenCalledTimes(2);
+  });
+});
+
+describe('學校作業搜尋', () => {
+  it('可依名稱、備註、標籤或科目搜尋，並自動顯示符合的歷史作業', () => {
+    const rows = [
+      sa({ id: 71, title: '力學講義', notes: '訂正第二題', tags: ['段考'], list_id: 1 }),
+      sa({ id: 72, title: '英文作文', notes: '', tags: [], list_id: 2 }),
+      sa({ id: 73, title: '舊報告', completed: 1, notes: '光合作用', list_id: 3 }),
+    ];
+    render(<SchoolAssignmentView tasks={rows} lists={[
+      { id: 1, name: '物理' }, { id: 2, name: '英文' }, { id: 3, name: '生物' },
+    ]} reload={vi.fn()} />);
+
+    const search = screen.getByLabelText('搜尋學校作業');
+    fireEvent.change(search, { target: { value: '段考' } });
+    expect(screen.getByText('力學講義')).toBeInTheDocument();
+    expect(screen.queryByText('英文作文')).not.toBeInTheDocument();
+
+    fireEvent.change(search, { target: { value: '光合作用' } });
+    expect(screen.getByText('舊報告')).toBeInTheDocument();
+
+    fireEvent.change(search, { target: { value: '數學' } });
+    expect(screen.getByText('找不到符合搜尋的學校作業')).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: '清除學校作業搜尋' }));
+    expect(screen.getByText('英文作文')).toBeInTheDocument();
   });
 });

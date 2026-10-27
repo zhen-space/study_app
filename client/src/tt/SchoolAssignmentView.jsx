@@ -183,9 +183,18 @@ export default function SchoolAssignmentView({ tasks, lists, plans = [], reload 
   const [attach, setAttach] = useState(null);
   const [attachPlan, setAttachPlan] = useState('');
   const [rolling, setRolling] = useState(null);
+  const [query, setQuery] = useState('');
   const now = nowTW();
-  const all = tasks.filter(t => isSchoolAssignment(t) && !t.deleted);
   const listOf = t => lists.find(l => l.id === t.list_id);
+  const normalizedQuery = query.normalize('NFKC').trim().toLocaleLowerCase('zh-Hant');
+  const all = tasks.filter(t => {
+    if (!isSchoolAssignment(t) || t.deleted) return false;
+    if (!normalizedQuery) return true;
+    const subject = listOf(t)?.name || '';
+    return [t.title, t.notes, subject, ...(t.tags || [])]
+      .filter(Boolean).join('\n').normalize('NFKC').toLocaleLowerCase('zh-Hant')
+      .includes(normalizedQuery);
+  });
 
   // 期限導向的分組（逾期／今天／即將／之後）是執行語意：掛在非進行中計畫的作業
   // 不應宣稱這些狀態，退出（改由該計畫的 Plan Detail 管理）。已完成／已取消歷史照留。
@@ -197,6 +206,7 @@ export default function SchoolAssignmentView({ tasks, lists, plans = [], reload 
   const later = active.filter(t => !overdue.includes(t) && !dueToday.includes(t) && !upcoming.includes(t));
   const doneOrCancelled = all.filter(t => t.completed || t.cancelled);
   const [showDone, setShowDone] = useState(false);
+  const showHistory = showDone || Boolean(normalizedQuery);
   const activePlans = plans.filter(p => p.status === 'active');
   const rowProps = { listOf, now, onEdit: setForm, onAddPlan: t => { setAttach(t); setAttachPlan(''); }, reload, mutations };
 
@@ -205,7 +215,15 @@ export default function SchoolAssignmentView({ tasks, lists, plans = [], reload 
       <PageHeader title="學校作業" subtitle="截止與提醒，沿用任務系統" />
       <div className="main-body">
         <MutationRefreshError mutations={mutations} />
-        {all.length === 0 ? (
+        <div className="task-quick-find" role="search" style={{ marginBottom: 'var(--sp-4)' }}>
+          <span aria-hidden="true">⌕</span>
+          <input aria-label="搜尋學校作業" placeholder="搜尋名稱、備註、標籤或科目" value={query}
+            onChange={e => setQuery(e.target.value)} />
+          {query && <button type="button" className="icon-btn" aria-label="清除學校作業搜尋" onClick={() => setQuery('')}>✕</button>}
+        </div>
+        {all.length === 0 && normalizedQuery ? (
+          <EmptyState title="找不到符合搜尋的學校作業" description="請換個名稱、備註、標籤或科目再試一次。" />
+        ) : all.length === 0 ? (
           <EmptyState title="還沒有學校作業"
             description="把老師出的作業、報告、考試記下來，會依繳交期限提醒你。"
             action={<Button variant="primary" onClick={() => setForm({})}>＋ 新增第一份作業</Button>} />
@@ -217,10 +235,11 @@ export default function SchoolAssignmentView({ tasks, lists, plans = [], reload 
             <Group title="之後" items={later} {...rowProps} />
             {doneOrCancelled.length > 0 && (
               <section className="ui-section">
-                <button className="ui-section-title sa-toggle" onClick={() => setShowDone(s => !s)}>
-                  {showDone ? '▾' : '▸'} 已完成／已取消（{doneOrCancelled.length}）
+                <button className="ui-section-title sa-toggle" aria-expanded={showHistory}
+                  onClick={() => setShowDone(s => !s)}>
+                  {showHistory ? '▾' : '▸'} 已完成／已取消（{doneOrCancelled.length}）
                 </button>
-                {showDone && (
+                {showHistory && (
                   <SurfaceCard>
                     {doneOrCancelled.map(t => <SARow key={t.id} t={t} list={listOf(t)} now={now} onEdit={setForm} reload={reload} mutations={mutations} />)}
                   </SurfaceCard>
