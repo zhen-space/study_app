@@ -41,6 +41,22 @@ test('完成每天重複的任務會長出隔天那一筆，原本那筆維持�
     assert.equal(next.due_date, day(1));
     assert.equal(!!next.completed, false, '下一次不能一出生就是完成的');
     assert.equal(next.recurring, 'daily', '重複規則要跟著傳下去');
+    assert.ok(next.updated_at, '新長出的下一次也必須留下異動時間');
+  } finally { stop(); }
+});
+
+test('drop 重複任務自動滾到今天時會同步更新異動時間', async () => {
+  const { base, H, stop } = await startServer();
+  try {
+    const created = await fetch(base + '/tasks', {
+      method: 'POST', headers: H,
+      body: JSON.stringify({ title: '不留逾期', due_date: day(-2), recurring: 'daily', miss_policy: 'drop' }),
+    }).then(r => r.json());
+    await new Promise(resolve => setTimeout(resolve, 10));
+
+    const current = byTitle(await list(base, H), '不留逾期')[0];
+    assert.equal(current.due_date, day(0));
+    assert.ok(current.updated_at > created.updated_at, '自動改動日期後不得保留 stale updated_at');
   } finally { stop(); }
 });
 

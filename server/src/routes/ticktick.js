@@ -179,7 +179,12 @@ router.get('/tasks', async (req, res) => {
     if (t.user_id === req.userId && t.plan_id == null && t.recurring && !t.completed && !t.deleted && t.miss_policy === 'drop' && t.due_date && t.due_date < todayStr) {
       let nd = t.due_date, guard = 0;
       while (nd && nd < todayStr && guard++ < 400) nd = nextDate(nd, t.recurring);
-      if (nd) { await q.run('UPDATE tasks SET due_date=? WHERE id=?', [nd, t.id]); t.due_date = nd; }
+      if (nd) {
+        const updatedAt = new Date().toISOString();
+        await q.run('UPDATE tasks SET due_date=?,updated_at=? WHERE id=?', [nd, updatedAt, t.id]);
+        t.due_date = nd;
+        t.updated_at = updatedAt;
+      }
     }
   }
   // ?task_kind=school_assignment：只是既有清單的 filter，不是另一支端點。
@@ -470,10 +475,11 @@ router.patch('/tasks/:id', async (req, res) => {
       if (cfg.end?.date && nd && nd > cfg.end.date) nd = null;               // 超過結束日期
       nextRule = JSON.stringify(c2);
     }
-    if (nd) await q.run(`INSERT INTO tasks (user_id,list_id,title,notes,due_date,due_time,priority,tags,subtasks,recurring,miss_policy)
-      VALUES (?,?,?,?,?,?,?,?,?,?,?)`,
+    if (nd) await q.run(`INSERT INTO tasks (user_id,list_id,title,notes,due_date,due_time,priority,tags,subtasks,recurring,miss_policy,updated_at)
+      VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`,
       [req.userId, t.list_id, t.title, t.notes, nd, t.due_time, t.priority, t.tags,
-        JSON.stringify(JSON.parse(t.subtasks).map(s => ({ ...s, done: false }))), nextRule, t.miss_policy || 'keep']);
+        JSON.stringify(JSON.parse(t.subtasks).map(s => ({ ...s, done: false }))), nextRule, t.miss_policy || 'keep',
+        new Date().toISOString()]);
   }
   let earned = 0;
   if (b.completed && !t.completed) earned = await award(req.userId, 'task', t.id, 10);
