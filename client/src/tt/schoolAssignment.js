@@ -53,6 +53,10 @@ export function nowTW() {
 // 沒指定時間＝那一天結束以前（23:59）。只用於逾期比較，不拿來當顯示值。
 export const EOD = '23:59';
 export const effectiveDeadlineTime = task => (isTime(task?.deadline_time) ? task.deadline_time : EOD);
+export const bySchoolDeadline = (a, b) =>
+  String(a.deadline_date || '9999-12-31').localeCompare(String(b.deadline_date || '9999-12-31'))
+  || effectiveDeadlineTime(a).localeCompare(effectiveDeadlineTime(b))
+  || Number(a.id) - Number(b.id);
 
 // 逾期一律現算，對照 backend isOverdue。completed / cancelled / deleted 不算逾期。
 export function isOverdue(task, now = nowTW()) {
@@ -75,14 +79,10 @@ export function groupSchoolAssignments(tasks, now = nowTW(), { upcomingDays = 7 
   const pending = (tasks || []).filter(t =>
     isSchoolAssignment(t) && !t.completed && !t.cancelled && !t.deleted && isDate(t.deadline_date));
   const horizon = addDaysStr(now.date, upcomingDays);
-  const byDeadline = (a, b) =>
-    a.deadline_date.localeCompare(b.deadline_date)
-    || effectiveDeadlineTime(a).localeCompare(effectiveDeadlineTime(b))
-    || a.id - b.id;
   return {
-    due_today: pending.filter(t => t.deadline_date === now.date).sort(byDeadline),
-    upcoming: pending.filter(t => t.deadline_date > now.date && t.deadline_date <= horizon).sort(byDeadline),
-    overdue: pending.filter(t => isOverdue(t, now)).sort(byDeadline),
+    due_today: pending.filter(t => t.deadline_date === now.date).sort(bySchoolDeadline),
+    upcoming: pending.filter(t => t.deadline_date > now.date && t.deadline_date <= horizon).sort(bySchoolDeadline),
+    overdue: pending.filter(t => isOverdue(t, now)).sort(bySchoolDeadline),
   };
 }
 
