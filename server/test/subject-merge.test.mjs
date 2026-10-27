@@ -93,3 +93,31 @@ describe('同名科目偵測與安全合併', () => {
     assert.equal((await api('/lists/merge-preview', 'POST', { target_id: a, source_ids: [foreign] })).status, 404);
   });
 });
+
+describe('安全刪除科目', () => {
+  test('Task 原子移到願望清單並刷新 updated_at', async () => {
+    const subject = (await api('/lists', 'POST', { name: '待刪科目' })).body.id;
+    const task = (await api('/tasks', 'POST', { title: '保留任務', list_id: subject })).body.id;
+    await db.execute({ sql: 'UPDATE tasks SET updated_at=? WHERE id=?', args: ['2000-01-01T00:00:00.000Z', task] });
+
+    const removed = await api(`/lists/${subject}`, 'DELETE');
+    assert.equal(removed.status, 200);
+    assert.equal(Number(removed.body.moved_tasks), 1);
+    const kept = await db.execute({ sql: 'SELECT list_id,updated_at,deleted FROM tasks WHERE id=?', args: [task] });
+    assert.equal(kept.rows[0].list_id, null);
+    assert.notEqual(kept.rows[0].updated_at, '2000-01-01T00:00:00.000Z');
+    assert.equal(Number(kept.rows[0].deleted), 0);
+  });
+
+  test('教材或計畫仍引用時 fail closed，不留下半套異動', async () => {
+    const subject = (await api('/lists', 'POST', { name: '仍在使用' })).body.id;
+    const task = (await api('/tasks', 'POST', { title: '不可先搬', list_id: subject })).body.id;
+    await db.execute({ sql: 'INSERT INTO material_books (user_id,title,subject_list_id) VALUES (?,?,?)', args: [userId, '講義', subject] });
+
+    const rejected = await api(`/lists/${subject}`, 'DELETE');
+    assert.equal(rejected.status, 409);
+    assert.match(rejected.body.error, /仍被教材或計畫使用/);
+    assert.equal(Number((await db.execute({ sql: 'SELECT list_id FROM tasks WHERE id=?', args: [task] })).rows[0].list_id), subject);
+    assert.equal(Number((await db.execute({ sql: 'SELECT COUNT(*) n FROM lists WHERE id=?', args: [subject] })).rows[0].n), 1);
+  });
+});

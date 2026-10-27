@@ -154,8 +154,31 @@ router.patch('/lists/:id', async (req, res) => {
   res.json({ ok: true });
 });
 router.delete('/lists/:id', async (req, res) => {
-  await q.run('DELETE FROM lists WHERE id=? AND user_id=?', [req.params.id, req.userId]);
-  res.json({ ok: true });
+  const listId = Number(req.params.id);
+  const updatedAt = new Date().toISOString();
+  let moved = 0, exists = false, blocked = false;
+  await q.tx(async tx => {
+    exists = Boolean(await tx.get('SELECT id FROM lists WHERE id=? AND user_id=?', [listId, req.userId]));
+    if (!exists) return;
+    const refs = await Promise.all([
+      tx.get('SELECT COUNT(*) n FROM toc_items WHERE user_id=? AND list_id=?', [req.userId, listId]),
+      tx.get('SELECT COUNT(*) n FROM plans WHERE user_id=? AND primary_list_id=?', [req.userId, listId]),
+      tx.get('SELECT COUNT(*) n FROM material_books WHERE user_id=? AND subject_list_id=? AND deleted_at IS NULL', [req.userId, listId]),
+      tx.get('SELECT COUNT(*) n FROM plan_progress_segments WHERE user_id=? AND subject_list_id=?', [req.userId, listId]),
+      tx.get('SELECT COUNT(*) n FROM plan_manual_scope WHERE user_id=? AND subject_list_id=? AND removed_at IS NULL', [req.userId, listId]),
+      tx.get('SELECT COUNT(*) n FROM plan_exam_subjects WHERE user_id=? AND subject_list_id=?', [req.userId, listId]),
+    ]);
+    blocked = refs.some(row => Number(row?.n || 0) > 0);
+    if (blocked) return;
+    const r = await tx.run('UPDATE tasks SET list_id=NULL,updated_at=? WHERE user_id=? AND list_id=?',
+      [updatedAt, req.userId, listId]);
+    moved = Number(r.changes || 0);
+    await tx.run('DELETE FROM list_shares WHERE owner_id=? AND list_id=?', [req.userId, listId]);
+    await tx.run('DELETE FROM lists WHERE id=? AND user_id=?', [listId, req.userId]);
+  });
+  if (!exists) return res.status(404).json({ error: '找不到科目' });
+  if (blocked) return res.status(409).json({ error: '這個科目仍被教材或計畫使用，請先移除關聯內容，或改用同名科目合併' });
+  res.json({ ok: true, moved_tasks: moved });
 });
 
 // ---- tasks ----
