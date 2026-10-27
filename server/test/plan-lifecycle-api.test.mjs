@@ -139,6 +139,10 @@ describe('刪除', () => {
     const cancelled = (await post('/tasks', { title: '不做了', plan_id: plan.id })).body;
     await post(`/tasks/${cancelled.id}/cancel`, {});
 
+    const beforeDelete = new Map((await get('/tasks')).body
+      .filter(t => [open.id, done.id, cancelled.id].includes(t.id))
+      .map(t => [t.id, t.updated_at]));
+
     await post(`/plans/${plan.id}/delete`, {});
 
     const list = (await get('/tasks')).body;
@@ -147,6 +151,8 @@ describe('刪除', () => {
       assert.ok(t, `#${id} 必須還在資料裡——軟刪除才救得回、歷史版本才看得懂`);
       assert.equal(Number(t.deleted), 1, `#${id} 必須 soft-delete`);
       assert.equal(t.plan_id, plan.id, `#${id} 不得 detach 成 standalone`);
+      assert.ok(t.updated_at, `#${id} 的 tombstone 必須有異動時間`);
+      assert.notEqual(t.updated_at, beforeDelete.get(id), `#${id} 軟刪除後不得保留 stale updated_at`);
     }
     // soft-delete 只翻旗標，內容不被抹掉
     const goneOpen = list.find(x => x.id === open.id);
