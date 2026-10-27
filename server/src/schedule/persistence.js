@@ -916,11 +916,12 @@ export async function transitionTaskOutcome(userId, taskId, outcome) {
     if (outcome === 'cancelled' && task.completed) throw new ScheduleInputError('已完成任務不能取消；請先重新開啟');
     const at = new Date().toISOString();
     await tx.run(
-      `UPDATE tasks SET completed=?,completed_at=?,cancelled=?,cancelled_at=?,due_date=?,due_time=? WHERE id=? AND user_id=?`,
+      `UPDATE tasks SET completed=?,completed_at=?,cancelled=?,cancelled_at=?,due_date=?,due_time=?,updated_at=? WHERE id=? AND user_id=?`,
       [outcome === 'completed' ? 1 : 0, outcome === 'completed' ? at : null,
         outcome === 'cancelled' ? 1 : 0, outcome === 'cancelled' ? at : null,
         outcome === 'cancelled' && task.plan_id != null ? null : task.due_date,
-        outcome === 'cancelled' && task.plan_id != null ? null : task.due_time, task.id, userId]);
+        outcome === 'cancelled' && task.plan_id != null ? null : task.due_time,
+        at, task.id, userId]);
 
     const state = await tx.get('SELECT active_version_id FROM user_schedule_state WHERE user_id=?', [userId]);
     const activeId = state?.active_version_id ?? null;
