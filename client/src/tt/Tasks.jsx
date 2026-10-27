@@ -738,6 +738,8 @@ export default function Tasks({ view, tasks, lists, filters, habits = [], reload
   // 排程計畫與學校作業各自有專屬日期 domain，不能用一般任務 PATCH 批次繞過。
   const reschedulableOverdue = shown.filter(t => !t.completed && t.due_date && t.due_date < tdF
     && t.plan_id == null && t.task_kind !== 'school_assignment');
+  // 計畫任務與學校作業完成後仍是學習歷史的一部分；批次整理只碰一般任務。
+  const clearableCompleted = shown.filter(t => t.completed && t.plan_id == null && t.task_kind !== 'school_assignment');
   const chipCount = k => (subjFilter ? shownAll.filter(matchesSubjectFilter) : shownAll).filter(chipFn[k]).length;
   const hasUnassigned = shownAll.some(t => t.list_id == null);
   const sel = tv.find(t => t.id === selId);
@@ -747,6 +749,8 @@ export default function Tasks({ view, tasks, lists, filters, habits = [], reload
   const emptyTrashBusyRef = useRef(false);
   const [emptyTrashBusy, setEmptyTrashBusy] = useState(false);
   const [emptyTrashError, setEmptyTrashError] = useState('');
+  const clearCompletedBusyRef = useRef(false);
+  const [clearCompletedBusy, setClearCompletedBusy] = useState(false);
   const beginTrashMutation = id => {
     // 清空垃圾桶和單筆還原／永久刪除會改同一批資料，必須同步互斥；只靠 disabled
     // 會留下一個 React 尚未重繪前的快速連點視窗，結果會由請求抵達順序決定。
@@ -827,6 +831,30 @@ export default function Tasks({ view, tasks, lists, filters, habits = [], reload
     clearTimeout(toastTimer.current);
     setToast({ msg, undo });
     toastTimer.current = setTimeout(() => setToast(null), 5000);
+  }
+  async function clearCompletedTasks() {
+    if (!clearableCompleted.length || clearCompletedBusyRef.current) return;
+    if (!window.confirm(`將 ${clearableCompleted.length} 項已完成的一般任務移到垃圾桶？`)) return;
+    clearCompletedBusyRef.current = true;
+    setClearCompletedBusy(true);
+    setRefreshError('');
+    const results = await Promise.allSettled(clearableCompleted.map(t => api(`/tasks/${t.id}`, { method: 'DELETE' })));
+    const moved = clearableCompleted.filter((_, index) => results[index].status === 'fulfilled');
+    const failed = results.length - moved.length;
+    setHidden(ids => new Set([...ids, ...moved.map(t => t.id)]));
+    if (moved.length) showToast(`已將 ${moved.length} 項已完成任務移到垃圾桶`, async () => {
+      const restored = await Promise.allSettled(moved.map(t =>
+        api(`/tasks/${t.id}`, { method: 'PATCH', body: { deleted: false } })));
+      const restoreFailed = restored.filter(result => result.status === 'rejected').length;
+      if (restoreFailed) throw new Error(`有 ${restoreFailed} 項無法復原，請到垃圾桶重試`);
+      setHidden(ids => { const next = new Set(ids); moved.forEach(t => next.delete(t.id)); return next; });
+      await reload('tasks').catch(() => setRefreshError('任務已復原，但畫面暫時無法重新載入。'));
+    });
+    try { await reload('tasks'); }
+    catch { setRefreshError('任務已移到垃圾桶，但畫面暫時無法重新載入。'); }
+    if (failed) setRefreshError(`已移動 ${moved.length} 項，另有 ${failed} 項失敗，請再試一次。`);
+    clearCompletedBusyRef.current = false;
+    setClearCompletedBusy(false);
   }
   async function undoToast() {
     if (!toast?.undo || toastBusy) return;
@@ -1143,6 +1171,12 @@ export default function Tasks({ view, tasks, lists, filters, habits = [], reload
           {view.type === 'trash' && shown.length > 0 && (
             <button className="btn sm ghost" style={{ marginLeft: 'auto' }} disabled={emptyTrashBusy || trashPendingIds.size > 0}
               onClick={emptyTrash}>{emptyTrashBusy ? '清空中…' : '清空垃圾桶'}</button>
+          )}
+          {view.type === 'completed' && clearableCompleted.length > 0 && (
+            <button className="btn sm ghost" style={{ marginLeft: 'auto' }} disabled={clearCompletedBusy}
+              onClick={clearCompletedTasks}>
+              {clearCompletedBusy ? '整理中…' : `移到垃圾桶（${clearableCompleted.length}）`}
+            </button>
           )}
         </div>
         {/* §K：舊 Todo IA（學校作業／已完成／垃圾桶）從側欄移進「任務」頁的視圖切換列 */}
