@@ -143,6 +143,28 @@ describe('due_date / due_time 鏡射', () => {
     const t = tasks.find(x => x.title === '已完成');
     assert.equal(t.due_date, day(1), '完成紀錄不該因為不在未來排程就被清掉');
   });
+
+  test('只替實際搬動的 Task 更新 updated_at，未變 placement 不製造假異動', async () => {
+    const { body: plan } = await mkPlan({ name: '鏡射異動時間' });
+    const moved = (await mkTask({ title: '會搬動', plan_id: plan.id })).body;
+    const stable = (await mkTask({ title: '保持原位', plan_id: plan.id })).body;
+    await api('/schedule/apply', { method: 'POST', body: {
+      plan_id: plan.id, source: 'initial', blocks: [
+        { task_id: moved.id, date: day(6) }, { task_id: stable.id, date: day(7) },
+      ],
+    } });
+    const before = (await api('/tasks')).body.filter(t => [moved.id, stable.id].includes(t.id));
+    await new Promise(resolve => setTimeout(resolve, 5));
+    await api('/schedule/apply', { method: 'POST', body: {
+      plan_id: plan.id, source: 'manual', blocks: [
+        { task_id: moved.id, date: day(8) }, { task_id: stable.id, date: day(7) },
+      ],
+    } });
+    const afterRows = (await api('/tasks')).body.filter(t => [moved.id, stable.id].includes(t.id));
+    const stamp = (rows, id) => rows.find(t => t.id === id).updated_at;
+    assert.ok(stamp(afterRows, moved.id) > stamp(before, moved.id), '搬動後必須留下新的異動時間');
+    assert.equal(stamp(afterRows, stable.id), stamp(before, stable.id), '位置未變的任務不應製造假異動');
+  });
 });
 
 /* ---------- 版本 immutability 與歷史 ---------- */
