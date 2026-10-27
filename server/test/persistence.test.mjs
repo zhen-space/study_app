@@ -223,6 +223,7 @@ describe('schedule/apply（Wizard 與 Replan 的唯一寫入入口）', () => {
       '新版除本次 block 外，還可帶入其他 Plan 的 active block');
     const taskId = r.body.created[0].id;
     const t = (await api('/tasks')).body.find(x => x.id === taskId);
+    assert.ok(t.updated_at, '排程器建立的 Task 必須留下異動時間');
     assert.equal(t.due_date, day(4));
     assert.equal(t.due_time, '19:00');
     const now = await active();

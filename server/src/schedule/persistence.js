@@ -1134,6 +1134,7 @@ export async function applySchedule(userId, {
     throw new ScheduleInputError('排程來源不正確');
   }
   return serializeWrite(() => withVersionNoRetry(() => q.tx(async tx => {
+    const updatedAt = new Date().toISOString();
     const plan = await tx.get('SELECT id,status FROM plans WHERE id=? AND user_id=?', [planId, userId]);
     if (!plan) throw new ScheduleInputError('找不到這個計畫');
     if (!['draft', 'active'].includes(plan.status)) throw new ScheduleInputError('目前未執行的計畫不能重新排程');
@@ -1315,12 +1316,12 @@ export async function applySchedule(userId, {
         tags = c.tags || []; subtasks = c.subtasks || []; recurring = c.recurring || null; missPolicy = c.miss_policy || 'keep';
       }
       const r = await tx.run(
-        `INSERT INTO tasks (user_id,list_id,title,notes,priority,tags,subtasks,recurring,miss_policy,plan_id,deadline_date,estimated_minutes,material_content_item_id,material_book_id)
-         VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+        `INSERT INTO tasks (user_id,list_id,title,notes,priority,tags,subtasks,recurring,miss_policy,plan_id,deadline_date,estimated_minutes,material_content_item_id,material_book_id,updated_at)
+         VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
         [userId, listId, title, notes, priority,
           JSON.stringify(tags), JSON.stringify(subtasks), recurring,
           missPolicy, planId, deadlineDate,
-          estimated, materialItem?.id ?? null, bookId]);
+          estimated, materialItem?.id ?? null, bookId, updatedAt]);
       created.set(key, r.lastInsertRowid);
       createdMaterialItemId.set(key, materialItem?.id ?? null);
       if (rollingStrict && materialItem) createdMaterialEstimate.set(key, Number(estimated));
@@ -1704,11 +1705,11 @@ export async function createExamPlanAtomic(userId, {
     if (scheduled) {
       for (const si of scope.scopeItems) {
         const tr = await tx.run(
-          `INSERT INTO tasks (user_id,list_id,title,notes,priority,tags,subtasks,recurring,miss_policy,plan_id,deadline_date,estimated_minutes,material_content_item_id,material_book_id)
-           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+          `INSERT INTO tasks (user_id,list_id,title,notes,priority,tags,subtasks,recurring,miss_policy,plan_id,deadline_date,estimated_minutes,material_content_item_id,material_book_id,updated_at)
+           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
           [userId, si.subjectId, si.title, '', 0,
             JSON.stringify(['讀書計劃']), JSON.stringify([]), null, 'keep',
-            planId, si.deadline, si.minutes, si.contentItemId, si.bookId]);
+            planId, si.deadline, si.minutes, si.contentItemId, si.bookId, at]);
         const tid = Number(tr.lastInsertRowid);
         taskIdByKey.set(`${si.subjectId}\u0000${si.title}`, tid);
         taskDeadline.set(tid, si.deadline);
