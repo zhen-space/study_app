@@ -277,24 +277,28 @@ router.post('/tasks', async (req, res) => {
     return res.status(400).json({ error: '分享清單的任務不能綁定自己的教材項目' });
   }
   const rem = reminderFields(req.body);
-  const r = await q.run(`INSERT INTO tasks (user_id,list_id,title,notes,due_date,due_time,priority,tags,subtasks,recurring,miss_policy,plan_id,deadline_date,estimated_minutes,material_content_item_id,material_book_id,
-    task_kind,school_assignment_type,deadline_time,reminder_kind,reminder_days_before,reminder_custom_date,reminder_time_override,updated_at)
-    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
-    [ownerId, list_id || null, title, notes || '', due_date || null, due_time || null,
-      priority || 0, JSON.stringify(cleanTags(asArr(tags || []))), JSON.stringify(subtasks || []), recurring || null, miss_policy || 'keep',
-      plan_id ?? null, deadline_date || null, estimated,
-      materialItem?.id ?? null, materialItem?.book_id ?? null,
-      taskKind, taskKind === 'school_assignment' ? req.body.school_assignment_type : null,
-      req.body.deadline_time || null,
-      rem.reminder_kind, rem.reminder_days_before, rem.reminder_custom_date, rem.reminder_time_override,
-      new Date().toISOString()]);
-  // selection 列記下這次實際產生的 Task，取消選取時才知道要讓誰退出排程。
-  if (materialItem && plan_id != null) {
-    await q.run(
-      'UPDATE plan_material_items SET task_id=?,updated_at=CURRENT_TIMESTAMP WHERE user_id=? AND plan_id=? AND content_item_id=?',
-      [r.lastInsertRowid, req.userId, plan_id, materialItem.id]);
-  }
-  res.json(parseTask(await q.get('SELECT * FROM tasks WHERE id=?', [r.lastInsertRowid])));
+  // Task 與 selection provenance 必須同成同敗，避免只留下無法由取消選取追蹤的孤兒 Task。
+  const taskId = await q.tx(async tx => {
+    const r = await tx.run(`INSERT INTO tasks (user_id,list_id,title,notes,due_date,due_time,priority,tags,subtasks,recurring,miss_policy,plan_id,deadline_date,estimated_minutes,material_content_item_id,material_book_id,
+      task_kind,school_assignment_type,deadline_time,reminder_kind,reminder_days_before,reminder_custom_date,reminder_time_override,updated_at)
+      VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+      [ownerId, list_id || null, title, notes || '', due_date || null, due_time || null,
+        priority || 0, JSON.stringify(cleanTags(asArr(tags || []))), JSON.stringify(subtasks || []), recurring || null, miss_policy || 'keep',
+        plan_id ?? null, deadline_date || null, estimated,
+        materialItem?.id ?? null, materialItem?.book_id ?? null,
+        taskKind, taskKind === 'school_assignment' ? req.body.school_assignment_type : null,
+        req.body.deadline_time || null,
+        rem.reminder_kind, rem.reminder_days_before, rem.reminder_custom_date, rem.reminder_time_override,
+        new Date().toISOString()]);
+    // selection 列記下這次實際產生的 Task，取消選取時才知道要讓誰退出排程。
+    if (materialItem && plan_id != null) {
+      await tx.run(
+        'UPDATE plan_material_items SET task_id=?,updated_at=CURRENT_TIMESTAMP WHERE user_id=? AND plan_id=? AND content_item_id=?',
+        [r.lastInsertRowid, req.userId, plan_id, materialItem.id]);
+    }
+    return r.lastInsertRowid;
+  });
+  res.json(parseTask(await q.get('SELECT * FROM tasks WHERE id=?', [taskId])));
 });
 
 // 重複規則：daily/weekly/monthly/yearly/weekdays 或自訂 JSON {"every":2,"unit":"week","days":[1,3,5]}
