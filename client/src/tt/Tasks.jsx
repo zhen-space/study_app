@@ -733,6 +733,9 @@ export default function Tasks({ view, tasks, lists, filters, habits = [], reload
   const shown = showChips
     ? tagFiltered.filter(t => taskMatchesQuery(t, quickFind, lists.find(l => Number(l.id) === Number(t.list_id))?.name))
     : (view.type === 'list' && showCompletedInList ? [...tagFiltered, ...completedInList] : tagFiltered);
+  // 排程計畫與學校作業各自有專屬日期 domain，不能用一般任務 PATCH 批次繞過。
+  const reschedulableOverdue = shown.filter(t => !t.completed && t.due_date && t.due_date < tdF
+    && t.plan_id == null && t.task_kind !== 'school_assignment');
   const chipCount = k => (subjFilter ? shownAll.filter(matchesSubjectFilter) : shownAll).filter(chipFn[k]).length;
   const hasUnassigned = shownAll.some(t => t.list_id == null);
   const sel = tv.find(t => t.id === selId);
@@ -841,6 +844,8 @@ export default function Tasks({ view, tasks, lists, filters, habits = [], reload
   const [mutationErrors, setMutationErrors] = useState({});
   const [refreshError, setRefreshError] = useState('');
   const [refreshBusy, setRefreshBusy] = useState(false);
+  const overdueRescheduleBusyRef = useRef(false);
+  const [overdueRescheduleBusy, setOverdueRescheduleBusy] = useState(false);
   const duplicateBusyRef = useRef(false);
   const beginMutation = id => {
     if (mutationIds.current.has(id)) return false;
@@ -958,6 +963,20 @@ export default function Tasks({ view, tasks, lists, filters, habits = [], reload
     catch { setRefreshError('任務已新增，但畫面暫時無法重新載入。'); }
     quickBusyRef.current = false;
     setQuickBusy(false);
+  }
+  async function rescheduleOverdueToToday() {
+    if (overdueRescheduleBusyRef.current || !reschedulableOverdue.length) return;
+    overdueRescheduleBusyRef.current = true;
+    setOverdueRescheduleBusy(true);
+    setRefreshError('');
+    const results = await Promise.allSettled(reschedulableOverdue.map(t =>
+      api(`/tasks/${t.id}`, { method: 'PATCH', body: { due_date: tdF } })));
+    const failed = results.filter(result => result.status === 'rejected').length;
+    try { await reload('tasks'); }
+    catch { setRefreshError('日期已更新，但畫面暫時無法重新載入。'); }
+    if (failed) setRefreshError(`已重新安排 ${results.length - failed} 項，另有 ${failed} 項失敗，請再試一次。`);
+    overdueRescheduleBusyRef.current = false;
+    setOverdueRescheduleBusy(false);
   }
   // 儲存去抖動：不再每敲一個字就打 API＋全量重載（造成又慢又容易出錯）
   const saveTimer = useRef(null);
@@ -1170,6 +1189,12 @@ export default function Tasks({ view, tasks, lists, filters, habits = [], reload
               )}
               {hasActiveFilters && (
                 <button type="button" className="btn sm ghost" onClick={clearTaskFilters}>清除篩選</button>
+              )}
+              {taskFilter === 'overdue' && reschedulableOverdue.length > 0 && (
+                <button type="button" className="btn sm" disabled={overdueRescheduleBusy}
+                  onClick={rescheduleOverdueToToday}>
+                  {overdueRescheduleBusy ? '重新安排中…' : `全部移到今天（${reschedulableOverdue.length}）`}
+                </button>
               )}
             </div>
           </>
