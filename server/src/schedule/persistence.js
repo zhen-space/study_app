@@ -855,8 +855,8 @@ export async function transitionPlanLifecycle(userId, planId, {
       affectedTaskIds = targets.map(t => Number(t.id));
       if (disposition.mode === 'soft_delete') {
         await tx.run(
-          `UPDATE tasks SET deleted=1
-            WHERE user_id=? AND plan_id=? AND COALESCE(deleted,0)=0${scopeSql}`, [userId, plan.id]);
+          `UPDATE tasks SET deleted=1,updated_at=?
+            WHERE user_id=? AND plan_id=? AND COALESCE(deleted,0)=0${scopeSql}`, [at, userId, plan.id]);
       }
       // mode==='none'（暫停＋保留）：Task 全留，只是整個 Plan 退出排程。
       //
@@ -967,7 +967,8 @@ export async function transitionTaskDeletion(userId, taskId) {
         WHERE user_id=? AND schedule_version_id=? AND task_id=? AND date>=? LIMIT 1`,
       [userId, activeId, task.id, effectiveFrom]);
 
-    await tx.run('UPDATE tasks SET deleted=1 WHERE id=? AND user_id=?', [task.id, userId]);
+    await tx.run('UPDATE tasks SET deleted=1,updated_at=? WHERE id=? AND user_id=?',
+      [new Date().toISOString(), task.id, userId]);
     if (!placed) {
       return { task: await tx.get('SELECT * FROM tasks WHERE id=?', [task.id]), version: null };
     }
@@ -1341,7 +1342,8 @@ export async function applySchedule(userId, {
 
     for (const taskId of taskDeleteIds) {
       await assertLivePlanTask(taskId);
-      await tx.run('UPDATE tasks SET deleted=1 WHERE id=? AND user_id=?', [taskId, userId]);
+      await tx.run('UPDATE tasks SET deleted=1,updated_at=? WHERE id=? AND user_id=?',
+        [new Date().toISOString(), taskId, userId]);
     }
 
     // §Phase2 audit blocker2：strict rolling 模式下每個 block 必須「恰好一種 identity」。

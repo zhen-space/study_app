@@ -302,8 +302,8 @@ router.delete('/plans/:id/tasks', async (req, res) => {
   // 變成 orphan——而 ScheduledBlock 是 immutable snapshot，事後補不回來。
   // 軟刪除同時保住「垃圾桶救得回來」與「歷史版本仍看得懂」兩件事。
   const r = await q.run(
-    'UPDATE tasks SET deleted=1 WHERE user_id=? AND plan_id=? AND completed=0 AND COALESCE(cancelled,0)=0 AND COALESCE(deleted,0)=0',
-    [req.userId, plan.id]);
+    'UPDATE tasks SET deleted=1,updated_at=? WHERE user_id=? AND plan_id=? AND completed=0 AND COALESCE(cancelled,0)=0 AND COALESCE(deleted,0)=0',
+    [new Date().toISOString(), req.userId, plan.id]);
   res.json({ removed: r.changes ?? 0 });
 });
 
