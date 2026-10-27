@@ -37,6 +37,29 @@ describe('學校作業編輯', () => {
     expect(onSave.mock.lastCall[0]).toMatchObject({ estimated_minutes: 55 });
   });
 
+  it('375px 可用日期快捷選項設定今天、明天或清除繳交日', () => {
+    Object.defineProperty(window, 'innerWidth', { configurable: true, value: 375 });
+    const onSave = vi.fn();
+    render(<Detail task={assignment()} lists={lists} onSave={onSave} onDelete={() => {}} onClose={() => {}} />);
+
+    fireEvent.click(screen.getByRole('button', { name: '今天' }));
+    expect(onSave.mock.lastCall[0].deadline_date).toMatch(/^\d{4}-\d{2}-\d{2}$/);
+    expect(onSave.mock.lastCall[0].due_date).toBeNull();
+
+    fireEvent.click(screen.getByRole('button', { name: '明天' }));
+    expect(onSave.mock.lastCall[0].deadline_date).not.toBeNull();
+
+    fireEvent.click(screen.getByRole('button', { name: '清除日期' }));
+    expect(onSave.mock.lastCall[0]).toMatchObject({ deadline_date: null, due_date: null });
+  });
+
+  it('計畫管理的一般任務不顯示日期快捷選項', () => {
+    render(<Detail task={assignment({ task_kind: 'task', plan_id: 12, deadline_date: null, due_date: '2026-10-10' })}
+      lists={lists} onSave={vi.fn()} onDelete={() => {}} onClose={() => {}} />);
+    expect(screen.queryByLabelText('日期快捷選項')).toBeNull();
+    expect(screen.getByLabelText('日期')).toBeDisabled();
+  });
+
   it('中文輸入法組字時按 Enter 不會提前建立標籤', () => {
     const onSave = vi.fn();
     render(<Detail task={assignment()} lists={lists} onSave={onSave} onDelete={() => {}} onClose={() => {}} />);
