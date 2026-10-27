@@ -41,4 +41,15 @@ describe('科目清單顯示已完成任務', () => {
     await waitFor(() => expect(api).toHaveBeenCalledWith('/tasks/2', { method: 'PATCH', body: { completed: false } }));
     expect(screen.getByText('動量守恆')).toBeInTheDocument();
   });
+
+  it('記住顯示已完成偏好，重新開啟科目清單仍沿用', () => {
+    const first = render(<Tasks view={{ type: 'list', id: 10 }} tasks={tasks} lists={lists} filters={[]} reload={vi.fn()} title="物理" />);
+    fireEvent.click(screen.getByRole('button', { name: '顯示已完成（1）' }));
+    expect(localStorage.getItem('taskShowCompletedInList')).toBe('true');
+    first.unmount();
+
+    render(<Tasks view={{ type: 'list', id: 10 }} tasks={tasks} lists={lists} filters={[]} reload={vi.fn()} title="物理" />);
+    expect(screen.getByText('動量守恆')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: '隱藏已完成' })).toHaveAttribute('aria-pressed', 'true');
+  });
 });
