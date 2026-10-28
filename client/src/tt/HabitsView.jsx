@@ -19,12 +19,37 @@ export default function HabitsView({ habits, reload }) {
     while (h.checkins.includes(d)) { s++; d = addDays(d, -1); }
     return s;
   };
+  // 新增習慣的伺服器端不去重，連點或同一輪 submit 重入就會建立兩筆，所以用同步 ref 上鎖到刷新結束
+  const addBusyRef = useRef(false);
+  const [addBusy, setAddBusy] = useState(false);
+  const [addError, setAddError] = useState('');
+  // 中文輸入法選字的 Enter 不能被當成送出
+  const composingRef = useRef(false);
+  const imeKeyDown = e => {
+    if (e.key === 'Enter' && (composingRef.current || e.nativeEvent.isComposing || e.keyCode === 229)) e.preventDefault();
+  };
   async function add(e) {
     e.preventDefault();
-    if (!name.trim()) return;
-    await api('/habits', { method: 'POST', body: { name: name.trim(), icon, miss_policy: missPolicy, category: category.trim() } });
+    if (composingRef.current || addBusyRef.current || !name.trim()) return;
+    addBusyRef.current = true;
+    setAddBusy(true);
+    setAddError('');
+    try {
+      await api('/habits', { method: 'POST', body: { name: name.trim(), icon, miss_policy: missPolicy, category: category.trim() } });
+    } catch (err) {
+      // 沒寫入：保留輸入讓使用者直接再按一次新增
+      setAddError(err.message || '習慣沒有新增成功，請再試一次。');
+      addBusyRef.current = false;
+      setAddBusy(false);
+      return;
+    }
+    // 寫入成功和重新載入是兩個邊界：刷新失敗時習慣已存在，先清掉已送出的名稱，
+    // 復原只重新載入、不重送，避免建立重複的習慣
     setName('');
-    reload();
+    try { await reload(); }
+    catch { setRefreshError('習慣已新增，但畫面暫時無法重新載入。'); }
+    addBusyRef.current = false;
+    setAddBusy(false);
   }
   // 打卡圓點的狀態來自 props，要等刷新回來才會變。這段期間再點一次，送出的 undo 仍是
   // 舊畫面算的，使用者想「取消」會被當成再打一次卡，所以每個習慣同步上鎖到刷新結束。
@@ -117,17 +142,24 @@ export default function HabitsView({ habits, reload }) {
         )}
         <form onSubmit={add} style={{ margin: '6px 0' }}>
           <div className="row">
-            <select value={icon} onChange={e => setIcon(e.target.value)}>{ICONS.map(i => <option key={i}>{i}</option>)}</select>
-            <input placeholder="＋ 新增習慣（如：背 10 個單字）" value={name} onChange={e => setName(e.target.value)} style={{ flex: 1 }} />
-            <button className="btn sm">新增</button>
+            <select value={icon} disabled={addBusy} onChange={e => setIcon(e.target.value)}>{ICONS.map(i => <option key={i}>{i}</option>)}</select>
+            <input placeholder="＋ 新增習慣（如：背 10 個單字）" value={name} onChange={e => setName(e.target.value)} style={{ flex: 1 }}
+              onCompositionStart={() => { composingRef.current = true; }}
+              onCompositionEnd={e => { composingRef.current = false; setName(e.currentTarget.value); }}
+              onKeyDown={imeKeyDown} disabled={addBusy} aria-invalid={addError ? 'true' : undefined} />
+            <button className="btn sm" disabled={addBusy}>{addBusy ? '新增中…' : '新增'}</button>
           </div>
+          {addError && <div role="alert" className="ui-error" style={{ marginTop: 6 }}>{addError}</div>}
           <div className="row" style={{ marginTop: 6 }}>
             <span className="muted">分類：</span>
             <input list="habit-cats" placeholder="輸入新分類或選現有（可留空）" value={category}
-              onChange={e => setCategory(e.target.value)} style={{ width: 200 }} />
+              onChange={e => setCategory(e.target.value)} style={{ width: 200 }}
+              onCompositionStart={() => { composingRef.current = true; }}
+              onCompositionEnd={e => { composingRef.current = false; setCategory(e.currentTarget.value); }}
+              onKeyDown={imeKeyDown} disabled={addBusy} />
             <datalist id="habit-cats">{cats.map(c => <option key={c} value={c} />)}</datalist>
             <span className="muted">沒打卡時：</span>
-            <select value={missPolicy} onChange={e => setMissPolicy(e.target.value)}>
+            <select value={missPolicy} disabled={addBusy} onChange={e => setMissPolicy(e.target.value)}>
               <option value="drop">跳過就好，不用補</option>
               <option value="keep">保留，要回來補卡</option>
             </select>
