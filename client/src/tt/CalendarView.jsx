@@ -59,6 +59,21 @@ export default function CalendarView({ tasks, reload, lists = [], addIntent = nu
   // 學校作業的「繳交期限」＝學校什麼時候要，不是「什麼時候做」。這裡只做投影顯示，
   // 絕不為它建 ScheduledBlock 或 fixed_event mirror；點一下開作業本身編輯。
   const [saEdit, setSaEdit] = useState(null);
+  // 作業已寫入但畫面刷新失敗：表單已關閉，這裡提示並只提供「重新載入」，不重送寫入
+  // （與 Global Add 同一模式）。
+  const [saRefreshError, setSaRefreshError] = useState('');
+  const [saRefreshBusy, setSaRefreshBusy] = useState(false);
+  const refreshAfterSaSave = async () => {
+    try { await reload(); setSaRefreshError(''); }
+    catch { setSaRefreshError('作業已儲存，但畫面暫時無法重新載入。'); }
+  };
+  const retrySaRefresh = async () => {
+    if (saRefreshBusy) return;
+    setSaRefreshBusy(true);
+    try { await reload(); setSaRefreshError(''); }
+    catch { setSaRefreshError('仍然無法重新載入，請稍後再試。'); }
+    finally { setSaRefreshBusy(false); }
+  };
   const saDeadlinesOn = ds => tasks.filter(t =>
     isSchoolAssignment(t) && onActivePlan(t) && !t.completed && !t.cancelled && !t.deleted && t.deadline_date === ds);
   // 測試／尚未進入 2C 的帳號可能回空；Calendar 仍需能正常顯示既有行程。
@@ -886,7 +901,15 @@ export default function CalendarView({ tasks, reload, lists = [], addIntent = nu
 
       {/* 編輯行程：同樣是 Apple 日曆式版面 */}
       {adjustBlock && adjustBlock.task && <AdjustBlockSheet block={adjustBlock.block} task={adjustBlock.task} versionId={schedule.version?.id} reload={async () => { await reload(); await schedule.reload(); }} onClose={() => setAdjustBlock(null)} />}
-      {saEdit && <SchoolAssignmentForm lists={lists} task={saEdit} onClose={() => setSaEdit(null)} onSaved={() => reload()} />}
+      {saEdit && <SchoolAssignmentForm lists={lists} task={saEdit} onClose={() => setSaEdit(null)} onSaved={refreshAfterSaSave} />}
+      {saRefreshError && (
+        <div className="toast" role="alert">
+          <span>{saRefreshError}</span>
+          <button type="button" disabled={saRefreshBusy} onClick={retrySaRefresh}>
+            {saRefreshBusy ? '重新載入中…' : '重新載入'}
+          </button>
+        </div>
+      )}
       {editEv && (
         <div className="cal-modal-back" onClick={() => setEditEv(null)}>
           <div className="ev-sheet" onClick={e => e.stopPropagation()}>
