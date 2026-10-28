@@ -78,6 +78,8 @@ describe('拖曳排序的寫入／刷新邊界', () => {
     fireEvent.click(screen.getByRole('button', { name: '重新載入' }));
     await waitFor(() => expect(screen.queryByRole('alert')).not.toBeInTheDocument());
     expect(reload).toHaveBeenCalledTimes(2);
+    // 一般任務變更的重試維持只重抓 tasks scope（只有習慣打卡才需要整包重抓）
+    expect(reload).toHaveBeenNthCalledWith(2, 'tasks');
     // 重試只重新載入，不重送排序
     expect(reorderCalls()).toHaveLength(1);
   });
