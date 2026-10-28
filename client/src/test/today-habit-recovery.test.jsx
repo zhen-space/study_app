@@ -98,6 +98,29 @@ describe('Today 今日習慣打卡的寫入／刷新邊界', () => {
     fireEvent.click(screen.getByRole('button', { name: '重新載入' }));
     await waitFor(() => expect(screen.queryByRole('alert')).not.toBeInTheDocument());
     expect(reload).toHaveBeenCalledTimes(2);
+    // 重試要整包重抓（無參數），不能退回 reload('tasks')，否則習慣打卡結果仍看不到
+    expect(reload).toHaveBeenNthCalledWith(2);
+    expect(reload.mock.calls[1]).toEqual([]);
+    expect(checkinCalls()).toHaveLength(1);
+  });
+
+  it('習慣刷新重試也失敗時，下一次重試仍整包重抓，不重送打卡', async () => {
+    const reload = vi.fn()
+      .mockRejectedValueOnce(new Error('刷新失敗'))
+      .mockRejectedValueOnce(new Error('又失敗'))
+      .mockResolvedValue(undefined);
+    mount([habit()], reload);
+
+    fireEvent.click(box());
+    expect(await screen.findByRole('alert')).toHaveTextContent('已打卡，但畫面暫時無法重新載入。');
+
+    fireEvent.click(screen.getByRole('button', { name: '重新載入' }));
+    expect(await screen.findByRole('alert')).toHaveTextContent('仍然無法重新載入，請稍後再試。');
+    await waitFor(() => expect(screen.getByRole('button', { name: '重新載入' })).not.toBeDisabled());
+
+    fireEvent.click(screen.getByRole('button', { name: '重新載入' }));
+    await waitFor(() => expect(screen.queryByRole('alert')).not.toBeInTheDocument());
+    expect(reload.mock.calls).toEqual([[], [], []]);
     expect(checkinCalls()).toHaveLength(1);
   });
 

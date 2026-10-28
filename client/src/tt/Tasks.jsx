@@ -930,6 +930,9 @@ export default function Tasks({ view, tasks, lists, filters, habits = [], reload
   const [mutationErrors, setMutationErrors] = useState({});
   const [refreshError, setRefreshError] = useState('');
   const [refreshBusy, setRefreshBusy] = useState(false);
+  // 錯誤列的「重新載入」預設只重抓 tasks scope；習慣打卡刷新失敗時要整包重抓才看得到習慣。
+  // 這個旗標在成功整包重抓前都保留，之後其他任務錯誤蓋掉文案也照樣整包重抓（tasks 是子集，不會漏）。
+  const [refreshNeedsAll, setRefreshNeedsAll] = useState(false);
   const overdueRescheduleBusyRef = useRef(false);
   const [overdueRescheduleBusy, setOverdueRescheduleBusy] = useState(false);
   const duplicateBusyRef = useRef(false);
@@ -1192,7 +1195,12 @@ export default function Tasks({ view, tasks, lists, filters, habits = [], reload
   async function retryTaskRefresh() {
     if (refreshBusy) return;
     setRefreshBusy(true);
-    try { await reload('tasks'); setRefreshError(''); }
+    const needsAll = refreshNeedsAll;
+    try {
+      await (needsAll ? reload() : reload('tasks'));
+      setRefreshError('');
+      if (needsAll) setRefreshNeedsAll(false);
+    }
     catch { setRefreshError('仍然無法重新載入，請稍後再試。'); }
     finally { setRefreshBusy(false); }
   }
@@ -1219,8 +1227,11 @@ export default function Tasks({ view, tasks, lists, filters, habits = [], reload
     }
     // 習慣不在 scope='tasks' 的重抓範圍內，要整包 reload 才看得到打卡結果。
     // 寫入成功和重新載入是兩個邊界：刷新失敗時打卡其實已存好，不能誤報成打卡失敗。
-    try { await reload(); }
-    catch { setRefreshError(done ? '已取消打卡，但畫面暫時無法重新載入。' : '已打卡，但畫面暫時無法重新載入。'); }
+    try { await reload(); setRefreshNeedsAll(false); }
+    catch {
+      setRefreshNeedsAll(true);
+      setRefreshError(done ? '已取消打卡，但畫面暫時無法重新載入。' : '已打卡，但畫面暫時無法重新載入。');
+    }
     release();
   }
 

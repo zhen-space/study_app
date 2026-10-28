@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useRef, useState } from 'react';
 import { api } from '../api';
 import { today, addDays } from './helpers';
 
@@ -26,9 +26,44 @@ export default function HabitsView({ habits, reload }) {
     setName('');
     reload();
   }
+  // 打卡圓點的狀態來自 props，要等刷新回來才會變。這段期間再點一次，送出的 undo 仍是
+  // 舊畫面算的，使用者想「取消」會被當成再打一次卡，所以每個習慣同步上鎖到刷新結束。
+  const busyRef = useRef(new Set());
+  const [busy, setBusy] = useState(new Set());
+  const [refreshError, setRefreshError] = useState('');
+  const [refreshBusy, setRefreshBusy] = useState(false);
   async function check(h, date) {
-    await api(`/habits/${h.id}/checkin`, { method: 'POST', body: { date, undo: h.checkins.includes(date) } });
-    reload();
+    if (busyRef.current.has(h.id)) return;
+    busyRef.current.add(h.id);
+    setBusy(s => new Set([...s, h.id]));
+    const release = () => {
+      busyRef.current.delete(h.id);
+      setBusy(s => { const n = new Set(s); n.delete(h.id); return n; });
+    };
+    const undo = h.checkins.includes(date);
+    setRefreshError('');
+    try {
+      await api(`/habits/${h.id}/checkin`, { method: 'POST', body: { date, undo } });
+    } catch (e) {
+      setRefreshError(e.message || '打卡沒有儲存成功，請再試一次。');
+      release();
+      return;
+    }
+    // 寫入成功和重新載入是兩個邊界：刷新失敗時打卡其實已存好，不能誤報成打卡失敗
+    try { await reload(); }
+    catch {
+      setRefreshError(undo ? '已取消打卡，但畫面暫時無法重新載入。'
+        : date < today() ? '已補卡，但畫面暫時無法重新載入。' : '已打卡，但畫面暫時無法重新載入。');
+    }
+    release();
+  }
+  // 只重新載入、不重送打卡
+  async function retryRefresh() {
+    if (refreshBusy) return;
+    setRefreshBusy(true);
+    try { await reload(); setRefreshError(''); }
+    catch { setRefreshError('仍然無法重新載入，請稍後再試。'); }
+    finally { setRefreshBusy(false); }
   }
   async function moveCategory(h) {
     const c = prompt(`「${h.name}」的分類（留空＝不分類）：`, h.category || '');
@@ -54,7 +89,8 @@ export default function HabitsView({ habits, reload }) {
               ...(d === today() ? { outline: '2px solid var(--primary)', outlineOffset: 1 } : {}),
               ...(d > today() ? { opacity: .45 } : {}),
             }}
-            title={d} onClick={() => d <= today() && check(h, d)}>
+            title={d} aria-busy={busy.has(h.id)} aria-disabled={busy.has(h.id) || d > today()}
+            onClick={() => d <= today() && check(h, d)}>
             {d === today() ? '今' : +d.slice(8)}
           </div>
         ))}
@@ -71,6 +107,14 @@ export default function HabitsView({ habits, reload }) {
     <div className="main">
       <div className="main-head"><h2>習慣打卡</h2></div>
       <div className="main-body">
+        {refreshError && (
+          <div role="alert" className="ui-error" style={{ marginBottom: 'var(--sp-3)' }}>
+            {refreshError}
+            <button type="button" disabled={refreshBusy} onClick={retryRefresh} style={{ marginLeft: 8 }}>
+              {refreshBusy ? '重新載入中…' : '重新載入'}
+            </button>
+          </div>
+        )}
         <form onSubmit={add} style={{ margin: '6px 0' }}>
           <div className="row">
             <select value={icon} onChange={e => setIcon(e.target.value)}>{ICONS.map(i => <option key={i}>{i}</option>)}</select>
