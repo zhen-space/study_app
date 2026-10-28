@@ -47,10 +47,17 @@ export default function Shell({ onLogout }) {
   // 改一筆任務不需要把清單／篩選／習慣整包重抓——之前每個動作都打 5 支 API，
   // 手機上就是每按一下等好幾百毫秒。scope='tasks' 只抓真正會變的（任務＋金幣）。
   // 回傳 Promise：建立計畫之後要等清單真的更新，才能開它的明細
-  const reload = (scope) => {
+  //
+  // 回傳語義（callers 的「已寫入但刷新失敗」recovery 依賴這個契約）：
+  //   ・/tasks 是主資料，失敗一定 reject——不能讓 caller 把舊畫面當成已同步
+  //   ・/plans 只在「這次仍是最新一次 reload」時 reject（見下方）
+  //   ・/pet、/lists、/filters、/habits 是可選資料，失敗安靜保留最後已知值
+  // 一律等全部請求落定才 settle（allSettled），失敗時其他成功的資料仍會套用，
+  // 也避免 caller 已顯示錯誤／重試時，上一輪請求還在背景覆寫狀態。
+  const reload = async (scope) => {
     const planRequest = ++plansReloadRequest.current;
     const jobs = [
-      api('/tasks').then(setTasks).catch(() => {}),
+      api('/tasks').then(setTasks),
       api('/pet').then(setPetData).catch(() => {}),   // 完成任務會加金幣
       // 帶 includeArchived：計畫頁要能顯示（並恢復）已封存的計畫。
       // 較舊 reload 晚回來時不能覆蓋 CURRENT 狀態；CURRENT 讀取失敗也不能把
@@ -67,7 +74,10 @@ export default function Shell({ onLogout }) {
       api('/filters').then(setFilters).catch(() => {}),
       api('/habits').then(setHabits).catch(() => {}),
     );
-    return Promise.all(jobs);
+    const results = await Promise.allSettled(jobs);
+    // jobs 順序固定 /tasks 在最前：兩者都失敗時優先回報任務刷新失敗
+    const failed = results.find(r => r.status === 'rejected');
+    if (failed) throw failed.reason;
   };
   useEffect(() => { reload().catch(() => {}); }, []);
   useEffect(() => { api('/pet').then(setPetData).catch(() => {}); }, [view.type]);
@@ -79,7 +89,8 @@ export default function Shell({ onLogout }) {
     const t = p.get('add');
     if (t?.trim()) {
       api('/tasks', { method: 'POST', body: { title: t.trim(), due_date: today() } })
-        .then(() => { window.history.replaceState({}, '', window.location.pathname); reload(); })
+        // 回傳 reload 讓下面的 catch 接住刷新失敗；網址已清掉，不會重送建立
+        .then(() => { window.history.replaceState({}, '', window.location.pathname); return reload(); })
         .catch(() => {});
     }
     const go = p.get('go'); // App 圖示快速選單（manifest shortcuts）
@@ -184,14 +195,16 @@ export default function Shell({ onLogout }) {
             createGeneralPlan={async () => {
               // 保留「一般／空白計畫」能力（非段考）：建立空白計畫並進明細。
               const p = await api('/plans', { method: 'POST', body: { name: '新的計畫', status: 'active', source: 'manual' } });
-              await reload();
+              // 計畫已建立：刷新失敗也照樣前往明細，不能留在原地讓使用者再按一次而重複建立
+              await reload().catch(() => {});
               setView({ type: 'plan', key: `plan:${p.id}` });
             }}
             goWizardMode={m => setView({ type: 'wizard', scheduleMode: m })} />
         : view.type === 'exam-wizard' ? <ExamCreateWizard key="exam-wizard" lists={lists}
             onCancel={() => setView({ type: 'plans' })}
             onManageSubjects={() => setView({ type: 'settings' })}
-            onDone={async pid => { await reload(); setView({ type: 'plan', key: `plan:${pid}` }); }} />
+            // 段考已在伺服器原子建立：刷新失敗也要離開精靈（否則會卡在「建立中」）
+            onDone={async pid => { await reload().catch(() => {}); setView({ type: 'plan', key: `plan:${pid}` }); }} />
         : view.type === 'plan' ? <PlanDetailView planKey={view.key} tasks={tasks} lists={lists} apiPlans={apiPlans} reload={reload}
             onBack={() => setView({ type: 'plans' })} goWizard={() => setView({ type: 'wizard' })}
             // 「調整計畫」＝Edit Mode：帶著這個計畫進精靈，不會建立新計畫

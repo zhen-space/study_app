@@ -696,7 +696,9 @@ export default function WizardView({
             onLibraryChange={() => { listBooks().then(setMatBooks).catch(() => {}); }}
             onAddSubject={async name => {
               const created = await createSubject(name);
-              await reload();          // 讓科目立刻出現在整個 App，不只這個畫面
+              // 讓科目立刻出現在整個 App，不只這個畫面。科目已建立：刷新失敗不能往上拋，
+              // 否則新增欄位會停在原地，使用者再按一次就重複建立同名科目。
+              await reload().catch(() => {});
               return created;
             }}
             header={
