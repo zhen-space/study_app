@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { api } from '../api';
 import { today } from './helpers';
 import { filesToPayload, savePending, runImport, resumePending, importing, getCurve, setCurve } from './vocabImport';
@@ -14,9 +14,17 @@ export default function VocabView() {
   const [curveDays, setCurveDays] = useState(() => localStorage.getItem('vocabCurveDays') || '1,3,7');
   const [impDate, setImpDate] = useState(today()); // 匯入到哪一天（預設今天，可選昨天/明天…）
   const [openDays, setOpenDays] = useState(() => new Set([today()]));
-  const load = () => api('/import/vocab').then(list => {
+  const [deleteError, setDeleteError] = useState('');
+  const [deleteNeedsReload, setDeleteNeedsReload] = useState(false);
+  const [deleteReloading, setDeleteReloading] = useState(false);
+  const [deleteBusy, setDeleteBusy] = useState(false);
+  const deleteBusyRef = useRef(false);
+  const applyItems = list => {
     setItems(list);
     try { localStorage.setItem('vocabCache', JSON.stringify(list)); } catch {}
+  };
+  const load = () => api('/import/vocab').then(list => {
+    applyItems(list);
   }).catch(() => {});
   useEffect(() => {
     load();
@@ -55,15 +63,46 @@ export default function VocabView() {
     setBusy(false);
   }
   async function del(id) {
-    setItems(list => list.filter(x => x.id !== id));
-    try { await api(`/import/vocab/${id}`, { method: 'DELETE' }); } catch {}
-    load();
+    if (deleteBusyRef.current) return;
+    const previous = items;
+    deleteBusyRef.current = true; setDeleteBusy(true); setDeleteError(''); setDeleteNeedsReload(false);
+    applyItems(previous.filter(x => x.id !== id));
+    try { await api(`/import/vocab/${id}`, { method: 'DELETE' }); }
+    catch { await recoverDelete(previous); }
+    finally { deleteBusyRef.current = false; setDeleteBusy(false); }
   }
   async function delDay(d) {
+    if (deleteBusyRef.current) return;
+    const previous = items;
     const ids = items.filter(x => x.date === d).map(x => x.id);
-    setItems(list => list.filter(x => x.date !== d));
-    for (const id of ids) { try { await api(`/import/vocab/${id}`, { method: 'DELETE' }); } catch {} }
-    load();
+    deleteBusyRef.current = true; setDeleteBusy(true); setDeleteError(''); setDeleteNeedsReload(false);
+    applyItems(previous.filter(x => x.date !== d));
+    let uncertain = false;
+    for (const id of ids) {
+      try { await api(`/import/vocab/${id}`, { method: 'DELETE' }); }
+      catch { uncertain = true; }
+    }
+    if (uncertain) await recoverDelete(previous);
+    deleteBusyRef.current = false; setDeleteBusy(false);
+  }
+  async function recoverDelete(previous) {
+    try {
+      applyItems(await api('/import/vocab'));
+      setDeleteError('刪除回應中斷，已重新載入確認。');
+    } catch {
+      applyItems(previous);
+      setDeleteError('無法確認是否刪除，請重新載入；重新載入前請勿再次刪除。');
+      setDeleteNeedsReload(true);
+    }
+  }
+  async function retryDeleteLoad() {
+    if (deleteReloading) return;
+    setDeleteReloading(true);
+    try {
+      applyItems(await api('/import/vocab'));
+      setDeleteError(''); setDeleteNeedsReload(false);
+    } catch { setDeleteError('仍然無法重新載入，請稍後再試。'); setDeleteNeedsReload(true); }
+    finally { setDeleteReloading(false); }
   }
   const setN = v => { const n = Math.max(1, Math.min(200, +v || 1)); setPerDay(n); try { localStorage.setItem('vocabPerDay', String(n)); } catch {} };
   const toggleDay = d => setOpenDays(s => { const n = new Set(s); n.has(d) ? n.delete(d) : n.add(d); return n; });
@@ -82,7 +121,8 @@ export default function VocabView() {
           {x.english}{x.kind === '片語' && <span className="chip" style={{ fontSize: 10, marginLeft: 4 }}>片語</span>}
         </span>
         <span className="vocab-zh">{x.chinese}</span>
-        <button className="icon-btn" style={{ padding: 2 }} onClick={e => { e.stopPropagation(); del(x.id); }}>✕</button>
+        <button className="icon-btn" style={{ padding: 2 }} disabled={deleteBusy || deleteNeedsReload}
+          aria-label={`刪除「${x.english}」`} onClick={e => { e.stopPropagation(); del(x.id); }}>✕</button>
       </div>
       {editId === x.id && (
         <div style={{ padding: '6px 2px 10px', borderBottom: '1px solid var(--border)' }} onClick={e => e.stopPropagation()}>
@@ -110,6 +150,11 @@ export default function VocabView() {
     <div className="main">
       <div className="main-head"><h2>單字本</h2><span className="muted">{items.length} 個</span></div>
       <div className="main-body">
+        {deleteError && <div role="alert" className="form-error" style={{ marginBottom: 8 }}>
+          {deleteError}
+          {deleteNeedsReload && <button type="button" className="btn sm ghost" disabled={deleteReloading}
+            onClick={retryDeleteLoad} style={{ marginLeft: 8 }}>重新載入</button>}
+        </div>}
         <div className="tile" style={{ margin: '8px 0' }}>
           <b>匯入單字</b>
           <div className="muted" style={{ margin: '2px 0 8px' }}>拍照或選檔案（可多張、最多 12 份），AI 自動整理成英文＋中文、分單字/片語</div>
@@ -169,6 +214,7 @@ export default function VocabView() {
                 <span>{open ? '▾' : '▸'}</span>{label(d)}
                 <span className="muted" style={{ fontWeight: 400 }}>{list.length} 個</span>
                 <button className="icon-btn" style={{ marginLeft: 'auto' }} title="刪除這一天全部"
+                  aria-label={`刪除 ${label(d)} 全部單字`} disabled={deleteBusy || deleteNeedsReload}
                   onClick={e => { e.stopPropagation(); delDay(d); }}>✕</button>
               </div>
               {open && list.map(WordRow)}
