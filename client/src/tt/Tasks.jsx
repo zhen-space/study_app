@@ -855,13 +855,28 @@ export default function Tasks({ view, tasks, lists, filters, habits = [], reload
   }
   // 拖曳排序（預設排序時才能拖）
   const [dragT, setDragT] = useState(null);
+  // 新順序是從畫面上的清單算出來的；上一次排序還沒寫入並重新載入前，畫面仍是舊順序。
+  // 這時再拖一次會用舊順序算出整批 ids，蓋掉剛寫入的那一次，所以同步上鎖到刷新結束。
+  const reorderBusyRef = useRef(false);
   async function dropOn(target, list) {
     if (!dragT || dragT.id === target.id) return;
+    if (reorderBusyRef.current) { setDragT(null); return; }
     const ids = list.map(x => x.id).filter(id => id !== dragT.id);
     ids.splice(ids.indexOf(target.id), 0, dragT.id);
     setDragT(null);
-    await api('/tasks/reorder', { method: 'POST', body: { ids } });
-    reload('tasks');
+    reorderBusyRef.current = true;
+    setRefreshError('');
+    try {
+      await api('/tasks/reorder', { method: 'POST', body: { ids } });
+    } catch (e) {
+      setRefreshError(e.message || '排序沒有儲存成功，請再試一次。');
+      reorderBusyRef.current = false;
+      return;
+    }
+    // 寫入成功和重新載入是兩個邊界：刷新失敗時順序其實已存好，不能誤報成排序失敗。
+    try { await reload('tasks'); }
+    catch { setRefreshError('排序已儲存，但畫面暫時無法重新載入。'); }
+    reorderBusyRef.current = false;
   }
 
   // 底部小提示（可復原，防誤按）
