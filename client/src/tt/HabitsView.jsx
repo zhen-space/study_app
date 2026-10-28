@@ -10,8 +10,12 @@ export default function HabitsView({ habits, reload }) {
   const [missPolicy, setMissPolicy] = useState('drop');
   const [category, setCategory] = useState('');
 
+  // 伺服器已確認刪除、但刷新還沒成功的習慣先從畫面拿掉，避免對已不存在的習慣打卡或再刪一次
+  const [deleted, setDeleted] = useState(new Set());
+  const shown = habits.filter(h => !deleted.has(h.id));
+
   const week = [...Array(7)].map((_, i) => addDays(today(), i - 3)); // 今天置中：左邊前三天、右邊後三天
-  const cats = [...new Set(habits.map(h => h.category).filter(Boolean))];
+  const cats = [...new Set(shown.map(h => h.category).filter(Boolean))];
 
   const streak = h => {
     let s = 0, d = today();
@@ -82,7 +86,31 @@ export default function HabitsView({ habits, reload }) {
     }
     release();
   }
-  // 只重新載入、不重送打卡
+  // 刪除不可復原，先確認；和打卡共用每個習慣的同步鎖，打卡進行中不能刪、刪除進行中不能打卡
+  async function remove(h) {
+    if (busyRef.current.has(h.id)) return;
+    if (!window.confirm(`刪除習慣「${h.name}」？打卡紀錄會一起刪除，無法復原。`)) return;
+    busyRef.current.add(h.id);
+    setBusy(s => new Set([...s, h.id]));
+    const release = () => {
+      busyRef.current.delete(h.id);
+      setBusy(s => { const n = new Set(s); n.delete(h.id); return n; });
+    };
+    setRefreshError('');
+    try {
+      await api(`/habits/${h.id}`, { method: 'DELETE' });
+    } catch (e) {
+      setRefreshError(e.message || '習慣沒有刪除成功，請再試一次。');
+      release();
+      return;
+    }
+    // 寫入成功和重新載入是兩個邊界：刷新失敗時習慣其實已刪除，先從畫面拿掉，復原只重新載入
+    setDeleted(s => new Set([...s, h.id]));
+    try { await reload(); }
+    catch { setRefreshError('習慣已刪除，但畫面暫時無法重新載入。'); }
+    release();
+  }
+  // 只重新載入、不重送打卡／刪除
   async function retryRefresh() {
     if (refreshBusy) return;
     setRefreshBusy(true);
@@ -104,7 +132,8 @@ export default function HabitsView({ habits, reload }) {
         {showIcon && <span style={{ fontSize: 18 }}>{h.icon}</span>}
         <span className="habit-name" title="點名稱可改分類" onClick={() => moveCategory(h)}>{h.name}</span>
         <span className="streak">🔥 連續 {streak(h)} 天・共 {h.checkins.length} 次</span>
-        <button className="icon-btn" style={{ marginLeft: 'auto' }} onClick={() => api(`/habits/${h.id}`, { method: 'DELETE' }).then(reload)}>✕</button>
+        <button className="icon-btn" style={{ marginLeft: 'auto' }} aria-label={`刪除習慣「${h.name}」`}
+          disabled={busy.has(h.id)} onClick={() => remove(h)}>✕</button>
       </div>
       <div className="week-dots">
         {week.map(d => (
@@ -124,9 +153,9 @@ export default function HabitsView({ habits, reload }) {
   );
 
   // 依分類分組顯示：有分類的照名稱排、未分類放最後
-  const grouped = [...cats.sort(), ...(habits.some(h => !h.category) ? [''] : [])];
+  const grouped = [...cats.sort(), ...(shown.some(h => !h.category) ? [''] : [])];
   // 分類標題的圖標＝該分類第一個習慣的圖標
-  const catIcon = cat => habits.find(h => (h.category || '') === cat)?.icon || '';
+  const catIcon = cat => shown.find(h => (h.category || '') === cat)?.icon || '';
 
   return (
     <div className="main">
@@ -168,10 +197,10 @@ export default function HabitsView({ habits, reload }) {
         {grouped.map(cat => (
           <div key={cat || '__none'} className="tgroup">
             {(cat || cats.length > 0) && <div className="glabel">{cat ? `${catIcon(cat)} ${cat}` : '未分類'}</div>}
-            {habits.filter(h => (h.category || '') === cat).map(h => HabitRow(h, !cat))}
+            {shown.filter(h => (h.category || '') === cat).map(h => HabitRow(h, !cat))}
           </div>
         ))}
-        {habits.length === 0 && <div className="muted" style={{ marginTop: 30, textAlign: 'center' }}>還沒有習慣，新增一個開始打卡吧</div>}
+        {shown.length === 0 && <div className="muted" style={{ marginTop: 30, textAlign: 'center' }}>還沒有習慣，新增一個開始打卡吧</div>}
       </div>
     </div>
   );
