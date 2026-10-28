@@ -1197,6 +1197,33 @@ export default function Tasks({ view, tasks, lists, filters, habits = [], reload
     finally { setRefreshBusy(false); }
   }
 
+  // 今日習慣打卡：勾選框的狀態來自 props，要等刷新回來才會變。這段期間再點一次，
+  // 送出的 undo 仍是舊畫面算的，使用者想「取消」會被當成再打一次卡，所以同步上鎖到刷新結束。
+  const habitBusyRef = useRef(new Set());
+  const [habitBusy, setHabitBusy] = useState(new Set());
+  async function checkinHabit(h, done) {
+    if (habitBusyRef.current.has(h.id)) return;
+    habitBusyRef.current.add(h.id);
+    setHabitBusy(s => new Set([...s, h.id]));
+    const release = () => {
+      habitBusyRef.current.delete(h.id);
+      setHabitBusy(s => { const n = new Set(s); n.delete(h.id); return n; });
+    };
+    setRefreshError('');
+    try {
+      await api(`/habits/${h.id}/checkin`, { method: 'POST', body: { date: today(), undo: done } });
+    } catch (e) {
+      setRefreshError(e.message || '打卡沒有儲存成功，請再試一次。');
+      release();
+      return;
+    }
+    // 習慣不在 scope='tasks' 的重抓範圍內，要整包 reload 才看得到打卡結果。
+    // 寫入成功和重新載入是兩個邊界：刷新失敗時打卡其實已存好，不能誤報成打卡失敗。
+    try { await reload(); }
+    catch { setRefreshError(done ? '已取消打卡，但畫面暫時無法重新載入。' : '已打卡，但畫面暫時無法重新載入。'); }
+    release();
+  }
+
   // 願望清單：想做/要記得的事（無日期、無清單）
   const [wish, setWish] = useState('');
   const [wishBusy, setWishBusy] = useState(false);
@@ -1466,8 +1493,9 @@ export default function Tasks({ view, tasks, lists, filters, habits = [], reload
                   : 0;
                 return (
                   <div key={h.id} className={'todo' + (done ? ' done' : '')} style={{ marginTop: 6 }}>
-                    <input type="checkbox" checked={done}
-                      onChange={() => api(`/habits/${h.id}/checkin`, { method: 'POST', body: { date: today(), undo: done } }).then(reload)} />
+                    <input type="checkbox" checked={done} aria-label={`${h.name} 今日打卡`}
+                      disabled={habitBusy.has(h.id)} aria-busy={habitBusy.has(h.id)}
+                      onChange={() => checkinHabit(h, done)} />
                     <span>{h.icon}</span>
                     <span className="todo-title">{h.name}</span>
                     {owed > 0 && <span className="chip" style={{ color: 'var(--red)' }}>欠 {owed} 天，到習慣頁補卡</span>}
