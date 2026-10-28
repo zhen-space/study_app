@@ -621,3 +621,82 @@ describe('確認套用的 committed recovery', () => {
     await waitFor(() => expect(sent('/plans', 'POST')).toHaveLength(1));
   });
 });
+
+// /schedule/apply 已提交後，後續的「改名／清舊任務」失敗不是套用失敗。
+// 以前這種錯誤會讓確認按鈕重新可按：Create Mode 重按會再建一個 Plan、整份任務重複。
+describe('排程提交後的後續步驟失敗', () => {
+  const legacyTitle = '物理｜新大滿貫｜單元2｜節1｜範例+例題';   // fx.tasks id=11，plan_id == null
+  const createPreview = {
+    check: null,
+    blocks: [
+      { subject_id: 1, title: legacyTitle, date: today(), start_time: null, end_time: null, deadline: null },
+      { subject_id: 1, title: '單元1 力學｜範例+例題', date: addDays(today(), 1), start_time: null, end_time: null, deadline: null },
+    ],
+  };
+
+  it('Create Mode：舊任務刪除失敗進入已儲存狀態，不能再建立第二個 Plan', async () => {
+    let deletes = 0;
+    setApi({
+      '/schedule/preview': createPreview,
+      '/tasks/11': opts => {
+        if (opts?.method === 'DELETE') { deletes += 1; throw new Error('網路中斷'); }
+        return { ok: true };
+      },
+    });
+    const goTasks = vi.fn();
+    await mountWizard({ tasks: [...fx.tasks, ...fx.planTasks], goTasks });
+    await toResult();
+    await click(btn(/加入待辦/));
+    expect(await screen.findByRole('alert')).toHaveTextContent('舊的未完成任務沒有移除');
+    expect(screen.getByText('讀書計畫已建立')).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /加入待辦/ })).toBeNull();
+    expect(goTasks).not.toHaveBeenCalled();
+    expect(sent('/plans', 'POST')).toHaveLength(1);
+    expect(sent('/schedule/apply', 'POST')).toHaveLength(1);
+
+    await click(btn('重新載入並完成'));
+    await waitFor(() => expect(goTasks).toHaveBeenCalledOnce());
+    expect(sent('/plans', 'POST')).toHaveLength(1);
+    expect(sent('/schedule/apply', 'POST')).toHaveLength(1);
+    expect(deletes).toBe(1);
+    noCrash();
+  });
+
+  it('Edit Mode：計畫 PATCH 失敗不重送 schedule apply', async () => {
+    setApi({
+      '/schedule/preview': fx.preview,
+      '/plans/12': opts => {
+        if (opts?.method === 'PATCH') throw new Error('伺服器忙碌');
+        return { ok: true };
+      },
+    });
+    const onDone = vi.fn();
+    await mountWizard({ mode: 'edit', planId: 12, planTitle: '段考準備', planTasks: fx.planTasks, initialSection: 'cond', onDone });
+    await click(btn(/產生排程/)); await flush();
+    await click(btn(/套用新版安排/));
+    expect(await screen.findByRole('alert')).toHaveTextContent('計畫名稱與日期沒有更新');
+    expect(screen.getByText('新版安排已套用')).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /套用新版安排（/ })).toBeNull();
+    expect(onDone).not.toHaveBeenCalled();
+
+    await click(btn('重新載入並完成'));
+    await waitFor(() => expect(onDone).toHaveBeenCalledOnce());
+    expect(sent('/schedule/apply', 'POST')).toHaveLength(1);
+    noCrash();
+  });
+
+  it('apply layer：舊任務刪除部分失敗仍逐筆嘗試，並帶回已提交結果', async () => {
+    setApi({ '/tasks/7': opts => { if (opts?.method === 'DELETE') throw new Error('失敗'); return { ok: true }; } });
+    const err = await applyWizardSchedule({
+      mode: 'create', name: '新計畫', blocks: [{ subject_id: 1, title: 'A', date: '2026-01-01' }],
+      legacyMerged: [
+        { id: 7, title: 'B', list_id: 1, plan_id: null, completed: 0 },
+        { id: 8, title: 'C', list_id: 1, plan_id: null, completed: 0 },
+      ],
+    }).then(() => null, e => e);
+    expect(err?.committed).toEqual({ planId: 99, created: 1, updated: 0, removed: 1 });
+    expect(err.message).toContain('1 項舊的未完成任務沒有移除');
+    const dels = calls.filter(([p, o]) => p.startsWith('/tasks/') && o?.method === 'DELETE').map(([p]) => p);
+    expect(dels).toEqual(['/tasks/7', '/tasks/8']);
+  });
+});

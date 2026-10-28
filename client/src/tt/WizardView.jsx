@@ -474,19 +474,34 @@ export default function WizardView({
         removeUnscheduled: redoUndone,
       });
     } catch (e) {
+      if (!e.committed) {
+        setSaving(false);
+        confirmBusy.current = false;
+        setErr(e.message);
+        return;
+      }
+      // 排程已提交、只是後續步驟（改名／清舊任務）失敗：進入已儲存狀態，
+      // 只留「重新載入並完成」，不能讓使用者再按一次確認而重複建立。
+      r = e.committed;
+      setCommitted(r);
+      setApplied(r);
+      await selectMaterials(r);
+      setErr(e.message);
       setSaving(false);
       confirmBusy.current = false;
-      setErr(e.message);
       return;
     }
 
     // 排程已正式寫入；之後任何 projection/finalize 失敗都不能再次 apply。
     setCommitted(r);
     setApplied(r);
+    await selectMaterials(r);
+    await finalize(r);
+  }
+  async function selectMaterials(r) {
     if (!isEdit && matIds.size) {
       try { await selectItems(r.planId, [...matIds], true); } catch { /* 排程已成立，選取失敗不回滾 */ }
     }
-    await finalize(r);
   }
   const dateInput = (k, label) => {
     const o = dMap[k] || {};

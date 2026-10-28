@@ -104,15 +104,19 @@ export async function applyWizardSchedule({
         ],
       },
     });
-    // 重排（Replan）只是把既有內容搬到新的日子，不該順手改掉使用者自己設的
-    // 起訖日，也不會改名 —— 所以 updatePlanDates=false 時整個 PATCH 都跳過。
-    const patch = { ...(updatePlanDates ? meta : {}), ...(name.trim() ? { name: name.trim() } : {}) };
-    if (Object.keys(patch).length) await api(`/plans/${planId}`, { method: 'PATCH', body: patch });
-    return {
+    const result = {
       planId, created: create.length, updated: update.length,
       removed: removeUnscheduled ? remove.length : 0,
       kept: removeUnscheduled ? 0 : remove.length,
     };
+    // 重排（Replan）只是把既有內容搬到新的日子，不該順手改掉使用者自己設的
+    // 起訖日，也不會改名 —— 所以 updatePlanDates=false 時整個 PATCH 都跳過。
+    const patch = { ...(updatePlanDates ? meta : {}), ...(name.trim() ? { name: name.trim() } : {}) };
+    if (Object.keys(patch).length) {
+      try { await api(`/plans/${planId}`, { method: 'PATCH', body: patch }); }
+      catch (e) { throw committedError(`新版安排已套用，但計畫名稱與日期沒有更新：${e.message || '請稍後再試'}`, result); }
+    }
+    return result;
   }
 
   // create：一次排程＝一個正式 Plan
@@ -141,9 +145,30 @@ export async function applyWizardSchedule({
   // 那支是照「讀書計劃」標籤／標題全域刪的，正式 Plan 的任務同樣帶那個標籤，
   // 會把別的計畫的未完成任務一起刪掉。id 拿不到的寧可留著不刪：
   // 資料重複遠比跨計畫誤刪安全。
+  //
+  // 走到這裡時 Plan 與排程都已提交。舊任務清不掉只會留下重複，不能讓呼叫端
+  // 當成「建立失敗」而重送——那會再建一個 Plan、整份任務重複一次。
   const safe = legacyMerged.filter(t => t && t.id != null && t.plan_id == null && !t.completed);
-  for (const t of safe) await api(`/tasks/${t.id}`, { method: 'DELETE' });
-  return { planId: plan.id, created: blocks.length, updated: 0, removed: safe.length };
+  let removed = 0, lastError = null;
+  for (const t of safe) {
+    try { await api(`/tasks/${t.id}`, { method: 'DELETE' }); removed += 1; }
+    catch (e) { lastError = e; }
+  }
+  const result = { planId: plan.id, created: blocks.length, updated: 0, removed };
+  if (lastError) {
+    throw committedError(
+      `讀書計畫已建立，但有 ${safe.length - removed} 項舊的未完成任務沒有移除，可能會重複出現：${lastError.message || '請稍後再試'}`,
+      result);
+  }
+  return result;
+}
+
+// 排程已正式寫入後才發生的失敗。呼叫端看到 committed 就必須進入「已儲存」狀態，
+// 只能重試讀取／同步，絕對不能再次 apply。
+function committedError(message, committed) {
+  const err = new Error(message);
+  err.committed = committed;
+  return err;
 }
 
 function toScheduledBlock(block, ref) {
