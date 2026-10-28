@@ -41,7 +41,13 @@ function useAssignmentMutations(reload) {
     catch { setRefreshError('仍然無法重新載入，請稍後再試。'); }
     finally { setRefreshBusy(false); }
   };
-  return { patch, pending, errors, refreshError, refreshBusy, retryRefresh };
+  // 表單新增／編輯已寫入後的刷新：表單會照常關閉（不能留著讓人重送），
+  // 刷新失敗就在這裡提示並只提供「重新載入」，不能默默留在舊畫面。
+  const refreshAfterSave = async () => {
+    try { await reload('tasks'); setRefreshError(''); }
+    catch { setRefreshError('作業已儲存，但畫面暫時無法重新載入。'); }
+  };
+  return { patch, pending, errors, refreshError, refreshBusy, retryRefresh, refreshAfterSave };
 }
 
 function MutationRefreshError({ mutations }) {
@@ -170,7 +176,7 @@ export function SchoolAssignmentToday({ tasks, lists, reload }) {
       )}
       {form && (
         <SchoolAssignmentForm lists={lists} task={form.id ? form : null} defaultReminderTime={defaultTime}
-          onClose={() => setForm(null)} onSaved={() => reload('tasks')} />
+          onClose={() => setForm(null)} onSaved={mutations.refreshAfterSave} />
       )}
     </section>
   );
@@ -253,7 +259,7 @@ export default function SchoolAssignmentView({ tasks, lists, plans = [], reload 
       </div>
       {form && (
         <SchoolAssignmentForm lists={lists} task={form.id ? form : null}
-          onClose={() => setForm(null)} onSaved={() => reload('tasks')} />
+          onClose={() => setForm(null)} onSaved={mutations.refreshAfterSave} />
       )}
       {attach && (
         <BottomSheet onClose={() => setAttach(null)} label="加入計畫">
