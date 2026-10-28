@@ -10,18 +10,50 @@ export default function MemoCard({ goMemo }) {
   // 打到一半的字存起來：切到別頁、關掉 app 再回來都還在
   const [quick, setQuick] = useState(() => { try { return localStorage.getItem('memoDraft') || ''; } catch { return ''; } });
   const [busy, setBusy] = useState(false);
+  const [doneError, setDoneError] = useState('');
+  const [doneNeedsReload, setDoneNeedsReload] = useState(false);
+  const [doneReloading, setDoneReloading] = useState(false);
+  const [blockedDoneIds, setBlockedDoneIds] = useState(() => new Set());
   const inputRef = useRef(null);
+  const doneBusy = useRef(new Set());
   const setDraft = v => { setQuick(v); try { localStorage.setItem('memoDraft', v); } catch {} };
-  const load = () => api('/memos').then(list => {
+  const load = async () => {
+    const list = await api('/memos');
     setMemos(list);
     try { localStorage.setItem('memoCache', JSON.stringify(list)); } catch {}
-  }).catch(() => {});
-  useEffect(() => { load(); }, []);
+  };
+  useEffect(() => { load().catch(() => {}); }, []);
 
   const undone = memos.filter(m => !m.done);
-  const done = m => {
+  const done = async m => {
+    if (doneBusy.current.has(m.id) || blockedDoneIds.has(m.id)) return;
+    doneBusy.current.add(m.id);
+    setDoneError('');
+    setDoneNeedsReload(false);
     setMemos(list => list.map(x => x.id === m.id ? { ...x, done: 1 } : x));   // 立刻消失
-    api(`/memos/${m.id}`, { method: 'PATCH', body: { done: true } }).catch(() => {});
+    try {
+      await api(`/memos/${m.id}`, { method: 'PATCH', body: { done: true } });
+    } catch {
+      // 寫入可能真的失敗，也可能只是回應途中斷線；重讀伺服器才能知道正式狀態。
+      setMemos(list => list.map(x => x.id === m.id ? { ...x, done: 0 } : x));
+      try {
+        await load();
+        setDoneError('完成狀態未能送出，已重新載入確認。');
+      } catch {
+        setDoneError('無法確認完成狀態，請重新載入；重新載入前請勿再次勾選。');
+        setDoneNeedsReload(true);
+        setBlockedDoneIds(ids => new Set(ids).add(m.id));
+      }
+    } finally {
+      doneBusy.current.delete(m.id);
+    }
+  };
+  const retryDoneLoad = async () => {
+    if (doneReloading) return;
+    setDoneReloading(true);
+    try { await load(); setDoneError(''); setDoneNeedsReload(false); setBlockedDoneIds(new Set()); }
+    catch { setDoneError('仍然無法重新載入，請稍後再試。'); setDoneNeedsReload(true); }
+    finally { setDoneReloading(false); }
   };
   // 一次可以加很多項：貼上或打了換行就一行一件，分別建立
   async function add(e) {
@@ -57,12 +89,17 @@ export default function MemoCard({ goMemo }) {
         📝 備忘錄{undone.length ? `（${undone.length}）` : ''}
         <button className="btn sm ghost" style={{ marginLeft: 'auto' }} onClick={goMemo}>全部</button>
       </div>
+      {doneError && <div role="alert" className="form-error" style={{ marginBottom: 8 }}>
+        {doneError}
+        {doneNeedsReload && <button type="button" className="btn sm ghost" disabled={doneReloading}
+          onClick={retryDoneLoad} style={{ marginLeft: 8 }}>重新載入</button>}
+      </div>}
       {groups.map(cat => (
         <div key={cat || '__none'}>
           {cats.length > 0 && <div className="muted" style={{ margin: '6px 0 2px', fontSize: 12 }}>{cat || '未分類'}</div>}
           {undone.filter(m => (m.category || '') === cat).sort(byDue).map(m => (
             <div key={m.id} className="trow" style={{ borderLeft: `3px solid ${m.color || 'transparent'}`, paddingLeft: m.color ? 8 : 0 }}>
-              <input type="checkbox" checked={false} onChange={() => done(m)} />
+              <input type="checkbox" checked={false} disabled={blockedDoneIds.has(m.id)} onChange={() => done(m)} />
               <span className="title">{m.content}</span>
               {m.due_date && (
                 <span style={{ fontSize: 12, marginLeft: 6, whiteSpace: 'nowrap', color: isOverdue(m.due_date) ? 'var(--red)' : 'var(--muted)' }}>
