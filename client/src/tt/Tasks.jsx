@@ -1137,6 +1137,23 @@ export default function Tasks({ view, tasks, lists, filters, habits = [], reload
       setSaveError('任務已儲存，但畫面暫時無法更新');
     } finally { setSaveBusy(false); }
   }
+  // 桌面版明細是側欄，清單列仍可點。待存區只放得下一筆草稿：直接切到別筆再編輯，
+  // 會把上一筆還沒寫入（去抖動中、進行中或失敗待重試）的草稿擠掉而無聲遺失。
+  // 所以切換和「完成」走同一道關卡：先把目前這筆寫入，失敗就留在原任務顯示錯誤。
+  const selectBusyRef = useRef(false);
+  async function selectTask(x) {
+    if (selId == null || x.id === selId) { setSelId(x.id); return; }
+    if (selectBusyRef.current) return;
+    selectBusyRef.current = true;
+    clearTimeout(saveTimer.current);
+    try {
+      await flushSave();
+    } catch { return; }
+    finally { selectBusyRef.current = false; }
+    setCloseRefreshCommitted(false);
+    setSaveError('');
+    setSelId(x.id);
+  }
   async function del(t) {
     if (!beginMutation(t.id)) return;
     try {
@@ -1411,7 +1428,7 @@ export default function Tasks({ view, tasks, lists, filters, habits = [], reload
                         分堆的用途正是這個，所以把每一科的項數與逾期數寫在標頭上。 */}
                     {sortBy === 'subjectGroup' && !['completed', 'trash'].includes(view.type) && <SubjectCounts list={sorted} />}
                   </button>
-                  {!collapsed && sorted.map(t => <TaskRow key={t.id} t={t} lists={lists} sel={t.id === selId} onSel={x => setSelId(x.id)} onToggle={toggle}
+                  {!collapsed && sorted.map(t => <TaskRow key={t.id} t={t} lists={lists} sel={t.id === selId} onSel={selectTask} onToggle={toggle}
                     onDragStart={canDrag ? setDragT : undefined}
                     onDropOn={canDrag ? x => dropOn(x, sorted) : undefined}
                     onSwipeDelete={del} mutationBusy={pendingIds.has(t.id)} mutationError={mutationErrors[t.id]} />)}
@@ -1449,7 +1466,7 @@ export default function Tasks({ view, tasks, lists, filters, habits = [], reload
           {view.type === 'today' && (
             <div className="tgroup" style={{ marginTop: 24, borderTop: '2px dashed var(--border)', paddingTop: 12 }}>
               <div className="glabel">💭 願望清單（想做、要記得的事）</div>
-              {wishes.map(t => <TaskRow key={t.id} t={t} lists={lists} sel={t.id === selId} onSel={x => setSelId(x.id)} onToggle={toggle} onSwipeDelete={del} />)}
+              {wishes.map(t => <TaskRow key={t.id} t={t} lists={lists} sel={t.id === selId} onSel={selectTask} onToggle={toggle} onSwipeDelete={del} />)}
               <form onSubmit={addWish} aria-busy={wishBusy} style={{ marginTop: 6 }}>
                 <input placeholder="＋ 記一件想做的事…" value={wish} disabled={wishBusy}
                   aria-invalid={wishError ? 'true' : undefined}
