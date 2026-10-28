@@ -34,6 +34,12 @@ export default function MemoView() {
   const [deleteBusyIds, setDeleteBusyIds] = useState(() => new Set());
   const [deleteBlockedIds, setDeleteBlockedIds] = useState(() => new Set());
   const deleteBusy = useRef(new Set());
+  const [updateError, setUpdateError] = useState('');
+  const [updateNeedsReload, setUpdateNeedsReload] = useState(false);
+  const [updateReloading, setUpdateReloading] = useState(false);
+  const [updateBusyIds, setUpdateBusyIds] = useState(() => new Set());
+  const [updateBlockedIds, setUpdateBlockedIds] = useState(() => new Set());
+  const updateBusy = useRef(new Set());
   const load = () => {
     api('/memos').then(setMemos).catch(() => {});
     api('/memo-cats').then(setCats).catch(() => {});
@@ -53,7 +59,41 @@ export default function MemoView() {
     setContent('');
     if (category && !catNames.includes(category)) api('/memo-cats').then(setCats).catch(() => {});
   }
-  const patch = (id, body) => { setMemos(list => list.map(m => m.id === id ? { ...m, ...body } : m)); api(`/memos/${id}`, { method: 'PATCH', body }).catch(() => {}); };
+  async function patch(id, body) {
+    if (updateBusy.current.has(id) || updateBlockedIds.has(id)) return;
+    const previous = memos.find(m => m.id === id);
+    updateBusy.current.add(id);
+    setUpdateBusyIds(ids => new Set(ids).add(id));
+    setUpdateError(''); setUpdateNeedsReload(false);
+    setMemos(list => list.map(m => m.id === id ? { ...m, ...body } : m));
+    try {
+      await api(`/memos/${id}`, { method: 'PATCH', body });
+    } catch {
+      // PATCH 可能真的失敗，也可能只遺失回應；重讀正式資料以免畫面停在假狀態。
+      try {
+        setMemos(await api('/memos'));
+        setUpdateError('更新回應中斷，已重新載入確認。');
+      } catch {
+        // 正式資料也讀不到時，先退回操作前畫面並鎖住，避免假狀態把項目藏起來。
+        if (previous) setMemos(list => list.map(m => m.id === id ? previous : m));
+        setUpdateError('無法確認是否更新，請重新載入；重新載入前請勿再次修改這一筆。');
+        setUpdateNeedsReload(true);
+        setUpdateBlockedIds(ids => new Set(ids).add(id));
+      }
+    } finally {
+      updateBusy.current.delete(id);
+      setUpdateBusyIds(ids => { const next = new Set(ids); next.delete(id); return next; });
+    }
+  }
+  async function retryUpdateLoad() {
+    if (updateReloading) return;
+    setUpdateReloading(true);
+    try {
+      setMemos(await api('/memos'));
+      setUpdateError(''); setUpdateNeedsReload(false); setUpdateBlockedIds(new Set());
+    } catch { setUpdateError('仍然無法重新載入，請稍後再試。'); setUpdateNeedsReload(true); }
+    finally { setUpdateReloading(false); }
+  }
   async function del(id) {
     if (deleteBusy.current.has(id) || deleteBlockedIds.has(id)) return;
     deleteBusy.current.add(id);
@@ -123,7 +163,8 @@ export default function MemoView() {
   const Row = m => (
     <div key={m.id}>
       <div className="trow" style={{ borderLeft: `3px solid ${m.color || 'transparent'}`, paddingLeft: m.color ? 8 : 0 }}>
-        <input type="checkbox" checked={!!m.done} onChange={() => patch(m.id, { done: !m.done })} />
+        <input type="checkbox" checked={!!m.done} disabled={updateBusyIds.has(m.id) || updateBlockedIds.has(m.id)}
+          aria-label={`完成「${m.content}」`} onChange={() => patch(m.id, { done: !m.done })} />
         <span className="title" style={m.done ? { textDecoration: 'line-through', color: 'var(--muted)' } : { cursor: 'pointer' }}
           onClick={() => setEditId(editId === m.id ? null : m.id)}>{m.content}</span>
         {m.due_date && (
@@ -138,7 +179,7 @@ export default function MemoView() {
         <div style={{ padding: '4px 2px 10px' }}>
           <textarea value={m.content} rows={2} style={{ width: '100%' }}
             onChange={e => setMemos(list => list.map(x => x.id === m.id ? { ...x, content: e.target.value } : x))}
-            onBlur={e => api(`/memos/${m.id}`, { method: 'PATCH', body: { content: e.target.value } }).catch(() => {})} />
+            onBlur={e => patch(m.id, { content: e.target.value })} />
           <div className="row" style={{ marginTop: 6 }}>
             <span className="muted">日期</span>
             <input type="date" value={m.due_date || ''} onChange={e => patch(m.id, { due_date: e.target.value })} style={{ flex: 1 }} />
@@ -170,6 +211,11 @@ export default function MemoView() {
           {deleteError}
           {deleteNeedsReload && <button type="button" className="btn sm ghost" disabled={deleteReloading}
             onClick={retryDeleteLoad} style={{ marginLeft: 8 }}>重新載入</button>}
+        </div>}
+        {updateError && <div role="alert" className="form-error" style={{ marginBottom: 8 }}>
+          {updateError}
+          {updateNeedsReload && <button type="button" className="btn sm ghost" disabled={updateReloading}
+            onClick={retryUpdateLoad} style={{ marginLeft: 8 }}>重新載入</button>}
         </div>}
         <form onSubmit={add} style={{ margin: '6px 0' }}>
           <input placeholder="要記下什麼？" value={content} onChange={e => setContent(e.target.value)} style={{ width: '100%' }} />
