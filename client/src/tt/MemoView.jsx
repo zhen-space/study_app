@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { api } from '../api';
 import Icon from './Icons';
 
@@ -28,6 +28,12 @@ export default function MemoView() {
   const [editId, setEditId] = useState(null);
   const [showDone, setShowDone] = useState(false);
   const [manageCat, setManageCat] = useState(false);
+  const [deleteError, setDeleteError] = useState('');
+  const [deleteNeedsReload, setDeleteNeedsReload] = useState(false);
+  const [deleteReloading, setDeleteReloading] = useState(false);
+  const [deleteBusyIds, setDeleteBusyIds] = useState(() => new Set());
+  const [deleteBlockedIds, setDeleteBlockedIds] = useState(() => new Set());
+  const deleteBusy = useRef(new Set());
   const load = () => {
     api('/memos').then(setMemos).catch(() => {});
     api('/memo-cats').then(setCats).catch(() => {});
@@ -48,7 +54,39 @@ export default function MemoView() {
     if (category && !catNames.includes(category)) api('/memo-cats').then(setCats).catch(() => {});
   }
   const patch = (id, body) => { setMemos(list => list.map(m => m.id === id ? { ...m, ...body } : m)); api(`/memos/${id}`, { method: 'PATCH', body }).catch(() => {}); };
-  async function del(id) { setMemos(list => list.filter(m => m.id !== id)); try { await api(`/memos/${id}`, { method: 'DELETE' }); } catch {} }
+  async function del(id) {
+    if (deleteBusy.current.has(id) || deleteBlockedIds.has(id)) return;
+    deleteBusy.current.add(id);
+    setDeleteBusyIds(ids => new Set(ids).add(id));
+    setDeleteError(''); setDeleteNeedsReload(false);
+    try {
+      await api(`/memos/${id}`, { method: 'DELETE' });
+      setMemos(list => list.filter(m => m.id !== id));
+    } catch {
+      // DELETE 可能真的失敗，也可能只遺失回應；重讀後才能安全決定項目是否仍存在。
+      try {
+        const current = await api('/memos');
+        setMemos(current);
+        setDeleteError('刪除回應中斷，已重新載入確認。');
+      } catch {
+        setDeleteError('無法確認是否刪除，請重新載入；重新載入前請勿再次刪除。');
+        setDeleteNeedsReload(true);
+        setDeleteBlockedIds(ids => new Set(ids).add(id));
+      }
+    } finally {
+      deleteBusy.current.delete(id);
+      setDeleteBusyIds(ids => { const next = new Set(ids); next.delete(id); return next; });
+    }
+  }
+  async function retryDeleteLoad() {
+    if (deleteReloading) return;
+    setDeleteReloading(true);
+    try {
+      setMemos(await api('/memos'));
+      setDeleteError(''); setDeleteNeedsReload(false); setDeleteBlockedIds(new Set());
+    } catch { setDeleteError('仍然無法重新載入，請稍後再試。'); setDeleteNeedsReload(true); }
+    finally { setDeleteReloading(false); }
+  }
   async function newCat() {
     const n = prompt('新分類名稱：', '');
     if (!n || !n.trim()) return;
@@ -93,7 +131,8 @@ export default function MemoView() {
             {dateLabel(m.due_date)}
           </span>
         )}
-        <button className="icon-btn" style={{ padding: 2 }} onClick={() => del(m.id)}><Icon name="x" size={14} /></button>
+        <button className="icon-btn" style={{ padding: 2 }} disabled={deleteBusyIds.has(m.id) || deleteBlockedIds.has(m.id)}
+          aria-label={`刪除「${m.content}」`} onClick={() => del(m.id)}><Icon name="x" size={14} /></button>
       </div>
       {editId === m.id && (
         <div style={{ padding: '4px 2px 10px' }}>
@@ -127,6 +166,11 @@ export default function MemoView() {
     <div className="main">
       <div className="main-head"><h2>備忘錄</h2><span className="muted">{memos.filter(m => !m.done).length} 項待辦</span></div>
       <div className="main-body">
+        {deleteError && <div role="alert" className="form-error" style={{ marginBottom: 8 }}>
+          {deleteError}
+          {deleteNeedsReload && <button type="button" className="btn sm ghost" disabled={deleteReloading}
+            onClick={retryDeleteLoad} style={{ marginLeft: 8 }}>重新載入</button>}
+        </div>}
         <form onSubmit={add} style={{ margin: '6px 0' }}>
           <input placeholder="要記下什麼？" value={content} onChange={e => setContent(e.target.value)} style={{ width: '100%' }} />
           <div style={{ marginTop: 6 }}>
