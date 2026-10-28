@@ -19,6 +19,12 @@ export default function VocabView() {
   const [deleteReloading, setDeleteReloading] = useState(false);
   const [deleteBusy, setDeleteBusy] = useState(false);
   const deleteBusyRef = useRef(false);
+  const [updateError, setUpdateError] = useState('');
+  const [updateNeedsReload, setUpdateNeedsReload] = useState(false);
+  const [updateReloading, setUpdateReloading] = useState(false);
+  const [updateBusyIds, setUpdateBusyIds] = useState(() => new Set());
+  const [updateBlockedIds, setUpdateBlockedIds] = useState(() => new Set());
+  const updateBusyRef = useRef(new Set());
   const applyItems = list => {
     setItems(list);
     try { localStorage.setItem('vocabCache', JSON.stringify(list)); } catch {}
@@ -111,9 +117,44 @@ export default function VocabView() {
   // 編輯單字（英文、中文、單字/片語、顏色）
   const [editId, setEditId] = useState(null);
   const VOCAB_COLORS = ['', '#0086CC', '#8AC4DE', '#005B98', '#192F60', '#CB1B45', '#E98B2A', '#00896C', '#66327C'];
-  const updLocal = (id, patch) => setItems(list => list.map(x => x.id === id ? { ...x, ...patch } : x));
-  const sendPatch = (id, patch) => api(`/import/vocab/${id}`, { method: 'PATCH', body: patch }).catch(() => {});
-  const patchWord = (id, patch) => { updLocal(id, patch); sendPatch(id, patch); };
+  const updLocal = (id, patch) => setItems(list => {
+    const next = list.map(x => x.id === id ? { ...x, ...patch } : x);
+    try { localStorage.setItem('vocabCache', JSON.stringify(next)); } catch {}
+    return next;
+  });
+  async function sendPatch(id, patch) {
+    if (updateBusyRef.current.has(id) || updateBlockedIds.has(id)) return;
+    updateBusyRef.current.add(id);
+    setUpdateBusyIds(ids => new Set(ids).add(id));
+    setUpdateError(''); setUpdateNeedsReload(false);
+    try { await api(`/import/vocab/${id}`, { method: 'PATCH', body: patch }); }
+    catch {
+      try {
+        applyItems(await api('/import/vocab'));
+        setUpdateError('更新回應中斷，已重新載入確認。');
+      } catch {
+        setUpdateError('無法確認是否更新，請重新載入；重新載入前請勿再次修改這一筆。');
+        setUpdateNeedsReload(true);
+        setUpdateBlockedIds(ids => new Set(ids).add(id));
+      }
+    } finally {
+      updateBusyRef.current.delete(id);
+      setUpdateBusyIds(ids => { const next = new Set(ids); next.delete(id); return next; });
+    }
+  }
+  async function retryUpdateLoad() {
+    if (updateReloading) return;
+    setUpdateReloading(true);
+    try {
+      applyItems(await api('/import/vocab'));
+      setUpdateError(''); setUpdateNeedsReload(false); setUpdateBlockedIds(new Set());
+    } catch { setUpdateError('仍然無法重新載入，請稍後再試。'); setUpdateNeedsReload(true); }
+    finally { setUpdateReloading(false); }
+  }
+  const patchWord = (id, patch) => {
+    if (updateBusyRef.current.has(id) || updateBlockedIds.has(id)) return;
+    updLocal(id, patch); sendPatch(id, patch);
+  };
   const WordRow = x => (
     <div key={x.id}>
       <div className="vocab-row" style={{ cursor: 'pointer' }} onClick={() => setEditId(editId === x.id ? null : x.id)}>
@@ -127,16 +168,18 @@ export default function VocabView() {
       {editId === x.id && (
         <div style={{ padding: '6px 2px 10px', borderBottom: '1px solid var(--border)' }} onClick={e => e.stopPropagation()}>
           <div className="row">
-            <input value={x.english} style={{ flex: 1, fontWeight: 600 }}
+            <input value={x.english} disabled={updateBusyIds.has(x.id) || updateBlockedIds.has(x.id)} style={{ flex: 1, fontWeight: 600 }}
               onChange={e => updLocal(x.id, { english: e.target.value })} onBlur={e => sendPatch(x.id, { english: e.target.value })} />
-            <input value={x.chinese} placeholder="中文" style={{ flex: 1 }}
+            <input value={x.chinese} placeholder="中文" disabled={updateBusyIds.has(x.id) || updateBlockedIds.has(x.id)} style={{ flex: 1 }}
               onChange={e => updLocal(x.id, { chinese: e.target.value })} onBlur={e => sendPatch(x.id, { chinese: e.target.value })} />
-            <button className="btn sm ghost" onClick={() => patchWord(x.id, { kind: x.kind === '片語' ? '單字' : '片語' })}>{x.kind}</button>
+            <button className="btn sm ghost" disabled={updateBusyIds.has(x.id) || updateBlockedIds.has(x.id)}
+              onClick={() => patchWord(x.id, { kind: x.kind === '片語' ? '單字' : '片語' })}>{x.kind}</button>
           </div>
           <div className="swatches" style={{ marginTop: 6 }}>
             {VOCAB_COLORS.map(c => (
               <span key={c || 'none'} className={'swatch' + ((x.color || '') === c ? ' on' : '')}
-                style={c ? { background: c } : { background: '#fff', border: '1px solid var(--border)' }}
+                aria-disabled={updateBusyIds.has(x.id) || updateBlockedIds.has(x.id)}
+                style={{ ...(c ? { background: c } : { background: '#fff', border: '1px solid var(--border)' }), opacity: updateBusyIds.has(x.id) || updateBlockedIds.has(x.id) ? .5 : 1 }}
                 title={c ? '' : '預設'} onClick={() => patchWord(x.id, { color: c })} />
             ))}
             <button className="btn sm" style={{ marginLeft: 'auto' }} onClick={() => setEditId(null)}>完成</button>
@@ -154,6 +197,11 @@ export default function VocabView() {
           {deleteError}
           {deleteNeedsReload && <button type="button" className="btn sm ghost" disabled={deleteReloading}
             onClick={retryDeleteLoad} style={{ marginLeft: 8 }}>重新載入</button>}
+        </div>}
+        {updateError && <div role="alert" className="form-error" style={{ marginBottom: 8 }}>
+          {updateError}
+          {updateNeedsReload && <button type="button" className="btn sm ghost" disabled={updateReloading}
+            onClick={retryUpdateLoad} style={{ marginLeft: 8 }}>重新載入</button>}
         </div>}
         <div className="tile" style={{ margin: '8px 0' }}>
           <b>匯入單字</b>
