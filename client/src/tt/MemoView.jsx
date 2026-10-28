@@ -40,6 +40,10 @@ export default function MemoView() {
   const [updateBusyIds, setUpdateBusyIds] = useState(() => new Set());
   const [updateBlockedIds, setUpdateBlockedIds] = useState(() => new Set());
   const updateBusy = useRef(new Set());
+  const [categoryError, setCategoryError] = useState('');
+  const [categoryNeedsReload, setCategoryNeedsReload] = useState(false);
+  const [categoryReloading, setCategoryReloading] = useState(false);
+  const categoryBusy = useRef(false);
   const load = () => {
     api('/memos').then(setMemos).catch(() => {});
     api('/memo-cats').then(setCats).catch(() => {});
@@ -136,13 +140,50 @@ export default function MemoView() {
   async function renameCat(c) {
     const n = prompt('改分類名稱：', c.name);
     if (n === null || !n.trim() || n.trim() === c.name) return;
-    await api(`/memo-cats/${c.id}`, { method: 'PATCH', body: { name: n.trim() } }).catch(() => {});
-    load();
+    if (categoryBusy.current) return;
+    categoryBusy.current = true;
+    setCategoryError(''); setCategoryNeedsReload(false);
+    try {
+      await api(`/memo-cats/${c.id}`, { method: 'PATCH', body: { name: n.trim() } });
+      const [nextMemos, nextCats] = await Promise.all([api('/memos'), api('/memo-cats')]);
+      setMemos(nextMemos); setCats(nextCats);
+      if (category === c.name) setCategory(n.trim());
+    } catch {
+      await recoverCategories('分類改名回應中斷，已重新載入確認。');
+    } finally { categoryBusy.current = false; }
   }
   async function delCat(c) {
-    await api(`/memo-cats/${c.id}`, { method: 'DELETE' }).catch(() => {});
-    if (category === c.name) setCategory('');
-    load();
+    if (categoryBusy.current) return;
+    categoryBusy.current = true;
+    setCategoryError(''); setCategoryNeedsReload(false);
+    try {
+      await api(`/memo-cats/${c.id}`, { method: 'DELETE' });
+      const [nextMemos, nextCats] = await Promise.all([api('/memos'), api('/memo-cats')]);
+      setMemos(nextMemos); setCats(nextCats);
+      if (category === c.name) setCategory('');
+    } catch {
+      await recoverCategories('分類刪除回應中斷，已重新載入確認。');
+    } finally { categoryBusy.current = false; }
+  }
+  async function recoverCategories(message) {
+    try {
+      const [nextMemos, nextCats] = await Promise.all([api('/memos'), api('/memo-cats')]);
+      setMemos(nextMemos); setCats(nextCats); setCategoryError(message);
+      if (category && !nextCats.some(c => c.name === category)) setCategory('');
+    } catch {
+      setCategoryError('無法確認分類是否變更，請重新載入；重新載入前請勿再次修改分類。');
+      setCategoryNeedsReload(true);
+    }
+  }
+  async function retryCategoryLoad() {
+    if (categoryReloading) return;
+    setCategoryReloading(true);
+    try {
+      const [nextMemos, nextCats] = await Promise.all([api('/memos'), api('/memo-cats')]);
+      setMemos(nextMemos); setCats(nextCats); setCategoryError(''); setCategoryNeedsReload(false);
+      if (category && !nextCats.some(c => c.name === category)) setCategory('');
+    } catch { setCategoryError('仍然無法重新載入，請稍後再試。'); setCategoryNeedsReload(true); }
+    finally { setCategoryReloading(false); }
   }
   const toggleCat = c => setOpenCat(s => { const n = new Set(s); n.has(c) ? n.delete(c) : n.add(c); return n; });
 
@@ -216,6 +257,11 @@ export default function MemoView() {
           {updateError}
           {updateNeedsReload && <button type="button" className="btn sm ghost" disabled={updateReloading}
             onClick={retryUpdateLoad} style={{ marginLeft: 8 }}>重新載入</button>}
+        </div>}
+        {categoryError && <div role="alert" className="form-error" style={{ marginBottom: 8 }}>
+          {categoryError}
+          {categoryNeedsReload && <button type="button" className="btn sm ghost" disabled={categoryReloading}
+            onClick={retryCategoryLoad} style={{ marginLeft: 8 }}>重新載入</button>}
         </div>}
         <form onSubmit={add} style={{ margin: '6px 0' }}>
           <input placeholder="要記下什麼？" value={content} onChange={e => setContent(e.target.value)} style={{ width: '100%' }} />
