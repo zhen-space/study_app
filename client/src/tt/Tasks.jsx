@@ -7,6 +7,25 @@ import MemoCard from './MemoCard';
 
 const WDC = '日一二三四五六';
 
+// 快速新增送出後、POST 回來前切到別頁（今天／行事曆等）會讓 Tasks 卸載；
+// 這時 POST 才失敗的話，元件 state 已經不在，輸入會無聲消失、任務也沒建立。
+// 先把當時的草稿與錯誤記在模組層，下次掛載時取回一次。
+// 登出只清 token、不會重新載入 JS，模組變數會跨帳號存活；所以草稿綁定送出當下的
+// 登入憑證，取回時憑證不同（換人登入、重新登入、已登出）就直接丟棄。
+// 憑證只放在這個記憶體變數裡做嚴格比對，不寫入 storage、不顯示也不記 log。
+let orphanedQuickDraft = null;
+const currentAuthToken = () => {
+  try { return localStorage.getItem('token') || null; } catch { return null; }
+};
+const takeOrphanedQuickDraft = () => {
+  const draft = orphanedQuickDraft;
+  orphanedQuickDraft = null;
+  if (!draft) return null;
+  const owner = currentAuthToken();
+  if (!owner || draft.owner !== owner) return null;
+  return draft.values;
+};
+
 // 一科的項數與逾期數。逾期是紅的，其餘是次要資訊——這一行要能一眼看出
 // 「哪一科欠最多」，而不是變成又一排同樣重的數字。
 export function overdueCount(list, td = today()) {
@@ -581,16 +600,17 @@ export function Detail({ task, lists, onSave, onDelete, onDuplicate, onClose, sa
 
 export default function Tasks({ view, tasks, lists, filters, habits = [], reload, title, subtitle = '', listLabel = '', goVocab, goMemo, topSlot = null, onNav }) {
   const [selId, setSelId] = useState(null);
-  const [quick, setQuick] = useState('');
-  const [quickErr, setQuickErr] = useState('');
+  const [restoredQuick] = useState(takeOrphanedQuickDraft);
+  const [quick, setQuick] = useState(restoredQuick?.title ?? '');
+  const [quickErr, setQuickErr] = useState(restoredQuick?.error ?? '');
   const [quickBusy, setQuickBusy] = useState(false);
-  const [quickDue, setQuickDue] = useState('');
-  const [quickTime, setQuickTime] = useState('');
-  const [quickListId, setQuickListId] = useState('');
-  const [quickPriority, setQuickPriority] = useState(0);
-  const [quickTag, setQuickTag] = useState('');
-  const [quickNotes, setQuickNotes] = useState('');
-  const [quickRecurring, setQuickRecurring] = useState('');
+  const [quickDue, setQuickDue] = useState(restoredQuick?.due ?? '');
+  const [quickTime, setQuickTime] = useState(restoredQuick?.time ?? '');
+  const [quickListId, setQuickListId] = useState(restoredQuick?.listId ?? '');
+  const [quickPriority, setQuickPriority] = useState(restoredQuick?.priority ?? 0);
+  const [quickTag, setQuickTag] = useState(restoredQuick?.tag ?? '');
+  const [quickNotes, setQuickNotes] = useState(restoredQuick?.notes ?? '');
+  const [quickRecurring, setQuickRecurring] = useState(restoredQuick?.recurring ?? '');
   const [collapsedGroups, setCollapsedGroups] = useState(() => {
     try {
       const saved = JSON.parse(localStorage.getItem('taskCollapsedGroups') || '[]');
@@ -609,6 +629,11 @@ export default function Tasks({ view, tasks, lists, filters, habits = [], reload
   });
   const quickBusyRef = useRef(false);
   const quickComposing = useRef(false);
+  const mountedRef = useRef(false);
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => { mountedRef.current = false; };
+  }, []);
   // §E 第一層 filters（只在「任務」總表出現）：全部／今天／逾期／未排程。記在 localStorage。
   const [taskFilter, setTaskFilter] = useState(() => {
     try { return localStorage.getItem('taskFilter') || 'all'; } catch { return 'all'; }
@@ -987,11 +1012,28 @@ export default function Tasks({ view, tasks, lists, filters, habits = [], reload
     // submit 重入建立兩筆相同任務。
     quickBusyRef.current = true;
     setQuickBusy(true); setQuickErr('');
+    // api() 同步讀取 token 帶進這次請求；在同一個 tick 記下，草稿就屬於發出請求的那個身分。
+    const owner = currentAuthToken();
     try {
       await api('/tasks', { method: 'POST', body });
     } catch (err) {
-      setQuickErr(err.message || '新增任務失敗');
       quickBusyRef.current = false;
+      if (!mountedRef.current) {
+        // 沒有登入身分可綁定時不留草稿，寧可遺失也不能讓下一個登入者看到。
+        if (!owner) return;
+        // 草稿只保留使用者輸入的欄位；檢視帶入的預設值（科目、今天、標籤）
+        // 回來時依當下檢視重新套用，和同一實例切換清單時的行為一致。
+        orphanedQuickDraft = {
+          owner,
+          values: {
+            title: quick, due: quickDue, time: quickTime, listId: quickListId, priority: quickPriority,
+            tag: quickTag, notes: quickNotes, recurring: quickRecurring,
+            error: `剛才送出的任務沒有新增成功：${err.message || '新增任務失敗'}`,
+          },
+        };
+        return;
+      }
+      setQuickErr(err.message || '新增任務失敗');
       setQuickBusy(false);
       return;
     }

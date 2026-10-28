@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { act } from 'react';
+import { act, StrictMode } from 'react';
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import * as fx from './fixtures';
 
@@ -13,7 +13,7 @@ const props = {
 };
 
 describe('任務快速新增', () => {
-  beforeEach(() => { api.mockReset(); props.reload.mockReset(); });
+  beforeEach(() => { api.mockReset(); props.reload.mockReset(); localStorage.removeItem('token'); });
 
   it('中文輸入法按 Enter 選字時不送出，組字完成後才建立', async () => {
     api.mockResolvedValue({ id: 99 });
@@ -162,6 +162,85 @@ describe('任務快速新增', () => {
     fireEvent.submit(form);
 
     await waitFor(() => expect(input).toHaveValue(''));
+    expect(api.mock.calls.filter(([path, options]) => path === '/tasks' && options?.method === 'POST')).toHaveLength(1);
+  });
+
+  it('送出中切到別頁、之後 POST 失敗時，回來仍保留內容與錯誤，可直接重送', async () => {
+    localStorage.setItem('token', 'session-a');
+    let rejectPost;
+    api.mockImplementationOnce(() => new Promise((_, reject) => { rejectPost = reject; }));
+    const first = render(<Tasks {...props} />);
+    fireEvent.change(screen.getByPlaceholderText('＋ 新增任務，按 Enter 儲存'), { target: { value: '化學實驗報告' } });
+    fireEvent.change(screen.getByLabelText('快速新增優先級'), { target: { value: '3' } });
+    fireEvent.change(screen.getByLabelText('快速新增備註'), { target: { value: '附圖表' } });
+    fireEvent.submit(screen.getByPlaceholderText('＋ 新增任務，按 Enter 儲存').closest('form'));
+
+    // 例如在 Render 冷啟動時切到「今天」或行事曆：Tasks 卸載，請求才失敗。
+    first.unmount();
+    await act(async () => { rejectPost(new Error('伺服器暫時沒有回應')); });
+
+    api.mockResolvedValueOnce({ id: 107 });
+    props.reload.mockResolvedValue();
+    // 正式環境包在 StrictMode：開發時的重複初始化／重複掛載也不能把草稿吃掉。
+    render(<StrictMode><Tasks {...props} /></StrictMode>);
+    const input = screen.getByPlaceholderText('＋ 新增任務，按 Enter 儲存');
+    expect(input).toHaveValue('化學實驗報告');
+    expect(input).not.toBeDisabled();
+    expect(input).toHaveAttribute('aria-invalid', 'true');
+    expect(screen.getByRole('alert')).toHaveTextContent('伺服器暫時沒有回應');
+    expect(screen.getByLabelText('快速新增優先級')).toHaveValue('3');
+    expect(screen.getByLabelText('快速新增備註')).toHaveValue('附圖表');
+    expect(props.reload).not.toHaveBeenCalled();
+
+    await act(async () => { fireEvent.submit(input.closest('form')); });
+    expect(api).toHaveBeenLastCalledWith('/tasks', {
+      method: 'POST', body: { title: '化學實驗報告', priority: 3, notes: '附圖表' },
+    });
+    expect(input).toHaveValue('');
+  });
+
+  it('送出中登出並換另一個帳號登入、之後 POST 失敗時，不把前一位的草稿給新帳號', async () => {
+    localStorage.setItem('token', 'session-a');
+    let rejectPost;
+    api.mockImplementationOnce(() => new Promise((_, reject) => { rejectPost = reject; }));
+    const first = render(<Tasks {...props} />);
+    fireEvent.change(screen.getByPlaceholderText('＋ 新增任務，按 Enter 儲存'), { target: { value: 'A 的私人待辦' } });
+    fireEvent.change(screen.getByLabelText('快速新增備註'), { target: { value: 'A 的備註' } });
+    fireEvent.submit(screen.getByPlaceholderText('＋ 新增任務，按 Enter 儲存').closest('form'));
+
+    // App.jsx 登出只移除 token 並導向 /login，不會重新載入 JS 模組。
+    first.unmount();
+    localStorage.removeItem('token');
+    localStorage.setItem('token', 'session-b');
+    await act(async () => { rejectPost(new Error('伺服器暫時沒有回應')); });
+
+    const second = render(<StrictMode><Tasks {...props} /></StrictMode>);
+    expect(screen.getByPlaceholderText('＋ 新增任務，按 Enter 儲存')).toHaveValue('');
+    expect(screen.queryByRole('alert')).toBeNull();
+    expect(screen.queryByText(/A 的/)).toBeNull();
+    second.unmount();
+
+    // 不只是對 B 隱藏：草稿已丟棄，A 之後再用同一個 token 回來也不會再冒出來。
+    localStorage.setItem('token', 'session-a');
+    render(<Tasks {...props} />);
+    expect(screen.getByPlaceholderText('＋ 新增任務，按 Enter 儲存')).toHaveValue('');
+    expect(screen.queryByRole('alert')).toBeNull();
+  });
+
+  it('送出中切到別頁、之後 POST 成功時，回來不殘留舊內容或錯誤', async () => {
+    let resolvePost;
+    api.mockImplementationOnce(() => new Promise(resolve => { resolvePost = resolve; }));
+    props.reload.mockResolvedValue();
+    const first = render(<Tasks {...props} />);
+    fireEvent.change(screen.getByPlaceholderText('＋ 新增任務，按 Enter 儲存'), { target: { value: '英文單字' } });
+    fireEvent.submit(screen.getByPlaceholderText('＋ 新增任務，按 Enter 儲存').closest('form'));
+
+    first.unmount();
+    await act(async () => { resolvePost({ id: 108 }); });
+
+    render(<Tasks {...props} />);
+    expect(screen.getByPlaceholderText('＋ 新增任務，按 Enter 儲存')).toHaveValue('');
+    expect(screen.queryByRole('alert')).toBeNull();
     expect(api.mock.calls.filter(([path, options]) => path === '/tasks' && options?.method === 'POST')).toHaveLength(1);
   });
 
