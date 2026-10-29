@@ -25,6 +25,7 @@ export default function HabitsView({ habits, reload }) {
   };
   // 新增習慣的伺服器端不去重，連點或同一輪 submit 重入就會建立兩筆，所以用同步 ref 上鎖到刷新結束
   const addBusyRef = useRef(false);
+  const pendingAddRef = useRef(null);
   const [addBusy, setAddBusy] = useState(false);
   const [addError, setAddError] = useState('');
   // 中文輸入法選字的 Enter 不能被當成送出
@@ -34,15 +35,33 @@ export default function HabitsView({ habits, reload }) {
   };
   async function add(e) {
     e.preventDefault();
-    if (composingRef.current || addBusyRef.current || !name.trim()) return;
+    if (composingRef.current || addBusyRef.current || pendingAddRef.current || !name.trim()) return;
     addBusyRef.current = true;
     setAddBusy(true);
     setAddError('');
+    const body = { name: name.trim(), icon, miss_policy: missPolicy, category: category.trim() };
+    pendingAddRef.current = { body, beforeIds: new Set(habits.map(h => h.id)) };
     try {
-      await api('/habits', { method: 'POST', body: { name: name.trim(), icon, miss_policy: missPolicy, category: category.trim() } });
+      await api('/habits', { method: 'POST', body });
     } catch (err) {
-      // 沒寫入：保留輸入讓使用者直接再按一次新增
-      setAddError(err.message || '習慣沒有新增成功，請再試一次。');
+      // POST 回應中斷不代表沒寫入。先讀回正式資料，避免使用者重按後建立同名習慣。
+      try {
+        const current = await api('/habits');
+        const pending = pendingAddRef.current;
+        const committed = current.some(h => !pending.beforeIds.has(h.id)
+          && h.name === pending.body.name && (h.icon || '⭐') === pending.body.icon
+          && (h.miss_policy || 'drop') === pending.body.miss_policy
+          && (h.category || '') === pending.body.category);
+        pendingAddRef.current = null;
+        if (committed) {
+          setName('');
+          setAddError('新增回應中斷，已重新載入確認。');
+          await reload();
+        } else setAddError(err.message || '習慣沒有新增成功，請再試一次。');
+      } catch {
+        setAddError('');
+        setRefreshError('無法確認習慣是否新增，請重新載入；重新載入前請勿再次新增。');
+      }
       addBusyRef.current = false;
       setAddBusy(false);
       return;
@@ -50,6 +69,7 @@ export default function HabitsView({ habits, reload }) {
     // 寫入成功和重新載入是兩個邊界：刷新失敗時習慣已存在，先清掉已送出的名稱，
     // 復原只重新載入、不重送，避免建立重複的習慣
     setName('');
+    pendingAddRef.current = null;
     try { await reload(); }
     catch { setRefreshError('習慣已新增，但畫面暫時無法重新載入。'); }
     addBusyRef.current = false;
@@ -114,7 +134,22 @@ export default function HabitsView({ habits, reload }) {
   async function retryRefresh() {
     if (refreshBusy) return;
     setRefreshBusy(true);
-    try { await reload(); setRefreshError(''); }
+    try {
+      const pending = pendingAddRef.current;
+      if (pending) {
+        const current = await api('/habits');
+        const committed = current.some(h => !pending.beforeIds.has(h.id)
+          && h.name === pending.body.name && (h.icon || '⭐') === pending.body.icon
+          && (h.miss_policy || 'drop') === pending.body.miss_policy
+          && (h.category || '') === pending.body.category);
+        pendingAddRef.current = null;
+        if (committed) {
+          setName('');
+          setAddError('新增回應中斷，已重新載入確認。');
+        } else setAddError('習慣沒有新增成功，已重新載入；可再次新增。');
+      }
+      await reload(); setRefreshError('');
+    }
     catch { setRefreshError('仍然無法重新載入，請稍後再試。'); }
     finally { setRefreshBusy(false); }
   }
