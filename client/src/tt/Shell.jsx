@@ -246,7 +246,7 @@ export default function Shell({ onLogout }) {
       {/* Global Add（§A）：Today / 計畫 / 任務 / 行事曆 共用同一顆右下 ＋。
           Study / Wizard / Plan 明細 / 設定等操作或表單狀態不顯示。 */}
       {(['today', 'plans', 'calendar'].includes(view.type) || TASK_VIEWS.includes(view.type)) && (
-        <GlobalAdd lists={lists} reload={reload} defaultReminderTime={saReminderTime}
+        <GlobalAdd lists={lists} tasks={tasks} reload={reload} defaultReminderTime={saReminderTime}
           onPlan={() => setViewRaw({ type: 'exam-wizard' })}
           onCalendarAdd={kind => { setCalAddIntent(kind); setViewRaw({ type: 'calendar' }); }} />
       )}

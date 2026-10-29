@@ -21,7 +21,7 @@ describe('Global Add 快速任務：寫入與刷新分開處理', () => {
   beforeEach(() => { api.mockReset(); });
 
   it('POST 成功但 reload 失敗：關閉表單、提示已新增，重新載入只重抓不重送 POST', async () => {
-    api.mockResolvedValue({ id: 501 });
+    api.mockImplementation((path, opts) => Promise.resolve(opts?.method === 'POST' ? { id: 501 } : []));
     const reload = vi.fn().mockRejectedValueOnce(new Error('離線')).mockResolvedValueOnce(undefined);
     await openQuickTask(reload);
     fireEvent.click(screen.getByRole('button', { name: '新增任務' }));
@@ -38,7 +38,8 @@ describe('Global Add 快速任務：寫入與刷新分開處理', () => {
 
   it('送出中連點只送一次 POST，且不能取消關閉', async () => {
     let resolvePost;
-    api.mockImplementation(() => new Promise(resolve => { resolvePost = resolve; }));
+    api.mockImplementation((path, opts) => opts?.method === 'POST'
+      ? new Promise(resolve => { resolvePost = resolve; }) : Promise.resolve([]));
     const reload = vi.fn().mockResolvedValue(undefined);
     await openQuickTask(reload);
     const submit = screen.getByRole('button', { name: '新增任務' });
@@ -54,7 +55,12 @@ describe('Global Add 快速任務：寫入與刷新分開處理', () => {
   });
 
   it('POST 失敗：顯示錯誤、保留標題，可重試', async () => {
-    api.mockRejectedValueOnce(new Error('網路中斷')).mockResolvedValueOnce({ id: 503 });
+    let postCount = 0;
+    api.mockImplementation((path, opts) => {
+      if (!opts?.method) return Promise.resolve([]);
+      postCount += 1;
+      return postCount === 1 ? Promise.reject(new Error('網路中斷')) : Promise.resolve({ id: 503 });
+    });
     const reload = vi.fn().mockResolvedValue(undefined);
     await openQuickTask(reload);
     fireEvent.click(screen.getByRole('button', { name: '新增任務' }));
@@ -66,6 +72,46 @@ describe('Global Add 快速任務：寫入與刷新分開處理', () => {
     await waitFor(() => expect(screen.queryByLabelText('任務標題')).toBeNull());
     expect(posts()).toHaveLength(2);
     expect(reload).toHaveBeenCalledTimes(1);
+  });
+
+  it('POST 已提交但回應遺失時讀回確認，不重送任務', async () => {
+    let reads = 0;
+    api.mockImplementation((path, opts) => {
+      if (opts?.method === 'POST') return Promise.reject(new Error('回應中斷'));
+      reads += 1;
+      return Promise.resolve([{ id: 504, title: '買便當', due_date: null }]);
+    });
+    const reload = vi.fn().mockResolvedValue(undefined);
+    await openQuickTask(reload);
+    fireEvent.click(screen.getByRole('button', { name: '不指定日期' }));
+    fireEvent.click(screen.getByRole('button', { name: '新增任務' }));
+
+    await waitFor(() => expect(screen.queryByLabelText('任務標題')).toBeNull());
+    expect(posts()).toHaveLength(1);
+    expect(reload).toHaveBeenCalledTimes(1);
+  });
+
+  it('POST 與確認讀取都失敗時阻擋重送，重新載入只讀取', async () => {
+    let reads = 0;
+    api.mockImplementation((path, opts) => {
+      if (opts?.method === 'POST') return Promise.reject(new Error('回應中斷'));
+      reads += 1;
+      if (reads === 1) return Promise.reject(new Error('離線'));
+      return Promise.resolve([{ id: 505, title: '買便當', due_date: null }]);
+    });
+    const reload = vi.fn().mockResolvedValue(undefined);
+    await openQuickTask(reload);
+    fireEvent.click(screen.getByRole('button', { name: '不指定日期' }));
+    fireEvent.click(screen.getByRole('button', { name: '新增任務' }));
+
+    expect(await screen.findByRole('alert')).toHaveTextContent('無法確認任務是否新增');
+    expect(screen.getByRole('button', { name: '新增任務' })).toBeDisabled();
+    fireEvent.click(screen.getByRole('button', { name: '新增任務' }));
+    expect(posts()).toHaveLength(1);
+
+    fireEvent.click(screen.getByRole('button', { name: '重新載入' }));
+    await waitFor(() => expect(screen.queryByLabelText('任務標題')).toBeNull());
+    expect(posts()).toHaveLength(1);
   });
 });
 
