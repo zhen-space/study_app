@@ -20,9 +20,11 @@ export default function RoutinesView() {
   const [exceptionBusy, setExceptionBusy] = useState(false);
   const [retrying, setRetrying] = useState(false);
   const [deleteBusyIds, setDeleteBusyIds] = useState(() => new Set());
+  const [exceptionDeleteBusyIds, setExceptionDeleteBusyIds] = useState(() => new Set());
   const pendingCreate = useRef(null);
   const pendingException = useRef(null);
   const pendingRoutineDelete = useRef(null);
+  const pendingExceptionDelete = useRef(null);
   const load = () => Promise.all([api('/routines'), api('/routine-exceptions')])
     .then(([rs, es]) => { setRoutines(rs); setExceptions(es); return rs; });
   useEffect(() => { load().catch(e => setError(e.message)); }, []);
@@ -61,12 +63,13 @@ export default function RoutinesView() {
     } else setError(originalError?.message || '固定時間沒有新增成功，已重新載入；可再次新增。');
   };
   const retryPending = async () => {
-    if (retrying || (!pendingCreate.current && !pendingException.current && !pendingRoutineDelete.current)) return;
+    if (retrying || (!pendingCreate.current && !pendingException.current && !pendingRoutineDelete.current && !pendingExceptionDelete.current)) return;
     setRetrying(true);
     try {
       if (pendingCreate.current) resolveCreate(await api('/routines'));
       else if (pendingException.current) resolveException(await api('/routine-exceptions'));
-      else resolveRoutineDelete(await api('/routines'));
+      else if (pendingRoutineDelete.current) resolveRoutineDelete(await api('/routines'));
+      else resolveExceptionDelete(await api('/routine-exceptions'));
     }
     catch { setError('仍然無法重新載入，請稍後再試。'); }
     finally { setRetrying(false); }
@@ -127,11 +130,36 @@ export default function RoutinesView() {
     if (!current.some(r => r.id === id)) setError('移除回應中斷，已重新載入確認。');
     else setError(originalError?.message || '固定時間沒有移除成功，已重新載入；可再次移除。');
   };
+  const removeException = async item => {
+    if (exceptionDeleteBusyIds.has(item.id) || pendingExceptionDelete.current) return;
+    pendingExceptionDelete.current = item.id;
+    setExceptionDeleteBusyIds(ids => new Set(ids).add(item.id)); setError('');
+    try { await api(`/routine-exceptions/${item.id}`, { method: 'DELETE' }); }
+    catch (e) {
+      try { resolveExceptionDelete(await api('/routine-exceptions'), e); }
+      catch { setError('無法確認例外日是否移除，請重新載入；重新載入前請勿再次移除。'); }
+      setExceptionDeleteBusyIds(ids => { const next = new Set(ids); next.delete(item.id); return next; });
+      return;
+    }
+    pendingExceptionDelete.current = null;
+    setExceptions(list => list.filter(e => e.id !== item.id));
+    try { await load(); }
+    catch { setError('例外日已移除，但畫面暫時無法重新載入。'); }
+    finally { setExceptionDeleteBusyIds(ids => { const next = new Set(ids); next.delete(item.id); return next; }); }
+  };
+  const resolveExceptionDelete = (current, originalError) => {
+    setExceptions(current);
+    const id = pendingExceptionDelete.current;
+    if (id == null) return;
+    pendingExceptionDelete.current = null;
+    if (!current.some(e => e.id === id)) setError('移除例外日回應中斷，已重新載入確認。');
+    else setError(originalError?.message || '例外日沒有移除成功，已重新載入；可再次移除。');
+  };
   // §J：全 App 的時間設定集中在這一頁（課表／固定行程／作息／可讀書時間／例外日），
   // 從行事曆右上「時間設定」或側欄進來；設定不再散在各處。
   return <div className="main"><PageHeader title="時間設定" subtitle="課表、固定行程、作息、可讀書時間與例外日；會套用到所有計畫" />
     <div className="main-body">
-      {error && <SurfaceCard tone="warning"><div role="alert">{error}</div>{(pendingCreate.current || pendingException.current || pendingRoutineDelete.current) && <Button size="sm" variant="tertiary" disabled={retrying} onClick={retryPending}>{retrying ? '重新載入中…' : '重新載入'}</Button>}</SurfaceCard>}
+      {error && <SurfaceCard tone="warning"><div role="alert">{error}</div>{(pendingCreate.current || pendingException.current || pendingRoutineDelete.current || pendingExceptionDelete.current) && <Button size="sm" variant="tertiary" disabled={retrying} onClick={retryPending}>{retrying ? '重新載入中…' : '重新載入'}</Button>}</SurfaceCard>}
       <SurfaceCard large><div className="ui-section-title">新增固定時間</div>
         <select value={form.type} onChange={e => setForm(x => ({ ...x, type: e.target.value }))}>{TYPES.map(([v, n]) => <option value={v} key={v}>{n}</option>)}</select>
         <input placeholder="名稱（例如：數學課、晚自習）" value={form.title} onChange={e => setForm(x => ({ ...x, title: e.target.value }))} />
@@ -150,7 +178,7 @@ export default function RoutinesView() {
         <input placeholder="說明（選填）" value={exception.title} onChange={e => setException(x => ({ ...x, title: e.target.value }))} />
         <div className="row" style={{ gap: 8 }}><input type="time" aria-label="例外開始時間" value={exception.start_time} onChange={e => setException(x => ({ ...x, start_time: e.target.value }))} /><span>至</span><input type="time" aria-label="例外結束時間" value={exception.end_time} onChange={e => setException(x => ({ ...x, end_time: e.target.value }))} /></div>
         <Button variant="secondary" block disabled={exceptionBusy || !!pendingException.current} onClick={createException}>{exceptionBusy ? '新增中…' : '加入例外日'}</Button>
-        {exceptions.map(e => <div className="ui-row" key={e.id}><div className="ui-row-main"><div className="ui-row-title">{e.date}・{e.kind === 'available' ? '額外可讀書' : '不可讀書'}</div><div className="ui-row-sub">{e.title || '例外時間'} {e.start_time && `${e.start_time}–${e.end_time}`}</div></div><Button size="sm" variant="tertiary" onClick={async () => { await api(`/routine-exceptions/${e.id}`, { method: 'DELETE' }); load(); }}>移除</Button></div>)}
+        {exceptions.map(e => <div className="ui-row" key={e.id}><div className="ui-row-main"><div className="ui-row-title">{e.date}・{e.kind === 'available' ? '額外可讀書' : '不可讀書'}</div><div className="ui-row-sub">{e.title || '例外時間'} {e.start_time && `${e.start_time}–${e.end_time}`}</div></div><Button size="sm" variant="tertiary" disabled={exceptionDeleteBusyIds.has(e.id) || !!pendingExceptionDelete.current} onClick={() => removeException(e)}>{exceptionDeleteBusyIds.has(e.id) ? '移除中…' : '移除'}</Button></div>)}
       </SurfaceCard>
     </div>
   </div>;
