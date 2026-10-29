@@ -19,8 +19,10 @@ export default function RoutinesView() {
   const [createBusy, setCreateBusy] = useState(false);
   const [exceptionBusy, setExceptionBusy] = useState(false);
   const [retrying, setRetrying] = useState(false);
+  const [deleteBusyIds, setDeleteBusyIds] = useState(() => new Set());
   const pendingCreate = useRef(null);
   const pendingException = useRef(null);
+  const pendingRoutineDelete = useRef(null);
   const load = () => Promise.all([api('/routines'), api('/routine-exceptions')])
     .then(([rs, es]) => { setRoutines(rs); setExceptions(es); return rs; });
   useEffect(() => { load().catch(e => setError(e.message)); }, []);
@@ -59,11 +61,12 @@ export default function RoutinesView() {
     } else setError(originalError?.message || '固定時間沒有新增成功，已重新載入；可再次新增。');
   };
   const retryPending = async () => {
-    if (retrying || (!pendingCreate.current && !pendingException.current)) return;
+    if (retrying || (!pendingCreate.current && !pendingException.current && !pendingRoutineDelete.current)) return;
     setRetrying(true);
     try {
       if (pendingCreate.current) resolveCreate(await api('/routines'));
-      else resolveException(await api('/routine-exceptions'));
+      else if (pendingException.current) resolveException(await api('/routine-exceptions'));
+      else resolveRoutineDelete(await api('/routines'));
     }
     catch { setError('仍然無法重新載入，請稍後再試。'); }
     finally { setRetrying(false); }
@@ -99,11 +102,36 @@ export default function RoutinesView() {
       setError('新增例外日回應中斷，已重新載入確認。');
     } else setError(originalError?.message || '例外日沒有新增成功，已重新載入；可再次新增。');
   };
+  const removeRoutine = async routine => {
+    if (deleteBusyIds.has(routine.id) || pendingRoutineDelete.current) return;
+    pendingRoutineDelete.current = routine.id;
+    setDeleteBusyIds(ids => new Set(ids).add(routine.id)); setError('');
+    try { await api(`/routines/${routine.id}`, { method: 'DELETE' }); }
+    catch (e) {
+      try { resolveRoutineDelete(await api('/routines'), e); }
+      catch { setError('無法確認固定時間是否移除，請重新載入；重新載入前請勿再次移除。'); }
+      setDeleteBusyIds(ids => { const next = new Set(ids); next.delete(routine.id); return next; });
+      return;
+    }
+    pendingRoutineDelete.current = null;
+    setRoutines(list => list.filter(r => r.id !== routine.id));
+    try { await load(); }
+    catch { setError('固定時間已移除，但畫面暫時無法重新載入。'); }
+    finally { setDeleteBusyIds(ids => { const next = new Set(ids); next.delete(routine.id); return next; }); }
+  };
+  const resolveRoutineDelete = (current, originalError) => {
+    setRoutines(current);
+    const id = pendingRoutineDelete.current;
+    if (id == null) return;
+    pendingRoutineDelete.current = null;
+    if (!current.some(r => r.id === id)) setError('移除回應中斷，已重新載入確認。');
+    else setError(originalError?.message || '固定時間沒有移除成功，已重新載入；可再次移除。');
+  };
   // §J：全 App 的時間設定集中在這一頁（課表／固定行程／作息／可讀書時間／例外日），
   // 從行事曆右上「時間設定」或側欄進來；設定不再散在各處。
   return <div className="main"><PageHeader title="時間設定" subtitle="課表、固定行程、作息、可讀書時間與例外日；會套用到所有計畫" />
     <div className="main-body">
-      {error && <SurfaceCard tone="warning"><div role="alert">{error}</div>{(pendingCreate.current || pendingException.current) && <Button size="sm" variant="tertiary" disabled={retrying} onClick={retryPending}>{retrying ? '重新載入中…' : '重新載入'}</Button>}</SurfaceCard>}
+      {error && <SurfaceCard tone="warning"><div role="alert">{error}</div>{(pendingCreate.current || pendingException.current || pendingRoutineDelete.current) && <Button size="sm" variant="tertiary" disabled={retrying} onClick={retryPending}>{retrying ? '重新載入中…' : '重新載入'}</Button>}</SurfaceCard>}
       <SurfaceCard large><div className="ui-section-title">新增固定時間</div>
         <select value={form.type} onChange={e => setForm(x => ({ ...x, type: e.target.value }))}>{TYPES.map(([v, n]) => <option value={v} key={v}>{n}</option>)}</select>
         <input placeholder="名稱（例如：數學課、晚自習）" value={form.title} onChange={e => setForm(x => ({ ...x, title: e.target.value }))} />
@@ -114,7 +142,7 @@ export default function RoutinesView() {
       <section className="ui-section"><div className="ui-section-title">固定時間</div>
         {routines.length === 0 ? <EmptyState title="還沒有固定時間" description="加入課表、固定行程或可讀書時間後，排程會自動避開。" /> : routines.map(r => {
           let weekdays = []; try { weekdays = JSON.parse(r.weekdays || '[]'); } catch {}
-          return <SurfaceCard key={r.id} style={{ marginBottom: 8 }}><div className="row"><div><b>{r.title || typeName(r.type)}</b><div className="ui-meta">{typeName(r.type)}・{weekdays.map(d => `週${DAYS[d]}`).join('、')}・{r.start_time}–{r.end_time}</div></div><Button size="sm" variant="tertiary" style={{ marginLeft: 'auto' }} onClick={async () => { await api(`/routines/${r.id}`, { method: 'DELETE' }); load(); }}>移除</Button></div></SurfaceCard>;
+          return <SurfaceCard key={r.id} style={{ marginBottom: 8 }}><div className="row"><div><b>{r.title || typeName(r.type)}</b><div className="ui-meta">{typeName(r.type)}・{weekdays.map(d => `週${DAYS[d]}`).join('、')}・{r.start_time}–{r.end_time}</div></div><Button size="sm" variant="tertiary" disabled={deleteBusyIds.has(r.id) || !!pendingRoutineDelete.current} style={{ marginLeft: 'auto' }} onClick={() => removeRoutine(r)}>{deleteBusyIds.has(r.id) ? '移除中…' : '移除'}</Button></div></SurfaceCard>;
         })}
       </section>
       <SurfaceCard><div className="ui-section-title">例外日</div><input type="date" value={exception.date} onChange={e => setException(x => ({ ...x, date: e.target.value }))} />
