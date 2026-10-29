@@ -44,6 +44,7 @@ export default function MemoView() {
   const [categoryNeedsReload, setCategoryNeedsReload] = useState(false);
   const [categoryReloading, setCategoryReloading] = useState(false);
   const categoryBusy = useRef(false);
+  const pendingCategoryCreate = useRef(null);
   const [createError, setCreateError] = useState('');
   const [createNeedsReload, setCreateNeedsReload] = useState(false);
   const [createBusy, setCreateBusy] = useState(false);
@@ -168,10 +169,38 @@ export default function MemoView() {
     finally { setDeleteReloading(false); }
   }
   async function newCat() {
+    if (categoryBusy.current || categoryNeedsReload) return;
     const n = prompt('新分類名稱：', '');
     if (!n || !n.trim()) return;
-    const c = await api('/memo-cats', { method: 'POST', body: { name: n.trim() } }).catch(() => null);
-    if (c) { setCats(l => [...l, c]); setCategory(c.name); }
+    const name = n.trim();
+    pendingCategoryCreate.current = { name, beforeIds: new Set(cats.map(c => c.id)) };
+    categoryBusy.current = true;
+    setCategoryError(''); setCategoryNeedsReload(false);
+    try {
+      const c = await api('/memo-cats', { method: 'POST', body: { name } });
+      setCats(l => [...l, c]); setCategory(c.name); pendingCategoryCreate.current = null;
+    } catch {
+      try {
+        const [nextMemos, nextCats] = await Promise.all([api('/memos'), api('/memo-cats')]);
+        setMemos(nextMemos); resolveCategoryCreate(nextCats);
+      } catch {
+        setCategoryError('無法確認是否新增分類，請重新載入；重新載入前請勿再次新增。');
+        setCategoryNeedsReload(true);
+      }
+    } finally { categoryBusy.current = false; }
+  }
+  function resolveCategoryCreate(nextCats) {
+    setCats(nextCats);
+    const pending = pendingCategoryCreate.current;
+    if (!pending) return false;
+    const committed = nextCats.find(c => !pending.beforeIds.has(c.id) && c.name === pending.name);
+    if (committed) {
+      setCategory(committed.name);
+      setCategoryError('新增分類回應中斷，已重新載入確認。');
+    } else setCategoryError('新增分類失敗，已重新載入；可再次新增。');
+    pendingCategoryCreate.current = null;
+    setCategoryNeedsReload(false);
+    return true;
   }
   async function renameCat(c) {
     const n = prompt('改分類名稱：', c.name);
@@ -216,8 +245,12 @@ export default function MemoView() {
     setCategoryReloading(true);
     try {
       const [nextMemos, nextCats] = await Promise.all([api('/memos'), api('/memo-cats')]);
-      setMemos(nextMemos); setCats(nextCats); setCategoryError(''); setCategoryNeedsReload(false);
-      if (category && !nextCats.some(c => c.name === category)) setCategory('');
+      setMemos(nextMemos);
+      const resolvedCreate = resolveCategoryCreate(nextCats);
+      if (!resolvedCreate) {
+        setCats(nextCats); setCategoryError(''); setCategoryNeedsReload(false);
+        if (category && !nextCats.some(c => c.name === category)) setCategory('');
+      }
     } catch { setCategoryError('仍然無法重新載入，請稍後再試。'); setCategoryNeedsReload(true); }
     finally { setCategoryReloading(false); }
   }
