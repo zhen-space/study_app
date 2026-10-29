@@ -17,8 +17,10 @@ export default function RoutinesView() {
   const [exception, setException] = useState({ date: '', kind: 'unavailable', title: '', start_time: '', end_time: '' });
   const [error, setError] = useState('');
   const [createBusy, setCreateBusy] = useState(false);
+  const [exceptionBusy, setExceptionBusy] = useState(false);
   const [retrying, setRetrying] = useState(false);
   const pendingCreate = useRef(null);
+  const pendingException = useRef(null);
   const load = () => Promise.all([api('/routines'), api('/routine-exceptions')])
     .then(([rs, es]) => { setRoutines(rs); setExceptions(es); return rs; });
   useEffect(() => { load().catch(e => setError(e.message)); }, []);
@@ -56,22 +58,52 @@ export default function RoutinesView() {
       setError('新增回應中斷，已重新載入確認。');
     } else setError(originalError?.message || '固定時間沒有新增成功，已重新載入；可再次新增。');
   };
-  const retryCreate = async () => {
-    if (retrying || !pendingCreate.current) return;
+  const retryPending = async () => {
+    if (retrying || (!pendingCreate.current && !pendingException.current)) return;
     setRetrying(true);
-    try { resolveCreate(await api('/routines')); }
+    try {
+      if (pendingCreate.current) resolveCreate(await api('/routines'));
+      else resolveException(await api('/routine-exceptions'));
+    }
     catch { setError('仍然無法重新載入，請稍後再試。'); }
     finally { setRetrying(false); }
   };
   const createException = async () => {
-    try { setError(''); await api('/routine-exceptions', { method: 'POST', body: exception }); setException({ date: '', kind: 'unavailable', title: '', start_time: '', end_time: '' }); load(); }
-    catch (e) { setError(e.message); }
+    if (exceptionBusy || pendingException.current) return;
+    const body = { ...exception };
+    pendingException.current = { body, beforeIds: new Set(exceptions.map(e => e.id)) };
+    setExceptionBusy(true); setError('');
+    try { await api('/routine-exceptions', { method: 'POST', body }); }
+    catch (e) {
+      try { resolveException(await api('/routine-exceptions'), e); }
+      catch { setError('無法確認例外日是否新增，請重新載入；重新載入前請勿再次新增。'); }
+      setExceptionBusy(false);
+      return;
+    }
+    pendingException.current = null;
+    setException({ date: '', kind: 'unavailable', title: '', start_time: '', end_time: '' });
+    try { await load(); }
+    catch { setError('例外日已新增，但畫面暫時無法重新載入。'); }
+    finally { setExceptionBusy(false); }
+  };
+  const resolveException = (current, originalError) => {
+    setExceptions(current);
+    const pending = pendingException.current;
+    if (!pending) return;
+    const committed = current.some(e => !pending.beforeIds.has(e.id) && e.date === pending.body.date
+      && e.kind === pending.body.kind && (e.title || '') === (pending.body.title || '')
+      && (e.start_time || '') === (pending.body.start_time || '') && (e.end_time || '') === (pending.body.end_time || ''));
+    pendingException.current = null;
+    if (committed) {
+      setException({ date: '', kind: 'unavailable', title: '', start_time: '', end_time: '' });
+      setError('新增例外日回應中斷，已重新載入確認。');
+    } else setError(originalError?.message || '例外日沒有新增成功，已重新載入；可再次新增。');
   };
   // §J：全 App 的時間設定集中在這一頁（課表／固定行程／作息／可讀書時間／例外日），
   // 從行事曆右上「時間設定」或側欄進來；設定不再散在各處。
   return <div className="main"><PageHeader title="時間設定" subtitle="課表、固定行程、作息、可讀書時間與例外日；會套用到所有計畫" />
     <div className="main-body">
-      {error && <SurfaceCard tone="warning"><div role="alert">{error}</div>{pendingCreate.current && <Button size="sm" variant="tertiary" disabled={retrying} onClick={retryCreate}>{retrying ? '重新載入中…' : '重新載入'}</Button>}</SurfaceCard>}
+      {error && <SurfaceCard tone="warning"><div role="alert">{error}</div>{(pendingCreate.current || pendingException.current) && <Button size="sm" variant="tertiary" disabled={retrying} onClick={retryPending}>{retrying ? '重新載入中…' : '重新載入'}</Button>}</SurfaceCard>}
       <SurfaceCard large><div className="ui-section-title">新增固定時間</div>
         <select value={form.type} onChange={e => setForm(x => ({ ...x, type: e.target.value }))}>{TYPES.map(([v, n]) => <option value={v} key={v}>{n}</option>)}</select>
         <input placeholder="名稱（例如：數學課、晚自習）" value={form.title} onChange={e => setForm(x => ({ ...x, title: e.target.value }))} />
@@ -89,7 +121,7 @@ export default function RoutinesView() {
         <select value={exception.kind} onChange={e => setException(x => ({ ...x, kind: e.target.value }))}><option value="unavailable">不可讀書</option><option value="available">額外可讀書</option></select>
         <input placeholder="說明（選填）" value={exception.title} onChange={e => setException(x => ({ ...x, title: e.target.value }))} />
         <div className="row" style={{ gap: 8 }}><input type="time" aria-label="例外開始時間" value={exception.start_time} onChange={e => setException(x => ({ ...x, start_time: e.target.value }))} /><span>至</span><input type="time" aria-label="例外結束時間" value={exception.end_time} onChange={e => setException(x => ({ ...x, end_time: e.target.value }))} /></div>
-        <Button variant="secondary" block onClick={createException}>加入例外日</Button>
+        <Button variant="secondary" block disabled={exceptionBusy || !!pendingException.current} onClick={createException}>{exceptionBusy ? '新增中…' : '加入例外日'}</Button>
         {exceptions.map(e => <div className="ui-row" key={e.id}><div className="ui-row-main"><div className="ui-row-title">{e.date}・{e.kind === 'available' ? '額外可讀書' : '不可讀書'}</div><div className="ui-row-sub">{e.title || '例外時間'} {e.start_time && `${e.start_time}–${e.end_time}`}</div></div><Button size="sm" variant="tertiary" onClick={async () => { await api(`/routine-exceptions/${e.id}`, { method: 'DELETE' }); load(); }}>移除</Button></div>)}
       </SurfaceCard>
     </div>
