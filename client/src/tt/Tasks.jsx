@@ -936,6 +936,13 @@ export default function Tasks({ view, tasks, lists, filters, habits = [], reload
   const overdueRescheduleBusyRef = useRef(false);
   const [overdueRescheduleBusy, setOverdueRescheduleBusy] = useState(false);
   const duplicateBusyRef = useRef(false);
+  const duplicateMatches = (candidate, body) => candidate.title === body.title
+    && (candidate.list_id ?? null) === body.list_id
+    && (candidate.notes || '') === body.notes
+    && (candidate.due_date || null) === body.due_date
+    && (candidate.due_time || null) === body.due_time
+    && (Number(candidate.priority) || 0) === body.priority
+    && (candidate.recurring || null) === body.recurring;
   const beginMutation = id => {
     if (mutationIds.current.has(id)) return false;
     mutationIds.current.add(id);
@@ -986,12 +993,27 @@ export default function Tasks({ view, tasks, lists, filters, habits = [], reload
       estimated_minutes: t.estimated_minutes ?? null,
       task_kind: 'task',
     };
+    const beforeIds = new Set(tasks.map(task => task.id));
+    let committed = false;
     try {
       await api('/tasks', { method: 'POST', body });
+      committed = true;
     } catch (e) {
-      setRefreshError(e.message || '複製任務失敗，請再試一次。');
-      duplicateBusyRef.current = false;
-      return;
+      // POST 可能已寫入、只有回應遺失。先讀回確認，避免使用者重按後多一筆。
+      try {
+        const latest = await api('/tasks');
+        committed = Array.isArray(latest)
+          && latest.some(candidate => !beforeIds.has(candidate.id) && duplicateMatches(candidate, body));
+        if (!committed) {
+          setRefreshError(e.message || '複製任務失敗，請再試一次。');
+          duplicateBusyRef.current = false;
+          return;
+        }
+      } catch {
+        // 無法判定是否已寫入時維持鎖定；重新載入成功後才允許下一次複製。
+        setRefreshError('無法確認任務是否已複製，請先重新載入；重新載入前請勿再次複製。');
+        return;
+      }
     }
     showToast(`已複製「${t.title}」`);
     try {
@@ -1199,6 +1221,7 @@ export default function Tasks({ view, tasks, lists, filters, habits = [], reload
     try {
       await (needsAll ? reload() : reload('tasks'));
       setRefreshError('');
+      duplicateBusyRef.current = false;
       if (needsAll) setRefreshNeedsAll(false);
     }
     catch { setRefreshError('仍然無法重新載入，請稍後再試。'); }

@@ -55,4 +55,48 @@ describe('複製任務', () => {
     fireEvent.click(screen.getByRole('button', { name: '更多' }));
     expect(screen.queryByRole('menuitem', { name: '複製任務' })).not.toBeInTheDocument();
   });
+
+  it('POST 已寫入但回應遺失時讀回確認，不會再次複製', async () => {
+    const copied = { ...baseTask, id: 2, subtasks: [{ title: '第一章', done: false }] };
+    api.mockImplementation((url, options) => {
+      if (url === '/tasks' && options?.method === 'POST') return Promise.reject(new Error('回應中斷'));
+      if (url === '/tasks') return Promise.resolve([baseTask, copied]);
+      return Promise.resolve([]);
+    });
+    const reload = vi.fn().mockResolvedValue();
+    render(<Tasks view={{ type: 'tasks' }} tasks={[baseTask]} lists={[{ id: 10, name: '物理' }]} filters={[]} reload={reload} title="任務" />);
+    fireEvent.click(screen.getByText('整理物理筆記'));
+    fireEvent.click(screen.getByRole('button', { name: '更多' }));
+    fireEvent.click(screen.getByRole('menuitem', { name: '複製任務' }));
+
+    expect(await screen.findByText('已複製「整理物理筆記」')).toBeInTheDocument();
+    expect(api.mock.calls.filter(([url, options]) => url === '/tasks' && options?.method === 'POST')).toHaveLength(1);
+    expect(reload).toHaveBeenCalledWith('tasks');
+  });
+
+  it('POST 與確認讀取都失敗時鎖住重送，重新載入後才解除', async () => {
+    let postCount = 0;
+    api.mockImplementation((url, options) => {
+      if (url === '/tasks' && options?.method === 'POST') {
+        postCount += 1;
+        return Promise.reject(new Error('回應中斷'));
+      }
+      if (url === '/tasks') return Promise.reject(new Error('離線'));
+      return Promise.resolve([]);
+    });
+    const reload = vi.fn().mockResolvedValue();
+    render(<Tasks view={{ type: 'tasks' }} tasks={[baseTask]} lists={[{ id: 10, name: '物理' }]} filters={[]} reload={reload} title="任務" />);
+    fireEvent.click(screen.getByText('整理物理筆記'));
+    fireEvent.click(screen.getByRole('button', { name: '更多' }));
+    fireEvent.click(screen.getByRole('menuitem', { name: '複製任務' }));
+
+    expect(await screen.findByRole('alert')).toHaveTextContent('無法確認任務是否已複製');
+    fireEvent.click(screen.getByRole('button', { name: '更多' }));
+    fireEvent.click(screen.getByRole('menuitem', { name: '複製任務' }));
+    expect(postCount).toBe(1);
+
+    fireEvent.click(screen.getByRole('button', { name: '重新載入' }));
+    await waitFor(() => expect(screen.queryByRole('alert')).not.toBeInTheDocument());
+    expect(reload).toHaveBeenCalledWith('tasks');
+  });
 });
