@@ -124,7 +124,7 @@ describe('習慣頁新增習慣的 IME／防重／寫入／刷新邊界', () => 
   });
 
   it('寫入失敗時顯示錯誤、保留所有輸入、不刷新，直接再按一次即可重試', async () => {
-    api.mockRejectedValueOnce(new Error('網路連線中斷'));
+    api.mockRejectedValueOnce(new Error('網路連線中斷')).mockResolvedValueOnce([]);
     const reload = mount();
     const [iconSelect, policySelect] = screen.getAllByRole('combobox').filter(el => el.tagName === 'SELECT');
 
@@ -152,13 +152,50 @@ describe('習慣頁新增習慣的 IME／防重／寫入／刷新邊界', () => 
   });
 
   it('沒有錯誤訊息的寫入失敗退回預設繁中提示', async () => {
-    api.mockRejectedValueOnce(new Error(''));
+    api.mockRejectedValueOnce(new Error('')).mockResolvedValueOnce([]);
     mount();
 
     fireEvent.change(nameInput(), { target: { value: '喝水' } });
     await act(async () => { submit(); });
 
     expect(screen.getByRole('alert')).toHaveTextContent('習慣沒有新增成功，請再試一次。');
+  });
+
+  it('POST 已提交但回應遺失時讀回確認，不重送新增', async () => {
+    api.mockRejectedValueOnce(new Error('回應中斷')).mockResolvedValueOnce([{
+      id: 31, name: '背單字', icon: '⭐', miss_policy: 'drop', category: '英文', checkins: [],
+    }]);
+    const reload = mount();
+    fireEvent.change(nameInput(), { target: { value: '背單字' } });
+    fireEvent.change(catInput(), { target: { value: '英文' } });
+
+    await act(async () => { submit(); });
+
+    expect(screen.getByRole('alert')).toHaveTextContent('已重新載入確認');
+    expect(nameInput()).toHaveValue('');
+    expect(createCalls()).toHaveLength(1);
+    expect(reload).toHaveBeenCalledTimes(1);
+  });
+
+  it('POST 與確認讀取都失敗時阻擋重送，重新載入只讀取', async () => {
+    api.mockRejectedValueOnce(new Error('回應中斷'))
+      .mockRejectedValueOnce(new Error('離線'))
+      .mockResolvedValueOnce([{
+        id: 31, name: '背單字', icon: '⭐', miss_policy: 'drop', category: '', checkins: [],
+      }]);
+    const reload = mount();
+    fireEvent.change(nameInput(), { target: { value: '背單字' } });
+
+    await act(async () => { submit(); });
+    expect(screen.getByRole('alert')).toHaveTextContent('無法確認習慣是否新增');
+    await act(async () => { submit(); });
+    expect(createCalls()).toHaveLength(1);
+
+    fireEvent.click(screen.getByRole('button', { name: '重新載入' }));
+    await waitFor(() => expect(screen.getByRole('alert')).toHaveTextContent('已重新載入確認'));
+    expect(nameInput()).toHaveValue('');
+    expect(createCalls()).toHaveLength(1);
+    expect(reload).toHaveBeenCalledTimes(1);
   });
 
   it('已寫入但刷新失敗：不誤報新增失敗、清空已送出名稱，重試只重新載入不重送', async () => {
