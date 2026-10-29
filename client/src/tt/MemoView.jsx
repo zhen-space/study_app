@@ -44,6 +44,11 @@ export default function MemoView() {
   const [categoryNeedsReload, setCategoryNeedsReload] = useState(false);
   const [categoryReloading, setCategoryReloading] = useState(false);
   const categoryBusy = useRef(false);
+  const [createError, setCreateError] = useState('');
+  const [createNeedsReload, setCreateNeedsReload] = useState(false);
+  const [createBusy, setCreateBusy] = useState(false);
+  const [createReloading, setCreateReloading] = useState(false);
+  const pendingCreate = useRef(null);
   const load = () => {
     api('/memos').then(setMemos).catch(() => {});
     api('/memo-cats').then(setCats).catch(() => {});
@@ -57,11 +62,42 @@ export default function MemoView() {
 
   async function add(e) {
     e.preventDefault();
-    if (!content.trim()) return;
-    const m = await api('/memos', { method: 'POST', body: { content: content.trim(), category, due_date: due } });
-    setMemos(list => [...list, m]);
-    setContent('');
-    if (category && !catNames.includes(category)) api('/memo-cats').then(setCats).catch(() => {});
+    if (!content.trim() || createBusy || pendingCreate.current) return;
+    const payload = { content: content.trim(), category, due_date: due };
+    pendingCreate.current = { payload, beforeIds: new Set(memos.map(m => m.id)) };
+    setCreateBusy(true); setCreateError(''); setCreateNeedsReload(false);
+    try {
+      const m = await api('/memos', { method: 'POST', body: payload });
+      setMemos(list => [...list, m]); setContent(''); pendingCreate.current = null;
+      if (category && !catNames.includes(category)) api('/memo-cats').then(setCats).catch(() => {});
+    } catch {
+      try { resolveCreate(await api('/memos')); }
+      catch {
+        setCreateError('無法確認是否新增，請重新載入；重新載入前請勿再次新增。');
+        setCreateNeedsReload(true);
+      }
+    } finally { setCreateBusy(false); }
+  }
+  function resolveCreate(current) {
+    setMemos(current);
+    const pending = pendingCreate.current;
+    if (!pending) return;
+    const { payload, beforeIds } = pending;
+    const committed = current.some(m => !beforeIds.has(m.id) && m.content === payload.content
+      && (m.category || '') === (payload.category || '') && (m.due_date || '') === (payload.due_date || ''));
+    if (committed) {
+      setContent('');
+      setCreateError('新增回應中斷，已重新載入確認。');
+    } else setCreateError('新增失敗，已重新載入；內容仍保留，可再次送出。');
+    pendingCreate.current = null;
+    setCreateNeedsReload(false);
+  }
+  async function retryCreateLoad() {
+    if (createReloading) return;
+    setCreateReloading(true);
+    try { resolveCreate(await api('/memos')); }
+    catch { setCreateError('仍然無法重新載入，請稍後再試。'); setCreateNeedsReload(true); }
+    finally { setCreateReloading(false); }
   }
   async function patch(id, body) {
     if (updateBusy.current.has(id) || updateBlockedIds.has(id)) return;
@@ -263,8 +299,14 @@ export default function MemoView() {
           {categoryNeedsReload && <button type="button" className="btn sm ghost" disabled={categoryReloading}
             onClick={retryCategoryLoad} style={{ marginLeft: 8 }}>重新載入</button>}
         </div>}
+        {createError && <div role="alert" className="form-error" style={{ marginBottom: 8 }}>
+          {createError}
+          {createNeedsReload && <button type="button" className="btn sm ghost" disabled={createReloading}
+            onClick={retryCreateLoad} style={{ marginLeft: 8 }}>重新載入</button>}
+        </div>}
         <form onSubmit={add} style={{ margin: '6px 0' }}>
-          <input placeholder="要記下什麼？" value={content} onChange={e => setContent(e.target.value)} style={{ width: '100%' }} />
+          <input placeholder="要記下什麼？" value={content} disabled={createBusy || !!pendingCreate.current}
+            onChange={e => setContent(e.target.value)} style={{ width: '100%' }} />
           <div style={{ marginTop: 6 }}>
             <span className="muted" style={{ fontSize: 12 }}>分類</span>
             <CatPicker value={category} onPick={setCategory} />
@@ -275,7 +317,7 @@ export default function MemoView() {
             {due
               ? <button type="button" className="btn sm ghost" onClick={() => setDue('')}>不用日期</button>
               : <button type="button" className="btn sm ghost" onClick={() => setDue(today())}>今天</button>}
-            <button className="btn sm">加入</button>
+            <button className="btn sm" disabled={createBusy || !!pendingCreate.current}>加入</button>
           </div>
         </form>
 
