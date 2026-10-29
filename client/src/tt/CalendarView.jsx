@@ -901,7 +901,7 @@ export default function CalendarView({ tasks, reload, lists = [], addIntent = nu
 
       {/* 編輯行程：同樣是 Apple 日曆式版面 */}
       {adjustBlock && adjustBlock.task && <AdjustBlockSheet block={adjustBlock.block} task={adjustBlock.task} versionId={schedule.version?.id} reload={async () => { await reload(); await schedule.reload(); }} onClose={() => setAdjustBlock(null)} />}
-      {saEdit && <SchoolAssignmentForm lists={lists} task={saEdit} onClose={() => setSaEdit(null)} onSaved={refreshAfterSaSave} />}
+      {saEdit && <SchoolAssignmentForm lists={lists} tasks={tasks} task={saEdit} onClose={() => setSaEdit(null)} onSaved={refreshAfterSaSave} />}
       {saRefreshError && (
         <div className="toast" role="alert">
           <span>{saRefreshError}</span>
