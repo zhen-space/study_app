@@ -11,7 +11,7 @@ import {
 //
 // 期限一律走 deadline_date / deadline_time，絕不寫 due_date / due_time（後者是
 // 排程結果的鏡射）。清單只列自己的科目：學校作業不能建立在分享進來的清單上。
-export default function SchoolAssignmentForm({ lists = [], task = null, defaultReminderTime = DEFAULT_REMINDER_TIME, onClose, onSaved }) {
+export default function SchoolAssignmentForm({ lists = [], tasks = [], task = null, defaultReminderTime = DEFAULT_REMINDER_TIME, onClose, onSaved }) {
   const editing = !!task;
   const ownLists = useMemo(() => lists.filter(l => !l.shared_in), [lists]);
   const [f, setF] = useState(() => ({
@@ -31,10 +31,44 @@ export default function SchoolAssignmentForm({ lists = [], task = null, defaultR
   // state 要等 React 重新 render 才會更新；手機連點或同一輪事件內重複 submit
   // 可能在 busy 變成 true 前再進來。ref 在第一個請求前同步上鎖。
   const submitBusy = useRef(false);
+  const pendingSave = useRef(null);
   const up = patch => setF(v => ({ ...v, ...patch }));
 
   const needsCustomDate = f.reminder_sel === 'custom';
   const remindsAtAll = f.reminder_sel !== 'none';
+
+  const matchesSave = (candidate, body) => candidate.task_kind === 'school_assignment'
+    && Number(candidate.list_id) === body.list_id
+    && candidate.title === body.title
+    && candidate.school_assignment_type === body.school_assignment_type
+    && candidate.deadline_date === body.deadline_date
+    && (candidate.deadline_time || null) === body.deadline_time;
+
+  async function finishSaved(saved) {
+    pendingSave.current = null;
+    try { await onSaved?.(saved); } catch { /* 資料已寫入；下次 reload 仍會讀回 */ }
+    onClose?.();
+  }
+
+  async function resolvePending() {
+    const pending = pendingSave.current;
+    if (!pending) return;
+    setBusy(true);
+    try {
+      const latest = await api('/tasks');
+      const saved = Array.isArray(latest) && latest.find(candidate =>
+        (editing ? candidate.id === task.id : !pending.beforeIds.has(candidate.id))
+        && matchesSave(candidate, pending.body));
+      if (saved) { await finishSaved(saved); return; }
+      pendingSave.current = null;
+      setErr(pending.error?.message || '儲存失敗');
+      submitBusy.current = false;
+      setBusy(false);
+    } catch {
+      setErr('仍然無法確認作業是否已儲存，請稍後再重新載入。');
+      setBusy(false);
+    }
+  }
 
   async function submit(e) {
     e.preventDefault();
@@ -61,33 +95,34 @@ export default function SchoolAssignmentForm({ lists = [], task = null, defaultR
     };
     submitBusy.current = true;
     setBusy(true);
+    pendingSave.current = { body, beforeIds: new Set(tasks.map(item => item.id)), error: null };
     let saved;
     try {
       saved = editing
         ? await api(`/tasks/${task.id}`, { method: 'PATCH', body })
         : await api('/tasks', { method: 'POST', body });
     } catch (e2) {
-      setErr(e2.message || '儲存失敗');
-      submitBusy.current = false;
-      setBusy(false);
+      pendingSave.current.error = e2;
+      try { await resolvePending(); }
+      catch { /* resolvePending 會保留可重新確認的狀態 */ }
       return;
     }
     // 寫入成功和重新整理是兩個不同邊界。reload 失敗不代表 POST/PATCH 失敗；
     // 若把兩者放在同一 catch，表單會留下並鼓勵重試，新增路徑就會建立重複作業。
-    try { await onSaved?.(saved); } catch { /* 資料已寫入；下次 reload 仍會讀回 */ }
-    onClose?.();
+    await finishSaved(saved);
   }
 
   const deadlineLabel = deadlineLabelText(f);
+  const unresolved = !!pendingSave.current;
 
   return (
-    <BottomSheet onClose={busy ? undefined : onClose} label={editing ? '編輯學校作業' : '新增學校作業'}>
+    <BottomSheet onClose={busy || unresolved ? undefined : onClose} label={editing ? '編輯學校作業' : '新增學校作業'}>
       {/* §G2：鍵盤導覽與送出分離——在文字/日期/時間/數字欄位按 Enter 只是換行/移動，
           不會意外送出整張表單；只有明確按「新增作業／儲存」才送出（textarea/select 不受影響）。 */}
       <form onSubmit={submit} className="sa-form"
         onKeyDown={e => { if (e.key === 'Enter' && e.target.tagName === 'INPUT') e.preventDefault(); }}>
         <h3 style={{ margin: '0 0 var(--sp-3)' }}>{editing ? '編輯學校作業' : '新增學校作業'}</h3>
-        {err && <div className="ui-card ui-card--warning" role="alert" style={{ marginBottom: 'var(--sp-3)' }}>{err}</div>}
+        {err && <div className="ui-card ui-card--warning" role="alert" style={{ marginBottom: 'var(--sp-3)' }}>{err}{pendingSave.current && <button type="button" disabled={busy} onClick={resolvePending} style={{ marginLeft: 8 }}>{busy ? '重新載入中…' : '重新載入'}</button>}</div>}
 
         <label className="sa-field">
           <span>科目</span>
@@ -155,8 +190,8 @@ export default function SchoolAssignmentForm({ lists = [], task = null, defaultR
         </label>
 
         <div className="row" style={{ marginTop: 'var(--sp-3)', gap: 'var(--sp-2)' }}>
-          <Button type="button" variant="tertiary" disabled={busy} onClick={onClose}>取消</Button>
-          <Button type="submit" variant="primary" style={{ marginLeft: 'auto' }} disabled={busy}>
+          <Button type="button" variant="tertiary" disabled={busy || unresolved} onClick={onClose}>取消</Button>
+          <Button type="submit" variant="primary" style={{ marginLeft: 'auto' }} disabled={busy || unresolved}>
             {busy ? '儲存中…' : (editing ? '儲存' : '新增作業')}
           </Button>
         </div>

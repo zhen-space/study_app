@@ -148,7 +148,7 @@ export default function GlobalAdd({ lists = [], tasks = [], reload, defaultRemin
       )}
 
       {flow === 'school' && (
-        <SchoolAssignmentForm lists={lists} defaultReminderTime={defaultReminderTime}
+        <SchoolAssignmentForm lists={lists} tasks={tasks} defaultReminderTime={defaultReminderTime}
           onClose={() => setFlow(null)} onSaved={() => refreshAfterSave('作業已儲存，但畫面暫時無法重新載入。')} />
       )}
       {flow === 'task' && (

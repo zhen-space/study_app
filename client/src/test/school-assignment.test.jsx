@@ -222,7 +222,12 @@ describe('新增／編輯表單', () => {
   });
 
   it('Task API 失敗保留完整輸入並可直接重試', async () => {
-    api.mockRejectedValueOnce(new Error('網路中斷')).mockResolvedValueOnce({ id: 88 });
+    let writes = 0;
+    api.mockImplementation((path, options) => {
+      if (!options?.method) return Promise.resolve([]);
+      writes += 1;
+      return writes === 1 ? Promise.reject(new Error('網路中斷')) : Promise.resolve({ id: 88 });
+    });
     const onClose = vi.fn();
     render(<SchoolAssignmentForm lists={lists} onClose={onClose} onSaved={vi.fn()} />);
     await fillMinimum();
@@ -233,7 +238,42 @@ describe('新增／編輯表單', () => {
     expect(screen.getByLabelText(/截止日期/)).toHaveValue('2026-09-20');
     expect(onClose).not.toHaveBeenCalled();
     fireEvent.click(screen.getByRole('button', { name: '新增作業' }));
-    await waitFor(() => expect(api).toHaveBeenCalledTimes(2));
+    await waitFor(() => expect(writes).toBe(2));
+  });
+
+  it('新增已寫入但回應遺失時讀回確認，不會重送 POST', async () => {
+    const created = sa({ id: 91, list_id: 1, title: '第 1 章', deadline_date: '2026-09-20' });
+    api.mockImplementation((path, options) => options?.method === 'POST'
+      ? Promise.reject(new Error('回應中斷')) : Promise.resolve([created]));
+    const onClose = vi.fn();
+    const onSaved = vi.fn();
+    render(<SchoolAssignmentForm lists={lists} tasks={[]} onClose={onClose} onSaved={onSaved} />);
+    await fillMinimum();
+    fireEvent.click(screen.getByRole('button', { name: '新增作業' }));
+
+    await waitFor(() => expect(onClose).toHaveBeenCalledTimes(1));
+    expect(onSaved).toHaveBeenCalledWith(created);
+    expect(api.mock.calls.filter(([, options]) => options?.method === 'POST')).toHaveLength(1);
+  });
+
+  it('寫入與確認讀取都失敗時鎖住重送，只允許重新載入確認', async () => {
+    let reads = 0;
+    const created = sa({ id: 92, list_id: 1, title: '第 1 章', deadline_date: '2026-09-20' });
+    api.mockImplementation((path, options) => {
+      if (options?.method === 'POST') return Promise.reject(new Error('回應中斷'));
+      reads += 1;
+      return reads === 1 ? Promise.reject(new Error('離線')) : Promise.resolve([created]);
+    });
+    const onClose = vi.fn();
+    render(<SchoolAssignmentForm lists={lists} tasks={[]} onClose={onClose} onSaved={vi.fn()} />);
+    await fillMinimum();
+    fireEvent.click(screen.getByRole('button', { name: '新增作業' }));
+
+    expect(await screen.findByRole('alert')).toHaveTextContent('仍然無法確認作業是否已儲存');
+    expect(screen.getByRole('button', { name: '新增作業' })).toBeDisabled();
+    fireEvent.click(screen.getByRole('button', { name: '重新載入' }));
+    await waitFor(() => expect(onClose).toHaveBeenCalledTimes(1));
+    expect(api.mock.calls.filter(([, options]) => options?.method === 'POST')).toHaveLength(1);
   });
 
   it('Task 已建立但 refresh 失敗時仍關閉，不誤報失敗或鼓勵重複 POST', async () => {

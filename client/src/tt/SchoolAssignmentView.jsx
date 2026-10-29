@@ -175,7 +175,7 @@ export function SchoolAssignmentToday({ tasks, lists, reload }) {
         </SurfaceCard>
       )}
       {form && (
-        <SchoolAssignmentForm lists={lists} task={form.id ? form : null} defaultReminderTime={defaultTime}
+        <SchoolAssignmentForm lists={lists} tasks={tasks} task={form.id ? form : null} defaultReminderTime={defaultTime}
           onClose={() => setForm(null)} onSaved={mutations.refreshAfterSave} />
       )}
     </section>
@@ -258,7 +258,7 @@ export default function SchoolAssignmentView({ tasks, lists, plans = [], reload 
         )}
       </div>
       {form && (
-        <SchoolAssignmentForm lists={lists} task={form.id ? form : null}
+        <SchoolAssignmentForm lists={lists} tasks={tasks} task={form.id ? form : null}
           onClose={() => setForm(null)} onSaved={mutations.refreshAfterSave} />
       )}
       {attach && (
