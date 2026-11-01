@@ -78,6 +78,55 @@ describe('375px Today 願望新增 recovery', () => {
     expect(reload).toHaveBeenCalledOnce();
   });
 
+  it('POST 已寫入但回應遺失時讀回確認，不讓使用者重複新增', async () => {
+    api.mockImplementation((path, options = {}) => {
+      if (path === '/tasks' && options.method === 'POST') return Promise.reject(new Error('回應遺失'));
+      if (path === '/tasks') return Promise.resolve([{ id: 90, title: '整理書桌', list_id: null, due_date: null }]);
+      return Promise.resolve([]);
+    });
+    const reload = mount();
+    const input = screen.getByPlaceholderText('＋ 記一件想做的事…');
+    fireEvent.change(input, { target: { value: '整理書桌' } });
+
+    fireEvent.submit(input.closest('form'));
+
+    await waitFor(() => expect(input).toHaveValue(''));
+    expect(input).toBeEnabled();
+    expect(screen.queryByRole('alert')).toBeNull();
+    expect(api.mock.calls.filter(([path, options]) => path === '/tasks' && options?.method === 'POST')).toHaveLength(1);
+    expect(api).toHaveBeenCalledWith('/tasks');
+    expect(reload).toHaveBeenCalledWith('tasks');
+  });
+
+  it('POST 與讀回都失敗時鎖住重送，重新確認已寫入後安全收尾', async () => {
+    let taskReads = 0;
+    api.mockImplementation((path, options = {}) => {
+      if (path === '/tasks' && options.method === 'POST') return Promise.reject(new Error('回應遺失'));
+      if (path === '/tasks') {
+        taskReads += 1;
+        return taskReads === 1
+          ? Promise.reject(new Error('確認失敗'))
+          : Promise.resolve([{ id: 91, title: '整理照片', list_id: null, due_date: null }]);
+      }
+      return Promise.resolve([]);
+    });
+    const reload = mount();
+    const input = screen.getByPlaceholderText('＋ 記一件想做的事…');
+    fireEvent.change(input, { target: { value: '整理照片' } });
+
+    fireEvent.submit(input.closest('form'));
+
+    expect(await screen.findByRole('alert')).toHaveTextContent('無法確認願望是否已新增');
+    expect(input).toBeDisabled();
+    await act(async () => { fireEvent.click(screen.getByRole('button', { name: '重新確認' })); });
+
+    expect(input).toHaveValue('');
+    expect(input).toBeEnabled();
+    expect(screen.queryByRole('alert')).toBeNull();
+    expect(api.mock.calls.filter(([path, options]) => path === '/tasks' && options?.method === 'POST')).toHaveLength(1);
+    expect(reload).toHaveBeenCalledWith('tasks');
+  });
+
   it('中文輸入法組字期間送出不會建立半成品願望', async () => {
     mount();
     const input = screen.getByPlaceholderText('＋ 記一件想做的事…');
