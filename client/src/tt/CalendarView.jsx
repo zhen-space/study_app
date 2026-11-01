@@ -344,10 +344,24 @@ export default function CalendarView({ tasks, reload, lists = [], addIntent = nu
     const dur = toMin(e.end_time) - toMin(e.start_time);
     const start = hm(startMin), end = hm(startMin + dur);
     if (e.date === day && e.start_time.slice(0, 5) === start) return;
-    setEvents(list => list.map(x => x.id === e.id ? { ...x, date: day, start_time: start, end_time: end } : x)); // 畫面先動
-    try { await api(`/events/${e.id}`, { method: 'PATCH', body: { date: day, start_time: start, end_time: end } }); }
-    catch (err) { alert('移動失敗：' + err.message); }
-    loadEvents();
+    const patch = { date: day, start_time: start, end_time: end };
+    setEvents(list => list.map(x => x.id === e.id ? { ...x, ...patch } : x)); // 畫面先動
+    try { await api(`/events/${e.id}`, { method: 'PATCH', body: patch }); }
+    catch {
+      try {
+        const latest = await refreshEvents();
+        if (latest.some(item => item.id === e.id && eventMatchesCreate(item, patch))) {
+          setEventRefreshError('');
+          return;
+        }
+        setEventRefreshError('行程移動未完成，已重新載入伺服器上的最新位置。');
+      } catch {
+        setEventRefreshError('無法確認行程是否已移動，請重新載入；確認前請勿再次移動。');
+      }
+      return;
+    }
+    try { await refreshEvents(); setEventRefreshError(''); }
+    catch { setEventRefreshError('行程已移動，但畫面暫時無法重新載入。'); }
   }
   async function dropEvent(dragEv, d) {
     dragEv.preventDefault();
