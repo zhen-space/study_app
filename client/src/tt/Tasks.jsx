@@ -1341,23 +1341,13 @@ export default function Tasks({ view, tasks, lists, filters, habits = [], reload
   const [wishBusy, setWishBusy] = useState(false);
   const [wishError, setWishError] = useState('');
   const wishBusyRef = useRef(false);
+  const wishPendingRef = useRef(null);
   const wishComposing = useRef(false);
   const wishes = tv.filter(t => !t.list_id && !t.completed && !t.due_date && !t.deleted);
-  async function addWish(e) {
-    e.preventDefault();
-    if (wishComposing.current || wishBusyRef.current || !wish.trim()) return;
-    wishBusyRef.current = true;
-    setWishBusy(true);
-    setWishError('');
-    try {
-      await api('/tasks', { method: 'POST', body: { title: wish.trim() } });
-    } catch (e) {
-      setWishError(e.message || '新增願望失敗，請再試一次。');
-      wishBusyRef.current = false;
-      setWishBusy(false);
-      return;
-    }
+  async function finishWishCreate() {
+    wishPendingRef.current = null;
     setWish('');
+    setWishError('');
     try {
       await reload('tasks');
     } catch {
@@ -1365,6 +1355,65 @@ export default function Tasks({ view, tasks, lists, filters, habits = [], reload
     }
     wishBusyRef.current = false;
     setWishBusy(false);
+  }
+  async function confirmWishCreate() {
+    const pending = wishPendingRef.current;
+    if (!pending) return;
+    try {
+      const latest = await api('/tasks');
+      const committed = Array.isArray(latest) && latest.some(task =>
+        !pending.beforeIds.includes(task.id)
+        && task.title === pending.title
+        && !task.list_id
+        && !task.due_date);
+      if (committed) {
+        await finishWishCreate();
+        return;
+      }
+    } catch {
+      setWishError('仍無法確認願望是否已新增，請稍後再確認；確認前請勿重複送出。');
+      return;
+    }
+    wishPendingRef.current = null;
+    wishBusyRef.current = false;
+    setWishBusy(false);
+    setWishError(pending.error || '新增願望失敗，請再試一次。');
+  }
+  async function addWish(e) {
+    e.preventDefault();
+    if (wishComposing.current || wishBusyRef.current || !wish.trim()) return;
+    wishBusyRef.current = true;
+    setWishBusy(true);
+    setWishError('');
+    const title = wish.trim();
+    const beforeIds = tasks.map(task => task.id);
+    try {
+      await api('/tasks', { method: 'POST', body: { title } });
+    } catch (e) {
+      const pending = { title, beforeIds, error: e.message || '新增願望失敗，請再試一次。' };
+      wishPendingRef.current = pending;
+      try {
+        const latest = await api('/tasks');
+        const committed = Array.isArray(latest) && latest.some(task =>
+          !beforeIds.includes(task.id)
+          && task.title === title
+          && !task.list_id
+          && !task.due_date);
+        if (committed) {
+          await finishWishCreate();
+          return;
+        }
+        wishPendingRef.current = null;
+      } catch {
+        setWishError('無法確認願望是否已新增，請先重新確認；確認前請勿重複送出。');
+        return;
+      }
+      setWishError(e.message || '新增願望失敗，請再試一次。');
+      wishBusyRef.current = false;
+      setWishBusy(false);
+      return;
+    }
+    await finishWishCreate();
   }
 
   return (
@@ -1639,7 +1688,14 @@ export default function Tasks({ view, tasks, lists, filters, habits = [], reload
                   onCompositionEnd={() => { wishComposing.current = false; }}
                   onKeyDown={e => { if (e.key === 'Enter' && (e.isComposing || e.nativeEvent?.isComposing)) e.preventDefault(); }}
                   style={{ width: '100%', background: 'var(--bg)', border: '1px dashed var(--border)' }} />
-                {wishError && <div role="alert" className="ui-error" style={{ marginTop: 6 }}>{wishError}</div>}
+                {wishError && (
+                  <div role="alert" className="ui-error" style={{ marginTop: 6 }}>
+                    {wishError}
+                    {wishPendingRef.current && (
+                      <button type="button" onClick={confirmWishCreate} style={{ marginLeft: 8 }}>重新確認</button>
+                    )}
+                  </div>
+                )}
               </form>
             </div>
           )}
