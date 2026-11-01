@@ -104,6 +104,7 @@ export default function CalendarView({ tasks, reload, lists = [], addIntent = nu
   const refreshEvents = () => api('/events').then(list => {
     setEvents(list);
     try { localStorage.setItem('evCache', JSON.stringify(list)); } catch {}
+    return list;
   });
   const loadEvents = () => refreshEvents().catch(() => {});
   useEffect(() => { loadEvents(); api('/schedule/locks').then(setLocks).catch(() => {}); setAnchor(today()); }, []); // 每次打開都回到今天那一週
@@ -444,14 +445,30 @@ export default function CalendarView({ tasks, reload, lists = [], addIntent = nu
     setEditEv(null);
     // 用「原本」的資料比對（視窗裡可能已改過名稱/時間）
     const orig = events.find(x => x.id === ev.id) || ev;
-    setEvents(list => list.filter(x => !(x.id === ev.id || (orig.recurring && x.recurring && x.title === orig.title && x.start_time === orig.start_time)))); // 畫面先消失
+    const same = orig.recurring
+      ? events.filter(x => x.recurring && x.title === orig.title && x.start_time === orig.start_time)
+      : [orig];
+    const targetIds = same.map(item => item.id);
+    setEvents(list => list.filter(x => !targetIds.includes(x.id))); // 畫面先消失
     try {
       if (orig.recurring) {
-        const same = events.filter(x => x.recurring && x.title === orig.title && x.start_time === orig.start_time);
-        await Promise.all(same.map(e => api(`/events/${e.id}`, { method: 'DELETE' })));
+        await Promise.all(same.map(item => api(`/events/${item.id}`, { method: 'DELETE' })));
       } else await api(`/events/${ev.id}`, { method: 'DELETE' });
-    } catch (err) { alert('刪除失敗：' + err.message); }
-    loadEvents();
+    } catch {
+      try {
+        const latest = await refreshEvents();
+        if (targetIds.every(id => !latest.some(item => item.id === id))) {
+          setEventRefreshError('');
+          return;
+        }
+        setEventRefreshError('刪除未完成，已重新載入伺服器上的最新行程。');
+      } catch {
+        setEventRefreshError('無法確認是否已刪除，請重新載入；確認前請勿再次刪除。');
+      }
+      return;
+    }
+    try { await refreshEvents(); setEventRefreshError(''); }
+    catch { setEventRefreshError('行程已刪除，但畫面暫時無法重新載入。'); }
   }
 
   // 手動新增行程
