@@ -62,4 +62,28 @@ describe('行事曆新增：回應遺失復原', () => {
     await waitFor(() => expect(screen.queryByPlaceholderText('標題')).toBeNull());
     expect(api.mock.calls.filter(([path, opts]) => path === '/events' && opts?.method === 'POST')).toHaveLength(1);
   });
+
+  it('寫入成功但刷新失敗時關閉表單，只提供重新載入', async () => {
+    let eventReads = 0;
+    api.mockImplementation(async (path, opts) => {
+      if (path === '/events' && opts?.method === 'POST') return { id: 503 };
+      if (path === '/events') {
+        eventReads += 1;
+        if (eventReads === 1) return [];
+        if (eventReads === 2) throw new Error('刷新失敗');
+        return [{ id: 503, title: '化學複習' }];
+      }
+      return [];
+    });
+
+    render(<CalendarView tasks={[]} reload={vi.fn()} addIntent="event" />);
+    fireEvent.change(await screen.findByPlaceholderText('標題'), { target: { value: '化學複習' } });
+    fireEvent.click(screen.getByRole('button', { name: '加入' }));
+
+    expect(await screen.findByRole('alert')).toHaveTextContent('日曆項目已新增，但畫面暫時無法重新載入');
+    expect(screen.queryByPlaceholderText('標題')).toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: '重新載入' }));
+    await waitFor(() => expect(screen.queryByRole('alert')).toBeNull());
+    expect(api.mock.calls.filter(([path, opts]) => path === '/events' && opts?.method === 'POST')).toHaveLength(1);
+  });
 });
