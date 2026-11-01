@@ -143,6 +143,54 @@ describe('任務快速新增', () => {
     expect(props.reload).not.toHaveBeenCalled();
   });
 
+  it('POST 已寫入但回應遺失時，讀回確認後不讓使用者重複新增', async () => {
+    api.mockRejectedValueOnce(new Error('連線中斷'))
+      .mockResolvedValueOnce([{
+        id: 109, title: '物理講義', list_id: null, notes: '', due_date: null,
+        due_time: null, priority: 0, recurring: null, tags: [],
+      }]);
+    props.reload.mockResolvedValue();
+    render(<Tasks {...props} />);
+    const input = screen.getByPlaceholderText('＋ 新增任務，按 Enter 儲存');
+    fireEvent.change(input, { target: { value: '物理講義' } });
+
+    await act(async () => { fireEvent.submit(input.closest('form')); });
+
+    expect(input).toHaveValue('');
+    expect(input).not.toBeDisabled();
+    expect(screen.queryByRole('alert')).toBeNull();
+    expect(api.mock.calls.filter(([path, options]) => path === '/tasks' && options?.method === 'POST')).toHaveLength(1);
+    expect(api).toHaveBeenCalledWith('/tasks');
+    expect(props.reload).toHaveBeenCalledWith('tasks');
+  });
+
+  it('POST 與首次讀回都失敗時維持鎖定，重新確認已寫入後安全收尾', async () => {
+    api.mockRejectedValueOnce(new Error('連線中斷'))
+      .mockRejectedValueOnce(new Error('仍無法讀取'))
+      .mockResolvedValueOnce([{
+        id: 110, title: '化學複習', list_id: null, notes: '', due_date: null,
+        due_time: null, priority: 0, recurring: null, tags: [],
+      }]);
+    props.reload.mockResolvedValue();
+    render(<Tasks {...props} />);
+    const input = screen.getByPlaceholderText('＋ 新增任務，按 Enter 儲存');
+    fireEvent.change(input, { target: { value: '化學複習' } });
+
+    await act(async () => { fireEvent.submit(input.closest('form')); });
+
+    expect(input).toBeDisabled();
+    expect(screen.getByRole('alert')).toHaveTextContent('無法確認任務是否已新增');
+    expect(screen.getByRole('button', { name: '重新確認' })).toBeInTheDocument();
+
+    await act(async () => { fireEvent.click(screen.getByRole('button', { name: '重新確認' })); });
+
+    expect(input).not.toBeDisabled();
+    expect(input).toHaveValue('');
+    expect(screen.queryByRole('alert')).toBeNull();
+    expect(api.mock.calls.filter(([path, options]) => path === '/tasks' && options?.method === 'POST')).toHaveLength(1);
+    expect(props.reload).toHaveBeenCalledWith('tasks');
+  });
+
   it('同一輪重入 submit 只建立一筆任務', async () => {
     let form;
     let reentered = false;
