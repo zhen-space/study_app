@@ -215,7 +215,7 @@ export default function CalendarView({ tasks, reload, lists = [], addIntent = nu
     } catch (err) { setAiBusy(false); alert('加入失敗：' + err.message); return; }
     setAiBusy(false);
     setAiList(null);
-    loadEvents();
+    await refreshAfterEventMutation('行程已匯入，但畫面暫時無法重新載入。');
     const first = chosen.map(x => x.date).sort()[0];
     if (first && first > today()) setAnchor(first);
     alert(`已加入 ${chosen.length} 筆行程${first && first > today() ? `（已跳到 ${first.slice(5).replace('-', '/')} 那週）` : ''}`);
