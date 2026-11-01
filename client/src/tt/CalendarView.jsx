@@ -391,11 +391,10 @@ export default function CalendarView({ tasks, reload, lists = [], addIntent = nu
       if (s + dur > 24 * 60 - 5) s = Math.max(H0 * 60, toMin(e.start_time) - dur);
       start = hm(s); end = hm(Math.min(s + dur, 24 * 60 - 5));
     }
-    await api('/events', {
-      method: 'POST',
-      body: { title: e.title, date: e.date, start_time: start, end_time: end, location: e.location || '', color: e.color || '', kind: e.kind || '', recurring: null },
-    });
-    loadEvents();
+    await createEvent(
+      { title: e.title, date: e.date, start_time: start, end_time: end, location: e.location || '', color: e.color || '', kind: e.kind || '', recurring: null },
+      'duplicate',
+    );
   }
 
   // 手機觸控拖曳：按住行程移動就拖（超過門檻才算拖，只是點一下＝開編輯）
@@ -472,7 +471,7 @@ export default function CalendarView({ tasks, reload, lists = [], addIntent = nu
   const finishEventCreate = async pending => {
     resetCreateState();
     if (pending.form === 'anniv') setAnnivForm(null);
-    else setAddForm(null);
+    else if (pending.form === 'event') setAddForm(null);
     try {
       await refreshEvents();
       setEventRefreshError('');
@@ -990,6 +989,16 @@ export default function CalendarView({ tasks, reload, lists = [], addIntent = nu
           <button type="button" disabled={eventRefreshBusy} onClick={retryEventRefresh}>
             {eventRefreshBusy ? '重新載入中…' : '重新載入'}
           </button>
+        </div>
+      )}
+      {createError && !addForm && !annivForm && (
+        <div className="toast" role="alert">
+          <span>{createError}</span>
+          {createPendingRef.current && (
+            <button type="button" disabled={createBusy} onClick={confirmEventCreate}>
+              {createBusy ? '確認中…' : '重新確認'}
+            </button>
+          )}
         </div>
       )}
       {editEv && (
