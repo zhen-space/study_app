@@ -101,10 +101,11 @@ export default function CalendarView({ tasks, reload, lists = [], addIntent = nu
     const t = setInterval(() => setNowMin(new Date().getHours() * 60 + new Date().getMinutes()), 30000);
     return () => clearInterval(t);
   }, []);
-  const loadEvents = () => api('/events').then(list => {
+  const refreshEvents = () => api('/events').then(list => {
     setEvents(list);
     try { localStorage.setItem('evCache', JSON.stringify(list)); } catch {}
-  }).catch(() => {});
+  });
+  const loadEvents = () => refreshEvents().catch(() => {});
   useEffect(() => { loadEvents(); api('/schedule/locks').then(setLocks).catch(() => {}); setAnchor(today()); }, []); // 每次打開都回到今天那一週
 
   // §H：時間軸視圖自動捲到「現在」——打開就看到此刻附近的安排，不用從早上 6 點手動往下滑。
@@ -460,18 +461,31 @@ export default function CalendarView({ tasks, reload, lists = [], addIntent = nu
   const [annivForm, setAnnivForm] = useState(null);
   const [createBusy, setCreateBusy] = useState(false);
   const [createError, setCreateError] = useState('');
+  const [eventRefreshError, setEventRefreshError] = useState('');
+  const [eventRefreshBusy, setEventRefreshBusy] = useState(false);
   const createPendingRef = useRef(null);
   const resetCreateState = () => {
     createPendingRef.current = null;
     setCreateBusy(false);
     setCreateError('');
   };
-  const finishEventCreate = pending => {
+  const finishEventCreate = async pending => {
     resetCreateState();
     if (pending.form === 'anniv') setAnnivForm(null);
     else setAddForm(null);
-    loadEvents();
+    try {
+      await refreshEvents();
+      setEventRefreshError('');
+    } catch {
+      setEventRefreshError('日曆項目已新增，但畫面暫時無法重新載入。');
+    }
   };
+  async function retryEventRefresh() {
+    setEventRefreshBusy(true);
+    try { await refreshEvents(); setEventRefreshError(''); }
+    catch { setEventRefreshError('仍然無法重新載入，請稍後再試。'); }
+    finally { setEventRefreshBusy(false); }
+  }
   async function confirmEventCreate() {
     const pending = createPendingRef.current;
     if (!pending) return;
@@ -480,7 +494,7 @@ export default function CalendarView({ tasks, reload, lists = [], addIntent = nu
       const committed = Array.isArray(latest) && latest.some(event =>
         !pending.beforeIds.includes(event.id) && eventMatchesCreate(event, pending.body));
       if (committed) {
-        finishEventCreate(pending);
+        await finishEventCreate(pending);
         return;
       }
     } catch {
@@ -505,7 +519,7 @@ export default function CalendarView({ tasks, reload, lists = [], addIntent = nu
         const committed = Array.isArray(latest) && latest.some(event =>
           !pending.beforeIds.includes(event.id) && eventMatchesCreate(event, body));
         if (committed) {
-          finishEventCreate(pending);
+          await finishEventCreate(pending);
           return;
         }
         createPendingRef.current = null;
@@ -517,7 +531,7 @@ export default function CalendarView({ tasks, reload, lists = [], addIntent = nu
       setCreateError(pending.error);
       return;
     }
-    finishEventCreate(pending);
+    await finishEventCreate(pending);
   }
   async function submitAnniv() {
     if (!annivForm.title.trim()) { alert('請輸入名稱'); return; }
@@ -967,6 +981,14 @@ export default function CalendarView({ tasks, reload, lists = [], addIntent = nu
           <span>{saRefreshError}</span>
           <button type="button" disabled={saRefreshBusy} onClick={retrySaRefresh}>
             {saRefreshBusy ? '重新載入中…' : '重新載入'}
+          </button>
+        </div>
+      )}
+      {eventRefreshError && (
+        <div className="toast" role="alert">
+          <span>{eventRefreshError}</span>
+          <button type="button" disabled={eventRefreshBusy} onClick={retryEventRefresh}>
+            {eventRefreshBusy ? '重新載入中…' : '重新載入'}
           </button>
         </div>
       )}
