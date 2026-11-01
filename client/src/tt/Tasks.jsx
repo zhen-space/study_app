@@ -26,6 +26,19 @@ const takeOrphanedQuickDraft = () => {
   return draft.values;
 };
 
+const taskMatchesQuickCreate = (candidate, body) => {
+  const tags = value => [...(value || [])].map(String).sort().join('\u0000');
+  const listId = value => value == null ? null : String(value);
+  return candidate.title === body.title
+    && listId(candidate.list_id) === listId(body.list_id)
+    && (candidate.notes || '') === (body.notes || '')
+    && (candidate.due_date || null) === (body.due_date || null)
+    && (candidate.due_time || null) === (body.due_time || null)
+    && (Number(candidate.priority) || 0) === (Number(body.priority) || 0)
+    && (candidate.recurring || null) === (body.recurring || null)
+    && tags(candidate.tags) === tags(body.tags);
+};
+
 // 一科的項數與逾期數。逾期是紅的，其餘是次要資訊——這一行要能一眼看出
 // 「哪一科欠最多」，而不是變成又一排同樣重的數字。
 export function overdueCount(list, td = today()) {
@@ -603,7 +616,7 @@ export default function Tasks({ view, tasks, lists, filters, habits = [], reload
   const [restoredQuick] = useState(takeOrphanedQuickDraft);
   const [quick, setQuick] = useState(restoredQuick?.title ?? '');
   const [quickErr, setQuickErr] = useState(restoredQuick?.error ?? '');
-  const [quickBusy, setQuickBusy] = useState(false);
+  const [quickBusy, setQuickBusy] = useState(!!restoredQuick?.pending);
   const [quickDue, setQuickDue] = useState(restoredQuick?.due ?? '');
   const [quickTime, setQuickTime] = useState(restoredQuick?.time ?? '');
   const [quickListId, setQuickListId] = useState(restoredQuick?.listId ?? '');
@@ -627,7 +640,8 @@ export default function Tasks({ view, tasks, lists, filters, habits = [], reload
     try { localStorage.setItem('taskShowCompletedInList', String(next)); } catch {}
     return next;
   });
-  const quickBusyRef = useRef(false);
+  const quickBusyRef = useRef(!!restoredQuick?.pending);
+  const quickPendingRef = useRef(restoredQuick?.pending ?? null);
   const quickComposing = useRef(false);
   const mountedRef = useRef(false);
   useEffect(() => {
@@ -1023,6 +1037,51 @@ export default function Tasks({ view, tasks, lists, filters, habits = [], reload
     }
     duplicateBusyRef.current = false;
   }
+  const clearQuickDraft = () => {
+    setQuick('');
+    setQuickDue('');
+    setQuickTime('');
+    setQuickListId('');
+    setQuickPriority(0);
+    setQuickTag('');
+    setQuickNotes('');
+    setQuickRecurring('');
+    setQuickErr('');
+  };
+  async function finishQuickCreate() {
+    quickPendingRef.current = null;
+    orphanedQuickDraft = null;
+    if (!mountedRef.current) return;
+    clearQuickDraft();
+    try { await reload('tasks'); }
+    catch { setRefreshError('任務已新增，但畫面暫時無法重新載入。'); }
+    quickBusyRef.current = false;
+    setQuickBusy(false);
+  }
+  async function confirmQuickCreate(pending = quickPendingRef.current) {
+    if (!pending) return;
+    try {
+      const latest = await api('/tasks');
+      const committed = Array.isArray(latest)
+        && latest.some(candidate => !pending.beforeIds.includes(candidate.id)
+          && taskMatchesQuickCreate(candidate, pending.body));
+      if (committed) {
+        await finishQuickCreate();
+        return;
+      }
+    } catch {
+      if (mountedRef.current) {
+        setQuickErr('仍無法確認任務是否已新增，請稍後再確認；確認前請勿重複送出。');
+      }
+      return;
+    }
+    quickPendingRef.current = null;
+    quickBusyRef.current = false;
+    if (mountedRef.current) {
+      setQuickBusy(false);
+      setQuickErr(pending.error || '新增任務失敗');
+    }
+  }
   async function quickAdd(e) {
     e.preventDefault();
     if (quickComposing.current || !quick.trim() || quickBusyRef.current) return;
@@ -1054,9 +1113,39 @@ export default function Tasks({ view, tasks, lists, filters, habits = [], reload
     setQuickBusy(true); setQuickErr('');
     // api() 同步讀取 token 帶進這次請求；在同一個 tick 記下，草稿就屬於發出請求的那個身分。
     const owner = currentAuthToken();
+    const beforeIds = tasks.map(task => task.id);
     try {
       await api('/tasks', { method: 'POST', body });
     } catch (err) {
+      const pending = { body, beforeIds, error: err.message || '新增任務失敗' };
+      quickPendingRef.current = pending;
+      try {
+        const latest = await api('/tasks');
+        const committed = Array.isArray(latest)
+          && latest.some(candidate => !beforeIds.includes(candidate.id)
+            && taskMatchesQuickCreate(candidate, body));
+        if (committed) {
+          await finishQuickCreate();
+          return;
+        }
+        quickPendingRef.current = null;
+      } catch {
+        // POST 可能已寫入但回應遺失；連讀回也失敗時不能解鎖重送，否則會建立重複任務。
+        if (!mountedRef.current) {
+          if (!owner) return;
+          orphanedQuickDraft = {
+            owner,
+            values: {
+              title: quick, due: quickDue, time: quickTime, listId: quickListId, priority: quickPriority,
+              tag: quickTag, notes: quickNotes, recurring: quickRecurring, pending,
+              error: '無法確認任務是否已新增，請先重新確認；確認前請勿重複送出。',
+            },
+          };
+          return;
+        }
+        setQuickErr('無法確認任務是否已新增，請先重新確認；確認前請勿重複送出。');
+        return;
+      }
       quickBusyRef.current = false;
       if (!mountedRef.current) {
         // 沒有登入身分可綁定時不留草稿，寧可遺失也不能讓下一個登入者看到。
@@ -1079,18 +1168,7 @@ export default function Tasks({ view, tasks, lists, filters, habits = [], reload
     }
     // 寫入成功和重新載入是兩個邊界。refresh 失敗時任務已存在，不能把它
     // 誤報成新增失敗或讓使用者重送 POST。
-    setQuick('');
-    setQuickDue('');
-    setQuickTime('');
-    setQuickListId('');
-    setQuickPriority(0);
-    setQuickTag('');
-    setQuickNotes('');
-    setQuickRecurring('');
-    try { await reload('tasks'); }
-    catch { setRefreshError('任務已新增，但畫面暫時無法重新載入。'); }
-    quickBusyRef.current = false;
-    setQuickBusy(false);
+    await finishQuickCreate();
   }
   async function rescheduleOverdueToToday() {
     if (overdueRescheduleBusyRef.current || !reschedulableOverdue.length) return;
@@ -1437,7 +1515,16 @@ export default function Tasks({ view, tasks, lists, filters, habits = [], reload
                     onChange={e => setQuickNotes(e.target.value)} />
                 </div>
               )}
-              {quickErr && <div role="alert" className="ui-error" style={{ marginTop: 6 }}>{quickErr}</div>}
+              {quickErr && (
+                <div role="alert" className="ui-error" style={{ marginTop: 6 }}>
+                  {quickErr}
+                  {quickPendingRef.current && (
+                    <button type="button" onClick={() => confirmQuickCreate()} style={{ marginLeft: 8 }}>
+                      重新確認
+                    </button>
+                  )}
+                </div>
+              )}
             </form>
           </div>
         )}
