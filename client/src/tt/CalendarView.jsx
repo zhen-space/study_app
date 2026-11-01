@@ -65,6 +65,10 @@ export default function CalendarView({ tasks, reload, lists = [], addIntent = nu
   // （與 Global Add 同一模式）。
   const [saRefreshError, setSaRefreshError] = useState('');
   const [saRefreshBusy, setSaRefreshBusy] = useState(false);
+  // 任務完成狀態已寫入但父層資料刷新失敗時，只能重新載入，不能再次反轉狀態。
+  const [taskRefreshError, setTaskRefreshError] = useState('');
+  const [taskRefreshBusy, setTaskRefreshBusy] = useState(false);
+  const taskToggleBusyRef = useRef(false);
   const refreshAfterSaSave = async () => {
     try { await reload(); setSaRefreshError(''); }
     catch { setSaRefreshError('作業已儲存，但畫面暫時無法重新載入。'); }
@@ -75,6 +79,13 @@ export default function CalendarView({ tasks, reload, lists = [], addIntent = nu
     try { await reload(); setSaRefreshError(''); }
     catch { setSaRefreshError('仍然無法重新載入，請稍後再試。'); }
     finally { setSaRefreshBusy(false); }
+  };
+  const retryTaskRefresh = async () => {
+    if (taskRefreshBusy) return;
+    setTaskRefreshBusy(true);
+    try { await reload(); setTaskRefreshError(''); }
+    catch { setTaskRefreshError('仍然無法重新載入，請稍後再試。'); }
+    finally { setTaskRefreshBusy(false); }
   };
   const saDeadlinesOn = ds => tasks.filter(t =>
     isSchoolAssignment(t) && onActivePlan(t) && !t.completed && !t.cancelled && !t.deleted && t.deadline_date === ds);
@@ -611,8 +622,18 @@ export default function CalendarView({ tasks, reload, lists = [], addIntent = nu
   }
 
   const toggle = async t => {
-    await api(`/tasks/${t.id}`, { method: 'PATCH', body: { completed: !t.completed } });
-    reload();
+    if (taskToggleBusyRef.current || taskRefreshError) return;
+    taskToggleBusyRef.current = true;
+    try {
+      await api(`/tasks/${t.id}`, { method: 'PATCH', body: { completed: !t.completed } });
+    } catch (error) {
+      setTaskRefreshError(error.message || '更新完成狀態失敗，請稍後再試。');
+      taskToggleBusyRef.current = false;
+      return;
+    }
+    try { await reload(); setTaskRefreshError(''); }
+    catch { setTaskRefreshError('任務完成狀態已更新，但畫面暫時無法重新載入。'); }
+    finally { taskToggleBusyRef.current = false; }
   };
   async function quickCreate(date, hour) {
     const title = prompt(`${date} ${String(hour).padStart(2, '0')}:00 新增行程：`);
@@ -1028,6 +1049,14 @@ export default function CalendarView({ tasks, reload, lists = [], addIntent = nu
           <span>{saRefreshError}</span>
           <button type="button" disabled={saRefreshBusy} onClick={retrySaRefresh}>
             {saRefreshBusy ? '重新載入中…' : '重新載入'}
+          </button>
+        </div>
+      )}
+      {taskRefreshError && (
+        <div className="toast" role="alert">
+          <span>{taskRefreshError}</span>
+          <button type="button" disabled={taskRefreshBusy} onClick={retryTaskRefresh}>
+            {taskRefreshBusy ? '重新載入中…' : '重新載入'}
           </button>
         </div>
       )}
