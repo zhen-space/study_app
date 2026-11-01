@@ -290,8 +290,24 @@ export default function CalendarView({ tasks, reload, lists = [], addIntent = nu
       if (applySameName) {
         await Promise.all(sameName.map(x => api(`/events/${x.id}`, { method: 'PATCH', body: { color: ev.color || '' } })));
       }
-    } catch (err) { alert('儲存失敗：' + err.message); }
-    loadEvents();
+    } catch {
+      try {
+        const latest = await refreshEvents();
+        const primaryCommitted = latest.some(item => item.id === ev.id && eventMatchesCreate(item, patch));
+        const relatedCommitted = !applySameName || sameName.every(x => latest.some(item =>
+          item.id === x.id && String(item.color || '') === String(ev.color || '')));
+        if (primaryCommitted && relatedCommitted) {
+          setEventRefreshError('');
+          return;
+        }
+        setEventRefreshError('行程修改未完成，已重新載入伺服器上的最新內容。');
+      } catch {
+        setEventRefreshError('無法確認行程是否已儲存，請重新載入；確認前請勿再次修改。');
+      }
+      return;
+    }
+    try { await refreshEvents(); setEventRefreshError(''); }
+    catch { setEventRefreshError('行程已儲存，但畫面暫時無法重新載入。'); }
   }
   // 拖曳行程：可移到任何一天、任何時段（對齊到最近的半小時）
   // 桌機用 HTML5 拖曳；手機（iPhone/iPad）用觸控自製拖曳（見下方 touch handlers）
