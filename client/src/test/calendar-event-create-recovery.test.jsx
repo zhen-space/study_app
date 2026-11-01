@@ -1,0 +1,65 @@
+// 行事曆新增遇到回應遺失時，必須先向伺服器確認，避免使用者重送而產生重複行程。
+import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+
+vi.mock('../api', () => ({ api: vi.fn() }));
+const { api } = await import('../api');
+const CalendarView = (await import('../tt/CalendarView')).default;
+
+describe('行事曆新增：回應遺失復原', () => {
+  beforeEach(() => {
+    localStorage.clear();
+    api.mockReset();
+  });
+
+  it('POST 回應遺失但伺服器已有資料時，關閉表單且不重送', async () => {
+    let posted;
+    let eventReads = 0;
+    api.mockImplementation(async (path, opts) => {
+      if (path === '/events' && opts?.method === 'POST') {
+        posted = opts.body;
+        throw new Error('連線中斷');
+      }
+      if (path === '/events') {
+        eventReads += 1;
+        return eventReads === 1 ? [] : [{ id: 501, ...posted }];
+      }
+      return [];
+    });
+
+    render(<CalendarView tasks={[]} reload={vi.fn()} addIntent="event" />);
+    fireEvent.change(await screen.findByPlaceholderText('標題'), { target: { value: '物理複習' } });
+    fireEvent.click(screen.getByRole('button', { name: '加入' }));
+
+    await waitFor(() => expect(screen.queryByPlaceholderText('標題')).toBeNull());
+    expect(api.mock.calls.filter(([path, opts]) => path === '/events' && opts?.method === 'POST')).toHaveLength(1);
+  });
+
+  it('無法確認時鎖住送出，重新確認成功後仍不重送', async () => {
+    let posted;
+    let eventReads = 0;
+    api.mockImplementation(async (path, opts) => {
+      if (path === '/events' && opts?.method === 'POST') {
+        posted = opts.body;
+        throw new Error('連線中斷');
+      }
+      if (path === '/events') {
+        eventReads += 1;
+        if (eventReads === 1) return [];
+        if (eventReads === 2) throw new Error('仍離線');
+        return [{ id: 502, ...posted }];
+      }
+      return [];
+    });
+
+    render(<CalendarView tasks={[]} reload={vi.fn()} addIntent="event" />);
+    fireEvent.change(await screen.findByPlaceholderText('標題'), { target: { value: '英文報告' } });
+    fireEvent.click(screen.getByRole('button', { name: '加入' }));
+
+    expect(await screen.findByRole('alert')).toHaveTextContent('無法確認是否已新增');
+    expect(screen.getByRole('button', { name: '確認中…' })).toBeDisabled();
+    fireEvent.click(screen.getByRole('button', { name: '重新確認' }));
+    await waitFor(() => expect(screen.queryByPlaceholderText('標題')).toBeNull());
+    expect(api.mock.calls.filter(([path, opts]) => path === '/events' && opts?.method === 'POST')).toHaveLength(1);
+  });
+});
