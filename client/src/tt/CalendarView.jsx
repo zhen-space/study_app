@@ -291,23 +291,16 @@ export default function CalendarView({ tasks, reload, lists = [], addIntent = nu
         await Promise.all(sameName.map(x => api(`/events/${x.id}`, { method: 'PATCH', body: { color: ev.color || '' } })));
       }
     } catch {
-      try {
-        const latest = await refreshEvents();
+      await reconcileEventMutation(latest => {
         const primaryCommitted = latest.some(item => item.id === ev.id && eventMatchesCreate(item, patch));
         const relatedCommitted = !applySameName || sameName.every(x => latest.some(item =>
           item.id === x.id && String(item.color || '') === String(ev.color || '')));
-        if (primaryCommitted && relatedCommitted) {
-          setEventRefreshError('');
-          return;
-        }
-        setEventRefreshError('行程修改未完成，已重新載入伺服器上的最新內容。');
-      } catch {
-        setEventRefreshError('無法確認行程是否已儲存，請重新載入；確認前請勿再次修改。');
-      }
+        return primaryCommitted && relatedCommitted;
+      }, '行程修改未完成，已重新載入伺服器上的最新內容。',
+      '無法確認行程是否已儲存，請重新載入；確認前請勿再次修改。');
       return;
     }
-    try { await refreshEvents(); setEventRefreshError(''); }
-    catch { setEventRefreshError('行程已儲存，但畫面暫時無法重新載入。'); }
+    await refreshAfterEventMutation('行程已儲存，但畫面暫時無法重新載入。');
   }
   // 拖曳行程：可移到任何一天、任何時段（對齊到最近的半小時）
   // 桌機用 HTML5 拖曳；手機（iPhone/iPad）用觸控自製拖曳（見下方 touch handlers）
@@ -348,20 +341,13 @@ export default function CalendarView({ tasks, reload, lists = [], addIntent = nu
     setEvents(list => list.map(x => x.id === e.id ? { ...x, ...patch } : x)); // 畫面先動
     try { await api(`/events/${e.id}`, { method: 'PATCH', body: patch }); }
     catch {
-      try {
-        const latest = await refreshEvents();
-        if (latest.some(item => item.id === e.id && eventMatchesCreate(item, patch))) {
-          setEventRefreshError('');
-          return;
-        }
-        setEventRefreshError('行程移動未完成，已重新載入伺服器上的最新位置。');
-      } catch {
-        setEventRefreshError('無法確認行程是否已移動，請重新載入；確認前請勿再次移動。');
-      }
+      await reconcileEventMutation(latest => latest.some(item =>
+        item.id === e.id && eventMatchesCreate(item, patch)),
+      '行程移動未完成，已重新載入伺服器上的最新位置。',
+      '無法確認行程是否已移動，請重新載入；確認前請勿再次移動。');
       return;
     }
-    try { await refreshEvents(); setEventRefreshError(''); }
-    catch { setEventRefreshError('行程已移動，但畫面暫時無法重新載入。'); }
+    await refreshAfterEventMutation('行程已移動，但畫面暫時無法重新載入。');
   }
   async function dropEvent(dragEv, d) {
     dragEv.preventDefault();
@@ -406,20 +392,13 @@ export default function CalendarView({ tasks, reload, lists = [], addIntent = nu
       setEvents(list => list.map(x => x.id === e.id ? { ...x, ...patch } : x));
       try { await api(`/events/${e.id}`, { method: 'PATCH', body: patch }); }
       catch {
-        try {
-          const latest = await refreshEvents();
-          if (latest.some(item => item.id === e.id && eventMatchesCreate(item, patch))) {
-            setEventRefreshError('');
-            return;
-          }
-          setEventRefreshError('行程搬移未完成，已重新載入伺服器上的最新位置。');
-        } catch {
-          setEventRefreshError('無法確認行程是否已搬移，請重新載入；確認前請勿再次搬移。');
-        }
+        await reconcileEventMutation(latest => latest.some(item =>
+          item.id === e.id && eventMatchesCreate(item, patch)),
+        '行程搬移未完成，已重新載入伺服器上的最新位置。',
+        '無法確認行程是否已搬移，請重新載入；確認前請勿再次搬移。');
         return;
       }
-      try { await refreshEvents(); setEventRefreshError(''); }
-      catch { setEventRefreshError('行程已搬移，但畫面暫時無法重新載入。'); }
+      await refreshAfterEventMutation('行程已搬移，但畫面暫時無法重新載入。');
       return;
     } else {                                          // 複製＝新增一筆
       await createEvent(
@@ -501,20 +480,13 @@ export default function CalendarView({ tasks, reload, lists = [], addIntent = nu
         await Promise.all(same.map(item => api(`/events/${item.id}`, { method: 'DELETE' })));
       } else await api(`/events/${ev.id}`, { method: 'DELETE' });
     } catch {
-      try {
-        const latest = await refreshEvents();
-        if (targetIds.every(id => !latest.some(item => item.id === id))) {
-          setEventRefreshError('');
-          return;
-        }
-        setEventRefreshError('刪除未完成，已重新載入伺服器上的最新行程。');
-      } catch {
-        setEventRefreshError('無法確認是否已刪除，請重新載入；確認前請勿再次刪除。');
-      }
+      await reconcileEventMutation(latest => targetIds.every(id =>
+        !latest.some(item => item.id === id)),
+      '刪除未完成，已重新載入伺服器上的最新行程。',
+      '無法確認是否已刪除，請重新載入；確認前請勿再次刪除。');
       return;
     }
-    try { await refreshEvents(); setEventRefreshError(''); }
-    catch { setEventRefreshError('行程已刪除，但畫面暫時無法重新載入。'); }
+    await refreshAfterEventMutation('行程已刪除，但畫面暫時無法重新載入。');
   }
 
   // 手動新增行程
@@ -527,6 +499,18 @@ export default function CalendarView({ tasks, reload, lists = [], addIntent = nu
   const [eventRefreshError, setEventRefreshError] = useState('');
   const [eventRefreshBusy, setEventRefreshBusy] = useState(false);
   const createPendingRef = useRef(null);
+  async function reconcileEventMutation(isCommitted, incompleteMessage, unknownMessage) {
+    try {
+      const latest = await refreshEvents();
+      setEventRefreshError(isCommitted(latest) ? '' : incompleteMessage);
+    } catch {
+      setEventRefreshError(unknownMessage);
+    }
+  }
+  async function refreshAfterEventMutation(errorMessage) {
+    try { await refreshEvents(); setEventRefreshError(''); }
+    catch { setEventRefreshError(errorMessage); }
+  }
   const resetCreateState = () => {
     createPendingRef.current = null;
     setCreateBusy(false);
