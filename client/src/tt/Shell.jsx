@@ -41,6 +41,7 @@ export default function Shell({ onLogout }) {
   const [filters, setFilters] = useState([]);
   const [habits, setHabits] = useState([]);
   const [petData, setPetData] = useState(null);
+  const [shortcutError, setShortcutError] = useState('');
   const [apiPlans, setApiPlans] = useState([]);   // 正式 Plan（Phase 2A）
   const plansReloadRequest = useRef(0);
 
@@ -88,10 +89,39 @@ export default function Shell({ onLogout }) {
     const p = new URLSearchParams(window.location.search);
     const t = p.get('add');
     if (t?.trim()) {
-      api('/tasks', { method: 'POST', body: { title: t.trim(), due_date: today() } })
-        // 回傳 reload 讓下面的 catch 接住刷新失敗；網址已清掉，不會重送建立
-        .then(() => { window.history.replaceState({}, '', window.location.pathname); return reload(); })
-        .catch(() => {});
+      const body = { title: t.trim(), due_date: today() };
+      const clearShortcut = () => window.history.replaceState({}, '', window.location.pathname);
+      (async () => {
+        // 先取得提交前 ID。若連基線都讀不到就不送 POST，保留網址供重新整理安全重試。
+        let before;
+        try { before = await api('/tasks'); }
+        catch { setShortcutError('暫時無法準備捷徑任務，尚未新增；請稍後重新整理再試。'); return; }
+        const beforeIds = new Set((Array.isArray(before) ? before : []).map(task => task.id));
+        try {
+          await api('/tasks', { method: 'POST', body });
+        } catch (error) {
+          try {
+            const latest = await api('/tasks');
+            const committed = Array.isArray(latest) && latest.some(task =>
+              !beforeIds.has(task.id)
+              && task.title === body.title
+              && task.due_date === body.due_date
+              && (task.due_time || null) === null);
+            if (!committed) {
+              setShortcutError(error.message || '捷徑任務新增失敗，請稍後重新整理再試。');
+              return;
+            }
+          } catch {
+            // POST 可能已寫入；清掉網址避免重新整理後重送，再請使用者到任務清單確認。
+            clearShortcut();
+            setShortcutError('無法確認捷徑任務是否已新增，請先到任務清單確認，避免重複建立。');
+            return;
+          }
+        }
+        clearShortcut();
+        try { await reload(); }
+        catch { setShortcutError('捷徑任務已新增，但畫面暫時無法重新載入。'); }
+      })();
     }
     const go = p.get('go'); // App 圖示快速選單（manifest shortcuts）
     if (go && ['wizard', 'vocab', 'memo', 'calendar', 'pomo', 'habits', 'pet', 'stats', 'today', 'plans', 'study', 'tasks', 'settings'].includes(go)) {
@@ -153,6 +183,12 @@ export default function Shell({ onLogout }) {
 
   return (
     <div className="app">
+      {shortcutError && (
+        <div role="alert" className="ui-error" style={{ position: 'fixed', top: 8, left: '50%', transform: 'translateX(-50%)', zIndex: 30 }}>
+          {shortcutError}
+          <button type="button" aria-label="關閉捷徑錯誤" onClick={() => setShortcutError('')} style={{ marginLeft: 8 }}>✕</button>
+        </div>
+      )}
       <button className="menu-btn" aria-label="開啟選單"
         style={{ position: 'fixed', top: 'calc(4px + env(safe-area-inset-top))', left: 4, zIndex: 10 }}
         onClick={() => setSide(true)}>☰</button>
