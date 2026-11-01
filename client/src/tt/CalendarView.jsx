@@ -624,12 +624,24 @@ export default function CalendarView({ tasks, reload, lists = [], addIntent = nu
   const toggle = async t => {
     if (taskToggleBusyRef.current || taskRefreshError) return;
     taskToggleBusyRef.current = true;
+    const completed = !t.completed;
     try {
-      await api(`/tasks/${t.id}`, { method: 'PATCH', body: { completed: !t.completed } });
+      await api(`/tasks/${t.id}`, { method: 'PATCH', body: { completed } });
     } catch (error) {
-      setTaskRefreshError(error.message || '更新完成狀態失敗，請稍後再試。');
-      taskToggleBusyRef.current = false;
-      return;
+      // 連線中斷不代表 PATCH 沒寫入；先讀回確認，避免使用者重按後把狀態反轉回去。
+      try {
+        const latest = await api('/tasks');
+        const saved = Array.isArray(latest) && latest.find(item => Number(item.id) === Number(t.id));
+        if (!saved || Boolean(saved.completed) !== completed) {
+          setTaskRefreshError(error.message || '更新完成狀態失敗，請稍後再試。');
+          taskToggleBusyRef.current = false;
+          return;
+        }
+      } catch {
+        setTaskRefreshError('無法確認任務完成狀態是否已更新，請重新載入；確認前請勿再次切換。');
+        taskToggleBusyRef.current = false;
+        return;
+      }
     }
     try { await reload(); setTaskRefreshError(''); }
     catch { setTaskRefreshError('任務完成狀態已更新，但畫面暫時無法重新載入。'); }
