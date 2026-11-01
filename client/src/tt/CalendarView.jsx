@@ -374,10 +374,11 @@ export default function CalendarView({ tasks, reload, lists = [], addIntent = nu
       setEvents(list => list.map(x => x.id === e.id ? { ...x, date: day, start_time: hm(s), end_time: hm(s + dur) } : x));
       await api(`/events/${e.id}`, { method: 'PATCH', body: { date: day, start_time: hm(s), end_time: hm(s + dur) } }).catch(err => alert('貼上失敗：' + err.message));
     } else {                                          // 複製＝新增一筆
-      await api('/events', {
-        method: 'POST',
-        body: { title: e.title, date: day, start_time: hm(s), end_time: hm(s + dur), location: e.location || '', color: e.color || '', recurring: null },
-      }).catch(err => alert('貼上失敗：' + err.message));
+      await createEvent(
+        { title: e.title, date: day, start_time: hm(s), end_time: hm(s + dur), location: e.location || '', color: e.color || '', recurring: null },
+        'paste',
+      );
+      return;
     }
     loadEvents();
   }
