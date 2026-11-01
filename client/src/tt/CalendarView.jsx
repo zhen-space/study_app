@@ -388,8 +388,25 @@ export default function CalendarView({ tasks, reload, lists = [], addIntent = nu
     const s = Math.max(H0 * 60, Math.min(24 * 60 - 5 - dur, startMin));
     setClip(null);
     if (clip.mode === 'cut') {                       // 剪下＝搬過去
-      setEvents(list => list.map(x => x.id === e.id ? { ...x, date: day, start_time: hm(s), end_time: hm(s + dur) } : x));
-      await api(`/events/${e.id}`, { method: 'PATCH', body: { date: day, start_time: hm(s), end_time: hm(s + dur) } }).catch(err => alert('貼上失敗：' + err.message));
+      const patch = { date: day, start_time: hm(s), end_time: hm(s + dur) };
+      setEvents(list => list.map(x => x.id === e.id ? { ...x, ...patch } : x));
+      try { await api(`/events/${e.id}`, { method: 'PATCH', body: patch }); }
+      catch {
+        try {
+          const latest = await refreshEvents();
+          if (latest.some(item => item.id === e.id && eventMatchesCreate(item, patch))) {
+            setEventRefreshError('');
+            return;
+          }
+          setEventRefreshError('行程搬移未完成，已重新載入伺服器上的最新位置。');
+        } catch {
+          setEventRefreshError('無法確認行程是否已搬移，請重新載入；確認前請勿再次搬移。');
+        }
+        return;
+      }
+      try { await refreshEvents(); setEventRefreshError(''); }
+      catch { setEventRefreshError('行程已搬移，但畫面暫時無法重新載入。'); }
+      return;
     } else {                                          // 複製＝新增一筆
       await createEvent(
         { title: e.title, date: day, start_time: hm(s), end_time: hm(s + dur), location: e.location || '', color: e.color || '', recurring: null },
@@ -397,7 +414,6 @@ export default function CalendarView({ tasks, reload, lists = [], addIntent = nu
       );
       return;
     }
-    loadEvents();
   }
   // 複製一份接在原行程後面（不用貼上，直接產生）
   async function duplicateEvent(e) {
