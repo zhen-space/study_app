@@ -98,7 +98,7 @@ export default function PlanDetailView({ planKey, tasks, lists, apiPlans = [], r
   const mounted = useRef(true);
   useEffect(() => () => { mounted.current = false; }, []);
   const taskToggleBusyRef = useRef(false);
-  const [taskToggleState, setTaskToggleState] = useState(null); // { taskId, committed, error }
+  const [taskToggleState, setTaskToggleState] = useState(null); // { taskId, committed, unknown, error }
   const [replan, setReplan] = useState(false);
   const [unresolved, setUnresolved] = useState(0);
   const [nt, setNt] = useState({ title: '', list_id: '', deadline_date: '', estimated_minutes: '' });
@@ -254,12 +254,25 @@ export default function PlanDetailView({ planKey, tasks, lists, apiPlans = [], r
     if (taskToggleBusyRef.current || taskToggleState?.committed) return;
     taskToggleBusyRef.current = true;
     setTaskToggleState({ taskId: t.id, committed: false, error: '' });
+    const completed = !t.completed;
     try {
-      await api(`/tasks/${t.id}`, { method: 'PATCH', body: { completed: !t.completed } });
+      await api(`/tasks/${t.id}`, { method: 'PATCH', body: { completed } });
     } catch (e) {
-      setTaskToggleState({ taskId: t.id, committed: false, error: e.message || '更新完成狀態失敗，請稍後再試。' });
-      taskToggleBusyRef.current = false;
-      return;
+      // PATCH 回應遺失時先讀回確認，避免重按後把已提交的完成狀態反轉。
+      try {
+        const latest = await api('/tasks');
+        const saved = Array.isArray(latest) && latest.find(item => Number(item.id) === Number(t.id));
+        if (!saved || Boolean(saved.completed) !== completed) {
+          setTaskToggleState({ taskId: t.id, committed: false, error: e.message || '更新完成狀態失敗，請稍後再試。' });
+          taskToggleBusyRef.current = false;
+          return;
+        }
+      } catch {
+        setTaskToggleState({ taskId: t.id, committed: true, unknown: true,
+          error: '無法確認完成狀態是否已更新，請重新載入；確認前請勿再次切換。' });
+        taskToggleBusyRef.current = false;
+        return;
+      }
     }
     taskToggleBusyRef.current = false;
     await refreshCommittedTaskToggle(t.id);
@@ -528,7 +541,8 @@ export default function PlanDetailView({ planKey, tasks, lists, apiPlans = [], r
         {taskToggleState?.error && (
           <SurfaceCard tone={taskToggleState.committed ? 'accent' : undefined}>
             <div role="alert">
-              <b>{taskToggleState.committed ? '完成狀態已儲存，但畫面暫時無法更新' : '無法更新完成狀態'}</b>
+              <b>{taskToggleState.unknown ? '無法確認完成狀態'
+                : taskToggleState.committed ? '完成狀態已儲存，但畫面暫時無法更新' : '無法更新完成狀態'}</b>
               <div className="ui-meta" style={{ marginTop: 'var(--sp-2)' }}>{taskToggleState.error}</div>
             </div>
             {taskToggleState.committed && (

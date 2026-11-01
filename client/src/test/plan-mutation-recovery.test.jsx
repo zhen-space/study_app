@@ -398,6 +398,37 @@ describe('Plan mutation recovery', () => {
     expect(reload).toHaveBeenCalledOnce();
   });
 
+  it('PATCH 回應遺失但讀回確認已提交時，只刷新而不重送', async () => {
+    handlers['/tasks/21'] = vi.fn().mockRejectedValue(new Error('連線中斷'));
+    handlers['/tasks'] = vi.fn().mockResolvedValue([{ ...tasks[0], completed: 1 }]);
+    const reload = mount();
+
+    await click(screen.getByRole('checkbox', { name: tasks[0].title }));
+
+    await waitFor(() => expect(reload).toHaveBeenCalledWith('tasks'));
+    expect(handlers['/tasks/21']).toHaveBeenCalledOnce();
+    expect(handlers['/tasks']).toHaveBeenCalledOnce();
+    expect(screen.queryByText('連線中斷')).not.toBeInTheDocument();
+  });
+
+  it('PATCH 與確認讀取都失敗時鎖住重送，重新載入只刷新 projection', async () => {
+    handlers['/tasks/21'] = vi.fn().mockRejectedValue(new Error('連線中斷'));
+    handlers['/tasks'] = vi.fn().mockRejectedValue(new Error('讀取失敗'));
+    const reload = mount();
+    const checkbox = screen.getByRole('checkbox', { name: tasks[0].title });
+
+    await click(checkbox);
+    expect((await screen.findByText('無法確認完成狀態')).closest('[role="alert"]'))
+      .toHaveTextContent('確認前請勿再次切換');
+    expect(checkbox).toBeDisabled();
+    expect(handlers['/tasks/21']).toHaveBeenCalledOnce();
+
+    await click(screen.getByRole('button', { name: '重新載入' }));
+    await waitFor(() => expect(screen.queryByText('無法確認完成狀態')).not.toBeInTheDocument());
+    expect(reload).toHaveBeenCalledOnce();
+    expect(handlers['/tasks/21']).toHaveBeenCalledOnce();
+  });
+
   it('retries only the projection refresh after a completion PATCH was committed', async () => {
     handlers['/tasks/21'] = vi.fn().mockResolvedValue({ ...tasks[0], completed: 1 });
     const reload = vi.fn()
