@@ -17,6 +17,8 @@ const H0 = 6;                                       // 時間軸起點小時
 const NOW_LINE = '#8AC4DE';                         // 現在時間線：淺天空藍，襯在行程後面
 const toMin = t => +t.slice(0, 2) * 60 + +t.slice(3, 5);
 const yOf = m => (m - H0 * 60) / 60 * ROW;          // 分鐘 → 垂直位置
+const eventMatchesCreate = (event, body) => Object.entries(body).every(([key, value]) =>
+  String(event[key] ?? '') === String(value ?? ''));
 // 依背景色自動選黑/白字，確保看得清楚
 const textOn = hex => {
   if (!hex) return '#111';
@@ -456,15 +458,75 @@ export default function CalendarView({ tasks, reload, lists = [], addIntent = nu
   const [addForm, setAddForm] = useState(null);
   // 紀念日／生日（全天標記，不是行程）
   const [annivForm, setAnnivForm] = useState(null);
+  const [createBusy, setCreateBusy] = useState(false);
+  const [createError, setCreateError] = useState('');
+  const createPendingRef = useRef(null);
+  const resetCreateState = () => {
+    createPendingRef.current = null;
+    setCreateBusy(false);
+    setCreateError('');
+  };
+  const finishEventCreate = pending => {
+    resetCreateState();
+    if (pending.form === 'anniv') setAnnivForm(null);
+    else setAddForm(null);
+    loadEvents();
+  };
+  async function confirmEventCreate() {
+    const pending = createPendingRef.current;
+    if (!pending) return;
+    try {
+      const latest = await api('/events');
+      const committed = Array.isArray(latest) && latest.some(event =>
+        !pending.beforeIds.includes(event.id) && eventMatchesCreate(event, pending.body));
+      if (committed) {
+        finishEventCreate(pending);
+        return;
+      }
+    } catch {
+      setCreateError('仍無法確認是否已新增，請稍後再確認；確認前請勿重複送出。');
+      return;
+    }
+    createPendingRef.current = null;
+    setCreateBusy(false);
+    setCreateError(pending.error || '新增失敗，請再試一次。');
+  }
+  async function createEvent(body, form) {
+    const pending = { body, form, beforeIds: events.map(event => event.id), error: '' };
+    setCreateBusy(true);
+    setCreateError('');
+    try {
+      await api('/events', { method: 'POST', body });
+    } catch (error) {
+      pending.error = error.message || '新增失敗，請再試一次。';
+      createPendingRef.current = pending;
+      try {
+        const latest = await api('/events');
+        const committed = Array.isArray(latest) && latest.some(event =>
+          !pending.beforeIds.includes(event.id) && eventMatchesCreate(event, body));
+        if (committed) {
+          finishEventCreate(pending);
+          return;
+        }
+        createPendingRef.current = null;
+      } catch {
+        setCreateError('無法確認是否已新增，請先重新確認；確認前請勿重複送出。');
+        return;
+      }
+      setCreateBusy(false);
+      setCreateError(pending.error);
+      return;
+    }
+    finishEventCreate(pending);
+  }
   async function submitAnniv() {
     if (!annivForm.title.trim()) { alert('請輸入名稱'); return; }
-    await api('/events', { method: 'POST', body: { ...annivForm, title: annivForm.title.trim(), kind: annivForm.kind || 'day', recurring: annivForm.recurring || null } });
-    setAnnivForm(null);
-    loadEvents();
+    await createEvent({ ...annivForm, title: annivForm.title.trim(), kind: annivForm.kind || 'day', recurring: annivForm.recurring || null }, 'anniv');
   }
   // 點格子新增：預設就是點到的那個時段（像 Apple 日曆）
   function openAdd(date = anchor, startMin = null) {
     setAddMenu(false);
+    resetCreateState();
     const s = startMin == null ? 8 * 60 : startMin;
     setAddForm({ title: '', date, start_time: hm(s), end_time: hm(Math.min(s + durH * 60, 24 * 60 - 5)), location: '', color: '', recurring: '', allDay: false });
   }
@@ -472,21 +534,19 @@ export default function CalendarView({ tasks, reload, lists = [], addIntent = nu
   useEffect(() => {
     if (!addIntent) return;
     if (addIntent === 'event') openAdd(anchor, null);
-    else if (addIntent === 'anniversary') setAnnivForm({ title: '', date: anchor, kind: 'due', recurring: '', color: '' });
+    else if (addIntent === 'anniversary') { resetCreateState(); setAnnivForm({ title: '', date: anchor, kind: 'due', recurring: '', color: '' }); }
     onAddIntentHandled?.();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [addIntent]);
   async function submitAdd() {
     if (!addForm.title.trim()) { alert('請輸入行程名稱'); return; }
     const { allDay, ...f } = addForm;
-    await api('/events', {
-      method: 'POST',
-      body: allDay
+    await createEvent(
+      allDay
         ? { title: f.title.trim(), date: f.date, kind: 'day', recurring: null }   // 全天＝日期下的標記
         : { ...f, title: f.title.trim(), recurring: f.recurring || null },
-    });
-    setAddForm(null);
-    loadEvents();
+      'event',
+    );
   }
 
   const toggle = async t => {
@@ -981,7 +1041,7 @@ export default function CalendarView({ tasks, reload, lists = [], addIntent = nu
 
       {/* 重要日子 */}
       {annivForm && (
-        <div className="cal-modal-back" onClick={() => setAnnivForm(null)}>
+        <div className="cal-modal-back" onClick={() => { if (!createBusy) setAnnivForm(null); }}>
           <div className="tile cal-modal" onClick={e => e.stopPropagation()}>
             <b>📌 重要日子</b>
             <div className="muted" style={{ marginTop: 2 }}>全天標記，不佔行事曆時段</div>
@@ -1003,21 +1063,22 @@ export default function CalendarView({ tasks, reload, lists = [], addIntent = nu
               <span>每年重複（會顯示第幾週年）</span>
             </label>
             <div className="row" style={{ marginTop: 12 }}>
-              <button className="btn sm ghost" onClick={() => setAnnivForm(null)}>取消</button>
-              <button className="btn sm" style={{ marginLeft: 'auto' }} onClick={submitAnniv}>新增</button>
+              <button className="btn sm ghost" disabled={createBusy} onClick={() => setAnnivForm(null)}>取消</button>
+              <button className="btn sm" disabled={createBusy} style={{ marginLeft: 'auto' }} onClick={submitAnniv}>{createBusy ? '確認中…' : '新增'}</button>
             </div>
+            {createError && <div role="alert" className="ui-error" style={{ marginTop: 8 }}>{createError}{createPendingRef.current && <button type="button" onClick={confirmEventCreate} style={{ marginLeft: 8 }}>重新確認</button>}</div>}
           </div>
         </div>
       )}
 
       {/* 新增行程：Apple 日曆式（底部彈出＋分組列表） */}
       {addForm && (
-        <div className="cal-modal-back" onClick={() => setAddForm(null)}>
+        <div className="cal-modal-back" onClick={() => { if (!createBusy) setAddForm(null); }}>
           <div className="ev-sheet" onClick={e => e.stopPropagation()}>
             <div className="ev-nav">
-              <button onClick={() => setAddForm(null)}>取消</button>
+              <button disabled={createBusy} onClick={() => setAddForm(null)}>取消</button>
               <b>新增行程</b>
-              <button className="done" disabled={!addForm.title.trim()} onClick={submitAdd}>加入</button>
+              <button className="done" disabled={createBusy || !addForm.title.trim()} onClick={submitAdd}>{createBusy ? '確認中…' : '加入'}</button>
             </div>
 
             <div className="ev-group">
@@ -1064,6 +1125,7 @@ export default function CalendarView({ tasks, reload, lists = [], addIntent = nu
                 <ColorPicker value={addForm.color} onPick={c => setAddForm(v => ({ ...v, color: c }))} />
               </div>
             )}
+            {createError && <div role="alert" className="ui-error" style={{ margin: '8px 14px' }}>{createError}{createPendingRef.current && <button type="button" onClick={confirmEventCreate} style={{ marginLeft: 8 }}>重新確認</button>}</div>}
           </div>
         </div>
       )}
