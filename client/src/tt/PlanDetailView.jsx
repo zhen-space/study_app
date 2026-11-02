@@ -102,6 +102,7 @@ export default function PlanDetailView({ planKey, tasks, lists, apiPlans = [], r
   const [replan, setReplan] = useState(false);
   const [unresolved, setUnresolved] = useState(0);
   const [nt, setNt] = useState({ title: '', list_id: '', deadline_date: '', estimated_minutes: '' });
+  const pendingTaskCreate = useRef(null); // POST 回應與讀回都失敗時，下一次先確認再決定是否重送
   const [edit, setEdit] = useState(null);     // 編輯計畫資訊的暫存（按儲存才送出）
   // null＝還沒選。暫停／刪除都必須明確選一個，不給預設值。
   const [retain, setRetain] = useState(null);
@@ -409,17 +410,52 @@ export default function PlanDetailView({ planKey, tasks, lists, apiPlans = [], r
   const addTask = () => run(async () => {
     const title = nt.title.trim();
     if (!title) return;
-    await api('/tasks', {
-      method: 'POST',
-      body: {
-        title,
-        plan_id: plan.planId,
-        list_id: nt.list_id ? Number(nt.list_id) : null,
-        deadline_date: nt.deadline_date || null,
-        estimated_minutes: nt.estimated_minutes ? Number(nt.estimated_minutes) : null,
-      },
-    });
+    const body = {
+      title,
+      plan_id: plan.planId,
+      list_id: nt.list_id ? Number(nt.list_id) : null,
+      deadline_date: nt.deadline_date || null,
+      estimated_minutes: nt.estimated_minutes ? Number(nt.estimated_minutes) : null,
+    };
+    const nullableNumber = value => value == null || value === '' ? null : Number(value);
+    const matches = (candidate, pending) => !pending.beforeIds.includes(String(candidate.id))
+      && candidate.title === pending.body.title
+      && Number(candidate.plan_id) === Number(pending.body.plan_id)
+      && nullableNumber(candidate.list_id) === nullableNumber(pending.body.list_id)
+      && (candidate.deadline_date || null) === pending.body.deadline_date
+      && nullableNumber(candidate.estimated_minutes) === nullableNumber(pending.body.estimated_minutes);
+    const confirm = async pending => {
+      const latest = await api('/tasks');
+      return Array.isArray(latest) && latest.some(candidate => matches(candidate, pending));
+    };
+    // 上次連讀回也失敗時不能直接再 POST；先確認是否已建立，避免同一任務出現兩筆。
+    if (pendingTaskCreate.current) {
+      try {
+        if (await confirm(pendingTaskCreate.current)) {
+          pendingTaskCreate.current = null;
+          return;
+        }
+        pendingTaskCreate.current = null;
+      } catch {
+        throw new Error('仍無法確認任務是否已新增，請稍後再確認；確認前不會重複送出。');
+      }
+    }
+    const pending = { body, beforeIds: tasks.map(task => String(task.id)) };
+    try {
+      await api('/tasks', { method: 'POST', body });
+    } catch (e) {
+      if (e.status >= 400 && e.status < 500) throw e;
+      try {
+        if (await confirm(pending)) return;
+        throw e;
+      } catch (checkError) {
+        if (checkError === e) throw e;
+        pendingTaskCreate.current = pending;
+        throw new Error('無法確認任務是否已新增，請稍後再確認；確認前不會重複送出。');
+      }
+    }
   }, () => {
+    pendingTaskCreate.current = null;
     setNt({ title: '', list_id: nt.list_id, deadline_date: '', estimated_minutes: '' });   // 科目留著，連續加同一科比較順
     close();
   });

@@ -398,6 +398,49 @@ describe('Plan mutation recovery', () => {
     expect(handlers['/tasks']).toHaveBeenCalledOnce();
   });
 
+  it('新增任務 POST 回應遺失但讀回已建立時，只刷新而不重送', async () => {
+    const reload = vi.fn().mockResolvedValue(undefined);
+    handlers['/tasks'] = vi.fn(options => options?.method === 'POST'
+      ? Promise.reject(new Error('連線中斷'))
+      : Promise.resolve([...tasks, {
+        id: 99, title: '複習第三課', plan_id: 12, list_id: null,
+        deadline_date: null, estimated_minutes: null,
+      }]));
+    mount(reload);
+    await click(screen.getByRole('button', { name: '新增任務' }));
+    fireEvent.change(screen.getByLabelText('任務名稱'), { target: { value: '複習第三課' } });
+    await click(screen.getByRole('button', { name: '新增' }));
+
+    expect(handlers['/tasks']).toHaveBeenCalledTimes(2);
+    expect(handlers['/tasks'].mock.calls.filter(([options]) => options?.method === 'POST')).toHaveLength(1);
+    expect(reload).toHaveBeenCalledOnce();
+    expect(screen.queryByLabelText('任務名稱')).not.toBeInTheDocument();
+  });
+
+  it('新增任務結果不明時，重按會先確認而不重送 POST', async () => {
+    let reads = 0;
+    handlers['/tasks'] = vi.fn(options => {
+      if (options?.method === 'POST') return Promise.reject(new Error('連線中斷'));
+      reads += 1;
+      if (reads === 1) return Promise.reject(new Error('讀取失敗'));
+      return Promise.resolve([...tasks, {
+        id: 99, title: '複習第三課', plan_id: 12, list_id: null,
+        deadline_date: null, estimated_minutes: null,
+      }]);
+    });
+    const reload = mount();
+    await click(screen.getByRole('button', { name: '新增任務' }));
+    fireEvent.change(screen.getByLabelText('任務名稱'), { target: { value: '複習第三課' } });
+    await click(screen.getByRole('button', { name: '新增' }));
+
+    expect(await screen.findByText('無法確認任務是否已新增，請稍後再確認；確認前不會重複送出。')).toBeInTheDocument();
+    await click(screen.getByRole('button', { name: '新增' }));
+
+    expect(handlers['/tasks'].mock.calls.filter(([options]) => options?.method === 'POST')).toHaveLength(1);
+    expect(reload).toHaveBeenCalledOnce();
+    expect(screen.queryByLabelText('任務名稱')).not.toBeInTheDocument();
+  });
+
   it('synchronously prevents duplicate completion writes while the first PATCH is pending', async () => {
     let resolvePatch;
     handlers['/tasks/21'] = vi.fn().mockImplementation(() => new Promise(resolve => { resolvePatch = resolve; }));
