@@ -124,6 +124,7 @@ describe('Task mutation recovery at 375px', () => {
   it('delete failure keeps the task and detail open instead of claiming success', async () => {
     api.mockImplementation((path, options = {}) => {
       if (path === '/tasks/501' && options.method === 'DELETE') return Promise.reject(new Error('刪除失敗'));
+      if (path === '/tasks') return Promise.resolve([task()]);
       if (path.endsWith('/attachments') || path === '/study-sessions') return Promise.resolve([]);
       return Promise.resolve({});
     });
@@ -135,6 +136,44 @@ describe('Task mutation recovery at 375px', () => {
     expect(await screen.findByRole('alert')).toHaveTextContent('刪除失敗');
     expect(screen.getByDisplayValue('今天複習英文')).toBeInTheDocument();
     expect(screen.queryByText(/已刪除「今天複習英文」/)).not.toBeInTheDocument();
+  });
+
+  it('DELETE 回應遺失但讀回已刪除時，不重送並照常移除任務', async () => {
+    api.mockImplementation((path, options = {}) => {
+      if (path === '/tasks/501' && options.method === 'DELETE') return Promise.reject(new Error('連線中斷'));
+      if (path === '/tasks') return Promise.resolve([{ ...task(), deleted: true }]);
+      if (path.endsWith('/attachments') || path === '/study-sessions') return Promise.resolve([]);
+      return Promise.resolve({});
+    });
+    const reload = mount();
+    fireEvent.click(screen.getByText('今天複習英文'));
+    fireEvent.click(screen.getByRole('button', { name: '更多' }));
+    fireEvent.click(screen.getByRole('menuitem', { name: '刪除任務' }));
+
+    await waitFor(() => expect(screen.queryByText('今天複習英文')).not.toBeInTheDocument());
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument();
+    expect(api.mock.calls.filter(([path, options]) => path === '/tasks/501' && options?.method === 'DELETE')).toHaveLength(1);
+    expect(reload).toHaveBeenCalledOnce();
+  });
+
+  it('DELETE 與讀回確認都失敗時鎖住操作，重新載入後才解鎖', async () => {
+    api.mockImplementation((path, options = {}) => {
+      if (path === '/tasks/501' && options.method === 'DELETE') return Promise.reject(new Error('連線中斷'));
+      if (path === '/tasks') return Promise.reject(new Error('仍然離線'));
+      if (path.endsWith('/attachments') || path === '/study-sessions') return Promise.resolve([]);
+      return Promise.resolve({});
+    });
+    const reload = mount();
+    fireEvent.click(screen.getByText('今天複習英文'));
+    fireEvent.click(screen.getByRole('button', { name: '更多' }));
+    fireEvent.click(screen.getByRole('menuitem', { name: '刪除任務' }));
+
+    expect((await screen.findAllByRole('alert'))[0]).toHaveTextContent('無法確認任務是否已刪除');
+    expect(screen.getByRole('checkbox', { name: '完成「今天複習英文」' })).toBeDisabled();
+    fireEvent.click(screen.getByRole('button', { name: '重新載入' }));
+    await waitFor(() => expect(screen.getByRole('checkbox', { name: '完成「今天複習英文」' })).toBeEnabled());
+    expect(api.mock.calls.filter(([path, options]) => path === '/tasks/501' && options?.method === 'DELETE')).toHaveLength(1);
+    expect(reload).toHaveBeenCalledOnce();
   });
 
   it('沿用 iOS 慣例：向左滑過門檻才刪除，向右滑不觸發破壞性操作', async () => {
