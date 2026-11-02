@@ -91,4 +91,25 @@ describe('學校作業表單：寫入成功但刷新失敗要可見且可重試'
     expect(reload).toHaveBeenCalledWith('tasks');
     expect(screen.queryByRole('alert')).toBeNull();
   });
+
+  it('完成狀態無法確認時維持鎖定，重新載入成功後才允許再次操作', async () => {
+    api.mockImplementation((path, options = {}) => {
+      if (path === '/tasks/306' && options.method === 'PATCH') return Promise.reject(new Error('連線中斷'));
+      if (path === '/tasks') return Promise.reject(new Error('仍然離線'));
+      return Promise.resolve({});
+    });
+    const reload = vi.fn().mockResolvedValue(undefined);
+    render(<SchoolAssignmentView tasks={[sa({ id: 306, title: '待確認作業', deadline_date: '2099-01-01' })]} lists={lists} reload={reload} />);
+    const check = screen.getByRole('checkbox', { name: '標記完成' });
+
+    fireEvent.click(check);
+
+    await waitFor(() => expect(check).toBeDisabled());
+    expect(screen.getAllByRole('alert')[0]).toHaveTextContent('無法確認作業是否已更新');
+    fireEvent.click(screen.getByRole('button', { name: '重新載入' }));
+    await waitFor(() => expect(check).toBeEnabled());
+    expect(screen.queryByRole('button', { name: '重新載入' })).not.toBeInTheDocument();
+    expect(api.mock.calls.filter(([path, options]) => path === '/tasks/306' && options?.method === 'PATCH')).toHaveLength(1);
+    expect(reload).toHaveBeenCalledOnce();
+  });
 });

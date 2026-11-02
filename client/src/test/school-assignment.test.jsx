@@ -393,7 +393,39 @@ describe('生命週期沿用既有 Task API', () => {
     fireEvent.click(check);
     await waitFor(() => expect(reload).toHaveBeenCalledWith('tasks'));
     expect(screen.queryByRole('alert')).not.toBeInTheDocument();
-    expect(api).toHaveBeenCalledTimes(2);
+    expect(api.mock.calls.filter(([path, options]) => path === '/tasks/11' && options?.method === 'PATCH')).toHaveLength(2);
+    expect(api.mock.calls.filter(([path]) => path === '/tasks')).toHaveLength(1);
+  });
+  it('PATCH 回應遺失但讀回已完成時，不重送寫入並照常刷新', async () => {
+    api.mockImplementation((path, options = {}) => {
+      if (path === '/tasks/12' && options.method === 'PATCH') return Promise.reject(new Error('連線中斷'));
+      if (path === '/tasks') return Promise.resolve([sa({ id: 12, completed: 1 })]);
+      return Promise.resolve({});
+    });
+    render(<SARow t={sa({ id: 12 })} list={{ id: 1, name: '數學' }} now={NOW} onEdit={() => {}} reload={reload} />);
+
+    fireEvent.click(screen.getByRole('checkbox'));
+
+    await waitFor(() => expect(reload).toHaveBeenCalledWith('tasks'));
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument();
+    expect(api.mock.calls.filter(([path, options]) => path === '/tasks/12' && options?.method === 'PATCH')).toHaveLength(1);
+  });
+  it('PATCH 與讀回確認都失敗時鎖住操作且不自動重送', async () => {
+    api.mockImplementation((path, options = {}) => {
+      if (path === '/tasks/13' && options.method === 'PATCH') return Promise.reject(new Error('連線中斷'));
+      if (path === '/tasks') return Promise.reject(new Error('仍然離線'));
+      return Promise.resolve({});
+    });
+    render(<SARow t={sa({ id: 13 })} list={{ id: 1, name: '數學' }} now={NOW} onEdit={() => {}} reload={reload} />);
+    const check = screen.getByRole('checkbox');
+
+    fireEvent.click(check);
+
+    expect(await screen.findByRole('alert')).toHaveTextContent('無法確認作業是否已更新');
+    expect(check).toBeDisabled();
+
+    expect(api.mock.calls.filter(([path, options]) => path === '/tasks/13' && options?.method === 'PATCH')).toHaveLength(1);
+    expect(reload).not.toHaveBeenCalled();
   });
 });
 
