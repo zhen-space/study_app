@@ -39,6 +39,15 @@ const taskMatchesQuickCreate = (candidate, body) => {
     && tags(candidate.tags) === tags(body.tags);
 };
 
+// 明細 PATCH 回應遺失時，用伺服器讀回值確認是否其實已寫入。
+// undefined 不會進 JSON request，不能拿來要求伺服器欄位也必須是 undefined。
+const taskMatchesPatch = (candidate, body) => Object.entries(body).every(([key, value]) => {
+  if (value === undefined) return true;
+  if (Array.isArray(value)) return JSON.stringify(candidate[key] || []) === JSON.stringify(value);
+  if (value === null) return candidate[key] == null;
+  return candidate[key] === value;
+});
+
 // 一科的項數與逾期數。逾期是紅的，其餘是次要資訊——這一行要能一眼看出
 // 「哪一科欠最多」，而不是變成又一排同樣重的數字。
 export function overdueCount(list, td = today()) {
@@ -1227,7 +1236,19 @@ export default function Tasks({ view, tasks, lists, filters, habits = [], reload
     saveChain.current = request;
     return request.then(() => {
       setSaveError('');
-    }).catch(err => {
+    }).catch(async err => {
+      // PATCH 可能已提交但只有回應遺失。先讀回比對完整草稿，避免把成功誤報成失敗。
+      try {
+        const latest = await api('/tasks');
+        const saved = Array.isArray(latest) && latest.find(item => Number(item.id) === Number(id));
+        if (saved && taskMatchesPatch(saved, body)) {
+          setSaveError('');
+          return;
+        }
+      } catch {
+        // PATCH 是覆寫同一組欄位，重試仍具冪等性；保留草稿並清楚說明目前無法確認。
+        err = new Error('無法確認任務是否已儲存');
+      }
       // 只有「目前最後一筆」失敗才能把自己的草稿放回待存區。若後面已有
       // 較新的 PATCH 排隊，舊失敗回應不能復活舊草稿，否則關閉明細時會再送
       // 舊內容並覆蓋已成功寫入的新版本。
