@@ -68,6 +68,50 @@ describe('Task mutation recovery at 375px', () => {
     expect(writes).toEqual([{ completed: true }, { completed: false }, { completed: false }]);
   });
 
+  it('復原 PATCH 回應遺失但讀回已復原時，不誤報失敗或重送', async () => {
+    let writes = 0;
+    api.mockImplementation((path, options = {}) => {
+      if (path === '/tasks/501' && options.method === 'PATCH') {
+        writes += 1;
+        if (writes === 2) return Promise.reject(new Error('連線中斷'));
+        return Promise.resolve({});
+      }
+      if (path === '/tasks') return Promise.resolve([{ ...task(), completed: false }]);
+      return Promise.resolve([]);
+    });
+    const reload = mount();
+
+    fireEvent.click(screen.getByRole('checkbox', { name: '完成「今天複習英文」' }));
+    fireEvent.click(await screen.findByRole('button', { name: '復原' }));
+
+    await waitFor(() => expect(screen.getByText('今天複習英文')).toBeInTheDocument());
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument();
+    expect(writes).toBe(2);
+    expect(api.mock.calls.filter(([path]) => path === '/tasks')).toHaveLength(1);
+    expect(reload).toHaveBeenCalledTimes(2);
+  });
+
+  it('復原 PATCH 與讀回都失敗時，保留提示供重新載入確認', async () => {
+    let writes = 0;
+    api.mockImplementation((path, options = {}) => {
+      if (path === '/tasks/501' && options.method === 'PATCH') {
+        writes += 1;
+        if (writes === 2) return Promise.reject(new Error('連線中斷'));
+        return Promise.resolve({});
+      }
+      if (path === '/tasks') return Promise.reject(new Error('仍然離線'));
+      return Promise.resolve([]);
+    });
+    mount();
+
+    fireEvent.click(screen.getByRole('checkbox', { name: '完成「今天複習英文」' }));
+    fireEvent.click(await screen.findByRole('button', { name: '復原' }));
+
+    expect(await screen.findByRole('alert')).toHaveTextContent('無法確認任務是否已復原，請重新載入後再確認。');
+    expect(screen.queryByText('今天複習英文')).not.toBeInTheDocument();
+    expect(writes).toBe(2);
+  });
+
   it('after commit, refresh failure retries only reload and never resends completion', async () => {
     api.mockResolvedValue({});
     const reload = vi.fn().mockRejectedValueOnce(new Error('離線')).mockResolvedValueOnce(undefined);
