@@ -942,6 +942,7 @@ export default function Tasks({ view, tasks, lists, filters, habits = [], reload
   const mutationIds = useRef(new Set());
   const [pendingIds, setPendingIds] = useState(new Set());
   const [mutationErrors, setMutationErrors] = useState({});
+  const uncertainMutationIds = useRef(new Set());
   const [refreshError, setRefreshError] = useState('');
   const [refreshBusy, setRefreshBusy] = useState(false);
   // 錯誤列的「重新載入」預設只重抓 tasks scope；習慣打卡刷新失敗時要整包重抓才看得到習慣。
@@ -970,12 +971,26 @@ export default function Tasks({ view, tasks, lists, filters, habits = [], reload
   };
   async function toggle(t) {
     if (!beginMutation(t.id)) return;
+    const completed = !t.completed;
     try {
-      await api(`/tasks/${t.id}`, { method: 'PATCH', body: { completed: !t.completed } });
+      await api(`/tasks/${t.id}`, { method: 'PATCH', body: { completed } });
     } catch (e) {
-      setMutationErrors(errors => ({ ...errors, [t.id]: e.message || '更新任務失敗，請再試一次' }));
-      finishMutation(t.id);
-      return;
+      // 連線中斷不代表 PATCH 未提交；讀回確認後才決定是否允許再次切換。
+      try {
+        const latest = await api('/tasks');
+        const saved = Array.isArray(latest) && latest.find(item => Number(item.id) === Number(t.id));
+        if (!saved || Boolean(saved.completed) !== completed) {
+          setMutationErrors(errors => ({ ...errors, [t.id]: e.message || '更新任務失敗，請再試一次' }));
+          finishMutation(t.id);
+          return;
+        }
+      } catch {
+        uncertainMutationIds.current.add(t.id);
+        const message = '無法確認任務是否已更新，請重新載入；確認前請勿再次切換。';
+        setMutationErrors(errors => ({ ...errors, [t.id]: message }));
+        setRefreshError(message);
+        return;
+      }
     }
     if (!(view.type === 'list' && showCompletedInList)) {
       setHidden(h => new Set([...h, t.id]));
@@ -1300,6 +1315,8 @@ export default function Tasks({ view, tasks, lists, filters, habits = [], reload
       await (needsAll ? reload() : reload('tasks'));
       setRefreshError('');
       duplicateBusyRef.current = false;
+      for (const id of uncertainMutationIds.current) finishMutation(id);
+      uncertainMutationIds.current.clear();
       if (needsAll) setRefreshNeedsAll(false);
     }
     catch { setRefreshError('仍然無法重新載入，請稍後再試。'); }
