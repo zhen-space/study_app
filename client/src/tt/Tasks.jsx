@@ -1007,7 +1007,20 @@ export default function Tasks({ view, tasks, lists, filters, habits = [], reload
       setOver(o => ({ ...o, [t.id]: { ...t, completed: !t.completed } }));
     }
     if (!t.completed) showToast(`已完成「${t.title}」`, async () => {
-      await api(`/tasks/${t.id}`, { method: 'PATCH', body: { completed: false } });
+      try {
+        await api(`/tasks/${t.id}`, { method: 'PATCH', body: { completed: false } });
+      } catch (e) {
+        // 「復原」很常緊接在完成後使用；PATCH 回應遺失不代表沒有提交。
+        // 先讀回確認，避免其實已復原卻顯示失敗並要求使用者再按一次。
+        try {
+          const latest = await api('/tasks');
+          const saved = Array.isArray(latest) && latest.find(item => Number(item.id) === Number(t.id));
+          if (!saved || Boolean(saved.completed)) throw e;
+        } catch (checkError) {
+          if (checkError === e) throw e;
+          throw new Error('無法確認任務是否已復原，請重新載入後再確認。');
+        }
+      }
       setHidden(h => { const n = new Set(h); n.delete(t.id); return n; });
       await reload('tasks').catch(() => setRefreshError('任務已復原，但畫面暫時無法重新載入。'));
     });
