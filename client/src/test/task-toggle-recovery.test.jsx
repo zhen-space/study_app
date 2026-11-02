@@ -82,6 +82,45 @@ describe('Task mutation recovery at 375px', () => {
     expect(reload).toHaveBeenCalledTimes(2);
   });
 
+  it('PATCH 回應遺失時會讀回確認，已寫入就不重送也不顯示失敗', async () => {
+    api.mockImplementation((path, options = {}) => {
+      if (path === '/tasks/501' && options.method === 'PATCH') return Promise.reject(new Error('連線中斷'));
+      if (path === '/tasks') return Promise.resolve([{ ...task(), completed: true }]);
+      return Promise.resolve({});
+    });
+    const reload = mount();
+
+    fireEvent.click(screen.getByRole('checkbox', { name: '完成「今天複習英文」' }));
+
+    await waitFor(() => expect(screen.queryByText('今天複習英文')).not.toBeInTheDocument());
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument();
+    expect(api.mock.calls.filter(([path, options]) => path === '/tasks/501' && options?.method === 'PATCH')).toHaveLength(1);
+    expect(api.mock.calls.filter(([path]) => path === '/tasks')).toHaveLength(1);
+    expect(reload).toHaveBeenCalledOnce();
+  });
+
+  it('PATCH 與讀回確認都失敗時鎖住切換，重新載入後才安全解鎖', async () => {
+    api.mockImplementation((path, options = {}) => {
+      if (path === '/tasks/501' && options.method === 'PATCH') return Promise.reject(new Error('連線中斷'));
+      if (path === '/tasks') return Promise.reject(new Error('仍然離線'));
+      return Promise.resolve({});
+    });
+    const reload = mount();
+    const checkbox = screen.getByRole('checkbox', { name: '完成「今天複習英文」' });
+
+    fireEvent.click(checkbox);
+
+    await waitFor(() => expect(checkbox).toBeDisabled());
+    expect(screen.getAllByRole('alert')[0]).toHaveTextContent('無法確認任務是否已更新');
+    expect(screen.getByRole('button', { name: '重新載入' })).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('button', { name: '重新載入' }));
+    await waitFor(() => expect(checkbox).toBeEnabled());
+    expect(screen.queryByRole('button', { name: '重新載入' })).not.toBeInTheDocument();
+    expect(api.mock.calls.filter(([path, options]) => path === '/tasks/501' && options?.method === 'PATCH')).toHaveLength(1);
+    expect(reload).toHaveBeenCalledOnce();
+  });
+
   it('delete failure keeps the task and detail open instead of claiming success', async () => {
     api.mockImplementation((path, options = {}) => {
       if (path === '/tasks/501' && options.method === 'DELETE') return Promise.reject(new Error('刪除失敗'));
