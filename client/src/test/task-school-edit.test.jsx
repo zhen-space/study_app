@@ -87,7 +87,7 @@ describe('學校作業編輯', () => {
     fireEvent.change(screen.getByLabelText('繳交日期'), { target: { value: '2026-10-15' } });
     fireEvent.click(screen.getByRole('button', { name: '✓ 完成' }));
 
-    expect(await screen.findByRole('alert')).toHaveTextContent('網路暫時中斷');
+    expect(await screen.findByRole('alert')).toHaveTextContent('無法確認任務是否已儲存');
     expect(screen.getByLabelText('繳交日期')).toHaveValue('2026-10-15');
     expect(reload).not.toHaveBeenCalled();
 
