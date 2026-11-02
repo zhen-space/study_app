@@ -114,6 +114,44 @@ describe('Plan mutation recovery', () => {
     expect(handlers['/plans/12']).not.toHaveBeenCalled();
   });
 
+  it('計畫資訊 PATCH 回應遺失但讀回已儲存時，只刷新而不重送', async () => {
+    const reload = vi.fn().mockResolvedValue(undefined);
+    handlers['/plans/12'] = vi.fn()
+      .mockRejectedValueOnce(new Error('連線中斷'))
+      .mockResolvedValueOnce({ plan: { ...plan, name: '段考衝刺' } });
+    mount(reload);
+
+    await click(screen.getByRole('button', { name: '計畫選項' }));
+    await click(screen.getByText('編輯計畫資訊'));
+    fireEvent.change(screen.getByLabelText('計畫名稱'), { target: { value: '段考衝刺' } });
+    await click(screen.getByRole('button', { name: '儲存' }));
+
+    expect(handlers['/plans/12']).toHaveBeenCalledTimes(2);
+    expect(reload).toHaveBeenCalledOnce();
+    expect(screen.queryByRole('dialog', { name: '編輯計畫資訊' })).not.toBeInTheDocument();
+    expect(screen.queryByText('連線中斷')).not.toBeInTheDocument();
+  });
+
+  it('計畫資訊 PATCH 與讀回都失敗時保留草稿供稍後重試', async () => {
+    handlers['/plans/12'] = vi.fn()
+      .mockRejectedValueOnce(new Error('連線中斷'))
+      .mockRejectedValueOnce(new Error('讀取失敗'))
+      .mockResolvedValueOnce({ plan: { ...plan, name: '段考衝刺' } });
+    mount();
+
+    await click(screen.getByRole('button', { name: '計畫選項' }));
+    await click(screen.getByText('編輯計畫資訊'));
+    fireEvent.change(screen.getByLabelText('計畫名稱'), { target: { value: '段考衝刺' } });
+    await click(screen.getByRole('button', { name: '儲存' }));
+
+    expect(await screen.findByText('無法確認計畫資訊是否已儲存，請稍後再試；草稿仍會保留。')).toBeInTheDocument();
+    expect(screen.getByLabelText('計畫名稱')).toHaveValue('段考衝刺');
+    expect(screen.getByRole('button', { name: '儲存' })).toBeEnabled();
+    await click(screen.getByRole('button', { name: '儲存' }));
+
+    expect(handlers['/plans/12']).toHaveBeenCalledTimes(3);
+  });
+
   it('刪除已提交但回應遺失時以 GET 404 確認，只返回列表而不重送', async () => {
     const onBack = vi.fn();
     const reload = vi.fn().mockResolvedValue(undefined);
