@@ -466,7 +466,23 @@ export default function PlanDetailView({ planKey, tasks, lists, apiPlans = [], r
     if ((edit.target_date || null) !== (raw?.target_date || null)) body.target_date = edit.target_date || null;
     if ((edit.description || '') !== (raw?.description || '')) body.description = edit.description || '';
     if (!Object.keys(body).length) { close(); return NO_COMMIT; }
-    await api(`/plans/${plan.planId}`, { method: 'PATCH', body });
+    try {
+      await api(`/plans/${plan.planId}`, { method: 'PATCH', body });
+    } catch (e) {
+      // 行動網路可能只遺失 PATCH 回應；先讀回核對，避免其實已儲存卻留在表單中
+      // 誘使用者重送。4xx 是明確拒絕，直接保留原錯誤與草稿供修正。
+      if (e.status >= 400 && e.status < 500) throw e;
+      let current;
+      try {
+        current = (await api(`/plans/${plan.planId}`))?.plan;
+      } catch {
+        throw new Error('無法確認計畫資訊是否已儲存，請稍後再試；草稿仍會保留。');
+      }
+      const saved = current && Object.entries(body).every(([key, value]) => (
+        (current[key] ?? null) === (value ?? null)
+      ));
+      if (!saved) throw e;
+    }
   }, close);
 
   // 依科目分組；同一科有多本書時再分小段。
