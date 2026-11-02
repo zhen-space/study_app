@@ -1292,9 +1292,23 @@ export default function Tasks({ view, tasks, lists, filters, habits = [], reload
     try {
       await api(`/tasks/${t.id}`, { method: 'DELETE' });
     } catch (e) {
-      setMutationErrors(errors => ({ ...errors, [t.id]: e.message || '刪除任務失敗，請再試一次' }));
-      finishMutation(t.id);
-      return;
+      // DELETE 可能已提交但回應遺失；讀回確認後才允許再次刪除。
+      try {
+        const latest = await api('/tasks');
+        if (!Array.isArray(latest)) throw new Error('任務清單格式不正確');
+        const saved = latest.find(item => Number(item.id) === Number(t.id));
+        if (saved && !saved.deleted) {
+          setMutationErrors(errors => ({ ...errors, [t.id]: e.message || '刪除任務失敗，請再試一次' }));
+          finishMutation(t.id);
+          return;
+        }
+      } catch {
+        uncertainMutationIds.current.add(t.id);
+        const message = '無法確認任務是否已刪除，請重新載入；確認前請勿再次操作。';
+        setMutationErrors(errors => ({ ...errors, [t.id]: message }));
+        setRefreshError(message);
+        return;
+      }
     }
     setHidden(h => new Set([...h, t.id]));
     setSelId(null);
