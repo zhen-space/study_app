@@ -11,6 +11,7 @@ import {
 
 function useAssignmentMutations(reload) {
   const live = useRef(new Set());
+  const uncertain = useRef(new Set());
   const [pending, setPending] = useState(new Set());
   const [errors, setErrors] = useState({});
   const [refreshError, setRefreshError] = useState('');
@@ -22,10 +23,26 @@ function useAssignmentMutations(reload) {
     setErrors(e => ({ ...e, [task.id]: '' }));
     try { await api(`/tasks/${task.id}`, { method: 'PATCH', body }); }
     catch (e) {
-      setErrors(all => ({ ...all, [task.id]: e.message || '更新作業失敗，請稍後再試' }));
-      live.current.delete(task.id);
-      setPending(s => { const n = new Set(s); n.delete(task.id); return n; });
-      return;
+      // PATCH 回應遺失時，先讀回確認是否已寫入，避免使用者重按後把狀態反轉。
+      try {
+        const latest = await api('/tasks');
+        const saved = Array.isArray(latest) && latest.find(item => Number(item.id) === Number(task.id));
+        const committed = saved && Object.entries(body).every(([key, value]) => (
+          typeof value === 'boolean' ? Boolean(saved[key]) === value : saved[key] === value
+        ));
+        if (!committed) {
+          setErrors(all => ({ ...all, [task.id]: e.message || '更新作業失敗，請稍後再試' }));
+          live.current.delete(task.id);
+          setPending(s => { const n = new Set(s); n.delete(task.id); return n; });
+          return;
+        }
+      } catch {
+        const message = '無法確認作業是否已更新，請重新載入；確認前請勿再次操作。';
+        uncertain.current.add(task.id);
+        setErrors(all => ({ ...all, [task.id]: message }));
+        setRefreshError(message);
+        return;
+      }
     }
     try { await reload('tasks'); }
     catch { setRefreshError('作業已更新，但畫面暫時無法重新載入。'); }
@@ -37,7 +54,15 @@ function useAssignmentMutations(reload) {
   const retryRefresh = async () => {
     if (refreshBusy) return;
     setRefreshBusy(true);
-    try { await reload('tasks'); setRefreshError(''); }
+    try {
+      await reload('tasks');
+      setRefreshError('');
+      for (const id of uncertain.current) {
+        live.current.delete(id);
+        setPending(s => { const n = new Set(s); n.delete(id); return n; });
+      }
+      uncertain.current.clear();
+    }
     catch { setRefreshError('仍然無法重新載入，請稍後再試。'); }
     finally { setRefreshBusy(false); }
   };
