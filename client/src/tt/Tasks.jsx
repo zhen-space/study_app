@@ -424,17 +424,39 @@ export function Detail({ task, lists, onSave, onDelete, onDuplicate, onClose, sa
     attBusyRef.current = true;
     setAttBusy(true);
     setAttMutation(null);
+    let confirmedRows = null;
     try {
       await api(`/attachments/${a.id}`, { method: 'DELETE' });
     } catch (err) {
-      setAttMutation({ operation: 'delete', committed: false, error: err.message || '附件刪除失敗，請再試一次。' });
+      // DELETE 回應遺失時，先讀回附件清單確認是否其實已提交；附件刪除不可逆，
+      // 不能只因連線錯誤就讓使用者再次送出同一個刪除。
+      try {
+        const rows = await api(`/tasks/${task.id}/attachments`);
+        if (!Array.isArray(rows)) throw new Error('附件清單格式不正確');
+        if (rows.some(row => Number(row.id) === Number(a.id))) {
+          setAttMutation({ operation: 'delete', committed: false, error: err.message || '附件刪除失敗，請再試一次。' });
+          attBusyRef.current = false;
+          setAttBusy(false);
+          return;
+        }
+        confirmedRows = rows;
+      } catch {
+        setAttMutation({ operation: 'delete', committed: true, uncertain: true,
+          error: '無法確認附件是否已刪除，請重新載入附件；確認前請勿再次操作。' });
+        attBusyRef.current = false;
+        setAttBusy(false);
+        return;
+      }
+    }
+    // DELETE 已提交就立刻移除本地投影，避免刷新失敗時再次送出不可逆刪除。
+    setAtts(rows => confirmedRows || rows.filter(row => Number(row.id) !== Number(a.id)));
+    setAttMutation({ operation: 'delete', committed: true, error: '' });
+    if (confirmedRows) {
+      setAttMutation(null);
       attBusyRef.current = false;
       setAttBusy(false);
       return;
     }
-    // DELETE 已提交就立刻移除本地投影，避免刷新失敗時再次送出不可逆刪除。
-    setAtts(rows => rows.filter(row => Number(row.id) !== Number(a.id)));
-    setAttMutation({ operation: 'delete', committed: true, error: '' });
     try {
       await loadAtts();
       setAttMutation(null);
@@ -604,7 +626,8 @@ export function Detail({ task, lists, onSave, onDelete, onDuplicate, onClose, sa
         {attMutation?.error && (
           <div role="alert" className="ui-error" style={{ marginTop: 6 }}>
             {attMutation.committed
-              ? (attMutation.operation === 'delete' ? '附件已刪除，但清單暫時無法更新。' : '附件已上傳，但清單暫時無法更新。')
+              ? (attMutation.uncertain ? attMutation.error
+                : attMutation.operation === 'delete' ? '附件已刪除，但清單暫時無法更新。' : '附件已上傳，但清單暫時無法更新。')
               : attMutation.error}
             {attMutation.committed && (
               <button type="button" disabled={attBusy} onClick={retryAtts} style={{ marginLeft: 8 }}>
