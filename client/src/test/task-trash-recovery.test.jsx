@@ -165,7 +165,15 @@ describe('375px 任務垃圾桶 mutation recovery', () => {
     fireEvent.click(screen.getByRole('button', { name: '永久刪除「待刪講義」' }));
     expect(api).not.toHaveBeenCalled();
 
-    api.mockRejectedValueOnce(new Error('清空失敗')).mockResolvedValueOnce({ ok: true });
+    let clears = 0;
+    api.mockImplementation((path, options = {}) => {
+      if (path === '/trash' && options.method === 'DELETE') {
+        clears += 1;
+        return clears === 1 ? Promise.reject(new Error('清空失敗')) : Promise.resolve({ ok: true });
+      }
+      if (path === '/tasks') return Promise.resolve(rows);
+      return Promise.resolve({});
+    });
     fireEvent.click(screen.getByRole('button', { name: '清空垃圾桶' }));
     expect(await screen.findByRole('alert')).toHaveTextContent('清空失敗');
     expect(screen.getByText('待刪講義')).toBeInTheDocument();
@@ -175,6 +183,41 @@ describe('375px 任務垃圾桶 mutation recovery', () => {
     await waitFor(() => expect(screen.queryByText('待刪講義')).not.toBeInTheDocument());
     expect(screen.queryByText('舊作業')).not.toBeInTheDocument();
     expect(api.mock.calls.filter(([path]) => path === '/trash')).toHaveLength(2);
+  });
+
+  it('清空垃圾桶回應遺失但讀回已無一般垃圾時，不誤報失敗或重送', async () => {
+    const planTask = { ...trashed(703, '計畫單元一'), plan_id: 9 };
+    api.mockImplementation((path, options = {}) => {
+      if (path === '/trash' && options.method === 'DELETE') return Promise.reject(new Error('連線中斷'));
+      if (path === '/tasks') return Promise.resolve([planTask]);
+      return Promise.resolve({});
+    });
+    const reload = mount(undefined, [trashed(701, '待刪講義'), planTask]);
+
+    fireEvent.click(screen.getByRole('button', { name: '清空垃圾桶' }));
+
+    await waitFor(() => expect(screen.queryByText('待刪講義')).not.toBeInTheDocument());
+    expect(screen.getByText('計畫單元一')).toBeInTheDocument();
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument();
+    expect(api.mock.calls.filter(([path]) => path === '/trash')).toHaveLength(1);
+    expect(api.mock.calls.filter(([path]) => path === '/tasks')).toHaveLength(1);
+    expect(reload).toHaveBeenCalledOnce();
+  });
+
+  it('清空垃圾桶與讀回都失敗時保留項目並提示重新載入確認', async () => {
+    api.mockImplementation((path, options = {}) => {
+      if (path === '/trash' && options.method === 'DELETE') return Promise.reject(new Error('連線中斷'));
+      if (path === '/tasks') return Promise.reject(new Error('仍然離線'));
+      return Promise.resolve({});
+    });
+    const reload = mount();
+
+    fireEvent.click(screen.getByRole('button', { name: '清空垃圾桶' }));
+
+    expect(await screen.findByRole('alert')).toHaveTextContent('無法確認垃圾桶是否已清空，請重新載入後再確認。');
+    expect(screen.getByText('待刪講義')).toBeInTheDocument();
+    expect(reload).not.toHaveBeenCalled();
+    expect(screen.getByRole('button', { name: '清空垃圾桶' })).toBeEnabled();
   });
 
   it('搜尋中清空垃圾桶：搜尋外已被伺服器刪除的項目，刷新失敗後清除搜尋也不會冒出來', async () => {

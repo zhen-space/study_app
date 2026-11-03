@@ -891,10 +891,29 @@ export default function Tasks({ view, tasks, lists, filters, habits = [], reload
     try {
       await api('/trash', { method: 'DELETE' });
     } catch (e) {
-      setEmptyTrashError(e.message || '清空垃圾桶失敗，請再試一次。');
-      emptyTrashBusyRef.current = false;
-      setEmptyTrashBusy(false);
-      return;
+      if (e.status >= 400 && e.status < 500) {
+        setEmptyTrashError(e.message || '清空垃圾桶失敗，請再試一次。');
+        emptyTrashBusyRef.current = false;
+        setEmptyTrashBusy(false);
+        return;
+      }
+      // 清空只會永久刪除一般任務；Plan Task tombstone 會保留。回應遺失時依同一
+      // 範圍讀回確認，避免已清空卻再要求使用者執行一次破壞性操作。
+      try {
+        const latest = await api('/tasks');
+        if (!Array.isArray(latest)) throw new Error('任務資料不完整');
+        if (latest.some(item => Boolean(item.deleted) && item.plan_id == null)) {
+          setEmptyTrashError(e.message || '清空垃圾桶失敗，請再試一次。');
+          emptyTrashBusyRef.current = false;
+          setEmptyTrashBusy(false);
+          return;
+        }
+      } catch {
+        setEmptyTrashError('無法確認垃圾桶是否已清空，請重新載入後再確認。');
+        emptyTrashBusyRef.current = false;
+        setEmptyTrashBusy(false);
+        return;
+      }
     }
     // 本地投影要和伺服器實際刪除的範圍一致：整個垃圾桶（不受 Quick Find 影響）
     // 的一般待辦；計畫任務伺服器會保留 tombstone，畫面也必須留著可還原。
