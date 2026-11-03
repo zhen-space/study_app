@@ -74,6 +74,39 @@ describe('複製任務', () => {
     expect(reload).toHaveBeenCalledWith('tasks');
   });
 
+  it('原任務 id 讀回變成字串時，不會把原任務誤認成新複製成功', async () => {
+    api.mockImplementation((url, options) => {
+      if (url === '/tasks' && options?.method === 'POST') return Promise.reject(new Error('複製失敗'));
+      if (url === '/tasks') return Promise.resolve([{ ...baseTask, id: '1' }]);
+      return Promise.resolve([]);
+    });
+    const reload = vi.fn().mockResolvedValue();
+    render(<Tasks view={{ type: 'tasks' }} tasks={[baseTask]} lists={[{ id: 10, name: '物理' }]} filters={[]} reload={reload} title="任務" />);
+    fireEvent.click(screen.getByText('整理物理筆記'));
+    fireEvent.click(screen.getByRole('button', { name: '更多' }));
+    fireEvent.click(screen.getByRole('menuitem', { name: '複製任務' }));
+
+    expect(await screen.findByRole('alert')).toHaveTextContent('複製失敗');
+    expect(screen.queryByText('已複製「整理物理筆記」')).not.toBeInTheDocument();
+    expect(reload).not.toHaveBeenCalled();
+    expect(api.mock.calls.filter(([url, options]) => url === '/tasks' && options?.method === 'POST')).toHaveLength(1);
+  });
+
+  it('讀回的新任務內容不完整時不判定成功，避免把其他同名任務當成複本', async () => {
+    api.mockImplementation((url, options) => {
+      if (url === '/tasks' && options?.method === 'POST') return Promise.reject(new Error('複製失敗'));
+      if (url === '/tasks') return Promise.resolve([{ ...baseTask, id: 2, tags: ['其他標籤'] }]);
+      return Promise.resolve([]);
+    });
+    render(<Tasks view={{ type: 'tasks' }} tasks={[baseTask]} lists={[{ id: 10, name: '物理' }]} filters={[]} reload={vi.fn()} title="任務" />);
+    fireEvent.click(screen.getByText('整理物理筆記'));
+    fireEvent.click(screen.getByRole('button', { name: '更多' }));
+    fireEvent.click(screen.getByRole('menuitem', { name: '複製任務' }));
+
+    expect(await screen.findByRole('alert')).toHaveTextContent('複製失敗');
+    expect(screen.queryByText('已複製「整理物理筆記」')).not.toBeInTheDocument();
+  });
+
   it('POST 與確認讀取都失敗時鎖住重送，重新載入後才解除', async () => {
     let postCount = 0;
     api.mockImplementation((url, options) => {

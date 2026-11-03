@@ -1118,13 +1118,22 @@ export default function Tasks({ view, tasks, lists, filters, habits = [], reload
   const overdueRescheduleBusyRef = useRef(false);
   const [overdueRescheduleBusy, setOverdueRescheduleBusy] = useState(false);
   const duplicateBusyRef = useRef(false);
+  const duplicateTags = value => [...(value || [])].map(String).sort().join('\u0000');
+  const duplicateSubtasks = value => JSON.stringify((value || []).map(item => ({
+    title: String(item.title || ''), done: Boolean(item.done),
+  })));
   const duplicateMatches = (candidate, body) => candidate.title === body.title
-    && (candidate.list_id ?? null) === body.list_id
+    && (candidate.list_id == null ? null : String(candidate.list_id)) === (body.list_id == null ? null : String(body.list_id))
     && (candidate.notes || '') === body.notes
     && (candidate.due_date || null) === body.due_date
     && (candidate.due_time || null) === body.due_time
     && (Number(candidate.priority) || 0) === body.priority
-    && (candidate.recurring || null) === body.recurring;
+    && duplicateTags(candidate.tags) === duplicateTags(body.tags)
+    && duplicateSubtasks(candidate.subtasks) === duplicateSubtasks(body.subtasks)
+    && (candidate.recurring || null) === body.recurring
+    && (candidate.miss_policy || 'keep') === body.miss_policy
+    && (candidate.estimated_minutes ?? null) === body.estimated_minutes
+    && (candidate.task_kind || 'task') === body.task_kind;
   const beginMutation = id => {
     if (mutationIds.current.has(id)) return false;
     mutationIds.current.add(id);
@@ -1202,7 +1211,9 @@ export default function Tasks({ view, tasks, lists, filters, habits = [], reload
       estimated_minutes: t.estimated_minutes ?? null,
       task_kind: 'task',
     };
-    const beforeIds = new Set(tasks.map(task => task.id));
+    // API 與畫面資料的 id 可能一邊是 number、一邊是 string；統一後才能排除原任務，
+    // 否則回應遺失時可能把原任務誤認成「新複製成功」。
+    const beforeIds = new Set(tasks.map(task => String(task.id)));
     let committed = false;
     try {
       await api('/tasks', { method: 'POST', body });
@@ -1212,7 +1223,7 @@ export default function Tasks({ view, tasks, lists, filters, habits = [], reload
       try {
         const latest = await api('/tasks');
         committed = Array.isArray(latest)
-          && latest.some(candidate => !beforeIds.has(candidate.id) && duplicateMatches(candidate, body));
+          && latest.some(candidate => !beforeIds.has(String(candidate.id)) && duplicateMatches(candidate, body));
         if (!committed) {
           setRefreshError(e.message || '複製任務失敗，請再試一次。');
           duplicateBusyRef.current = false;
