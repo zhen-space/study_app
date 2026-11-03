@@ -833,9 +833,20 @@ export default function Tasks({ view, tasks, lists, filters, habits = [], reload
     try {
       await api(`/tasks/${t.id}`, { method: 'PATCH', body: { deleted: false } });
     } catch (e) {
-      setTrashErrors(errors => ({ ...errors, [t.id]: e.message || '還原失敗，請再試一次。' }));
-      finishTrashMutation(t.id);
-      return;
+      // PATCH 回應遺失時先讀回確認；任務若已離開垃圾桶，就不要誤報失敗。
+      try {
+        const latest = await api('/tasks');
+        const saved = Array.isArray(latest) && latest.find(item => Number(item.id) === Number(t.id));
+        if (!saved || Boolean(saved.deleted)) {
+          setTrashErrors(errors => ({ ...errors, [t.id]: e.message || '還原失敗，請再試一次。' }));
+          finishTrashMutation(t.id);
+          return;
+        }
+      } catch {
+        setTrashErrors(errors => ({ ...errors, [t.id]: '無法確認任務是否已還原，請重新載入後再確認。' }));
+        finishTrashMutation(t.id);
+        return;
+      }
     }
     setHidden(ids => new Set([...ids, t.id]));
     await reload('tasks').catch(() => setRefreshError('任務已還原，但畫面暫時無法重新載入。'));
