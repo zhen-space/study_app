@@ -1428,7 +1428,20 @@ export default function Tasks({ view, tasks, lists, filters, habits = [], reload
     setHidden(h => new Set([...h, t.id]));
     setSelId(null);
     showToast(`已刪除「${t.title}」`, async () => {
-      await api(`/tasks/${t.id}`, { method: 'PATCH', body: { deleted: false } });
+      try {
+        await api(`/tasks/${t.id}`, { method: 'PATCH', body: { deleted: false } });
+      } catch (e) {
+        // 復原刪除的 PATCH 也可能已提交、只有回應遺失。先讀回確認，避免任務
+        // 其實已回到清單，卻誤報失敗並讓使用者再次送出同一個復原操作。
+        try {
+          const latest = await api('/tasks');
+          const saved = Array.isArray(latest) && latest.find(item => Number(item.id) === Number(t.id));
+          if (!saved || saved.deleted) throw e;
+        } catch (checkError) {
+          if (checkError === e) throw e;
+          throw new Error('無法確認任務是否已復原，請重新載入後再確認。');
+        }
+      }
       setHidden(h => { const n = new Set(h); n.delete(t.id); return n; });
       await reload('tasks').catch(() => setRefreshError('任務已復原，但畫面暫時無法重新載入。'));
     });
