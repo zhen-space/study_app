@@ -52,6 +52,40 @@ describe('§E 任務第一層 filters', () => {
     expect(reload).toHaveBeenCalledWith('tasks');
   });
 
+  it('批次移到今天回應遺失時，讀回確認成功後不誤報失敗', async () => {
+    const reload = vi.fn().mockResolvedValue();
+    api.mockImplementation((path, options) => {
+      if (path === '/tasks/2' && options?.method === 'PATCH') return Promise.reject(new Error('連線中斷'));
+      if (path === '/tasks') return Promise.resolve(tasks.map(task => task.id === 2 ? { ...task, due_date: TD } : task));
+      return Promise.resolve([]);
+    });
+    render(<Tasks view={{ type: 'tasks' }} tasks={tasks} lists={lists} filters={[]} reload={reload} title="任務" />);
+    fireEvent.click(within(screen.getByRole('tablist', { name: '任務篩選' })).getByRole('tab', { name: /逾期/ }));
+    fireEvent.click(screen.getByRole('button', { name: '全部移到今天（1）' }));
+
+    await waitFor(() => expect(api).toHaveBeenCalledWith('/tasks'));
+    expect(reload).toHaveBeenCalledWith('tasks');
+    expect(screen.queryByText(/另有 1 項失敗/)).toBeNull();
+  });
+
+  it('批次移到今天與讀回都失敗時鎖住重送，重新載入成功後才解鎖', async () => {
+    const reload = vi.fn().mockResolvedValue();
+    api.mockRejectedValue(new Error('連線中斷'));
+    render(<Tasks view={{ type: 'tasks' }} tasks={tasks} lists={lists} filters={[]} reload={reload} title="任務" />);
+    fireEvent.click(within(screen.getByRole('tablist', { name: '任務篩選' })).getByRole('tab', { name: /逾期/ }));
+    fireEvent.click(screen.getByRole('button', { name: '全部移到今天（1）' }));
+
+    expect(await screen.findByText(/無法確認逾期任務是否已重新安排/)).toBeInTheDocument();
+    const button = screen.getByRole('button', { name: '重新安排中…' });
+    expect(button).toBeDisabled();
+    fireEvent.click(button);
+    expect(api.mock.calls.filter(([path]) => path === '/tasks/2')).toHaveLength(1);
+
+    fireEvent.click(screen.getByRole('button', { name: '重新載入' }));
+    await waitFor(() => expect(reload).toHaveBeenCalledWith('tasks'));
+    expect(screen.getByRole('button', { name: '全部移到今天（1）' })).toBeEnabled();
+  });
+
   it('批次重新安排不包含計畫管理任務與學校作業', () => {
     const protectedTasks = [
       mk(7, { title: '計畫進度', due_date: addDays(TD, -1), plan_id: 9 }),

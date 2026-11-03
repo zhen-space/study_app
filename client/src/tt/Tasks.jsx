@@ -1132,6 +1132,7 @@ export default function Tasks({ view, tasks, lists, filters, habits = [], reload
   // 這個旗標在成功整包重抓前都保留，之後其他任務錯誤蓋掉文案也照樣整包重抓（tasks 是子集，不會漏）。
   const [refreshNeedsAll, setRefreshNeedsAll] = useState(false);
   const overdueRescheduleBusyRef = useRef(false);
+  const overdueRescheduleUncertainRef = useRef(false);
   const [overdueRescheduleBusy, setOverdueRescheduleBusy] = useState(false);
   const duplicateBusyRef = useRef(false);
   const duplicateTags = value => [...(value || [])].map(String).sort().join('\u0000');
@@ -1401,7 +1402,24 @@ export default function Tasks({ view, tasks, lists, filters, habits = [], reload
     setRefreshError('');
     const results = await Promise.allSettled(reschedulableOverdue.map(t =>
       api(`/tasks/${t.id}`, { method: 'PATCH', body: { due_date: tdF } })));
-    const failed = results.filter(result => result.status === 'rejected').length;
+    let failed = results.filter(result => result.status === 'rejected').length;
+    if (failed) {
+      // PATCH 可能已寫入、只有回應遺失。批次操作若直接解鎖，使用者重按會把
+      // 已成功的項目再送一次；先讀回正式值，只把仍未移到今天的項目算失敗。
+      try {
+        const latest = await api('/tasks');
+        failed = results.reduce((count, result, index) => {
+          if (result.status !== 'rejected') return count;
+          const wanted = reschedulableOverdue[index];
+          const saved = Array.isArray(latest) && latest.find(item => Number(item.id) === Number(wanted.id));
+          return count + (!saved || saved.due_date !== tdF ? 1 : 0);
+        }, 0);
+      } catch {
+        overdueRescheduleUncertainRef.current = true;
+        setRefreshError('無法確認逾期任務是否已重新安排，請先重新載入；確認前請勿再次操作。');
+        return;
+      }
+    }
     try { await reload('tasks'); }
     catch { setRefreshError('日期已更新，但畫面暫時無法重新載入。'); }
     if (failed) setRefreshError(`已重新安排 ${results.length - failed} 項，另有 ${failed} 項失敗，請再試一次。`);
@@ -1566,6 +1584,11 @@ export default function Tasks({ view, tasks, lists, filters, habits = [], reload
       if (reorderUncertainRef.current) {
         reorderUncertainRef.current = false;
         reorderBusyRef.current = false;
+      }
+      if (overdueRescheduleUncertainRef.current) {
+        overdueRescheduleUncertainRef.current = false;
+        overdueRescheduleBusyRef.current = false;
+        setOverdueRescheduleBusy(false);
       }
       for (const id of uncertainMutationIds.current) finishMutation(id);
       uncertainMutationIds.current.clear();
