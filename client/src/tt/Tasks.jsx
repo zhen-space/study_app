@@ -986,10 +986,29 @@ export default function Tasks({ view, tasks, lists, filters, habits = [], reload
     if (moved.length) showToast(`已將 ${moved.length} 項已完成任務移到垃圾桶`, async () => {
       const restored = await Promise.allSettled(moved.map(t =>
         api(`/tasks/${t.id}`, { method: 'PATCH', body: { deleted: false } })));
-      const restoreFailed = restored.filter(result => result.status === 'rejected').length;
+      const restoredIds = new Set(moved
+        .filter((_, index) => restored[index].status === 'fulfilled')
+        .map(t => t.id));
+      // 批次復原也可能只有回應遺失；一次讀回核對所有 rejected 項，避免其實已
+      // 復原卻留在隱藏狀態並誤報失敗。
+      if (restored.some(result => result.status === 'rejected')) {
+        try {
+          const latest = await api('/tasks');
+          if (Array.isArray(latest)) {
+            for (const task of moved) {
+              const saved = latest.find(item => Number(item.id) === Number(task.id));
+              if (saved && !saved.deleted) restoredIds.add(task.id);
+            }
+          }
+        } catch { /* 保留原失敗結果；restore PATCH 可安全重試 */ }
+      }
+      const restoredTasks = moved.filter(t => restoredIds.has(t.id));
+      const restoreFailed = moved.length - restoredTasks.length;
+      if (restoredTasks.length) {
+        setHidden(ids => { const next = new Set(ids); restoredTasks.forEach(t => next.delete(t.id)); return next; });
+        await reload('tasks').catch(() => setRefreshError('任務已復原，但畫面暫時無法重新載入。'));
+      }
       if (restoreFailed) throw new Error(`有 ${restoreFailed} 項無法復原，請到垃圾桶重試`);
-      setHidden(ids => { const next = new Set(ids); moved.forEach(t => next.delete(t.id)); return next; });
-      await reload('tasks').catch(() => setRefreshError('任務已復原，但畫面暫時無法重新載入。'));
     });
     try { await reload('tasks'); }
     catch { setRefreshError('任務已移到垃圾桶，但畫面暫時無法重新載入。'); }

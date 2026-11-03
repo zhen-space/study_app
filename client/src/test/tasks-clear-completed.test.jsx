@@ -80,4 +80,49 @@ describe('整理已完成任務', () => {
     expect(await screen.findByRole('alert')).toHaveTextContent('已移動 0 項，另有 1 項失敗，請再試一次。');
     expect(screen.queryByText(/已將 .* 項已完成任務移到垃圾桶/)).not.toBeInTheDocument();
   });
+
+  it('批次復原回應遺失但讀回已復原時，不誤報失敗或重送', async () => {
+    let deleted = false;
+    api.mockImplementation((path, options = {}) => {
+      if (path === '/tasks/1' && options.method === 'DELETE') {
+        deleted = true;
+        return Promise.resolve({});
+      }
+      if (path === '/tasks/1' && options.method === 'PATCH') {
+        deleted = false;
+        return Promise.reject(new Error('連線中斷'));
+      }
+      if (path === '/tasks') return Promise.resolve([{ ...mk(1), deleted }]);
+      return Promise.resolve({});
+    });
+    const reload = vi.fn().mockResolvedValue();
+    render(<Tasks view={{ type: 'completed' }} tasks={[mk(1)]} lists={[]} filters={[]} reload={reload} title="已完成" />);
+
+    fireEvent.click(screen.getByRole('button', { name: '移到垃圾桶（1）' }));
+    fireEvent.click(await screen.findByRole('button', { name: '復原' }));
+
+    await waitFor(() => expect(screen.getByText('任務 1')).toBeInTheDocument());
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument();
+    expect(api.mock.calls.filter(([path, options]) => path === '/tasks/1' && options?.method === 'PATCH')).toHaveLength(1);
+    expect(api.mock.calls.filter(([path]) => path === '/tasks')).toHaveLength(1);
+  });
+
+  it('批次復原部分失敗時，只讓已復原任務回到畫面並回報精確數量', async () => {
+    api.mockImplementation((path, options = {}) => {
+      if (options.method === 'DELETE') return Promise.resolve({});
+      if (path === '/tasks/1' && options.method === 'PATCH') return Promise.resolve({});
+      if (path === '/tasks/2' && options.method === 'PATCH') return Promise.reject(new Error('復原失敗'));
+      if (path === '/tasks') return Promise.resolve([{ ...mk(1), deleted: false }, { ...mk(2), deleted: true }]);
+      return Promise.resolve({});
+    });
+    const reload = vi.fn().mockResolvedValue();
+    render(<Tasks view={{ type: 'completed' }} tasks={[mk(1), mk(2)]} lists={[]} filters={[]} reload={reload} title="已完成" />);
+
+    fireEvent.click(screen.getByRole('button', { name: '移到垃圾桶（2）' }));
+    fireEvent.click(await screen.findByRole('button', { name: '復原' }));
+
+    expect(await screen.findByRole('alert')).toHaveTextContent('有 1 項無法復原，請到垃圾桶重試');
+    expect(screen.getByText('任務 1')).toBeInTheDocument();
+    expect(screen.queryByText('任務 2')).not.toBeInTheDocument();
+  });
 });
