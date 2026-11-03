@@ -858,9 +858,25 @@ export default function Tasks({ view, tasks, lists, filters, habits = [], reload
     try {
       await api(`/tasks/${t.id}?hard=1`, { method: 'DELETE' });
     } catch (e) {
-      setTrashErrors(errors => ({ ...errors, [t.id]: e.message || '永久刪除失敗，請再試一次。' }));
-      finishTrashMutation(t.id);
-      return;
+      if (e.status >= 400 && e.status < 500) {
+        setTrashErrors(errors => ({ ...errors, [t.id]: e.message || '永久刪除失敗，請再試一次。' }));
+        finishTrashMutation(t.id);
+        return;
+      }
+      // DELETE 可能已提交、只有回應遺失；讀回確認不存在後就視為成功，避免誤導重刪。
+      try {
+        const latest = await api('/tasks');
+        if (!Array.isArray(latest)) throw new Error('任務資料不完整');
+        if (latest.some(item => Number(item.id) === Number(t.id))) {
+          setTrashErrors(errors => ({ ...errors, [t.id]: e.message || '永久刪除失敗，請再試一次。' }));
+          finishTrashMutation(t.id);
+          return;
+        }
+      } catch {
+        setTrashErrors(errors => ({ ...errors, [t.id]: '無法確認任務是否已永久刪除，請重新載入後再確認。' }));
+        finishTrashMutation(t.id);
+        return;
+      }
     }
     setHidden(ids => new Set([...ids, t.id]));
     await reload('tasks').catch(() => setRefreshError('任務已永久刪除，但畫面暫時無法重新載入。'));
