@@ -334,9 +334,21 @@ export function Detail({ task, lists, onSave, onDelete, onDuplicate, onClose, sa
   const attOpenBusyRef = useRef(false);
   const [attOpenBusyId, setAttOpenBusyId] = useState(null);
   const [attOpenError, setAttOpenError] = useState(null); // { id, message }
+  const attRowsRef = useRef([]);
+  const attLoadedRef = useRef(false);
+  const attLoadPromiseRef = useRef(null);
   const loadAtts = async () => {
-    const rows = await api(`/tasks/${task.id}/attachments`);
-    setAtts(rows);
+    const request = api(`/tasks/${task.id}/attachments`);
+    attLoadPromiseRef.current = request;
+    try {
+      const rows = await request;
+      attRowsRef.current = rows;
+      attLoadedRef.current = true;
+      setAtts(rows);
+      return rows;
+    } finally {
+      if (attLoadPromiseRef.current === request) attLoadPromiseRef.current = null;
+    }
   };
   // 一定要包成 { }：箭頭函式直接回傳 Promise 的話，React 會把那個 Promise 當成
   // 清理函式，關掉任務時就會 destroy() → 「l is not a function」整頁掛掉
@@ -356,12 +368,54 @@ export function Detail({ task, lists, onSave, onDelete, onDuplicate, onClose, sa
     attBusyRef.current = true;
     setAttBusy(true);
     setAttMutation(null);
+    let knownIds;
     try {
+      // 上傳前一定要有完整 baseline，否則首屏附件清單還在載入時，同名舊附件
+      // 可能被誤當成這次 POST 已成功的證據。
+      if (attLoadPromiseRef.current) await attLoadPromiseRef.current;
+      else if (!attLoadedRef.current) await loadAtts();
+      knownIds = new Set(attRowsRef.current.map(row => Number(row.id)));
       const bytes = new Uint8Array(await file.arrayBuffer());
       let bin = '';
       for (let i = 0; i < bytes.length; i += 8192) bin += String.fromCharCode(...bytes.subarray(i, i + 8192));
       await api(`/tasks/${task.id}/attachments`, { method: 'POST', body: { name: file.name, mime: file.type, data: btoa(bin) } });
     } catch (err) {
+      // POST 可能已寫入、只有回應遺失。用上傳前的 id 集合與檔名／mime 找出
+      // 唯一新附件；確認成功就直接採用正式清單，避免重選同檔造成重複上傳。
+      try {
+        const rows = await api(`/tasks/${task.id}/attachments`);
+        if (!Array.isArray(rows)) throw new Error('附件清單格式不正確');
+        const matches = rows.filter(row => !knownIds.has(Number(row.id))
+          && row.name === file.name && (row.mime || '') === (file.type || ''));
+        if (matches.length === 1) {
+          input.value = '';
+          attRowsRef.current = rows;
+          attLoadedRef.current = true;
+          setAtts(rows);
+          setAttMutation(null);
+          attBusyRef.current = false;
+          setAttBusy(false);
+          return;
+        }
+        if (matches.length > 1) throw new Error('上傳結果不唯一');
+      } catch (checkError) {
+        // baseline 本身載入失敗時 POST 尚未送出，可安全讓使用者重試；只有 POST
+        // 已送出後的讀回失敗才需要鎖定，避免重複上傳。
+        if (!attLoadedRef.current) {
+          input.value = '';
+          setAttMutation({ operation: 'upload', committed: false,
+            error: '無法載入現有附件，尚未上傳；請重新選取檔案再試一次。' });
+          attBusyRef.current = false;
+          setAttBusy(false);
+          return;
+        }
+        input.value = '';
+        setAttMutation({ operation: 'upload', committed: true, uncertain: true,
+          error: '無法確認附件是否已上傳，請重新載入附件；確認前請勿再次上傳。' });
+        attBusyRef.current = false;
+        setAttBusy(false);
+        return;
+      }
       input.value = ''; // 讓同一個檔案可以重新選取並觸發 change
       setAttMutation({ operation: 'upload', committed: false, error: err.message || '附件上傳失敗，請重新選取檔案再試一次。' });
       attBusyRef.current = false;
