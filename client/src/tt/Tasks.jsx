@@ -1269,7 +1269,7 @@ export default function Tasks({ view, tasks, lists, filters, habits = [], reload
     try {
       const latest = await api('/tasks');
       const committed = Array.isArray(latest)
-        && latest.some(candidate => !pending.beforeIds.includes(candidate.id)
+        && latest.some(candidate => !pending.beforeIds.includes(String(candidate.id))
           && taskMatchesQuickCreate(candidate, pending.body));
       if (committed) {
         await finishQuickCreate();
@@ -1319,7 +1319,9 @@ export default function Tasks({ view, tasks, lists, filters, habits = [], reload
     setQuickBusy(true); setQuickErr('');
     // api() 同步讀取 token 帶進這次請求；在同一個 tick 記下，草稿就屬於發出請求的那個身分。
     const owner = currentAuthToken();
-    const beforeIds = tasks.map(task => task.id);
+    // 讀回資料的 id 可能是字串，畫面資料則是數字；統一後才能排除原有同內容任務，
+    // 避免 POST 真正失敗時把舊任務誤認成這次快速新增成功。
+    const beforeIds = tasks.map(task => String(task.id));
     try {
       await api('/tasks', { method: 'POST', body });
     } catch (err) {
@@ -1328,7 +1330,7 @@ export default function Tasks({ view, tasks, lists, filters, habits = [], reload
       try {
         const latest = await api('/tasks');
         const committed = Array.isArray(latest)
-          && latest.some(candidate => !beforeIds.includes(candidate.id)
+          && latest.some(candidate => !beforeIds.includes(String(candidate.id))
             && taskMatchesQuickCreate(candidate, body));
         if (committed) {
           await finishQuickCreate();

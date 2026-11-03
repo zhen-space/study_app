@@ -164,6 +164,26 @@ describe('任務快速新增', () => {
     expect(props.reload).toHaveBeenCalledWith('tasks');
   });
 
+  it('既有同內容任務的 id 讀回變成字串時，不會誤認成快速新增成功', async () => {
+    const existing = {
+      ...fx.tasks[0], id: 1, title: '物理講義', list_id: null, notes: '', due_date: null,
+      due_time: null, priority: 0, recurring: null, tags: [],
+    };
+    api.mockRejectedValueOnce(new Error('新增失敗'))
+      .mockResolvedValueOnce([{ ...existing, id: '1' }]);
+    render(<Tasks {...props} tasks={[existing]} />);
+    const input = screen.getByPlaceholderText('＋ 新增任務，按 Enter 儲存');
+    fireEvent.change(input, { target: { value: '物理講義' } });
+
+    await act(async () => { fireEvent.submit(input.closest('form')); });
+
+    expect(await screen.findByRole('alert')).toHaveTextContent('新增失敗');
+    expect(input).toHaveValue('物理講義');
+    expect(input).not.toBeDisabled();
+    expect(props.reload).not.toHaveBeenCalled();
+    expect(api.mock.calls.filter(([path, options]) => path === '/tasks' && options?.method === 'POST')).toHaveLength(1);
+  });
+
   it('POST 與首次讀回都失敗時維持鎖定，重新確認已寫入後安全收尾', async () => {
     api.mockRejectedValueOnce(new Error('連線中斷'))
       .mockRejectedValueOnce(new Error('仍無法讀取'))
