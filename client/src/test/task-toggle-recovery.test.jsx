@@ -200,6 +200,55 @@ describe('Task mutation recovery at 375px', () => {
     expect(reload).toHaveBeenCalledOnce();
   });
 
+  it('刪除後復原的 PATCH 回應遺失但讀回已復原時，不誤報失敗或重送', async () => {
+    let deleted = false;
+    api.mockImplementation((path, options = {}) => {
+      if (path === '/tasks/501' && options.method === 'DELETE') {
+        deleted = true;
+        return Promise.resolve({});
+      }
+      if (path === '/tasks/501' && options.method === 'PATCH' && options.body?.deleted === false) {
+        deleted = false;
+        return Promise.reject(new Error('連線中斷'));
+      }
+      if (path === '/tasks') return Promise.resolve([{ ...task(), deleted }]);
+      if (path.endsWith('/attachments') || path === '/study-sessions') return Promise.resolve([]);
+      return Promise.resolve({});
+    });
+    const reload = mount();
+    fireEvent.click(screen.getByText('今天複習英文'));
+    fireEvent.click(screen.getByRole('button', { name: '更多' }));
+    fireEvent.click(screen.getByRole('menuitem', { name: '刪除任務' }));
+    fireEvent.click(await screen.findByRole('button', { name: '復原' }));
+
+    await waitFor(() => expect(screen.getByText('今天複習英文')).toBeInTheDocument());
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument();
+    expect(api.mock.calls.filter(([path, options]) => path === '/tasks/501' && options?.body?.deleted === false)).toHaveLength(1);
+    expect(api.mock.calls.filter(([path]) => path === '/tasks')).toHaveLength(1);
+    expect(reload).toHaveBeenCalledTimes(2);
+  });
+
+  it('刪除後復原的 PATCH 與讀回都失敗時，保留提示供重新載入確認', async () => {
+    api.mockImplementation((path, options = {}) => {
+      if (path === '/tasks/501' && options.method === 'DELETE') return Promise.resolve({});
+      if (path === '/tasks/501' && options.method === 'PATCH' && options.body?.deleted === false) {
+        return Promise.reject(new Error('連線中斷'));
+      }
+      if (path === '/tasks') return Promise.reject(new Error('仍然離線'));
+      if (path.endsWith('/attachments') || path === '/study-sessions') return Promise.resolve([]);
+      return Promise.resolve({});
+    });
+    mount();
+    fireEvent.click(screen.getByText('今天複習英文'));
+    fireEvent.click(screen.getByRole('button', { name: '更多' }));
+    fireEvent.click(screen.getByRole('menuitem', { name: '刪除任務' }));
+    fireEvent.click(await screen.findByRole('button', { name: '復原' }));
+
+    expect(await screen.findByRole('alert')).toHaveTextContent('無法確認任務是否已復原，請重新載入後再確認。');
+    expect(screen.queryByText('今天複習英文')).not.toBeInTheDocument();
+    expect(api.mock.calls.filter(([path, options]) => path === '/tasks/501' && options?.body?.deleted === false)).toHaveLength(1);
+  });
+
   it('DELETE 與讀回確認都失敗時鎖住操作，重新載入後才解鎖', async () => {
     api.mockImplementation((path, options = {}) => {
       if (path === '/tasks/501' && options.method === 'DELETE') return Promise.reject(new Error('連線中斷'));
