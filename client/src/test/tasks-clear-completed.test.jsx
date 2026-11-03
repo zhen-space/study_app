@@ -48,4 +48,36 @@ describe('整理已完成任務', () => {
     fireEvent.click(screen.getByRole('button', { name: '移到垃圾桶（1）' }));
     expect(api).not.toHaveBeenCalled();
   });
+
+  it('批次刪除回應遺失但讀回已進垃圾桶時，不誤報失敗或重送', async () => {
+    api.mockImplementation((path, options = {}) => {
+      if (path === '/tasks/1' && options.method === 'DELETE') return Promise.reject(new Error('連線中斷'));
+      if (path === '/tasks') return Promise.resolve([{ ...mk(1), deleted: true }]);
+      return Promise.resolve({});
+    });
+    const reload = vi.fn().mockResolvedValue();
+    render(<Tasks view={{ type: 'completed' }} tasks={[mk(1)]} lists={[]} filters={[]} reload={reload} title="已完成" />);
+
+    fireEvent.click(screen.getByRole('button', { name: '移到垃圾桶（1）' }));
+
+    expect(await screen.findByText('已將 1 項已完成任務移到垃圾桶')).toBeInTheDocument();
+    expect(screen.queryByText(/另有 .* 項失敗/)).not.toBeInTheDocument();
+    expect(api.mock.calls.filter(([path, options]) => path === '/tasks/1' && options?.method === 'DELETE')).toHaveLength(1);
+    expect(api.mock.calls.filter(([path]) => path === '/tasks')).toHaveLength(1);
+    expect(reload).toHaveBeenCalledWith('tasks');
+  });
+
+  it('批次刪除讀回仍未提交時，保留失敗數量供安全重試', async () => {
+    api.mockImplementation((path, options = {}) => {
+      if (path === '/tasks/1' && options.method === 'DELETE') return Promise.reject(new Error('刪除失敗'));
+      if (path === '/tasks') return Promise.resolve([mk(1)]);
+      return Promise.resolve({});
+    });
+    render(<Tasks view={{ type: 'completed' }} tasks={[mk(1)]} lists={[]} filters={[]} reload={vi.fn()} title="已完成" />);
+
+    fireEvent.click(screen.getByRole('button', { name: '移到垃圾桶（1）' }));
+
+    expect(await screen.findByRole('alert')).toHaveTextContent('已移動 0 項，另有 1 項失敗，請再試一次。');
+    expect(screen.queryByText(/已將 .* 項已完成任務移到垃圾桶/)).not.toBeInTheDocument();
+  });
 });

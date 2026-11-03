@@ -964,7 +964,23 @@ export default function Tasks({ view, tasks, lists, filters, habits = [], reload
     setClearCompletedBusy(true);
     setRefreshError('');
     const results = await Promise.allSettled(clearableCompleted.map(t => api(`/tasks/${t.id}`, { method: 'DELETE' })));
-    const moved = clearableCompleted.filter((_, index) => results[index].status === 'fulfilled');
+    const movedIds = new Set(clearableCompleted
+      .filter((_, index) => results[index].status === 'fulfilled')
+      .map(t => t.id));
+    // 批次中個別 DELETE 可能已提交、只有回應遺失。用一次讀回核對所有失敗項，
+    // 已進垃圾桶的照成功處理，避免畫面誤報失敗並讓使用者重做整批操作。
+    if (results.some(result => result.status === 'rejected')) {
+      try {
+        const latest = await api('/tasks');
+        if (Array.isArray(latest)) {
+          for (const task of clearableCompleted) {
+            const saved = latest.find(item => Number(item.id) === Number(task.id));
+            if (saved?.deleted) movedIds.add(task.id);
+          }
+        }
+      } catch { /* 保留原失敗結果；soft delete 可安全重試 */ }
+    }
+    const moved = clearableCompleted.filter(t => movedIds.has(t.id));
     const failed = results.length - moved.length;
     setHidden(ids => new Set([...ids, ...moved.map(t => t.id)]));
     if (moved.length) showToast(`已將 ${moved.length} 項已完成任務移到垃圾桶`, async () => {
