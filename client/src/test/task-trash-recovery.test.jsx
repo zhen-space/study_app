@@ -83,6 +83,39 @@ describe('375px 任務垃圾桶 mutation recovery', () => {
     expect(reload).toHaveBeenCalledOnce();
   });
 
+  it('還原 PATCH 回應遺失但讀回已還原時，不誤報失敗或重送', async () => {
+    api.mockImplementation((path, options = {}) => {
+      if (path === '/tasks/701' && options.method === 'PATCH') return Promise.reject(new Error('連線中斷'));
+      if (path === '/tasks') return Promise.resolve([{ ...trashed(701, '待刪講義'), deleted: false }]);
+      return Promise.resolve([]);
+    });
+    const reload = mount();
+
+    fireEvent.click(screen.getByRole('button', { name: '還原' }));
+
+    await waitFor(() => expect(screen.queryByText('待刪講義')).not.toBeInTheDocument());
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument();
+    expect(api.mock.calls.filter(([path, options]) => path === '/tasks/701' && options?.method === 'PATCH')).toHaveLength(1);
+    expect(api.mock.calls.filter(([path]) => path === '/tasks')).toHaveLength(1);
+    expect(reload).toHaveBeenCalledOnce();
+  });
+
+  it('還原 PATCH 與讀回都失敗時保留項目並提示重新載入確認', async () => {
+    api.mockImplementation((path, options = {}) => {
+      if (path === '/tasks/701' && options.method === 'PATCH') return Promise.reject(new Error('連線中斷'));
+      if (path === '/tasks') return Promise.reject(new Error('仍然離線'));
+      return Promise.resolve([]);
+    });
+    const reload = mount();
+
+    fireEvent.click(screen.getByRole('button', { name: '還原' }));
+
+    expect(await screen.findByRole('alert')).toHaveTextContent('無法確認任務是否已還原，請重新載入後再確認。');
+    expect(screen.getByText('待刪講義')).toBeInTheDocument();
+    expect(reload).not.toHaveBeenCalled();
+    expect(screen.getByRole('button', { name: '還原' })).toBeEnabled();
+  });
+
   it('取消永久刪除零寫入；清空失敗保留全部項目並可重試', async () => {
     const rows = [trashed(701, '待刪講義'), trashed(702, '舊作業')];
     window.confirm.mockReturnValueOnce(false).mockReturnValue(true);
