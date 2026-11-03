@@ -97,6 +97,78 @@ describe('375px Task／School Assignment 附件上傳 recovery', () => {
     expect(uploads).toBe(2);
   });
 
+  it('POST 回應遺失但讀回唯一新附件時，不誤報失敗或重送', async () => {
+    const uploaded = { id: 94, name: '講義.pdf', mime: 'application/pdf', size: 16 };
+    let committed = false;
+    api.mockImplementation((path, options = {}) => {
+      if (path === '/tasks/501/attachments' && options.method === 'POST') {
+        committed = true;
+        return Promise.reject(new Error('連線中斷'));
+      }
+      if (path === '/tasks/501/attachments') return Promise.resolve(committed ? [uploaded] : []);
+      if (path === '/study-sessions') return Promise.resolve([]);
+      return Promise.resolve({});
+    });
+    mount();
+    const input = screen.getByLabelText('新增附件');
+    fireEvent.change(input, { target: { files: [uploadFile()] } });
+
+    expect(await screen.findByText('講義.pdf')).toBeInTheDocument();
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument();
+    expect(input).toBeEnabled();
+    expect(api.mock.calls.filter(([path, options]) => path === '/tasks/501/attachments' && options?.method === 'POST')).toHaveLength(1);
+    expect(api.mock.calls.filter(([path, options]) => path === '/tasks/501/attachments' && !options?.method)).toHaveLength(2);
+  });
+
+  it('首屏附件仍在載入時，先等 baseline，不能把同名舊附件誤判成新上傳', async () => {
+    const existing = { id: 90, name: '講義.pdf', mime: 'application/pdf', size: 16 };
+    let resolveBaseline;
+    let attachmentGets = 0;
+    api.mockImplementation((path, options = {}) => {
+      if (path === '/tasks/501/attachments' && options.method === 'POST') return Promise.reject(new Error('上傳失敗'));
+      if (path === '/tasks/501/attachments') {
+        attachmentGets += 1;
+        if (attachmentGets === 1) return new Promise(resolve => { resolveBaseline = resolve; });
+        return Promise.resolve([existing]);
+      }
+      if (path === '/study-sessions') return Promise.resolve([]);
+      return Promise.resolve({});
+    });
+    mount();
+    const input = screen.getByLabelText('新增附件');
+    fireEvent.change(input, { target: { files: [uploadFile()] } });
+    await act(async () => { resolveBaseline([existing]); });
+
+    expect(await screen.findByRole('alert')).toHaveTextContent('上傳失敗');
+    expect(screen.getByText('講義.pdf')).toBeInTheDocument();
+    expect(input).toBeEnabled();
+    expect(api.mock.calls.filter(([path, options]) => path === '/tasks/501/attachments' && options?.method === 'POST')).toHaveLength(1);
+  });
+
+  it('POST 回應與讀回都失敗時鎖住再次上傳，重新載入後才解鎖', async () => {
+    let attachmentGets = 0;
+    api.mockImplementation((path, options = {}) => {
+      if (path === '/tasks/501/attachments' && options.method === 'POST') return Promise.reject(new Error('連線中斷'));
+      if (path === '/tasks/501/attachments') {
+        attachmentGets += 1;
+        if (attachmentGets === 2) return Promise.reject(new Error('仍然離線'));
+        return Promise.resolve([]);
+      }
+      if (path === '/study-sessions') return Promise.resolve([]);
+      return Promise.resolve({});
+    });
+    mount();
+    const input = screen.getByLabelText('新增附件');
+    fireEvent.change(input, { target: { files: [uploadFile()] } });
+
+    expect(await screen.findByRole('alert')).toHaveTextContent('無法確認附件是否已上傳');
+    expect(input).toBeDisabled();
+    fireEvent.click(screen.getByRole('button', { name: '重新載入附件' }));
+    await waitFor(() => expect(screen.queryByRole('alert')).not.toBeInTheDocument());
+    expect(input).toBeEnabled();
+    expect(api.mock.calls.filter(([path, options]) => path === '/tasks/501/attachments' && options?.method === 'POST')).toHaveLength(1);
+  });
+
   it('POST committed 後清單失敗只重試 GET，不重送附件', async () => {
     let attachmentGets = 0;
     api.mockImplementation((path, options = {}) => {
