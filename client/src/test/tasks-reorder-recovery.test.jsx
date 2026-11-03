@@ -62,6 +62,46 @@ describe('拖曳排序的寫入／刷新邊界', () => {
     expect(screen.queryByRole('alert')).not.toBeInTheDocument();
   });
 
+  it('排序 POST 回應遺失但讀回順序已寫入時，不誤報失敗或重送', async () => {
+    api.mockImplementation((path, options = {}) => {
+      if (path === '/tasks/reorder' && options.method === 'POST') return Promise.reject(new Error('連線中斷'));
+      if (path === '/tasks') return Promise.resolve([mk('3'), mk('1'), mk('2')]);
+      return Promise.resolve({});
+    });
+    const reload = mount();
+
+    drag('任務 3', '任務 1');
+
+    await waitFor(() => expect(reload).toHaveBeenCalledWith('tasks'));
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument();
+    expect(reorderCalls()).toHaveLength(1);
+    expect(api.mock.calls.filter(([path]) => path === '/tasks')).toHaveLength(1);
+  });
+
+  it('排序 POST 與讀回都失敗時鎖住重拖，重新載入後才解鎖', async () => {
+    let writes = 0;
+    api.mockImplementation(path => {
+      if (path === '/tasks/reorder') {
+        writes += 1;
+        return Promise.reject(new Error('連線中斷'));
+      }
+      if (path === '/tasks') return Promise.reject(new Error('仍然離線'));
+      return Promise.resolve({});
+    });
+    const reload = mount();
+
+    drag('任務 3', '任務 1');
+    expect(await screen.findByRole('alert')).toHaveTextContent('無法確認排序是否已儲存');
+    drag('任務 2', '任務 1');
+    expect(writes).toBe(1);
+
+    fireEvent.click(screen.getByRole('button', { name: '重新載入' }));
+    await waitFor(() => expect(screen.queryByRole('alert')).not.toBeInTheDocument());
+    drag('任務 2', '任務 1');
+    await waitFor(() => expect(writes).toBe(2));
+    expect(reload).toHaveBeenCalledWith('tasks');
+  });
+
   it('排序已寫入但刷新失敗時，不誤報成排序失敗，並可只重試刷新', async () => {
     api.mockResolvedValue({ ok: true });
     const reload = vi.fn()

@@ -1004,6 +1004,7 @@ export default function Tasks({ view, tasks, lists, filters, habits = [], reload
   // 新順序是從畫面上的清單算出來的；上一次排序還沒寫入並重新載入前，畫面仍是舊順序。
   // 這時再拖一次會用舊順序算出整批 ids，蓋掉剛寫入的那一次，所以同步上鎖到刷新結束。
   const reorderBusyRef = useRef(false);
+  const reorderUncertainRef = useRef(false);
   async function dropOn(target, list) {
     if (!dragT || dragT.id === target.id) return;
     if (reorderBusyRef.current) { setDragT(null); return; }
@@ -1015,9 +1016,24 @@ export default function Tasks({ view, tasks, lists, filters, habits = [], reload
     try {
       await api('/tasks/reorder', { method: 'POST', body: { ids } });
     } catch (e) {
-      setRefreshError(e.message || '排序沒有儲存成功，請再試一次。');
-      reorderBusyRef.current = false;
-      return;
+      // POST 可能已提交、只有回應遺失。依 GET /tasks 的正式 order_index 順序
+      // 核對這批 id，避免使用者重拖後用舊畫面順序覆蓋已成功的排序。
+      try {
+        const latest = await api('/tasks');
+        const wanted = ids.map(String);
+        const wantedSet = new Set(wanted);
+        const saved = Array.isArray(latest)
+          ? latest.map(task => String(task.id)).filter(id => wantedSet.has(id)) : [];
+        if (saved.length !== wanted.length || saved.some((id, index) => id !== wanted[index])) {
+          setRefreshError(e.message || '排序沒有儲存成功，請再試一次。');
+          reorderBusyRef.current = false;
+          return;
+        }
+      } catch {
+        reorderUncertainRef.current = true;
+        setRefreshError('無法確認排序是否已儲存，請先重新載入；確認前請勿再次拖曳。');
+        return;
+      }
     }
     // 寫入成功和重新載入是兩個邊界：刷新失敗時順序其實已存好，不能誤報成排序失敗。
     try { await reload('tasks'); }
@@ -1547,6 +1563,10 @@ export default function Tasks({ view, tasks, lists, filters, habits = [], reload
       await (needsAll ? reload() : reload('tasks'));
       setRefreshError('');
       duplicateBusyRef.current = false;
+      if (reorderUncertainRef.current) {
+        reorderUncertainRef.current = false;
+        reorderBusyRef.current = false;
+      }
       for (const id of uncertainMutationIds.current) finishMutation(id);
       uncertainMutationIds.current.clear();
       if (needsAll) setRefreshNeedsAll(false);
