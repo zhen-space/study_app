@@ -1654,7 +1654,7 @@ export default function Tasks({ view, tasks, lists, filters, habits = [], reload
     try {
       const latest = await api('/tasks');
       const committed = Array.isArray(latest) && latest.some(task =>
-        !pending.beforeIds.includes(task.id)
+        !pending.beforeIds.includes(String(task.id))
         && task.title === pending.title
         && !task.list_id
         && !task.due_date);
@@ -1678,7 +1678,9 @@ export default function Tasks({ view, tasks, lists, filters, habits = [], reload
     setWishBusy(true);
     setWishError('');
     const title = wish.trim();
-    const beforeIds = tasks.map(task => task.id);
+    // API／測試資料可能混用數字與字串 id；baseline 一律正規化，避免把既有
+    // 同名願望誤認成這次 POST 已成功，進而清掉其實尚未建立的輸入。
+    const beforeIds = tasks.map(task => String(task.id));
     try {
       await api('/tasks', { method: 'POST', body: { title } });
     } catch (e) {
@@ -1687,7 +1689,7 @@ export default function Tasks({ view, tasks, lists, filters, habits = [], reload
       try {
         const latest = await api('/tasks');
         const committed = Array.isArray(latest) && latest.some(task =>
-          !beforeIds.includes(task.id)
+          !beforeIds.includes(String(task.id))
           && task.title === title
           && !task.list_id
           && !task.due_date);

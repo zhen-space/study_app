@@ -6,8 +6,8 @@ vi.mock('../api', () => ({ api: vi.fn() }));
 const { api } = await import('../api');
 const Tasks = (await import('../tt/Tasks')).default;
 
-function mount(reload = vi.fn().mockResolvedValue(undefined)) {
-  render(<Tasks view={{ type: 'today' }} tasks={[]} lists={[]} filters={[]}
+function mount(reload = vi.fn().mockResolvedValue(undefined), tasks = []) {
+  render(<Tasks view={{ type: 'today' }} tasks={tasks} lists={[]} filters={[]}
     habits={[]} reload={reload} title="今天" />);
   return reload;
 }
@@ -96,6 +96,26 @@ describe('375px Today 願望新增 recovery', () => {
     expect(api.mock.calls.filter(([path, options]) => path === '/tasks' && options?.method === 'POST')).toHaveLength(1);
     expect(api).toHaveBeenCalledWith('/tasks');
     expect(reload).toHaveBeenCalledWith('tasks');
+  });
+
+  it('既有數字 id 讀回變字串時，不把同名願望誤認成這次新增成功', async () => {
+    const existing = { id: 90, title: '整理書桌', list_id: null, due_date: null, completed: 0, deleted: 0, tags: [], subtasks: [] };
+    api.mockImplementation((path, options = {}) => {
+      if (path === '/tasks' && options.method === 'POST') return Promise.reject(new Error('新增暫時失敗'));
+      if (path === '/tasks') return Promise.resolve([{ ...existing, id: '90' }]);
+      return Promise.resolve([]);
+    });
+    const reload = vi.fn().mockResolvedValue(undefined);
+    mount(reload, [existing]);
+    const input = screen.getByPlaceholderText('＋ 記一件想做的事…');
+    fireEvent.change(input, { target: { value: '整理書桌' } });
+
+    fireEvent.submit(input.closest('form'));
+
+    expect(await screen.findByRole('alert')).toHaveTextContent('新增暫時失敗');
+    expect(input).toHaveValue('整理書桌');
+    expect(input).toBeEnabled();
+    expect(reload).not.toHaveBeenCalled();
   });
 
   it('POST 與讀回都失敗時鎖住重送，重新確認已寫入後安全收尾', async () => {
