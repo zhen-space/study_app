@@ -54,7 +54,15 @@ describe('375px 任務垃圾桶 mutation recovery', () => {
   });
 
   it('真正永久刪除失敗保留項目與錯誤，且可再次確認重試', async () => {
-    api.mockRejectedValueOnce(new Error('暫時無法永久刪除')).mockResolvedValueOnce({ ok: true });
+    let deletes = 0;
+    api.mockImplementation((path, options = {}) => {
+      if (path === '/tasks/701?hard=1' && options.method === 'DELETE') {
+        deletes += 1;
+        return deletes === 1 ? Promise.reject(new Error('暫時無法永久刪除')) : Promise.resolve({ ok: true });
+      }
+      if (path === '/tasks') return Promise.resolve([trashed(701, '待刪講義')]);
+      return Promise.resolve({});
+    });
     const reload = mount();
 
     fireEvent.click(screen.getByRole('button', { name: '永久刪除「待刪講義」' }));
@@ -64,8 +72,42 @@ describe('375px 任務垃圾桶 mutation recovery', () => {
 
     fireEvent.click(screen.getByRole('button', { name: '永久刪除「待刪講義」' }));
     await waitFor(() => expect(screen.queryByText('待刪講義')).not.toBeInTheDocument());
-    expect(api).toHaveBeenCalledTimes(2);
+    expect(api.mock.calls.filter(([path]) => path === '/tasks/701?hard=1')).toHaveLength(2);
+    expect(api.mock.calls.filter(([path]) => path === '/tasks')).toHaveLength(1);
     expect(reload).toHaveBeenCalledOnce();
+  });
+
+  it('永久刪除回應遺失但讀回已不存在時，不誤報失敗或重送', async () => {
+    api.mockImplementation((path, options = {}) => {
+      if (path === '/tasks/701?hard=1' && options.method === 'DELETE') return Promise.reject(new Error('連線中斷'));
+      if (path === '/tasks') return Promise.resolve([]);
+      return Promise.resolve({});
+    });
+    const reload = mount();
+
+    fireEvent.click(screen.getByRole('button', { name: '永久刪除「待刪講義」' }));
+
+    await waitFor(() => expect(screen.queryByText('待刪講義')).not.toBeInTheDocument());
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument();
+    expect(api.mock.calls.filter(([path]) => path === '/tasks/701?hard=1')).toHaveLength(1);
+    expect(api.mock.calls.filter(([path]) => path === '/tasks')).toHaveLength(1);
+    expect(reload).toHaveBeenCalledOnce();
+  });
+
+  it('永久刪除與讀回都失敗時保留項目並提示重新載入確認', async () => {
+    api.mockImplementation((path, options = {}) => {
+      if (path === '/tasks/701?hard=1' && options.method === 'DELETE') return Promise.reject(new Error('連線中斷'));
+      if (path === '/tasks') return Promise.reject(new Error('仍然離線'));
+      return Promise.resolve({});
+    });
+    const reload = mount();
+
+    fireEvent.click(screen.getByRole('button', { name: '永久刪除「待刪講義」' }));
+
+    expect(await screen.findByRole('alert')).toHaveTextContent('無法確認任務是否已永久刪除，請重新載入後再確認。');
+    expect(screen.getByText('待刪講義')).toBeInTheDocument();
+    expect(reload).not.toHaveBeenCalled();
+    expect(screen.getByRole('button', { name: '永久刪除「待刪講義」' })).toBeEnabled();
   });
 
   it('還原失敗不會讓項目消失，成功後才移出垃圾桶', async () => {
