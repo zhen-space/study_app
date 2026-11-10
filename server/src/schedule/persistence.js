@@ -1490,8 +1490,8 @@ export class ExamPlanError extends Error {
 //
 // 硬規則（scheduled = daily／timed 時 fail closed，不靜默略過）：
 //   ・科目：擁有權、不重複、考試日 canonical 且落在 [start,end]
-//   ・教材項目：CURRENT 重讀擁有權、所屬書的科目必須在本次考試科目內、未完成、
-//     （排程時）必須有 CURRENT 估計時間
+//   ・教材項目：CURRENT 重讀擁有權、所屬書的科目必須在本次考試科目內、未完成；
+//     只有 timed 必須有 CURRENT 估計時間，daily 只排日期
 //   ・手動範圍：label 非空、（有指定科目時）科目必須在考試科目內；排程時必須有科目
 //     與估計時間，缺一律 fail closed（不像舊前端那樣 `if (!est) continue` 靜默丟掉）
 //   ・同一科的範圍名稱不可重複（排程時），否則 block↔task 對不回去
@@ -1500,6 +1500,7 @@ export async function buildExamScope(runner, userId, {
   subjects = [], materialIds = [], manual = [],
 }) {
   const scheduled = level === 'daily' || level === 'timed';
+  const needsMinutes = level === 'timed';
   if (!isValidDay(endDate)) throw new ExamPlanError('請設定段考結束日期', 'INVALID_END_DATE');
   if (startDate != null && startDate !== '' && !isValidDay(startDate)) throw new ExamPlanError('開始日期不正確', 'INVALID_START_DATE');
   if (startDate && endDate < startDate) throw new ExamPlanError('結束日期不能早於開始日期', 'END_BEFORE_START');
@@ -1556,10 +1557,12 @@ export async function buildExamScope(runner, userId, {
     if (Number(it.completed) === 1) throw new ExamPlanError('已完成的教材不需要再排程', 'MATERIAL_COMPLETED');
     const title = `${it.book_title ? it.book_title + '｜' : ''}${it.chapter_title ? it.chapter_title + '｜' : ''}${it.title}`;
     const est = Number(it.estimated_minutes) > 0 ? Number(it.estimated_minutes) : null;
-    if (scheduled && est == null) throw new ExamPlanError(`教材項目缺少估計時間，無法排入每天安排：${title}`, 'MATERIAL_ESTIMATE_MISSING', 422);
+    if (needsMinutes && est == null) throw new ExamPlanError(`教材項目缺少估計時間，無法排入具體時段：${title}`, 'MATERIAL_ESTIMATE_MISSING', 422);
     if (scheduled) requireUniqueTitle(`${sid}\u0000${title}`);
     materialScopeItems.push({
-      kind: 'material', subjectId: sid, title, minutes: est ?? 30,
+      // daily 的 30 只是在排程器內代表一個等權內容單位，不是對學生宣稱的估時，
+      // 也不會寫回 Task；timed 才以真實分鐘排起訖時間。
+      kind: 'material', subjectId: sid, title, minutes: est ?? 30, estimatedMinutes: est,
       contentItemId: cid, bookId: it.book_id ?? null,
       deadline: examBySubject.get(sid), label: null,
       _requestIndex: requestIndex,
@@ -1601,12 +1604,11 @@ export async function buildExamScope(runner, userId, {
     if (sid != null && !examBySubject.has(sid)) throw new ExamPlanError('手動範圍的科目不在本次考試科目內', 'MANUAL_SUBJECT_NOT_IN_EXAM');
     const est = Number.isInteger(m.estimated_minutes) && m.estimated_minutes > 0 ? m.estimated_minutes : null;
     if (scheduled) {
-      // fail closed：daily／timed 下缺科目或缺估時的手動範圍**不得靜默略過**，
-      // 否則老師指定的範圍會憑空消失、使用者卻以為排進去了。
+      // daily／timed 都必須有科目，否則範圍會憑空消失；只有 timed 另需估時。
       if (sid == null) throw new ExamPlanError(`手動範圍需要指定科目才能排入每天安排：${label}`, 'MANUAL_SUBJECT_REQUIRED', 422);
-      if (est == null) throw new ExamPlanError(`手動範圍缺少預估時間，無法排入每天安排：${label}`, 'MANUAL_ESTIMATE_MISSING', 422);
+      if (needsMinutes && est == null) throw new ExamPlanError(`手動範圍缺少預估時間，無法排入具體時段：${label}`, 'MANUAL_ESTIMATE_MISSING', 422);
       requireUniqueTitle(`${sid}\u0000${label}`);
-      scopeItems.push({ kind: 'manual', subjectId: sid, title: label, minutes: est, contentItemId: null, bookId: null, deadline: examBySubject.get(sid), label });
+      scopeItems.push({ kind: 'manual', subjectId: sid, title: label, minutes: est ?? 30, estimatedMinutes: est, contentItemId: null, bookId: null, deadline: examBySubject.get(sid), label });
       sigParts.push(`x:${sid}:${est}:${label}`);
     }
     manualEntries.push({ subject_list_id: sid, label, estimated_minutes: est });
@@ -1710,7 +1712,7 @@ export async function createExamPlanAtomic(userId, {
            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
           [userId, si.subjectId, si.title, '', 0,
             JSON.stringify(['讀書計劃']), JSON.stringify([]), null, 'keep',
-            planId, si.deadline, si.minutes, si.contentItemId, si.bookId, at]);
+            planId, si.deadline, si.estimatedMinutes ?? null, si.contentItemId, si.bookId, at]);
         const tid = Number(tr.lastInsertRowid);
         taskIdByKey.set(`${si.subjectId}\u0000${si.title}`, tid);
         taskDeadline.set(tid, si.deadline);

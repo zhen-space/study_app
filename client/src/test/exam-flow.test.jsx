@@ -155,6 +155,30 @@ describe('ExamCreateWizard', () => {
     expect(screen.getByText(/預覽失敗：暫時無法取得最新範圍/)).toBeTruthy();
   });
 
+  it('daily 沒填分鐘也能確認；改成具體時間才要求補分鐘', async () => {
+    localStorage.setItem('examWizardDraft:v1', JSON.stringify({
+      step: 2, name: '第二次段考', start: '2099-09-20', end: '2099-10-02', level: 'daily',
+      subjects: [{ listId: 1, examDate: '' }],
+      scope: { 1: { items: {}, manual: [{ label: '講義第三章', est: null }] } },
+    }));
+    api.mockImplementation((path, opts) => {
+      calls.push([path, opts]);
+      if (path === '/exam-plans/preview') return Promise.resolve({
+        preview_token: 'signed', blocks: [{ date: '2099-09-21', subject_id: 1, title: '講義第三章' }],
+        scope: [{ kind: 'manual', subject_list_id: 1, title: '講義第三章', estimated_minutes: null }],
+      });
+      return Promise.resolve({});
+    });
+
+    render(<ExamCreateWizard lists={LISTS} onDone={() => {}} onCancel={() => {}} />);
+    await waitFor(() => expect(screen.getByText('確認，建立段考計畫').closest('button').disabled).toBe(false));
+    expect(screen.queryByText(/還沒有預估時間/)).toBeNull();
+
+    await click(screen.getAllByRole('radio')[2]);
+    await waitFor(() => expect(screen.getByText(/你選的是「具體時間」/)).toBeTruthy());
+    expect(screen.getByText('確認，建立段考計畫').closest('button').disabled).toBe(true);
+  });
+
   it('375px 快速連點確認只建立一次，progress 模式不會產生重複段考', async () => {
     Object.defineProperty(window, 'innerWidth', { configurable: true, value: 375 });
     localStorage.setItem('examWizardDraft:v1', JSON.stringify({

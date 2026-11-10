@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import { importPreview, commitDraft, nameCheck } from './material';
+import { importPreview, commitDraft, nameCheck, getBookTree } from './material';
 import { fileToPayload } from './vocabImport';
 import MaterialDraftEditor, { emptyDraft } from './MaterialDraftEditor';
 import MergeReview from './MergeReview';
@@ -19,7 +19,7 @@ import { canonicalizeLeafContent, materialContentCount } from './materialDraft';
 //   建立的教材就一定屬於那一科——否則使用者可能建到別科、回到卡片卻找不到、以為「建立失敗」。
 // appendToBook（可選）：{ id, title }。設了就是「增加目錄／匯入更多內容」模式——
 //   產生 draft 後直接走合併到這本書（略過同名偵測與另存），不建立新書。
-export default function AddMaterialFlow({ lists = [], onCancel, onCreated, onAddSubject = null, appendToBook = null, defaultSubjectId = null }) {
+export default function AddMaterialFlow({ lists = [], onCancel, onCreated, onAddSubject = null, appendToBook = null, defaultSubjectId = null, outlineSources = [] }) {
   const [mode, setMode] = useState(null);      // null｜'photo'｜'manual'
   const [draft, setDraft] = useState(null);
   const [busy, setBusy] = useState(false);
@@ -31,6 +31,7 @@ export default function AddMaterialFlow({ lists = [], onCancel, onCreated, onAdd
   const [conflict, setConflict] = useState(null);   // null | { books: [...] }
   const [mergeTarget, setMergeTarget] = useState(null);
   const [created, setCreated] = useState(null);
+  const [reuseSourceId, setReuseSourceId] = useState('');
   const [commitUnknown, setCommitUnknown] = useState(false);
   const parseBusy = useRef(false);
   const operationBusy = useRef(false);
@@ -162,6 +163,18 @@ export default function AddMaterialFlow({ lists = [], onCancel, onCreated, onAdd
     setDraft(null); setMode(null); setErr(''); setProblems([]); setWarnings([]);
   };
 
+  const reuseOutline = async () => {
+    const source = outlineSources.find(b => Number(b.material_book_id ?? b.id) === Number(reuseSourceId));
+    if (!source) return;
+    setBusy(true); setErr('');
+    try {
+      const tree = await getBookTree(source.material_book_id ?? source.id);
+      setMode('reuse');
+      setDraft(withContext(draftFromTree(tree)));
+    } catch (e2) { setErr(readable(e2)); }
+    finally { setBusy(false); }
+  };
+
   if (commitUnknown) {
     return (
       <div className="am">
@@ -250,8 +263,9 @@ export default function AddMaterialFlow({ lists = [], onCancel, onCreated, onAdd
   if (draft) {
     return (
       <div className="am">
-        <h3 className="am-title">{mode === 'photo' ? '確認讀到的內容' : '自己建立教材'}</h3>
+        <h3 className="am-title">{mode === 'photo' ? '確認讀到的內容' : mode === 'reuse' ? '沿用目錄建立教材' : '自己建立教材'}</h3>
         {mode === 'photo' && <p className="am-lead">有讀錯或漏掉的地方可以直接改。</p>}
+        {mode === 'reuse' && <p className="am-lead">目錄已複製成一份新的教材。請填講義／題本名稱；這份教材會有獨立的完成進度。</p>}
         {warnings.length > 0 && (
           <ul className="md-problems" role="status" style={{ borderColor: 'var(--warning,#b7791f)' }}>
             {warnings.map((w, i) => <li key={i}>⚠️ {typeof w === 'string' ? w : w.message}</li>)}
@@ -279,6 +293,21 @@ export default function AddMaterialFlow({ lists = [], onCancel, onCreated, onAdd
             <span className="am-choice-sub">拍課本目錄（可多張），AI 幫你打好</span>
           </span>
         </button>
+        {outlineSources.length > 0 && (
+          <div className="am-choice" style={{ cursor: 'default' }}>
+            <span className="am-choice-icon" aria-hidden="true">📑</span>
+            <span className="am-choice-main" style={{ display: 'grid', gap: 6 }}>
+              <span className="am-choice-title">沿用既有教材目錄</span>
+              <span className="am-choice-sub">適合講義、題本與課本使用相同章節；建立後仍可自行增刪。</span>
+              <select aria-label="要沿用的教材目錄" value={reuseSourceId} disabled={busy}
+                onChange={e => setReuseSourceId(e.target.value)}>
+                <option value="">選一本教材…</option>
+                {outlineSources.map(b => <option key={b.material_book_id ?? b.id} value={b.material_book_id ?? b.id}>{b.title}</option>)}
+              </select>
+              <Button size="sm" variant="secondary" disabled={busy || !reuseSourceId} onClick={reuseOutline}>沿用這份目錄</Button>
+            </span>
+          </div>
+        )}
         <button type="button" className="am-choice" disabled={busy}
           onClick={() => { setMode('manual'); setDraft(withContext(emptyDraft())); }}>
           <span className="am-choice-icon" aria-hidden="true">✏️</span>
@@ -293,6 +322,28 @@ export default function AddMaterialFlow({ lists = [], onCancel, onCreated, onAdd
       </div>
     </div>
   );
+}
+
+// 從後端 canonical tree 產生一份「新教材」草稿。只複製目錄內容，
+// 不複製完成度、選取或任何 Plan 關聯；新教材有自己的進度。
+function draftFromTree(tree) {
+  const content = items => (items || []).map(i => ({
+    kind: i.kind,
+    title: i.title,
+    ...(i.estimated_minutes != null ? { estimated_minutes: i.estimated_minutes } : {}),
+  }));
+  return {
+    book: { title: '', publisher: '', book_type: '', subject_list_id: tree?.book?.subject_list_id ?? null },
+    chapters: (tree?.nodes || []).map(chapter => ({
+      title: chapter.title,
+      content_items: content(chapter.content_items),
+      children: (chapter.children || []).map(child => ({
+        kind: child.kind,
+        title: child.title,
+        content_items: content(child.content_items),
+      })),
+    })),
+  };
 }
 
 // 學生不需要知道伺服器缺哪一把金鑰，他只需要知道現在能做什麼。

@@ -97,6 +97,13 @@ vi.mock('../tt/material', () => ({
   importPreview: vi.fn(async () => ({ draft: { book: { title: 'AI書', subject_list_id: null }, chapters: [{ title: '第一章', content_items: [{ kind: 'unit_exercise', title: '單元練習' }], children: [] }] }, problems: [], warnings: [] })),
   commitDraft: vi.fn(async () => ({ book: { id: 77, title: 'AI書' } })),
   nameCheck: vi.fn(async () => ({ has_conflict: false, same_name_books: [] })),
+  getBookTree: vi.fn(async () => ({
+    book: { id: 9, title: '數學課本', subject_list_id: 1 },
+    nodes: [{
+      id: 90, kind: 'chapter', title: '第一章', content_items: [],
+      children: [{ id: 91, kind: 'section', title: '1-1', content_items: [{ kind: 'reading', title: '函數', estimated_minutes: null }], children: [] }],
+    }],
+  })),
   ITEM_LABEL: { reading: '課本內容', example: '範例', example_problem: '例題', unit_exercise: '單元練習', past_exam: '歷屆試題' },
 }));
 vi.mock('../tt/vocabImport', () => ({ fileToPayload: vi.fn(async f => ({ filename: f.name, mime: 'image/jpeg', data: 'AAAA' })) }));
@@ -146,6 +153,24 @@ describe('AddMaterialFlow hotfix', () => {
     fireEvent.click(screen.getByText('自己建立教材'));
     const select = screen.getByLabelText('科目');       // 新增教材也有「教材類型」，明確抓科目
     expect(select.disabled).toBe(false);
+  });
+
+  it('可沿用既有教材目錄建立獨立講義，保留章節但不複製完成狀態', async () => {
+    const { getBookTree } = await import('../tt/material');
+    render(<AddMaterialFlow lists={LISTS} onCancel={() => {}} onCreated={() => {}}
+      outlineSources={[{ material_book_id: 9, title: '數學課本', subject_list_id: 1 }]} />);
+
+    expect(screen.getByText('沿用既有教材目錄')).toBeTruthy();
+    fireEvent.change(screen.getByLabelText('要沿用的教材目錄'), { target: { value: '9' } });
+    await act(async () => { fireEvent.click(screen.getByRole('button', { name: '沿用這份目錄' })); });
+
+    await waitFor(() => expect(screen.getByText('沿用目錄建立教材')).toBeTruthy());
+    expect(getBookTree).toHaveBeenCalledWith(9);
+    expect(screen.getByDisplayValue('數學').value).toBe('1');
+    expect(screen.getByDisplayValue('第一章')).toBeTruthy();
+    expect(screen.getByDisplayValue('1-1')).toBeTruthy();
+    expect(screen.getByText('函數')).toBeTruthy();
+    expect(screen.getByText(/獨立的完成進度/)).toBeTruthy();
   });
 
   it('defaultSubjectId：AI 讀到的 draft 沒科目時，補上預帶科目', async () => {

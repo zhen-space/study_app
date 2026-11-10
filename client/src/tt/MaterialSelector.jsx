@@ -476,7 +476,7 @@ export default function MaterialSelector({
   if (view === 'add') {
     return (
       <div className="mt-selector">
-        <AddMaterialFlow lists={lists} onAddSubject={onAddSubject}
+        <AddMaterialFlow lists={lists} onAddSubject={onAddSubject} outlineSources={books || []}
           onCancel={() => setView('shelf')}
           onCreated={r => afterCreated(r?.book?.id)} />
       </div>

@@ -175,6 +175,35 @@ describe('createExamPlanAtomic 單一交易原子性（P0-4）', () => {
     }), e => e.code === 'EXAM_SCOPE_EMPTY' && e.status === 422);
   });
 
+  test('daily 缺估時仍可建立 date-only Task，內部排程權重不得落庫成假分鐘', async () => {
+    const manual = [{ subject_list_id: subjId, label: '未估時講義', estimated_minutes: null }];
+    const scope = await sched.buildExamScope(q, USER, {
+      endDate: rel(10), startDate: rel(0), level: 'daily',
+      subjects: [{ subject_list_id: subjId, exam_date: rel(5) }], materialIds: [], manual,
+    });
+    assert.equal(scope.scopeItems[0].minutes, 30, '排日期只使用內部等權單位');
+    assert.equal(scope.scopeItems[0].estimatedMinutes, null, 'CURRENT 估時仍是 null');
+
+    const value = await secured({
+      level: 'daily', manual,
+      computedBlocks: [{ subject_id: subjId, title: '未估時講義', date: rel(2) }],
+      scopeSig: null,
+    });
+    const { planId } = await sched.createExamPlanAtomic(USER, value);
+    const task = await q.get('SELECT estimated_minutes,due_date,due_time FROM tasks WHERE user_id=? AND plan_id=?', [USER, planId]);
+    assert.equal(task.estimated_minutes, null, '內部等權單位不得冒充使用者估時');
+    assert.equal(task.due_date, rel(2));
+    assert.equal(task.due_time, null, 'daily 不建立具體時間');
+  });
+
+  test('timed 缺估時仍拒絕，不能用 daily 的內部等權單位產生假時段', async () => {
+    await assert.rejects(sched.buildExamScope(q, USER, {
+      endDate: rel(10), startDate: rel(0), level: 'timed',
+      subjects: [{ subject_list_id: subjId }], materialIds: [],
+      manual: [{ subject_list_id: subjId, label: '未估時講義', estimated_minutes: null }],
+    }), e => e.code === 'MANUAL_ESTIMATE_MISSING' && e.status === 422);
+  });
+
   test('教材 ID 順序與目錄順序不同時，三種段考安排都採正式教材階層順序', async () => {
     const book = await q.run(`INSERT INTO material_books (user_id,title,subject_list_id)
       VALUES (?,?,?)`, [USER, '數學課本', subjId]);
