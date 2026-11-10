@@ -352,6 +352,10 @@ select { -webkit-appearance: none; appearance: none; padding-right: 26px;
 .ga-item { display: flex; align-items: center; gap: 12px; width: 100%; padding: 14px 12px;
   background: transparent; border: none; border-radius: 12px; font-size: 16px; color: var(--text); cursor: pointer; text-align: left; }
 .ga-item:hover, .ga-item:active { background: var(--fill); }
+.ga-quick-more > summary { min-height: 44px; display: flex; align-items: center; cursor: pointer;
+  color: var(--primary); font-weight: 600; list-style-position: inside; }
+.ga-quick-more .ui-field input, .ga-quick-more .ui-field select,
+.ga-quick-more .ui-field textarea { width: 100%; }
 @media (max-width: 768px) {
   body { font-size: 16px; }
   input, select, textarea { font-size: 16px; } /* 避免 iOS 聚焦時自動放大 */
