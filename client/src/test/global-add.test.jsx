@@ -58,6 +58,40 @@ describe('Global Add', () => {
     expect(post?.[1]?.body?.title).toBe('買便當');
   });
 
+  it('375px 手機的 Quick Task 可一次填日期、時間、科目、優先級與備註', async () => {
+    await mountShell();
+    await click(fab());
+    await click(screen.getByRole('button', { name: '新增任務' }));
+    const dialog = screen.getByRole('dialog');
+    const input = within(dialog).getByLabelText('任務標題');
+    await act(async () => {
+      const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set;
+      setter.call(input, '準備物理小考'); input.dispatchEvent(new Event('input', { bubbles: true }));
+    });
+    await click(within(dialog).getByText('更多選項'));
+    await act(async () => {
+      const change = (label, value) => {
+        const field = within(dialog).getByLabelText(label);
+        const proto = field instanceof HTMLSelectElement ? window.HTMLSelectElement.prototype
+          : field instanceof HTMLTextAreaElement ? window.HTMLTextAreaElement.prototype
+            : window.HTMLInputElement.prototype;
+        Object.getOwnPropertyDescriptor(proto, 'value').set.call(field, value);
+        field.dispatchEvent(new Event('change', { bubbles: true }));
+      };
+      change('任務日期', '2030-05-06');
+      change('任務時間', '20:30');
+      change('任務科目', String(fx.lists[0].id));
+      change('任務優先級', '3');
+      change('任務備註', '帶講義第 3 頁');
+    });
+    await click(within(dialog).getByRole('button', { name: '新增任務' }));
+    const post = calls.find(([p, o]) => p === '/tasks' && o?.method === 'POST');
+    expect(post?.[1]?.body).toEqual({
+      title: '準備物理小考', due_date: '2030-05-06', due_time: '20:30',
+      list_id: fx.lists[0].id, priority: 3, notes: '帶講義第 3 頁',
+    });
+  });
+
   it('選「學校作業」→ 開學校作業表單（同一顆 ＋，不是另一套入口）', async () => {
     await mountShell();
     await click(fab());

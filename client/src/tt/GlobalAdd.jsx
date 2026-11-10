@@ -26,9 +26,21 @@ const FIRST_LEVEL = [
 // 不自動叫鍵盤前先讓使用者選好，Enter 或按鈕都能送出。
 // 寫入成功和重新載入是兩個邊界：POST 成功後一律交給 onCreated（關閉＋刷新），
 // 刷新失敗不能讓表單留著可再按，否則使用者以為沒存到、再按一次就多一筆。
-function QuickTaskSheet({ onClose, onCreated, tasks = [] }) {
+const sameQuickTask = (task, body) => task.title === body.title
+  && (task.due_date || '') === (body.due_date || '')
+  && (task.due_time || '') === (body.due_time || '')
+  && String(task.list_id ?? '') === String(body.list_id ?? '')
+  && Number(task.priority || 0) === Number(body.priority || 0)
+  && (task.notes || '') === (body.notes || '');
+
+function QuickTaskSheet({ onClose, onCreated, tasks = [], lists = [] }) {
   const [title, setTitle] = useState('');
   const [due, setDue] = useState('today');   // today | tomorrow | none
+  const [customDate, setCustomDate] = useState('');
+  const [time, setTime] = useState('');
+  const [listId, setListId] = useState('');
+  const [priority, setPriority] = useState(0);
+  const [notes, setNotes] = useState('');
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState('');
   // state 要等重新 render 才生效；手機連點會在 busy 變 true 前再進來，用 ref 同步上鎖。
@@ -37,8 +49,8 @@ function QuickTaskSheet({ onClose, onCreated, tasks = [] }) {
   const resolvePending = (latestTasks, originalError) => {
     const pending = pendingRef.current;
     if (!pending) return false;
-    const committed = latestTasks.some(task => !pending.beforeIds.has(task.id) && task.title === pending.body.title
-      && (task.due_date || '') === (pending.body.due_date || ''));
+    const committed = latestTasks.some(task => !pending.beforeIds.has(String(task.id))
+      && sameQuickTask(task, pending.body));
     pendingRef.current = null;
     if (committed) { onCreated?.(); return true; }
     setErr(originalError?.message || '任務沒有新增成功，已重新載入；可再次新增。');
@@ -54,7 +66,15 @@ function QuickTaskSheet({ onClose, onCreated, tasks = [] }) {
     const body = { title: title.trim() };
     if (due === 'today') body.due_date = today();
     else if (due === 'tomorrow') body.due_date = addDays(today(), 1);
-    pendingRef.current = { body, beforeIds: new Set(tasks.map(task => task.id)) };
+    else if (due === 'custom' && customDate) body.due_date = customDate;
+    if (time) {
+      body.due_time = time;
+      if (!body.due_date) body.due_date = today();
+    }
+    if (listId) body.list_id = Number(listId);
+    if (priority) body.priority = priority;
+    if (notes.trim()) body.notes = notes.trim();
+    pendingRef.current = { body, beforeIds: new Set(tasks.map(task => String(task.id))) };
     try {
       await api('/tasks', { method: 'POST', body });
     } catch (e2) {
@@ -83,9 +103,33 @@ function QuickTaskSheet({ onClose, onCreated, tasks = [] }) {
           onChange={e => setTitle(e.target.value)} style={{ width: '100%' }} />
         <div className="row" style={{ gap: 'var(--sp-2)', marginTop: 'var(--sp-3)', flexWrap: 'wrap' }}>
           {[['today', '今天'], ['tomorrow', '明天'], ['none', '不指定日期']].map(([v, l]) => (
-            <button type="button" key={v} className={'tag-pill' + (due === v ? ' on' : '')} onClick={() => setDue(v)}>{l}</button>
+            <button type="button" key={v} className={'tag-pill' + (due === v ? ' on' : '')}
+              aria-pressed={due === v} onClick={() => { setDue(v); setCustomDate(''); }}>{l}</button>
           ))}
         </div>
+        <details className="ga-quick-more" style={{ marginTop: 'var(--sp-3)' }}>
+          <summary>更多選項</summary>
+          <div style={{ display: 'grid', gap: 'var(--sp-3)', marginTop: 'var(--sp-3)' }}>
+            <label className="ui-field"><span className="ui-meta">日期</span>
+              <input aria-label="任務日期" type="date" value={customDate}
+                onChange={e => { setCustomDate(e.target.value); setDue(e.target.value ? 'custom' : 'none'); }} /></label>
+            <label className="ui-field"><span className="ui-meta">時間</span>
+              <input aria-label="任務時間" type="time" value={time} onChange={e => setTime(e.target.value)} /></label>
+            {lists.length > 0 && <label className="ui-field"><span className="ui-meta">科目</span>
+              <select aria-label="任務科目" value={listId} onChange={e => setListId(e.target.value)}>
+                <option value="">不分科目</option>
+                {lists.map(list => <option key={list.id} value={String(list.id)}>{list.name}</option>)}
+              </select></label>}
+            <label className="ui-field"><span className="ui-meta">優先級</span>
+              <select aria-label="任務優先級" value={priority} onChange={e => setPriority(Number(e.target.value))}>
+                <option value="0">一般</option><option value="3">高優先</option>
+                <option value="2">中優先</option><option value="1">低優先</option>
+              </select></label>
+            <label className="ui-field"><span className="ui-meta">備註</span>
+              <textarea aria-label="任務備註" value={notes} rows="2" placeholder="補充頁碼、要帶的東西…"
+                onChange={e => setNotes(e.target.value)} /></label>
+          </div>
+        </details>
         <div className="row" style={{ marginTop: 'var(--sp-4)', gap: 'var(--sp-2)' }}>
           <Button type="button" variant="tertiary" disabled={busy} onClick={onClose}>取消</Button>
           <Button type="submit" variant="primary" style={{ marginLeft: 'auto' }} disabled={!title.trim() || busy || !!pendingRef.current}>
@@ -152,7 +196,7 @@ export default function GlobalAdd({ lists = [], tasks = [], reload, defaultRemin
           onClose={() => setFlow(null)} onSaved={() => refreshAfterSave('作業已儲存，但畫面暫時無法重新載入。')} />
       )}
       {flow === 'task' && (
-        <QuickTaskSheet tasks={tasks} onClose={() => setFlow(null)}
+        <QuickTaskSheet tasks={tasks} lists={lists} onClose={() => setFlow(null)}
           onCreated={() => { setFlow(null); refreshAfterSave('任務已新增，但畫面暫時無法重新載入。'); }} />
       )}
       {refreshError && (
