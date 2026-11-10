@@ -163,9 +163,10 @@ export default function ExamCreateWizard({ lists = [], onDone, onCancel, onManag
     }))),
   }), [name, start, end, level, subjects, subjScope]);
 
-  // 每日／時段需要每項都有預估時間，缺一律無法排入（跟後端 fail-closed 一致）。
+  // 只有「具體時間」需要每項都有預估分鐘。每日模式只決定哪一天做什麼，
+  // 不應為了排日期逼學生猜每一章要花多久。
   const scheduleGate = useMemo(() => {
-    if (level === 'progress') return { ok: true, missing: [] };
+    if (level !== 'timed') return { ok: true, missing: [] };
     const missing = [];
     for (const s of subjects) {
       const sc = subjScope(s.listId);
@@ -412,7 +413,7 @@ export default function ExamCreateWizard({ lists = [], onDone, onCancel, onManag
                   </div>
                 ) : !scheduleGate.ok ? (
                   <div className="ui-meta" style={{ marginTop: 4 }}>
-                    這些範圍還沒有預估時間，無法排入每天安排：{scheduleGate.missing.slice(0, 6).join('、')}{scheduleGate.missing.length > 6 ? '…' : ''}。請回上一步，直接在範圍旁填入分鐘。
+                    你選的是「具體時間」，以下範圍需要預估分鐘：{scheduleGate.missing.slice(0, 6).join('、')}{scheduleGate.missing.length > 6 ? '…' : ''}。若只要安排每天做什麼，改選「每天」即可，不必填分鐘。
                   </div>
                 ) : preview?.failed ? (
                   <div className="ui-meta" style={{ marginTop: 4 }}>預覽失敗：{preview.error}</div>
@@ -543,7 +544,7 @@ function SubjectMaterialPicker({ subjectId, subjectName, lists, selectedIds, onA
   if (importing) {
     // 從段考科目卡進來：預帶本卡科目（建立的教材一定屬於這一科），建立後自動刷新書單
     // 並直接開啟新書，讓新教材立即可勾選；取消回到書單（段考草稿仍在 localStorage）。
-    return <AddMaterialFlow lists={lists} defaultSubjectId={subjectId}
+    return <AddMaterialFlow lists={lists} defaultSubjectId={subjectId} outlineSources={books || []}
       onCancel={() => setImporting(false)}
       onCreated={async (r) => {
         setImporting(false);

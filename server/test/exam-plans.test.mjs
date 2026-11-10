@@ -2,7 +2,7 @@
 //
 // server-authoritative 契約（P0 修正）：
 //   ・排程由伺服器用 CURRENT scope 自己算，client 送的 schedule/blocks 一律忽略（P0-2）。
-//   ・daily/timed 排不下、缺估時、空 scope → fail closed（422），不建立任何 Plan（P0-1）。
+//   ・daily 只排日期，不要求估時；timed 缺估時、排不下或空 scope → fail closed（422）。
 //   ・每科 Task 的 deadline＝該科 CURRENT 考試日，且沒有 block 超過它（P0-3）。
 //   ・單一交易：任一步失敗零可見殘留（P0-4，另見 exam-plan-atomic.test.mjs 的中途注入）。
 //   ・驗證與 ownership 全部在交易內以 CURRENT 重讀（P0-5）。
@@ -180,19 +180,41 @@ describe('POST /exam-plans（server-authoritative 原子建立）', () => {
     assert.equal(await plansCount(), before, 'gap 時不得殘留 Plan');
   });
 
-  test('EP3c P0-2：daily 下缺預估的手動範圍不得靜默略過 → 422，不留 Plan', async () => {
+  test('EP3c daily：教材與手動範圍都可不填分鐘，仍完整排入且不寫入假估時', async () => {
     const math = await subject('數學EP3c');
-    const m = await contentItem(math.id, '第一章');
-    const before = await plansCount();
-    const r = await post('/exam-plans', {
+    const m = await contentItem(math.id, '第一章', null);
+    const body = {
       name: '段考手動缺估', start_date: day(0), end_date: day(10), level: 'daily',
       subjects: [{ subject_list_id: math.id }],
       material_scope: [m.it.id],
       manual_scope: [{ subject_list_id: math.id, label: '老師講義（沒給時間）' }],   // 缺 est
+    };
+    const preview = await call('/exam-plans/preview', { method: 'POST', body });
+    assert.equal(preview.status, 200, JSON.stringify(preview.body));
+    assert.equal(preview.body.scope.length, 2);
+    assert.ok(preview.body.scope.every(x => x.estimated_minutes == null), '預覽不得把內部權重冒充估時');
+    assert.ok(preview.body.blocks.length >= 2, '兩項範圍都必須排入，不能因缺估時被略過');
+    assert.ok(preview.body.blocks.every(x => !x.start_time && !x.end_time), 'daily 只排日期，不產生假時段');
+
+    const r = await call('/exam-plans', { method: 'POST', body: { ...body, preview_token: preview.body.preview_token } });
+    assert.equal(r.status, 201, JSON.stringify(r.body));
+    const createdTasks = (await tasksNow()).filter(x => x.plan_id === r.body.plan.id);
+    assert.equal(createdTasks.length, 2);
+    assert.ok(createdTasks.every(x => x.estimated_minutes == null), '缺估時必須維持 null，不得寫入內部預設值');
+    assert.ok(createdTasks.every(x => x.due_date), '每項仍須有每日安排日期');
+  });
+
+  test('EP3c-timed：同一份缺估時範圍改選具體時間仍 fail closed', async () => {
+    const math = await subject('數學EP3c-timed');
+    const m = await contentItem(math.id, '第一章', null);
+    const before = await plansCount();
+    const r = await post('/exam-plans', {
+      name: '段考具體時段缺估', start_date: day(0), end_date: day(10), level: 'timed',
+      subjects: [{ subject_list_id: math.id }], material_scope: [m.it.id], manual_scope: [],
     });
     assert.equal(r.status, 422, JSON.stringify(r.body));
-    assert.equal(r.body.code, 'MANUAL_ESTIMATE_MISSING');
-    assert.equal(await plansCount(), before, '不得殘留 Plan');
+    assert.equal(r.body.code, 'MATERIAL_ESTIMATE_MISSING');
+    assert.equal(await plansCount(), before, 'timed 驗證失敗不得建立 Plan');
   });
 
   test('EP3d daily：有估時的手動範圍會排入並綁定 task_id', async () => {

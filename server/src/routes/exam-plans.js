@@ -52,7 +52,7 @@ async function authoritativePreview(userId, b) {
     subjects: scope.orderedSubjects, material_ids: scope.materialIds, manual_scope: scope.manualEntries,
     scope_sig: scope.sig, base_version_id: state?.active_version_id ?? null, blocks };
   const canonicalScope = scope.scopeItems.map(x => ({ kind: x.kind, subject_list_id: x.subjectId, title: x.title,
-    estimated_minutes: x.minutes, content_item_id: x.contentItemId, deadline: x.deadline }));
+    estimated_minutes: x.estimatedMinutes ?? null, content_item_id: x.contentItemId, deadline: x.deadline }));
   if (level === 'progress') for (const m of scope.manualEntries) canonicalScope.push({ kind: 'manual',
     subject_list_id: m.subject_list_id, title: m.label, estimated_minutes: m.estimated_minutes,
     content_item_id: null, deadline: scope.examBySubject.get(Number(m.subject_list_id)) ?? endDate });
