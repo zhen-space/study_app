@@ -785,6 +785,9 @@ export default function Tasks({ view, tasks, lists, filters, habits = [], reload
 
   const sortFns = {
     default: defaultSort, // 依時間，同一天依課序
+    // 「依時間」是可持久化的正式選項；先前漏掉這個 key，返回／刷新後 select 雖仍
+    // 顯示依時間，實際卻直接沿用 API 陣列順序，清單會隨回應順序突然跳動。
+    time: defaultSort,
     priority: (a, b) => b.priority - a.priority || defaultSort(a, b),
     title: (a, b) => a.title.localeCompare(b.title, 'zh-Hant'),
     // 依科目：每一組（已逾期／今天／某一天）裡面先照科目分堆，同一科內照課名順序
