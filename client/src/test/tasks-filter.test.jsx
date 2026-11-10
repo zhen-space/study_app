@@ -21,6 +21,19 @@ beforeEach(() => { try { localStorage.clear(); } catch {} api.mockReset(); api.m
 const mount = () => render(<Tasks view={{ type: 'tasks' }} tasks={tasks} lists={lists} filters={[]} reload={() => {}} title="任務" />);
 
 describe('§E 任務第一層 filters', () => {
+  it('返回／刷新後記住的「依時間」會真的排序，不沿用不穩定的 API 順序', () => {
+    localStorage.setItem('taskSort', 'time');
+    const unordered = [
+      mk(20, { title: '較晚', due_date: TD, due_time: '20:00' }),
+      mk(21, { title: '較早', due_date: TD, due_time: '08:00' }),
+    ];
+    render(<Tasks view={{ type: 'tasks' }} tasks={unordered} lists={lists} filters={[]} reload={() => {}} title="任務" />);
+
+    expect(screen.getByLabelText('排序方式')).toHaveValue('time');
+    const titles = screen.getAllByText(/較早|較晚/).map(node => node.textContent);
+    expect(titles).toEqual(['較早', '較晚']);
+  });
+
   it('顯示 全部／今天／逾期／未排程，帶數量；預設全部都在', () => {
     mount();
     const tabs = screen.getByRole('tablist', { name: '任務篩選' });
