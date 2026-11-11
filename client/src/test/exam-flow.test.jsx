@@ -510,4 +510,55 @@ describe('ExamCreateWizard', () => {
     expect(screen.getByText('下一步：加入各科範圍').closest('button').disabled).toBe(true);
     expect(screen.getByRole('status')).toHaveTextContent('段考最後一天不能早於準備開始日');
   });
+
+  it('調整段考會預填完整範圍並 PUT 原 Plan，快速連點不會重複送出', async () => {
+    const finish = deferred();
+    api.mockImplementation((path, opts) => {
+      calls.push([path, opts]);
+      if (path === '/plans/12/exam') return Promise.resolve({
+        plan: { id: 12, name: '舊段考', start_date: '2099-09-20', target_date: '2099-10-02' }, level: 'progress',
+        subjects: [{ subject_list_id: 1, exam_date: '2099-10-01' }], material: [],
+        manual_scope: [{ subject_list_id: 1, label: '舊講義範圍', estimated_minutes: null }],
+      });
+      if (path === '/exam-plans/preview') return Promise.resolve({ preview_token: 'edit-signed', blocks: [], progress_segments: [] });
+      if (path === '/exam-plans/12' && opts?.method === 'PUT') return finish.promise;
+      return Promise.resolve({});
+    });
+    const onDone = vi.fn();
+    render(<ExamCreateWizard lists={LISTS} editPlanId={12} onDone={onDone} onCancel={() => {}} />);
+    expect(await screen.findByDisplayValue('舊段考')).toBeTruthy();
+    expect(screen.getByLabelText('數學 考試日')).toHaveValue('2099-10-01');
+    await click(screen.getByText('下一步：加入各科範圍'));
+    expect(screen.getByText(/舊講義範圍/)).toBeTruthy();
+    await click(screen.getByText('下一步：選擇怎麼安排'));
+    const confirm = await screen.findByRole('button', { name: '確認，建立段考計畫' });
+    await act(async () => { confirm.click(); confirm.click(); });
+    expect(calls.filter(([p, o]) => p === '/exam-plans/12' && o?.method === 'PUT')).toHaveLength(1);
+    expect(calls.find(([p, o]) => p === '/exam-plans/12' && o?.method === 'PUT')[1].body.plan_id).toBe(12);
+    finish.resolve({ plan: { id: 12 } });
+    await waitFor(() => expect(onDone).toHaveBeenCalledWith(12));
+  });
+
+  it('調整段考遇 stale 只重新預覽，不自動再 PUT', async () => {
+    let previews = 0;
+    api.mockImplementation((path, opts) => {
+      calls.push([path, opts]);
+      if (path === '/plans/12/exam') return Promise.resolve({ plan: { id: 12, name: '舊段考', start_date: '2099-09-20', target_date: '2099-10-02' },
+        level: 'progress', subjects: [{ subject_list_id: 1, exam_date: '2099-10-02' }], material: [],
+        manual_scope: [{ subject_list_id: 1, label: '舊範圍', estimated_minutes: null }] });
+      if (path === '/exam-plans/preview') return Promise.resolve({ preview_token: `signed-${++previews}`, blocks: [], progress_segments: [] });
+      if (path === '/exam-plans/12' && opts?.method === 'PUT') {
+        const e = new Error('stale'); e.status = 409; e.payload = { code: 'EXAM_PREVIEW_STALE' }; return Promise.reject(e);
+      }
+      return Promise.resolve({});
+    });
+    render(<ExamCreateWizard lists={LISTS} editPlanId={12} onDone={() => {}} onCancel={() => {}} />);
+    await screen.findByDisplayValue('舊段考');
+    await click(screen.getByText('下一步：加入各科範圍'));
+    await click(screen.getByText('下一步：選擇怎麼安排'));
+    await click(await screen.findByRole('button', { name: '確認，建立段考計畫' }));
+    await waitFor(() => expect(previews).toBe(2));
+    expect(calls.filter(([p, o]) => p === '/exam-plans/12' && o?.method === 'PUT')).toHaveLength(1);
+    expect(screen.getByText(/已為你重新預覽/)).toBeTruthy();
+  });
 });

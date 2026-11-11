@@ -391,7 +391,7 @@ export default function PlanDetailView({ planKey, tasks, lists, apiPlans = [], r
     await selectItems(np.id, itemIds, true).catch(() => {});
     close();
     // 進精靈（在新計畫上、edit 模式讀回剛複製的選取）設定時間並套用產生任務。
-    adjustPlan(np.id, '');
+    adjustPlan(np.id, '', undefined, false);
   });
 
   // 暫停／刪除：retain 沒選之前不會送出，後端也會再擋一次（缺 boolean 一律 400）。
@@ -1122,8 +1122,8 @@ export default function PlanDetailView({ planKey, tasks, lists, apiPlans = [], r
             {ADJUST.map(([sec, label, hint]) => (
               <ListRow key={sec} title={label} subtitle={hint}
                 trailing={<Icon name="chevron" size={16} />} role="button" tabIndex={0} style={{ cursor: 'pointer' }}
-                onClick={() => { close(); adjustPlan(plan.planId, sec); }}
-                onKeyDown={e => { if (e.key === 'Enter') { close(); adjustPlan(plan.planId, sec); } }} />
+                onClick={() => { close(); adjustPlan(plan.planId, sec, undefined, examSubjectIds.size > 0); }}
+                onKeyDown={e => { if (e.key === 'Enter') { close(); adjustPlan(plan.planId, sec, undefined, examSubjectIds.size > 0); } }} />
             ))}
             <ListRow title="排程鎖定" subtitle="鎖住任務、時段或整天後，重排不會改動它們"
               trailing={<Icon name="chevron" size={16} />} role="button" tabIndex={0} style={{ cursor: 'pointer' }}

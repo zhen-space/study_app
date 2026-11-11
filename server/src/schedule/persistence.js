@@ -1497,7 +1497,7 @@ export class ExamPlanError extends Error {
 //   ・同一科的範圍名稱不可重複（排程時），否則 block↔task 對不回去
 export async function buildExamScope(runner, userId, {
   endDate, startDate = null, level = 'progress',
-  subjects = [], materialIds = [], manual = [],
+  subjects = [], materialIds = [], manual = [], allowCompletedMaterialIds = new Set(),
 }) {
   const scheduled = level === 'daily' || level === 'timed';
   const needsMinutes = level === 'timed';
@@ -1554,7 +1554,11 @@ export async function buildExamScope(runner, userId, {
     if (!it) throw new ExamPlanError('教材範圍中有不存在或不屬於你的內容', 'MATERIAL_NOT_FOUND');
     const sid = Number(it.subject_list_id);
     if (!examBySubject.has(sid)) throw new ExamPlanError('教材範圍的科目不在本次考試科目內', 'MATERIAL_SUBJECT_NOT_IN_EXAM');
-    if (Number(it.completed) === 1) throw new ExamPlanError('已完成的教材不需要再排程', 'MATERIAL_COMPLETED');
+    // 建立新計畫時，已完成教材仍不可重新加入；調整既有計畫時則只允許
+    // 該 Plan 原本已完成 Task 對應的內容留在 scope，保留歷史但不重新排程。
+    if (Number(it.completed) === 1 && !allowCompletedMaterialIds.has(Number(cid))) {
+      throw new ExamPlanError('已完成的教材不需要再排程', 'MATERIAL_COMPLETED');
+    }
     const title = `${it.book_title ? it.book_title + '｜' : ''}${it.chapter_title ? it.chapter_title + '｜' : ''}${it.title}`;
     const est = Number(it.estimated_minutes) > 0 ? Number(it.estimated_minutes) : null;
     if (needsMinutes && est == null) throw new ExamPlanError(`教材項目缺少估計時間，無法排入具體時段：${title}`, 'MATERIAL_ESTIMATE_MISSING', 422);
@@ -1810,6 +1814,165 @@ export async function createExamPlanAtomic(userId, {
       'INSERT INTO exam_plan_commits (user_id,creation_key,plan_id,created_at) VALUES (?,?,?,?)',
       [userId, creationKey, planId, at]);
 
+    return { planId };
+  })));
+}
+
+// 段考完整調整：與建立使用相同的 server-authoritative scope/preview，差別只有
+// 既有 Task 必須盡量沿用。相同教材 item 或同科同名手動範圍保留 task id、完成狀態；
+// 移除只標 cancelled，不刪歷史。所有資料與新版 schedule snapshot 同一交易提交。
+export async function updateExamPlanAtomic(userId, planId, {
+  name, description = '', startDate = null, endDate,
+  level = 'progress', subjects = [], materialIds = [], manual = [],
+  computedBlocks = [], scopeSig = null, previewToken = null,
+}) {
+  const scheduled = level === 'daily' || level === 'timed';
+  const at = new Date().toISOString();
+  const commitKey = typeof previewToken === 'string'
+    ? createHash('sha256').update(previewToken).digest('hex') : null;
+  return serializeWrite(() => withVersionNoRetry(() => q.tx(async tx => {
+    const plan = await tx.get("SELECT * FROM plans WHERE user_id=? AND id=? AND status<>'deleted'", [userId, planId]);
+    if (!plan) throw new ExamPlanError('找不到要調整的計畫', 'PLAN_NOT_FOUND', 404);
+    const completedMaterial = await tx.all(`SELECT material_content_item_id FROM tasks
+      WHERE user_id=? AND plan_id=? AND completed=1 AND deleted=0 AND material_content_item_id IS NOT NULL`,
+      [userId, planId]);
+    const allowCompletedMaterialIds = new Set(completedMaterial.map(t => Number(t.material_content_item_id)));
+    const scope = await buildExamScope(tx, userId, {
+      endDate, startDate, level, subjects, materialIds, manual, allowCompletedMaterialIds,
+    });
+    const signed = verifyExamPlanPreview(previewToken);
+    const state = await tx.get('SELECT active_version_id FROM user_schedule_state WHERE user_id=?', [userId]);
+    const requestShape = {
+      user_id: Number(userId), plan_id: Number(planId), name: String(name || '').trim(), level, start_date: startDate || null, end_date: endDate,
+      subjects: scope.orderedSubjects, material_ids: scope.materialIds, manual_scope: scope.manualEntries,
+      scope_sig: scope.sig, base_version_id: state?.active_version_id ?? null, blocks: computedBlocks,
+    };
+    const { base_version_id: _signedBase, blocks: _signedBlocks, ...signedIntent } = signed || {};
+    const { base_version_id: _currentBase, blocks: _currentBlocks, ...currentIntent } = requestShape;
+    if (!signed || JSON.stringify(signedIntent) !== JSON.stringify(currentIntent)) {
+      throw new ExamPlanError('段考範圍或安排已更新，請重新預覽', 'EXAM_PREVIEW_STALE', 409);
+    }
+    if (commitKey) {
+      const replay = await tx.get('SELECT plan_id FROM exam_plan_commits WHERE user_id=? AND creation_key=?', [userId, commitKey]);
+      if (replay) {
+        if (Number(replay.plan_id) !== Number(planId)) throw new ExamPlanError('預覽已被其他計畫使用', 'EXAM_PREVIEW_STALE', 409);
+        return { planId: Number(planId), replayed: true };
+      }
+    }
+    if (JSON.stringify(signed) !== JSON.stringify(requestShape)) {
+      throw new ExamPlanError('段考範圍或安排已更新，請重新預覽', 'EXAM_PREVIEW_STALE', 409);
+    }
+    if (scheduled && scopeSig != null && scope.sig !== scopeSig) throw new ScheduleStalePreviewError(null);
+
+    await tx.run(`UPDATE plans SET name=?,description=?,primary_list_id=?,start_date=?,target_date=?,updated_at=?
+      WHERE user_id=? AND id=?`, [String(name || '').trim(), description || '', scope.orderedSubjects[0]?.subject_list_id ?? null,
+      startDate || null, endDate, at, userId, planId]);
+    await tx.run('DELETE FROM plan_exam_subjects WHERE user_id=? AND plan_id=?', [userId, planId]);
+    let oi = 0;
+    for (const s of scope.orderedSubjects) await tx.run(
+      'INSERT INTO plan_exam_subjects (user_id,plan_id,subject_list_id,exam_date,order_index) VALUES (?,?,?,?,?)',
+      [userId, planId, s.subject_list_id, s.exam_date, oi++]);
+
+    const oldTasks = await tx.all(`SELECT * FROM tasks WHERE user_id=? AND plan_id=? AND deleted=0`, [userId, planId]);
+    const materialTask = new Map(oldTasks.filter(t => t.material_content_item_id != null)
+      .map(t => [Number(t.material_content_item_id), t]));
+    const oldManual = await tx.all('SELECT * FROM plan_manual_scope WHERE user_id=? AND plan_id=? AND removed_at IS NULL', [userId, planId]);
+    const manualTask = new Map(oldManual.map(m => [`${Number(m.subject_list_id)}\u0000${m.label}`, oldTasks.find(t => Number(t.id) === Number(m.task_id))]).filter(x => x[1]));
+    const keptTaskIds = new Set();
+    const taskByKey = new Map();
+    const materialTaskByCid = new Map();
+    const manualTaskByKey = new Map();
+    if (scheduled) {
+      for (const si of scope.scopeItems) {
+        const key = `${si.subjectId}\u0000${si.title}`;
+        const prior = si.kind === 'material' ? materialTask.get(Number(si.contentItemId)) : manualTask.get(`${si.subjectId}\u0000${si.label}`);
+        let tid;
+        if (prior?.completed) {
+          tid = Number(prior.id); keptTaskIds.add(tid);
+          if (si.kind === 'material') materialTaskByCid.set(Number(si.contentItemId), tid);
+          else manualTaskByKey.set(`${si.subjectId}\u0000${si.label}`, tid);
+          continue;
+        }
+        if (prior) {
+          tid = Number(prior.id); keptTaskIds.add(tid);
+          await tx.run(`UPDATE tasks SET list_id=?,title=?,deadline_date=?,estimated_minutes=?,material_content_item_id=?,material_book_id=?,cancelled=0,cancelled_at=NULL,updated_at=?
+            WHERE user_id=? AND id=?`, [si.subjectId, si.title, si.deadline, si.estimatedMinutes ?? null,
+            si.contentItemId, si.bookId, at, userId, tid]);
+        } else {
+          const tr = await tx.run(`INSERT INTO tasks
+            (user_id,list_id,title,notes,priority,tags,subtasks,recurring,miss_policy,plan_id,deadline_date,estimated_minutes,material_content_item_id,material_book_id,updated_at)
+            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, [userId, si.subjectId, si.title, '', 0, JSON.stringify(['讀書計劃']),
+            JSON.stringify([]), null, 'keep', planId, si.deadline, si.estimatedMinutes ?? null, si.contentItemId, si.bookId, at]);
+          tid = Number(tr.lastInsertRowid); keptTaskIds.add(tid);
+        }
+        taskByKey.set(key, tid);
+        if (si.kind === 'material') materialTaskByCid.set(Number(si.contentItemId), tid);
+        else manualTaskByKey.set(`${si.subjectId}\u0000${si.label}`, tid);
+      }
+    }
+    // progress 不需要排程 Task；原 Task 仍保留為歷史，只取消未再使用者。
+    for (const t of oldTasks) if (!t.completed && !keptTaskIds.has(Number(t.id)) && !t.cancelled) {
+      await tx.run('UPDATE tasks SET cancelled=1,cancelled_at=?,updated_at=? WHERE user_id=? AND id=?', [at, at, userId, t.id]);
+    }
+
+    await tx.run('UPDATE plan_material_items SET selected=0,removed_at=CURRENT_TIMESTAMP,updated_at=CURRENT_TIMESTAMP WHERE user_id=? AND plan_id=?', [userId, planId]);
+    for (const cid of scope.materialIds) await tx.run(`INSERT INTO plan_material_items
+      (user_id,plan_id,content_item_id,selected,task_id,updated_at) VALUES (?,?,?,1,?,CURRENT_TIMESTAMP)
+      ON CONFLICT(plan_id,content_item_id) DO UPDATE SET selected=1,removed_at=NULL,task_id=excluded.task_id,updated_at=CURRENT_TIMESTAMP`,
+      [userId, planId, cid, materialTaskByCid.get(Number(cid)) ?? null]);
+    await tx.run('UPDATE plan_manual_scope SET removed_at=CURRENT_TIMESTAMP WHERE user_id=? AND plan_id=? AND removed_at IS NULL', [userId, planId]);
+    oi = 0;
+    for (const m of scope.manualEntries) {
+      const key = `${Number(m.subject_list_id)}\u0000${m.label}`;
+      const existing = oldManual.find(x => Number(x.subject_list_id) === Number(m.subject_list_id) && x.label === m.label);
+      const tid = scheduled ? (manualTaskByKey.get(key) ?? null) : null;
+      if (existing) await tx.run(`UPDATE plan_manual_scope SET estimated_minutes=?,task_id=?,order_index=?,removed_at=NULL
+        WHERE user_id=? AND id=?`, [m.estimated_minutes ?? null, tid, oi++, userId, existing.id]);
+      else await tx.run(`INSERT INTO plan_manual_scope
+        (user_id,plan_id,subject_list_id,label,estimated_minutes,task_id,order_index) VALUES (?,?,?,?,?,?,?)`,
+        [userId, planId, m.subject_list_id ?? null, m.label, m.estimated_minutes ?? null, tid, oi++]);
+    }
+
+    await tx.run('DELETE FROM plan_progress_segments WHERE user_id=? AND plan_id=?', [userId, planId]);
+    if (level === 'progress') {
+      const rows = await tx.all('SELECT id,name FROM lists WHERE user_id=?', [userId]);
+      const segments = buildExamProgressSegments(scope, startDate || todayTW(), new Map(rows.map(r => [Number(r.id), r.name])));
+      for (const s of segments) await tx.run(`INSERT INTO plan_progress_segments
+        (user_id,plan_id,start_date,end_date,subject_list_id,title,scope_json,kind,order_index) VALUES (?,?,?,?,?,?,?,?,?)`,
+        [userId, planId, s.start_date, s.end_date, s.subject_list_id, s.title, JSON.stringify(s.scope), 'study', s.order_index]);
+    }
+
+    if (scheduled) {
+      const resolved = [], covered = new Set(), scheduledMinutes = new Map();
+      for (const b of computedBlocks) {
+        if (b._pinned) continue;
+        const key = `${b.subject_id}\u0000${b.title}`;
+        const tid = taskByKey.get(key);
+        if (tid == null) throw new ScheduleStalePreviewError(null);
+        const current = scope.scopeItems.find(si => `${si.subjectId}\u0000${si.title}` === key);
+        if (!current || b.date > current.deadline) throw new ScheduleDeadlineViolationError([
+          { task_id: tid, date: b.date, deadline_date: current?.deadline ?? null }]);
+        covered.add(tid);
+        const mins = (b.start_time && b.end_time)
+          ? (Number(b.end_time.slice(0, 2)) * 60 + Number(b.end_time.slice(3, 5)))
+            - (Number(b.start_time.slice(0, 2)) * 60 + Number(b.start_time.slice(3, 5))) : 0;
+        scheduledMinutes.set(tid, (scheduledMinutes.get(tid) || 0) + mins);
+        resolved.push({ task_id: tid, date: b.date, start_time: b.start_time || null, end_time: b.end_time || null });
+      }
+      for (const tid of taskByKey.values()) if (!covered.has(tid)) throw new ExamPlanError('有內容排不進去，無法更新每天安排', 'EXAM_SCHEDULE_GAP', 422);
+      if (level === 'timed') for (const [key, tid] of taskByKey) {
+        const want = scope.scopeItems.find(si => `${si.subjectId}\u0000${si.title}` === key)?.minutes ?? 0;
+        if ((scheduledMinutes.get(tid) || 0) !== Number(want)) throw new ScheduleStalePreviewError(null);
+      }
+      const carry = await otherPlanCarryForwardBlocks(tx, userId, state?.active_version_id ?? null, planId, todayTW());
+      const candidate = [...carry, ...resolved];
+      validateTimedBlockOverlaps(candidate);
+      await assertCandidateLocks(tx, userId, state?.active_version_id ?? null, candidate);
+      await createScheduleVersionInTx(tx, userId, { source: SOURCE.AI_REPLAN,
+        reason: `段考「${String(name).trim()}」調整`, effectiveFrom: todayTW(),
+        parentVersionId: state?.active_version_id ?? null, blocks: candidate });
+    }
+    if (commitKey) await tx.run('INSERT INTO exam_plan_commits (user_id,creation_key,plan_id,created_at) VALUES (?,?,?,?)', [userId, commitKey, planId, at]);
     return { planId };
   })));
 }
