@@ -317,7 +317,6 @@ export default function ExamCreateWizard({ lists = [], onDone, onCancel, onManag
               ) : !availableSubjects.length && subjects.length ? (
                 <div className="ui-meta" role="status" style={{ marginTop: 4 }}>所有現有科目都已加入這次段考。</div>
               ) : null}
-              <div className="ui-meta" style={{ marginTop: 4 }}>未指定單科考試日 → 沿用整個段考最後一天。</div>
             </div>
             <Button variant="primary" block disabled={!step0ok} onClick={() => setStep(1)}>下一步：加入各科範圍</Button>
             {!step0ok && <div className="ui-meta" role="status" style={{ textAlign: 'center' }}>{step0Hint}</div>}
@@ -328,7 +327,6 @@ export default function ExamCreateWizard({ lists = [], onDone, onCancel, onManag
           <div style={{ display: 'grid', gap: 12 }}>
             <SurfaceCard>
               <b>先決定這次怎麼安排</b>
-              <div className="ui-meta" style={{ marginTop: 4 }}>這會幫你預選適合的內容來源，之後仍可切換。</div>
               {LEVELS.map(([v, title, desc]) => (
                 <label key={v} className="row" style={{ gap: 8, alignItems: 'baseline', marginTop: 8 }}>
                   <input type="radio" name="exam-level-scope" checked={level === v} onChange={() => setLevel(v)} />
@@ -378,7 +376,14 @@ export default function ExamCreateWizard({ lists = [], onDone, onCancel, onManag
                     </div>
                   ))}
                   <div className="row" style={{ gap: 8, marginTop: 8, flexWrap: 'wrap' }}>
-                    <Button size="sm" variant="secondary" onClick={() => setPicking({ listId: s.listId })}>選課本目錄／學習材料</Button>
+                    <Button size="sm" variant="secondary"
+                      onClick={() => setPicking({ listId: s.listId, source: 'textbook' })}>
+                      選課本目錄
+                    </Button>
+                    <Button size="sm" variant="secondary"
+                      onClick={() => setPicking({ listId: s.listId, source: 'materials' })}>
+                      選／新增講義、題本
+                    </Button>
                     <ManualAdder onAdd={(label, est) => addManual(s.listId, label, est)} />
                   </div>
                 </SurfaceCard>
@@ -486,7 +491,7 @@ export default function ExamCreateWizard({ lists = [], onDone, onCancel, onManag
           <BottomSheet onClose={() => setPicking(null)} label="選教材">
             <SubjectMaterialPicker
               subjectId={picking.listId} subjectName={nameOf(picking.listId)} lists={lists}
-              defaultSource={level === 'progress' ? 'textbook' : 'materials'}
+              defaultSource={picking.source || (level === 'progress' ? 'textbook' : 'materials')}
               selectedIds={new Set(Object.keys(subjScope(picking.listId).items).map(Number))}
               onAdd={picked => addItems(picking.listId, picked)}
               onClose={() => setPicking(null)} />

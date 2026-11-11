@@ -60,7 +60,7 @@ describe('ExamCreateWizard', () => {
     await click(screen.getByText('下一步：加入各科範圍'));
 
     // Step 2：手動範圍（老師指定、教材庫沒有）
-    await waitFor(() => expect(screen.getByText('選課本目錄／學習材料')).toBeTruthy());
+    await waitFor(() => expect(screen.getByText('選課本目錄')).toBeTruthy());
     await click(screen.getByText('＋ 老師指定、教材庫沒有的範圍'));
     fireEvent.change(screen.getByLabelText('老師指定範圍'), { target: { value: '講義第三章' } });
     await click(screen.getByText('加入'));
@@ -530,6 +530,11 @@ describe('ExamCreateWizard', () => {
     expect(screen.getByLabelText('數學 考試日')).toHaveValue('2099-10-01');
     await click(screen.getByText('下一步：加入各科範圍'));
     expect(screen.getByText(/舊講義範圍/)).toBeTruthy();
+    expect(screen.getByRole('button', { name: '選課本目錄' })).toBeTruthy();
+    await click(screen.getByRole('button', { name: '選／新增講義、題本' }));
+    expect(screen.getByRole('tab', { name: 'B 講義／題本' })).toHaveAttribute('aria-selected', 'true');
+    expect(screen.getByRole('button', { name: '新增講義／題本' })).toBeTruthy();
+    await click(screen.getByRole('button', { name: '完成' }));
     await click(screen.getByText('下一步：選擇怎麼安排'));
     const confirm = await screen.findByRole('button', { name: '確認，建立段考計畫' });
     await act(async () => { confirm.click(); confirm.click(); });

@@ -31,7 +31,9 @@ async function openMaterialPicker({ level = 'progress' } = {}) {
   fireEvent.change(screen.getByLabelText('加入科目'), { target: { value: '1' } });
   fireEvent.click(screen.getByRole('button', { name: '下一步：加入各科範圍' }));
   if (level === 'daily') fireEvent.click(screen.getByLabelText(/幫我排出每天要完成什麼/));
-  fireEvent.click(await screen.findByRole('button', { name: '選課本目錄／學習材料' }));
+  fireEvent.click(await screen.findByRole('button', {
+    name: level === 'daily' ? '選／新增講義、題本' : '選課本目錄',
+  }));
 }
 
 describe('段考教材載入失敗恢復', () => {

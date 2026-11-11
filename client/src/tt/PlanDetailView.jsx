@@ -832,7 +832,6 @@ export default function PlanDetailView({ planKey, tasks, lists, apiPlans = [], r
         <BottomSheet onClose={close} label="要幫你安排到什麼程度">
           <div style={{ display: 'grid', gap: 8 }}>
             <b style={{ fontSize: 16 }}>要幫你安排到什麼程度？</b>
-            <div className="ui-meta">各科考試日已經是「哪天前讀完」的目標了。要不要再幫你排出每天要做的？</div>
             <ListRow
               title="排出每天要讀什麼" subtitle="列出每天要做哪些內容，但不綁幾點"
               trailing={<Icon name="chevron" size={16} />}
