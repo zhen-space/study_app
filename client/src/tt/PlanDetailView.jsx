@@ -730,7 +730,16 @@ export default function PlanDetailView({ planKey, tasks, lists, apiPlans = [], r
             才是主要動作，這裡再放一顆同樣重的實心鈕會變成兩個主要動作互搶 */}
         {showAdjust && (
           <Button variant={health?.needsAdjustment ? 'secondary' : 'primary'} size="md" block
-            style={{ marginTop: 'var(--sp-4)' }} onClick={() => setSheet('adjust')}>
+            style={{ marginTop: 'var(--sp-4)' }} onClick={() => {
+              // 段考的「調整計畫」直接回到與建立時相同的完整三步頁面；
+              // 只有一般 Plan 才保留舊的分段調整選單。類型尚未確認時先進安全等待頁，
+              // 不可把段考誤導到另一套精靈。
+              if (!examSubjectsLoad.loading && !examSubjectsLoad.error && examSubjectIds.size > 0) {
+                adjustPlan(plan.planId, '', undefined, true);
+              } else {
+                setSheet('adjust');
+              }
+            }}>
             <Icon name="wizard" size={16} /> 調整計畫
           </Button>
         )}
@@ -1111,6 +1120,11 @@ export default function PlanDetailView({ planKey, tasks, lists, apiPlans = [], r
         <BottomSheet onClose={close} label="調整計畫">
           <b style={{ fontSize: 17 }}>想調整什麼？</b>
           <div className="ui-meta" style={{ marginTop: 2 }}>調整的是「{plan.name}」，不會建立新的計畫</div>
+          {examSubjectsLoad.loading && <div className="ui-card ui-card--warning" role="status" style={{ marginTop: 8 }}>正在確認這份計畫的類型…</div>}
+          {examSubjectsLoad.error && <div className="ui-card ui-card--warning" role="alert" style={{ marginTop: 8 }}>
+            暫時無法確認是否為段考計畫，為避免開錯調整流程，請重試。
+            <Button size="sm" variant="secondary" onClick={() => refreshExamSubjects(plan.planId)} style={{ marginLeft: 8 }}>重試</Button>
+          </div>}
           <div style={{ marginTop: 'var(--sp-3)' }}>
             <ListRow title="新增學習內容" subtitle="選好後先預覽新的安排，再確認套用"
               trailing={<Icon name="chevron" size={16} />} role="button" tabIndex={0} style={{ cursor: 'pointer' }}
@@ -1122,8 +1136,10 @@ export default function PlanDetailView({ planKey, tasks, lists, apiPlans = [], r
             {ADJUST.map(([sec, label, hint]) => (
               <ListRow key={sec} title={label} subtitle={hint}
                 trailing={<Icon name="chevron" size={16} />} role="button" tabIndex={0} style={{ cursor: 'pointer' }}
-                onClick={() => { close(); adjustPlan(plan.planId, sec, undefined, examSubjectIds.size > 0); }}
-                onKeyDown={e => { if (e.key === 'Enter') { close(); adjustPlan(plan.planId, sec, undefined, examSubjectIds.size > 0); } }} />
+                onClick={() => { if (examSubjectsLoad.loading || examSubjectsLoad.error) return; close(); adjustPlan(plan.planId, sec, undefined, examSubjectIds.size > 0); }}
+                onKeyDown={e => { if (e.key === 'Enter' && !examSubjectsLoad.loading && !examSubjectsLoad.error) { close(); adjustPlan(plan.planId, sec, undefined, examSubjectIds.size > 0); } }}
+                aria-disabled={examSubjectsLoad.loading || !!examSubjectsLoad.error}
+                style={{ cursor: examSubjectsLoad.loading || examSubjectsLoad.error ? 'not-allowed' : 'pointer', opacity: examSubjectsLoad.loading || examSubjectsLoad.error ? .55 : 1 }} />
             ))}
             <ListRow title="排程鎖定" subtitle="鎖住任務、時段或整天後，重排不會改動它們"
               trailing={<Icon name="chevron" size={16} />} role="button" tabIndex={0} style={{ cursor: 'pointer' }}
