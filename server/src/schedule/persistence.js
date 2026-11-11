@@ -1916,16 +1916,23 @@ export async function updateExamPlanAtomic(userId, planId, {
     }
 
     await tx.run('UPDATE plan_material_items SET selected=0,removed_at=CURRENT_TIMESTAMP,updated_at=CURRENT_TIMESTAMP WHERE user_id=? AND plan_id=?', [userId, planId]);
-    for (const cid of scope.materialIds) await tx.run(`INSERT INTO plan_material_items
+    for (const cid of scope.materialIds) {
+      if (!materialTaskByCid.has(Number(cid)) && materialTask.get(Number(cid))) {
+        materialTaskByCid.set(Number(cid), Number(materialTask.get(Number(cid)).id));
+      }
+      await tx.run(`INSERT INTO plan_material_items
       (user_id,plan_id,content_item_id,selected,task_id,updated_at) VALUES (?,?,?,1,?,CURRENT_TIMESTAMP)
       ON CONFLICT(plan_id,content_item_id) DO UPDATE SET selected=1,removed_at=NULL,task_id=excluded.task_id,updated_at=CURRENT_TIMESTAMP`,
       [userId, planId, cid, materialTaskByCid.get(Number(cid)) ?? null]);
+    }
     await tx.run('UPDATE plan_manual_scope SET removed_at=CURRENT_TIMESTAMP WHERE user_id=? AND plan_id=? AND removed_at IS NULL', [userId, planId]);
     oi = 0;
     for (const m of scope.manualEntries) {
       const key = `${Number(m.subject_list_id)}\u0000${m.label}`;
       const existing = oldManual.find(x => Number(x.subject_list_id) === Number(m.subject_list_id) && x.label === m.label);
-      const tid = scheduled ? (manualTaskByKey.get(key) ?? null) : null;
+      // progress 只取消排程，不切斷既有範圍與 Task 的身分關聯；
+      // 之後切回 daily/timed 才能復用原 Task id，而不是建第二筆。
+      const tid = scheduled ? (manualTaskByKey.get(key) ?? null) : (existing?.task_id ?? null);
       if (existing) await tx.run(`UPDATE plan_manual_scope SET estimated_minutes=?,task_id=?,order_index=?,removed_at=NULL
         WHERE user_id=? AND id=?`, [m.estimated_minutes ?? null, tid, oi++, userId, existing.id]);
       else await tx.run(`INSERT INTO plan_manual_scope

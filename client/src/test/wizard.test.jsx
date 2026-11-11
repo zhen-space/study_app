@@ -358,10 +358,13 @@ describe('PlanDetail 的「調整計畫」入口', () => {
   });
 
   it('14. 選一段就帶著 planId 與該段進精靈', async () => {
+    setApi({ '/plans/12/exam': { plan: { id: 12 }, subjects: [], material: [], manual_scope: [] } });
     const adjustPlan = vi.fn();
     mountDetail({ adjustPlan });
     await click(btn(/調整計畫/));
-    await click(within(document.querySelector('.sheet-panel')).getByText('排程條件').closest('.ui-row'));
+    const row = within(document.querySelector('.sheet-panel')).getByText('排程條件').closest('.ui-row');
+    await waitFor(() => expect(row).toHaveAttribute('aria-disabled', 'false'));
+    await click(row);
     expect(adjustPlan).toHaveBeenCalledWith(12, 'cond', undefined, false);
     noCrash();
   });
@@ -372,9 +375,25 @@ describe('PlanDetail 的「調整計畫」入口', () => {
     mountDetail({ adjustPlan });
     await waitFor(() => expect(calls.some(([p]) => p === '/plans/12/exam')).toBe(true));
     await click(btn(/調整計畫/));
-    await click(within(document.querySelector('.sheet-panel')).getByText('排程條件').closest('.ui-row'));
-    expect(adjustPlan).toHaveBeenCalledWith(12, 'cond', undefined, true);
+    expect(document.querySelector('.sheet-panel')).toBeNull();
+    expect(adjustPlan).toHaveBeenCalledWith(12, '', undefined, true);
     noCrash();
+  });
+
+  it('14c. 段考投影還在載入時 fail closed，不會瞬間誤進一般計畫精靈', async () => {
+    let finish;
+    setApi({ '/plans/12/exam': () => new Promise(resolve => { finish = resolve; }) });
+    const adjustPlan = vi.fn();
+    mountDetail({ adjustPlan });
+    await click(btn(/調整計畫/));
+    const row = within(document.querySelector('.sheet-panel')).getByText('排程條件').closest('.ui-row');
+    expect(row).toHaveAttribute('aria-disabled', 'true');
+    await click(row);
+    expect(adjustPlan).not.toHaveBeenCalled();
+    await act(async () => { finish({ plan: { id: 12 }, subjects: [{ subject_list_id: 1 }], material: [], manual_scope: [] }); });
+    await waitFor(() => expect(row).toHaveAttribute('aria-disabled', 'false'));
+    await click(row);
+    expect(adjustPlan).toHaveBeenCalledWith(12, 'cond', undefined, true);
   });
 
   it('14a. 正式計畫調整排程時不能返回舊教材編輯器', async () => {
