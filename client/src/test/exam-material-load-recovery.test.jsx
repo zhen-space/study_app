@@ -24,16 +24,33 @@ beforeEach(() => {
 });
 afterEach(cleanup);
 
-async function openMaterialPicker() {
+async function openMaterialPicker({ level = 'progress' } = {}) {
   render(<ExamCreateWizard lists={LISTS} onDone={() => {}} onCancel={() => {}} />);
   fireEvent.change(screen.getByLabelText('段考名稱'), { target: { value: '第二次段考' } });
   fireEvent.change(screen.getByLabelText('段考結束日期'), { target: { value: '2099-10-02' } });
   fireEvent.change(screen.getByLabelText('加入科目'), { target: { value: '1' } });
   fireEvent.click(screen.getByRole('button', { name: '下一步：加入各科範圍' }));
-  fireEvent.click(await screen.findByRole('button', { name: '選教材／勾課章' }));
+  if (level === 'daily') fireEvent.click(screen.getByLabelText(/幫我排出每天要完成什麼/));
+  fireEvent.click(await screen.findByRole('button', { name: '選課本目錄／學習材料' }));
 }
 
 describe('段考教材載入失敗恢復', () => {
+  it('progress 預選課本目錄；daily 預選講義／題本，且使用者可自行切換', async () => {
+    material.listShelf.mockResolvedValue({ books: [
+      { material_book_id: 5, subject_list_id: 1, title: '數學課本', book_type: '課本' },
+      { material_book_id: 6, subject_list_id: 1, title: '數學講義', book_type: '講義' },
+    ] });
+
+    await openMaterialPicker({ level: 'daily' });
+    expect(screen.getByRole('tab', { name: 'B 講義／題本' })).toHaveAttribute('aria-selected', 'true');
+    expect(await screen.findByText('數學講義')).toBeInTheDocument();
+    expect(screen.queryByText('數學課本')).toBeNull();
+
+    fireEvent.click(screen.getByRole('tab', { name: 'A 課本目錄' }));
+    expect(await screen.findByText('數學課本')).toBeInTheDocument();
+    expect(screen.queryByText('數學講義')).toBeNull();
+  });
+
   it('書櫃 API 失敗時顯示重試，不誤稱這科沒有教材', async () => {
     material.listShelf
       .mockRejectedValueOnce(new Error('網路暫時中斷'))
