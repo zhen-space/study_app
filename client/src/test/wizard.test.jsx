@@ -362,7 +362,18 @@ describe('PlanDetail 的「調整計畫」入口', () => {
     mountDetail({ adjustPlan });
     await click(btn(/調整計畫/));
     await click(within(document.querySelector('.sheet-panel')).getByText('排程條件').closest('.ui-row'));
-    expect(adjustPlan).toHaveBeenCalledWith(12, 'cond');
+    expect(adjustPlan).toHaveBeenCalledWith(12, 'cond', undefined, false);
+    noCrash();
+  });
+
+  it('14b. 段考計畫調整會標記為完整段考精靈，不走一般簡化表單', async () => {
+    setApi({ '/plans/12/exam': { plan: { id: 12 }, subjects: [{ subject_list_id: 1, exam_date: '2099-10-02' }], material: [], manual_scope: [] } });
+    const adjustPlan = vi.fn();
+    mountDetail({ adjustPlan });
+    await waitFor(() => expect(calls.some(([p]) => p === '/plans/12/exam')).toBe(true));
+    await click(btn(/調整計畫/));
+    await click(within(document.querySelector('.sheet-panel')).getByText('排程條件').closest('.ui-row'));
+    expect(adjustPlan).toHaveBeenCalledWith(12, 'cond', undefined, true);
     noCrash();
   });
 

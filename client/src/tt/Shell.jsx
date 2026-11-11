@@ -236,15 +236,16 @@ export default function Shell({ onLogout }) {
               setView({ type: 'plan', key: `plan:${p.id}` });
             }}
             goWizardMode={m => setView({ type: 'wizard', scheduleMode: m })} />
-        : view.type === 'exam-wizard' ? <ExamCreateWizard key="exam-wizard" lists={lists}
+        : view.type === 'exam-wizard' ? <ExamCreateWizard key={`exam-wizard:${view.planId ?? 'new'}`} lists={lists}
+            editPlanId={view.mode === 'edit' ? view.planId : null}
             onCancel={() => setView({ type: 'plans' })}
             onManageSubjects={() => setView({ type: 'settings' })}
             // 段考已在伺服器原子建立：刷新失敗也要離開精靈（否則會卡在「建立中」）
-            onDone={async pid => { await reload().catch(() => {}); setView({ type: 'plan', key: `plan:${pid}` }); }} />
+            onDone={async pid => { await reload().catch(() => {}); setView({ type: 'plan', key: view.from || `plan:${pid}` }); }} />
         : view.type === 'plan' ? <PlanDetailView planKey={view.key} tasks={tasks} lists={lists} apiPlans={apiPlans} reload={reload}
             onBack={() => setView({ type: 'plans' })} goWizard={() => setView({ type: 'wizard' })}
             // 「調整計畫」＝Edit Mode：帶著這個計畫進精靈，不會建立新計畫
-            adjustPlan={(planId, section, scheduleMode) => setView({ type: 'wizard', mode: 'edit', planId, section, scheduleMode, from: view.key })}
+            adjustPlan={(planId, section, scheduleMode, examPlan = false) => setView({ type: examPlan ? 'exam-wizard' : 'wizard', mode: 'edit', planId, section, scheduleMode, from: view.key })}
             goLocks={() => setView({ type: 'locks' })}
             goScheduleHistory={() => setView({ type: 'schedule-history' })} />
         : view.type === 'study' || view.type === 'pomo' ? <StudyView tasks={tasks.filter(t => !t.deleted)} goPlans={() => setView({ type: 'plans' })} />

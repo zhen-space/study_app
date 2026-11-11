@@ -1,7 +1,7 @@
 import { Router } from 'express';
 import { q } from '../db/init.js';
 import { requireAuth } from '../middleware/auth.js';
-import { buildExamScope, createExamPlanAtomic, ExamPlanError } from '../schedule/persistence.js';
+import { buildExamScope, createExamPlanAtomic, updateExamPlanAtomic, ExamPlanError } from '../schedule/persistence.js';
 import { runPreview } from './schedule.js';
 import { getPlanSelection } from '../material/service.js';
 import { todayTW } from '../util/date.js';
@@ -38,17 +38,26 @@ async function authoritativePreview(userId, b) {
   let blocks = [], check = null, unplaced_tasks = [];
   if (level === 'daily' || level === 'timed') {
     if (!scope.scopeItems.length) throw new ExamPlanError('這個安排方式需要至少一項可排入的範圍', 'EXAM_SCOPE_EMPTY', 422);
+    // 調整既有計畫時，已完成的 Task 是歷史，不能因為仍在 scope 裡就再排一次。
+    const completed = b.plan_id == null ? [] : await q.all(
+      'SELECT material_content_item_id,title,list_id FROM tasks WHERE user_id=? AND plan_id=? AND completed=1 AND deleted=0',
+      [userId, Number(b.plan_id)]);
+    const doneMaterial = new Set(completed.filter(t => t.material_content_item_id != null).map(t => Number(t.material_content_item_id)));
+    const doneManual = new Set(completed.map(t => `${Number(t.list_id)}\u0000${t.title}`));
+    const schedulableScope = scope.scopeItems.filter(si => si.kind === 'material'
+      ? !doneMaterial.has(Number(si.contentItemId)) : !doneManual.has(`${Number(si.subjectId)}\u0000${si.title}`));
     const scheduleStart = startDate || todayTW();
-    const items = scope.scopeItems.map(si => ({ subject_id: si.subjectId, title: si.title,
+    const items = schedulableScope.map(si => ({ subject_id: si.subjectId, title: si.title,
       minutes: si.minutes, spread: false, start: scheduleStart, end: si.deadline }));
-    const pv = await runPreview(userId, { items, timed: level === 'timed', startDate: scheduleStart, endDate, pace: 'even' });
+    const pv = items.length ? await runPreview(userId, { items, timed: level === 'timed', startDate: scheduleStart, endDate, pace: 'even' })
+      : { status: 200, body: { blocks: [], check: null, unplaced_tasks: [] } };
     if (pv.status !== 200) throw new ExamPlanError(pv.body?.error || '無法排出可行的安排', pv.body?.code || 'EXAM_SCHEDULE_INFEASIBLE', 422);
     unplaced_tasks = pv.body.unplaced_tasks || [];
     if (pv.body.unplaced || unplaced_tasks.length) throw new ExamPlanError(pv.body.message || '有內容排不進去，請調整日期或範圍', 'EXAM_SCHEDULE_GAP', 422);
     blocks = (pv.body.blocks || []).filter(x => !x._pinned && x.subject_id != null);
     check = pv.body.check || null;
   }
-  const snapshot = { user_id: Number(userId), level, start_date: startDate, end_date: endDate,
+  const snapshot = { user_id: Number(userId), ...(b.plan_id == null ? {} : { plan_id: Number(b.plan_id), name: String(b.name || '').trim() }), level, start_date: startDate, end_date: endDate,
     subjects: scope.orderedSubjects, material_ids: scope.materialIds, manual_scope: scope.manualEntries,
     scope_sig: scope.sig, base_version_id: state?.active_version_id ?? null, blocks };
   const canonicalScope = scope.scopeItems.map(x => ({ kind: x.kind, subject_list_id: x.subjectId, title: x.title,
@@ -98,9 +107,20 @@ async function examProjection(userId, planId) {
       label: m.label, estimated_minutes: m.estimated_minutes ?? null, task_id: m.task_id ?? null,
       exam_date: examBySubject.get(Number(m.subject_list_id)) ?? plan.target_date ?? null,
     }));
+  const progressCount = Number((await q.get(
+    'SELECT COUNT(*) n FROM plan_progress_segments WHERE user_id=? AND plan_id=?', [userId, planId]))?.n || 0);
+  const scheduledCount = Number((await q.get(
+    'SELECT COUNT(*) n FROM tasks WHERE user_id=? AND plan_id=? AND deleted=0', [userId, planId]))?.n || 0);
+  let level = progressCount ? 'progress' : (scheduledCount ? 'daily' : 'progress');
+  if (scheduledCount) {
+    const timed = await q.get(`SELECT 1 ok FROM scheduled_blocks b JOIN tasks t ON t.id=b.task_id
+      JOIN user_schedule_state s ON s.user_id=t.user_id AND s.active_version_id=b.schedule_version_id
+      WHERE t.user_id=? AND t.plan_id=? AND b.start_time IS NOT NULL LIMIT 1`, [userId, planId]);
+    if (timed) level = 'timed';
+  }
   return {
     plan: { id: plan.id, name: plan.name, target_date: plan.target_date, start_date: plan.start_date, status: plan.status },
-    subjects, material, manual_scope: manual,
+    level, subjects, material, manual_scope: manual,
   };
 }
 
@@ -141,6 +161,32 @@ router.post('/exam-plans', async (req, res) => {
   }
 
   res.status(201).json(await examProjection(userId, planId));
+});
+
+// 調整段考沿用與建立完全相同的 preview 契約，但寫回既有 Plan。
+// 所有 metadata、scope、Task 與 schedule version 必須在同一筆交易完成。
+router.put('/exam-plans/:id', async (req, res) => {
+  const b = req.body || {};
+  const userId = req.userId;
+  const planId = Number(req.params.id);
+  if (!Number.isInteger(planId) || planId <= 0) return res.status(400).json({ error: '計畫編號不正確' });
+  const level = LEVELS.includes(b.level) ? b.level : 'progress';
+  const signed = verifyExamPlanPreview(b.preview_token);
+  if (!signed || Number(signed.user_id) !== Number(userId) || Number(signed.plan_id) !== planId) {
+    return res.status(409).json({ error: '請先重新預覽段考安排', code: 'EXAM_PREVIEW_STALE' });
+  }
+  try {
+    await updateExamPlanAtomic(userId, planId, {
+      name: b.name, description: b.description || '', startDate: b.start_date || null,
+      endDate: b.end_date, level, subjects: b.subjects || [], materialIds: b.material_scope || [],
+      manual: b.manual_scope || [], computedBlocks: signed.blocks || [], scopeSig: signed.scope_sig,
+      previewToken: b.preview_token,
+    });
+  } catch (e) {
+    if (e instanceof ExamPlanError || e.status) return res.status(e.status || 400).json({ error: e.message, code: e.code || null });
+    throw e;
+  }
+  res.json(await examProjection(userId, planId));
 });
 
 export default router;

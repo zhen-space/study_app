@@ -29,12 +29,13 @@ const LEVEL_OUTCOME = {
   timed: '建立有起訖時間的每日安排，並顯示在行事曆。',
 };
 
-const loadDraft = () => { try { return JSON.parse(localStorage.getItem(DRAFT_KEY) || 'null'); } catch { return null; } };
-const saveDraft = d => { try { localStorage.setItem(DRAFT_KEY, JSON.stringify(d)); } catch { /* private mode */ } };
-const clearDraft = () => { try { localStorage.removeItem(DRAFT_KEY); } catch { /* noop */ } };
+const loadDraft = key => { try { return JSON.parse(localStorage.getItem(key) || 'null'); } catch { return null; } };
+const saveDraft = (key, d) => { try { localStorage.setItem(key, JSON.stringify(d)); } catch { /* private mode */ } };
+const clearDraft = key => { try { localStorage.removeItem(key); } catch { /* noop */ } };
 
-export default function ExamCreateWizard({ lists = [], onDone, onCancel, onManageSubjects }) {
-  const restored = loadDraft();
+export default function ExamCreateWizard({ lists = [], onDone, onCancel, onManageSubjects, editPlanId = null }) {
+  const draftKey = editPlanId == null ? DRAFT_KEY : `${DRAFT_KEY}:plan:${editPlanId}`;
+  const restored = loadDraft(draftKey);
   const [step, setStep] = useState(restored?.step ?? 0);
   const [name, setName] = useState(restored?.name ?? '');
   const [start, setStart] = useState(restored?.start ?? today());
@@ -49,14 +50,40 @@ export default function ExamCreateWizard({ lists = [], onDone, onCancel, onManag
   const [savingEstimate, setSavingEstimate] = useState(0);
   const [picking, setPicking] = useState(null);   // { listId } → 開教材選取
   const [preview, setPreview] = useState(null);    // 每日/時段的排程預覽 blocks
+  const [loadingExisting, setLoadingExisting] = useState(editPlanId != null && !restored);
   const previewRequest = useRef(0);
   const estimateSaves = useRef(new Map());
   // React state 在同一個 event turn 不會同步更新；用 ref 擋住手機快速連點造成的重複建立。
   const creatingRef = useRef(false);
 
   // 草稿自動保存（返回/取消/重開可接續）。
-  useEffect(() => { saveDraft({ step, name, start, end, subjects, scope, level }); },
-    [step, name, start, end, subjects, scope, level]);
+  useEffect(() => {
+    if (!loadingExisting) saveDraft(draftKey, { step, name, start, end, subjects, scope, level });
+  }, [draftKey, loadingExisting, step, name, start, end, subjects, scope, level]);
+  useEffect(() => {
+    if (editPlanId == null || restored) return;
+    let current = true;
+    api(`/plans/${editPlanId}/exam`).then(p => {
+      if (!current) return;
+      const nextScope = {};
+      for (const m of (p.material || [])) {
+        const sid = Number(m.subject_list_id);
+        const cur = nextScope[sid] || { items: {}, manual: [] };
+        cur.items[Number(m.content_item_id)] = { title: m.title, chapter: m.chapter_title || '',
+          book_title: m.book_title || '', minutes: m.estimated_minutes ?? null };
+        nextScope[sid] = cur;
+      }
+      for (const m of (p.manual_scope || [])) {
+        const sid = Number(m.subject_list_id);
+        const cur = nextScope[sid] || { items: {}, manual: [] };
+        cur.manual.push({ label: m.label, est: m.estimated_minutes ?? null }); nextScope[sid] = cur;
+      }
+      setName(p.plan?.name || ''); setStart(p.plan?.start_date || today()); setEnd(p.plan?.target_date || '');
+      setSubjects((p.subjects || []).map(s => ({ listId: Number(s.subject_list_id), examDate: s.exam_date || '' })));
+      setScope(nextScope); setLevel(p.level || 'progress'); setLoadingExisting(false);
+    }).catch(e => { if (current) { setErr(e.message || '無法載入計畫'); setLoadingExisting(false); } });
+    return () => { current = false; };
+  }, [editPlanId]);
 
   const nameOf = useCallback(id => lists.find(l => Number(l.id) === Number(id))?.name || '已刪除的科目', [lists]);
   const addSubject = id => {
@@ -155,13 +182,13 @@ export default function ExamCreateWizard({ lists = [], onDone, onCancel, onManag
   // 預覽只是「讓使用者看一眼」——實際排程由**伺服器**用 CURRENT scope 自己算，
   // 前端不送任何 blocks／task_creates（見後端 createExamPlanAtomic）。
   const requestBody = useCallback(() => ({
-    name: name.trim(), start_date: start || null, end_date: end, level,
+    ...(editPlanId == null ? {} : { plan_id: Number(editPlanId) }), name: name.trim(), start_date: start || null, end_date: end, level,
     subjects: subjects.map(s => ({ subject_list_id: Number(s.listId), exam_date: s.examDate || end })),
     material_scope: subjects.flatMap(s => Object.keys(subjScope(s.listId).items).map(Number)),
     manual_scope: subjects.flatMap(s => subjScope(s.listId).manual.map(m => ({
       subject_list_id: Number(s.listId), label: m.label, estimated_minutes: m.est || null,
     }))),
-  }), [name, start, end, level, subjects, subjScope]);
+  }), [editPlanId, name, start, end, level, subjects, subjScope]);
 
   // 只有「具體時間」需要每項都有預估分鐘。每日模式只決定哪一天做什麼，
   // 不應為了排日期逼學生猜每一章要花多久。
@@ -204,7 +231,7 @@ export default function ExamCreateWizard({ lists = [], onDone, onCancel, onManag
   // daily／timed 只有在「有完整預估、預覽成功、有排出內容、且沒有排不下」時才可建立。
   // 這是 P0-1 的前端防線；伺服器仍會再 fail-closed 一次（單一權威來源）。
   const scheduleBlocked = !!missingSubjects.length || !scheduleGate.ok || previewing || !preview || preview.failed || !preview.preview_token
-    || (level !== 'progress' && preview.blocks.length === 0);
+    || (editPlanId == null && level !== 'progress' && preview.blocks.length === 0);
   const canConfirm = !creating && !savingEstimate && !scheduleBlocked;
 
   // ---- 確認建立（atomic，server-authoritative）----
@@ -214,8 +241,9 @@ export default function ExamCreateWizard({ lists = [], onDone, onCancel, onManag
     setCreating(true); setErr('');
     try {
       const body = { ...requestBody(), preview_token: preview.preview_token };
-      const created = await api('/exam-plans', { method: 'POST', body });
-      clearDraft();
+      const created = await api(editPlanId == null ? '/exam-plans' : `/exam-plans/${editPlanId}`,
+        { method: editPlanId == null ? 'POST' : 'PUT', body });
+      clearDraft(draftKey);
       onDone?.(created.plan.id);
     } catch (e) {
       if (e.status === 409 && e.payload?.code === 'EXAM_PREVIEW_STALE') {
@@ -235,9 +263,11 @@ export default function ExamCreateWizard({ lists = [], onDone, onCancel, onManag
     }
   };
 
+  if (loadingExisting) return <div className="main"><PageHeader title="調整計畫" onBack={onCancel} /><div className="ui-meta">載入現有計畫中…</div></div>;
+
   return (
     <div className="main">
-      <PageHeader title="建立段考"
+      <PageHeader title={editPlanId == null ? '建立段考' : '調整計畫'}
         back={<button className="page-back" disabled={creating} onClick={goBack}>← {step === 0 ? '稍後繼續' : '上一步'}</button>}
         actions={<IconButton label="稍後繼續" disabled={creating} onClick={exitForNow}><Icon name="x" size={18} /></IconButton>} />
       <div className="main-body" style={{ maxWidth: 560 }}>
