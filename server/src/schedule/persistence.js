@@ -1497,7 +1497,7 @@ export class ExamPlanError extends Error {
 //   ・同一科的範圍名稱不可重複（排程時），否則 block↔task 對不回去
 export async function buildExamScope(runner, userId, {
   endDate, startDate = null, level = 'progress',
-  subjects = [], materialIds = [], manual = [],
+  subjects = [], materialIds = [], manual = [], allowCompletedMaterialIds = new Set(),
 }) {
   const scheduled = level === 'daily' || level === 'timed';
   const needsMinutes = level === 'timed';
@@ -1554,7 +1554,11 @@ export async function buildExamScope(runner, userId, {
     if (!it) throw new ExamPlanError('教材範圍中有不存在或不屬於你的內容', 'MATERIAL_NOT_FOUND');
     const sid = Number(it.subject_list_id);
     if (!examBySubject.has(sid)) throw new ExamPlanError('教材範圍的科目不在本次考試科目內', 'MATERIAL_SUBJECT_NOT_IN_EXAM');
-    if (Number(it.completed) === 1) throw new ExamPlanError('已完成的教材不需要再排程', 'MATERIAL_COMPLETED');
+    // 建立新計畫時，已完成教材仍不可重新加入；調整既有計畫時則只允許
+    // 該 Plan 原本已完成 Task 對應的內容留在 scope，保留歷史但不重新排程。
+    if (Number(it.completed) === 1 && !allowCompletedMaterialIds.has(Number(cid))) {
+      throw new ExamPlanError('已完成的教材不需要再排程', 'MATERIAL_COMPLETED');
+    }
     const title = `${it.book_title ? it.book_title + '｜' : ''}${it.chapter_title ? it.chapter_title + '｜' : ''}${it.title}`;
     const est = Number(it.estimated_minutes) > 0 ? Number(it.estimated_minutes) : null;
     if (needsMinutes && est == null) throw new ExamPlanError(`教材項目缺少估計時間，無法排入具體時段：${title}`, 'MATERIAL_ESTIMATE_MISSING', 422);
@@ -1829,7 +1833,13 @@ export async function updateExamPlanAtomic(userId, planId, {
   return serializeWrite(() => withVersionNoRetry(() => q.tx(async tx => {
     const plan = await tx.get("SELECT * FROM plans WHERE user_id=? AND id=? AND status<>'deleted'", [userId, planId]);
     if (!plan) throw new ExamPlanError('找不到要調整的計畫', 'PLAN_NOT_FOUND', 404);
-    const scope = await buildExamScope(tx, userId, { endDate, startDate, level, subjects, materialIds, manual });
+    const completedMaterial = await tx.all(`SELECT material_content_item_id FROM tasks
+      WHERE user_id=? AND plan_id=? AND completed=1 AND deleted=0 AND material_content_item_id IS NOT NULL`,
+      [userId, planId]);
+    const allowCompletedMaterialIds = new Set(completedMaterial.map(t => Number(t.material_content_item_id)));
+    const scope = await buildExamScope(tx, userId, {
+      endDate, startDate, level, subjects, materialIds, manual, allowCompletedMaterialIds,
+    });
     const signed = verifyExamPlanPreview(previewToken);
     const state = await tx.get('SELECT active_version_id FROM user_schedule_state WHERE user_id=?', [userId]);
     const requestShape = {

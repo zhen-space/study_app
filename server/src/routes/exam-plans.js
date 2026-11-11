@@ -32,16 +32,23 @@ async function authoritativePreview(userId, b) {
   const level = LEVELS.includes(b.level) ? b.level : 'progress';
   const endDate = b.end_date;
   const startDate = b.start_date || null;
+  let completed = [];
+  if (b.plan_id != null) {
+    const plan = await q.get("SELECT id FROM plans WHERE user_id=? AND id=? AND status<>'deleted'", [userId, Number(b.plan_id)]);
+    if (!plan) throw new ExamPlanError('找不到要調整的計畫', 'PLAN_NOT_FOUND', 404);
+    completed = await q.all(
+      'SELECT material_content_item_id,title,list_id FROM tasks WHERE user_id=? AND plan_id=? AND completed=1 AND deleted=0',
+      [userId, Number(b.plan_id)]);
+  }
+  const allowCompletedMaterialIds = new Set(completed.filter(t => t.material_content_item_id != null)
+    .map(t => Number(t.material_content_item_id)));
   const scope = await buildExamScope(q, userId, { endDate, startDate, level,
-    subjects: b.subjects || [], materialIds: b.material_scope || [], manual: b.manual_scope || [] });
+    subjects: b.subjects || [], materialIds: b.material_scope || [], manual: b.manual_scope || [], allowCompletedMaterialIds });
   const state = await q.get('SELECT active_version_id FROM user_schedule_state WHERE user_id=?', [userId]);
   let blocks = [], check = null, unplaced_tasks = [];
   if (level === 'daily' || level === 'timed') {
     if (!scope.scopeItems.length) throw new ExamPlanError('這個安排方式需要至少一項可排入的範圍', 'EXAM_SCOPE_EMPTY', 422);
     // 調整既有計畫時，已完成的 Task 是歷史，不能因為仍在 scope 裡就再排一次。
-    const completed = b.plan_id == null ? [] : await q.all(
-      'SELECT material_content_item_id,title,list_id FROM tasks WHERE user_id=? AND plan_id=? AND completed=1 AND deleted=0',
-      [userId, Number(b.plan_id)]);
     const doneMaterial = new Set(completed.filter(t => t.material_content_item_id != null).map(t => Number(t.material_content_item_id)));
     const doneManual = new Set(completed.map(t => `${Number(t.list_id)}\u0000${t.title}`));
     const schedulableScope = scope.scopeItems.filter(si => si.kind === 'material'
