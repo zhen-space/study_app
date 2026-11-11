@@ -309,13 +309,19 @@ describe('UI-R2：Plans 與 Plan Detail', () => {
 
   it('18. 調整計畫的 deep-link 沒有退化', async () => {
     saveConfirmedConditions(12, { timed: false, perDay: 2, pace: 'front' });
-    await mountShell();
+    await mountShell({
+      '/plans/12/exam': {
+        plan: { id: 12, name: '第二次段考', start_date: PLAN.start_date, target_date: PLAN.target_date },
+        level: 'daily', subjects: [{ subject_list_id: 1, exam_date: PLAN.target_date }],
+        material: [], manual_scope: [],
+      },
+    });
     await goPlans();
     await click(cardByName('第二次段考'));
     await click(screen.getByRole('button', { name: /調整計畫/ }));
-    await click(within(panel()).getByText('排程條件').closest('.ui-row'));
     await flush();
-    expect(screen.getByRole('heading', { name: '調整「第二次段考」' })).toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: '調整計畫' })).toBeInTheDocument();
+    expect(screen.getByDisplayValue('第二次段考')).toBeInTheDocument();
     noCrash();
   });
 
