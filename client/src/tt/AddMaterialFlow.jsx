@@ -19,7 +19,7 @@ import { canonicalizeLeafContent, materialContentCount } from './materialDraft';
 //   建立的教材就一定屬於那一科——否則使用者可能建到別科、回到卡片卻找不到、以為「建立失敗」。
 // appendToBook（可選）：{ id, title }。設了就是「增加目錄／匯入更多內容」模式——
 //   產生 draft 後直接走合併到這本書（略過同名偵測與另存），不建立新書。
-export default function AddMaterialFlow({ lists = [], onCancel, onCreated, onAddSubject = null, appendToBook = null, defaultSubjectId = null, outlineSources = [] }) {
+export default function AddMaterialFlow({ lists = [], onCancel, onCreated, onAddSubject = null, appendToBook = null, defaultSubjectId = null, defaultBookType = '', outlineSources = [] }) {
   const [mode, setMode] = useState(null);      // null｜'photo'｜'manual'
   const [draft, setDraft] = useState(null);
   const [busy, setBusy] = useState(false);
@@ -50,6 +50,7 @@ export default function AddMaterialFlow({ lists = [], onCancel, onCreated, onAdd
       book: {
         ...d.book,
         title: d.book.title?.trim() ? d.book.title : (appendToBook?.title || ''),
+        book_type: d.book.book_type || defaultBookType,
         subject_list_id: d.book.subject_list_id ?? (subjectId == null ? null : Number(subjectId)),
       },
     };

@@ -60,7 +60,7 @@ describe('ExamCreateWizard', () => {
     await click(screen.getByText('下一步：加入各科範圍'));
 
     // Step 2：手動範圍（老師指定、教材庫沒有）
-    await waitFor(() => expect(screen.getByText('選教材／勾課章')).toBeTruthy());
+    await waitFor(() => expect(screen.getByText('選課本目錄／學習材料')).toBeTruthy());
     await click(screen.getByText('＋ 老師指定、教材庫沒有的範圍'));
     fireEvent.change(screen.getByLabelText('老師指定範圍'), { target: { value: '講義第三章' } });
     await click(screen.getByText('加入'));

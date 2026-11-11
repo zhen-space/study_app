@@ -296,6 +296,16 @@ export default function ExamCreateWizard({ lists = [], onDone, onCancel, onManag
 
         {step === 1 && (
           <div style={{ display: 'grid', gap: 12 }}>
+            <SurfaceCard>
+              <b>先決定這次怎麼安排</b>
+              <div className="ui-meta" style={{ marginTop: 4 }}>這會幫你預選適合的內容來源，之後仍可切換。</div>
+              {LEVELS.map(([v, title, desc]) => (
+                <label key={v} className="row" style={{ gap: 8, alignItems: 'baseline', marginTop: 8 }}>
+                  <input type="radio" name="exam-level-scope" checked={level === v} onChange={() => setLevel(v)} />
+                  <span><b>{title}</b><div className="ui-meta">{desc}</div></span>
+                </label>
+              ))}
+            </SurfaceCard>
             {subjects.map(s => {
               const sc = subjScope(s.listId);
               const byChapter = {};
@@ -338,7 +348,7 @@ export default function ExamCreateWizard({ lists = [], onDone, onCancel, onManag
                     </div>
                   ))}
                   <div className="row" style={{ gap: 8, marginTop: 8, flexWrap: 'wrap' }}>
-                    <Button size="sm" variant="secondary" onClick={() => setPicking({ listId: s.listId })}>選教材／勾課章</Button>
+                    <Button size="sm" variant="secondary" onClick={() => setPicking({ listId: s.listId })}>選課本目錄／學習材料</Button>
                     <ManualAdder onAdd={(label, est) => addManual(s.listId, label, est)} />
                   </div>
                 </SurfaceCard>
@@ -446,6 +456,7 @@ export default function ExamCreateWizard({ lists = [], onDone, onCancel, onManag
           <BottomSheet onClose={() => setPicking(null)} label="選教材">
             <SubjectMaterialPicker
               subjectId={picking.listId} subjectName={nameOf(picking.listId)} lists={lists}
+              defaultSource={level === 'progress' ? 'textbook' : 'materials'}
               selectedIds={new Set(Object.keys(subjScope(picking.listId).items).map(Number))}
               onAdd={picked => addItems(picking.listId, picked)}
               onClose={() => setPicking(null)} />
@@ -496,7 +507,7 @@ function DailyPreview({ blocks = [], nameOf }) {
 }
 
 // 單科教材選取：列該科的書 → 開一本 → 勾課/章/單元 → 加入。教材庫沒有可當場匯入回卡。
-function SubjectMaterialPicker({ subjectId, subjectName, lists, selectedIds, onAdd, onClose }) {
+function SubjectMaterialPicker({ subjectId, subjectName, lists, selectedIds, onAdd, onClose, defaultSource = 'textbook' }) {
   const [books, setBooks] = useState(null);
   const [booksError, setBooksError] = useState('');
   const [openBook, setOpenBook] = useState(null);
@@ -504,6 +515,7 @@ function SubjectMaterialPicker({ subjectId, subjectName, lists, selectedIds, onA
   const [treeError, setTreeError] = useState('');
   const [checked, setChecked] = useState(new Set());
   const [importing, setImporting] = useState(false);
+  const [sourcePage, setSourcePage] = useState(defaultSource);
   const treeRequest = useRef(0);
 
   const loadBooks = useCallback(async () => {
@@ -544,7 +556,8 @@ function SubjectMaterialPicker({ subjectId, subjectName, lists, selectedIds, onA
   if (importing) {
     // 從段考科目卡進來：預帶本卡科目（建立的教材一定屬於這一科），建立後自動刷新書單
     // 並直接開啟新書，讓新教材立即可勾選；取消回到書單（段考草稿仍在 localStorage）。
-    return <AddMaterialFlow lists={lists} defaultSubjectId={subjectId} outlineSources={books || []}
+    return <AddMaterialFlow lists={lists} defaultSubjectId={subjectId}
+      defaultBookType={sourcePage === 'textbook' ? '課本' : '講義'} outlineSources={books || []}
       onCancel={() => setImporting(false)}
       onCreated={async (r) => {
         setImporting(false);
@@ -575,22 +588,37 @@ function SubjectMaterialPicker({ subjectId, subjectName, lists, selectedIds, onA
       </div>
     );
   }
+  const isTextbook = b => !String(b.book_type || '').trim() || b.book_type === '課本';
+  const visibleBooks = (books || []).filter(b => sourcePage === 'textbook' ? isTextbook(b) : !isTextbook(b));
   return (
     <div style={{ display: 'grid', gap: 8 }}>
-      <b>{subjectName} 的教材</b>
+      <b>{subjectName}：這次要安排哪一類內容？</b>
+      <div className="seg-tabs" role="tablist" aria-label="安排內容來源">
+        <button type="button" role="tab" aria-selected={sourcePage === 'textbook'}
+          className={'seg-tab' + (sourcePage === 'textbook' ? ' on' : '')} onClick={() => setSourcePage('textbook')}>A 課本目錄</button>
+        <button type="button" role="tab" aria-selected={sourcePage === 'materials'}
+          className={'seg-tab' + (sourcePage === 'materials' ? ' on' : '')} onClick={() => setSourcePage('materials')}>B 講義／題本</button>
+      </div>
+      <div className="ui-meta">{sourcePage === 'textbook'
+        ? '依科目的課本章節選考試範圍。未分類的舊目錄也會放在這裡。'
+        : '可新增多份講義或題本；每份都能沿用課本／另一份教材的目錄，或匯入自己的目錄。'}</div>
       {booksError ? <div className="ui-card ui-card--warning" role="alert">
         <div>{booksError}</div>
         <Button size="sm" variant="secondary" style={{ marginTop: 6 }} onClick={loadBooks}>重試載入教材</Button>
       </div> : books == null ? <div className="ui-meta">載入中…</div>
-        : books.length === 0 ? <EmptyState title="這科還沒有教材" description="當場匯入或建立一本，完成後回到這裡繼續選。" />
-          : books.map(b => (
+        : visibleBooks.length === 0 ? <EmptyState
+          title={sourcePage === 'textbook' ? '這科還沒有課本目錄' : '這科還沒有講義／題本'}
+          description={sourcePage === 'textbook' ? '可匯入或手動建立課本目錄。' : '先新增一份講義或題本，再選這次要完成的內容。'} />
+          : visibleBooks.map(b => (
             <div key={b.material_book_id} className="row" role="button" tabIndex={0} style={{ cursor: 'pointer', padding: '6px 0' }}
               onClick={() => open(b)} onKeyDown={e => { if (e.key === 'Enter') open(b); }}>
               <span>{b.title}</span><Icon name="chevron" size={16} style={{ marginLeft: 'auto' }} />
             </div>
           ))}
       <div className="row" style={{ gap: 8, marginTop: 4 }}>
-        <Button size="sm" variant="secondary" onClick={() => setImporting(true)}>匯入／建立教材</Button>
+        <Button size="sm" variant="secondary" onClick={() => setImporting(true)}>
+          {sourcePage === 'textbook' ? '新增／匯入課本目錄' : '新增講義／題本'}
+        </Button>
         <Button size="sm" variant="ghost" style={{ marginLeft: 'auto' }} onClick={onClose}>完成</Button>
       </div>
     </div>
