@@ -46,6 +46,7 @@ export function buildPlanTimeline({
   plan, activeVersionId, tasks = [], blocks = [],
   subjectsById = new Map(), materialById = new Map(),
   manualByTaskId = new Map(), lockedTaskIds = new Set(), sessionTaskIds = new Set(), today,
+  lastScheduledByTask = new Map(),
 }) {
   const scheduable = SCHEDULABLE.has(plan.status) && activeVersionId != null;
   const planTarget = plan.target_date || null;
@@ -113,8 +114,17 @@ export function buildPlanTimeline({
       itemWarnings.push('schedule_gap');
     }
 
+    // §逾期：未完成，且「任務截止日」或「最後安排日」早於今天（台北時區），今天不算。
+    // 每次建立新版本只帶 date>=今天 的 block，過去的安排不在 active 版本裡；
+    // 沒有 active block 時改用歷史版本中最後一次安排的日期，否則逾期任務會被誤判成未排入。
+    const lastScheduledDate = rangeEnd || (lastScheduledByTask.get(taskId) ?? null);
+    const overdue = completion !== 'completed' && !!today && (
+      (!!t.deadline_date && t.deadline_date < today)
+      || (!!lastScheduledDate && lastScheduledDate < today));
+
     let timeStatus = null;
     if (completion === 'completed') timeStatus = 'completed';
+    else if (overdue) timeStatus = 'past_due';
     else if (displayMode === 'gap' || displayMode === 'unscheduled') timeStatus = 'schedule_gap';
     else {
       const starts = displayMode === 'deadline' ? t.deadline_date : rangeStart;
@@ -142,6 +152,8 @@ export function buildPlanTimeline({
       day_blocks: dayBlocks,               // 展開才看每日安排；沒有時段就是 null，不捏造
       completion,
       time_status: timeStatus,
+      overdue,
+      last_scheduled_date: lastScheduledDate,
       locked: lockedTaskIds.has(taskId),
       warnings: itemWarnings,
     });

@@ -229,4 +229,106 @@ describe('段考進度時間軸 projection', () => {
     assert.equal(r.items[0].kind, 'manual');
     assert.equal(r.items[0].display_mode, 'range');
   });
+  test('T14 新版本丟掉過去 block 後，未完成的過去安排仍判為已逾期（今天到期不算）', async () => {
+    const u = nextUser(); await mkUser(u);
+    const plan = await mkPlan(u); const list = await mkList(u);
+    const past = await mkTask(u, plan, list, { title: '前天的進度' });
+    const todayTask = await mkTask(u, plan, list, { title: '今天的進度' });
+    const trigger = await mkTask(u, plan, list, { title: '觸發新版本' });
+    const pastDeadline = await mkTask(u, plan, list, { title: '截止已過', deadline_date: D(-1) });
+    const dueToday = await mkTask(u, plan, list, { title: '今天截止', deadline_date: D(0), deadline_time: '00:01' });
+    const donePast = await mkTask(u, plan, list, { title: '過去已完成' });
+    await seedVersion(u, [
+      { task_id: past, date: D(-2), planned_minutes: 60 },
+      { task_id: donePast, date: D(-3), planned_minutes: 60 },
+      { task_id: todayTask, date: D(0), planned_minutes: 60 },
+      { task_id: trigger, date: D(1), planned_minutes: 60 },
+    ]);
+    await sched.transitionTaskOutcome(u, donePast, 'completed');
+    // 真實流程：任一 lifecycle 都只帶 date>=今天 的 block，前天的安排不在 active 版本。
+    await sched.transitionTaskOutcome(u, trigger, 'completed');
+    const r = await tl(u, plan);
+    const item = id => r.items.find(i => i.task_id === Number(id));
+    assert.equal(item(past).day_blocks.length, 0, '前提：過去的 block 已不在 active 版本');
+    assert.equal(item(past).overdue, true);
+    assert.equal(item(past).time_status, 'past_due');
+    assert.equal(item(past).last_scheduled_date, D(-2));
+    assert.equal(item(pastDeadline).overdue, true);
+    assert.equal(item(todayTask).overdue, false);
+    assert.equal(item(todayTask).time_status, 'today');
+    assert.equal(item(dueToday).overdue, false);
+    assert.equal(item(donePast).overdue, false);
+    assert.equal(item(trigger).overdue, false);
+  });
+
+  test('T15 歷史版本後來被重排到未來 → 不算逾期', () => {
+    const tasks = [{ id: 1, title: '重排過', list_id: 1, estimated_minutes: 60, completed: 0 }];
+    const r = buildPlanTimeline({
+      plan: { id: 1, status: 'active', target_date: D(30) }, activeVersionId: 2, tasks,
+      blocks: [{ id: 5, task_id: 1, date: D(2), planned_minutes: 60 }],
+      lastScheduledByTask: new Map([[1, D(-4)]]), today: TODAY,
+    });
+    assert.equal(r.items[0].overdue, false);
+    assert.equal(r.items[0].last_scheduled_date, D(2));
+  });
+  test('T16 無 active block 的逾期任務可用 manual transaction 重新安排（stale gate、過去、截止、重複都擋）', async () => {
+    const u = nextUser(); await mkUser(u);
+    const plan = await mkPlan(u); const list = await mkList(u);
+    const past = await mkTask(u, plan, list, { title: '前天的進度' });
+    const trigger = await mkTask(u, plan, list, { title: '觸發新版本' });
+    const pastDeadline = await mkTask(u, plan, list, { title: '截止已過', deadline_date: D(-1) });
+    const future = await mkTask(u, plan, list, { title: '已有安排' });
+    await seedVersion(u, [
+      { task_id: past, date: D(-2), planned_minutes: 60 },
+      { task_id: trigger, date: D(1), planned_minutes: 60 },
+      { task_id: future, date: D(3), planned_minutes: 60 },
+    ]);
+    await sched.transitionTaskOutcome(u, trigger, 'completed');
+    let r = await tl(u, plan);
+    const base = r.active_version_id;
+    assert.equal(r.items.find(i => i.task_id === Number(past)).overdue, true);
+
+    const place = { task_id: past, date: D(2), start_time: '19:00', end_time: '20:00' };
+    const dry = await sched.applyManualAdjustment(u, { baseVersionId: base, moves: [place], dryRun: true });
+    assert.equal(dry.ok, true);
+    assert.equal((await tl(u, plan)).active_version_id, base, 'dry-run 不寫入');
+
+    await assert.rejects(sched.applyManualAdjustment(u, { baseVersionId: base - 1, moves: [place] }), e => e.status === 409);
+    await assert.rejects(sched.applyManualAdjustment(u, { baseVersionId: base, moves: [{ ...place, date: D(-1) }] }),
+      e => e.conflicts?.some(c => c.type === 'past'));
+    await assert.rejects(sched.applyManualAdjustment(u, { baseVersionId: base, moves: [{ task_id: pastDeadline, date: D(1) }] }),
+      e => e.conflicts?.some(c => c.type === 'deadline'));
+    await assert.rejects(sched.applyManualAdjustment(u, { baseVersionId: base, moves: [{ task_id: future, date: D(4) }] }),
+      /已經有安排/);
+    assert.equal((await tl(u, plan)).active_version_id, base, '被拒絕的寫入不建立版本');
+
+    const out = await sched.applyManualAdjustment(u, { baseVersionId: base, moves: [place] });
+    assert.equal(out.ok, true);
+    r = await tl(u, plan);
+    const item = r.items.find(i => i.task_id === Number(past));
+    assert.equal(item.overdue, false);
+    assert.deepEqual(item.day_blocks.map(b => [b.date, b.start_time, b.end_time, b.planned_minutes]), [[D(2), '19:00', '20:00', 60]]);
+    // 其他 Task 的未來安排原封不動。
+    assert.equal(r.items.find(i => i.task_id === Number(future)).day_blocks[0].date, D(3));
+  });
+
+  test('T17 已完成的過去任務取消完成後，projection 依日期回到已逾期', async () => {
+    const u = nextUser(); await mkUser(u);
+    const plan = await mkPlan(u); const list = await mkList(u);
+    const done = await mkTask(u, plan, list, { title: '前天做完' });
+    const trigger = await mkTask(u, plan, list, { title: '觸發新版本' });
+    await seedVersion(u, [
+      { task_id: done, date: D(-2), planned_minutes: 60 },
+      { task_id: trigger, date: D(1), planned_minutes: 60 },
+    ]);
+    await sched.transitionTaskOutcome(u, done, 'completed');
+    await sched.transitionTaskOutcome(u, trigger, 'completed');
+    assert.equal((await tl(u, plan)).items.find(i => i.task_id === Number(done)).completion, 'completed');
+    await sched.transitionTaskOutcome(u, done, null);
+    const item = (await tl(u, plan)).items.find(i => i.task_id === Number(done));
+    assert.equal(item.completion, 'not_started');
+    assert.equal(item.overdue, true);
+    assert.equal(item.time_status, 'past_due');
+    assert.equal(item.last_scheduled_date, D(-2));
+  });
 });

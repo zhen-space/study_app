@@ -1860,9 +1860,29 @@ export async function getPlanTimeline(userId, planId) {
       for (const r of srows) sessionTaskIds.add(Number(r.task_id));
     }
 
+    // 歷史安排日期：新版本只帶今天以後的 block，過去沒完成的安排會從 active 版本消失。
+    // 對「未完成、且 active 版本沒有 block」的 Task，取最近一個仍含它的版本中最後的日期，
+    // 讓 projection 能判斷它是「已逾期」而不是「未排入」。只讀 immutable 版本，不改任何狀態。
+    const placedIds = new Set(blocks.map(b => Number(b.task_id)));
+    const historyIds = tasks.filter(t => !t.completed && !placedIds.has(Number(t.id))).map(t => Number(t.id));
+    const lastScheduledByTask = new Map();
+    if (historyIds.length && activeVersionId != null) {
+      const rows = await q.all(
+        `SELECT b.task_id, MAX(b.date) AS last_date
+           FROM scheduled_blocks b
+          WHERE b.user_id=? AND b.task_id IN (${historyIds.map(() => '?').join(',')})
+            AND b.schedule_version_id=(
+              SELECT MAX(b2.schedule_version_id) FROM scheduled_blocks b2
+               WHERE b2.user_id=b.user_id AND b2.task_id=b.task_id AND b2.schedule_version_id<=?)
+          GROUP BY b.task_id`,
+        [userId, ...historyIds, activeVersionId]);
+      for (const r of rows) if (r.last_date) lastScheduledByTask.set(Number(r.task_id), r.last_date);
+    }
+
     return { status: 200, body: buildPlanTimeline({
       plan, activeVersionId, tasks, blocks,
       subjectsById, materialById, manualByTaskId, lockedTaskIds, sessionTaskIds, today: todayTW(),
+      lastScheduledByTask,
     }) };
   }
 }

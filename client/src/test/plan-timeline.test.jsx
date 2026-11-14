@@ -136,7 +136,8 @@ describe('PlanTimeline', () => {
     });
     render(<PlanTimeline plan={plan} tasks={[{ id: 17, title: '交報告', deadline_date: '2026-10-03', deadline_time: '18:00' }]} />);
     fireEvent.click(await screen.findByRole('button', { name: '編輯任務' }));
-    expect(screen.queryByLabelText('日期')).not.toBeInTheDocument();
+    // 沒有 active block：同一張表單仍可選日期重新安排；不選日期就只改截止。
+    expect(screen.getByLabelText('日期')).toHaveValue('');
     expect(screen.getByLabelText('最晚完成日')).toHaveValue('2026-10-03');
     expect(screen.getByLabelText('最晚完成時間')).toHaveValue('18:00');
     fireEvent.change(screen.getByLabelText('最晚完成日'), { target: { value: '2026-10-04' } });
@@ -145,6 +146,7 @@ describe('PlanTimeline', () => {
     await waitFor(() => expect(api).toHaveBeenCalledWith('/tasks/17', expect.objectContaining({
       method: 'PATCH', body: expect.objectContaining({ deadline_date: '2026-10-04', deadline_time: '20:30' }),
     })));
+    expect(api.mock.calls.filter(([path]) => path === '/schedule/manual')).toHaveLength(0);
   });
 
   it('期限任務只改名稱時保留原截止時間', async () => {
@@ -224,6 +226,66 @@ describe('PlanTimeline', () => {
     fireEvent.click(screen.getByRole('button', { name: '重新載入確認' }));
     await waitFor(() => expect(screen.queryByText('暫時無法確認儲存結果')).not.toBeInTheDocument());
     expect(api.mock.calls.filter(([path, options]) => path === '/schedule/manual' && !options?.body?.dry_run)).toHaveLength(1);
+  });
+
+  it('dry-run 回報衝突時不能儲存，也不會送出正式 manual transaction', async () => {
+    const item = { task_id: 21, title: '數學複習', display_mode: 'range', completion: 'not_started',
+      day_blocks: [{ block_id: 30, date: '2026-10-01', start_time: '19:00', end_time: '20:00' }], warnings: [] };
+    api.mockImplementation((path, options) => {
+      if (path === '/schedule/timeline/1') return Promise.resolve(range({ active: true, active_version_id: 5, items: [item] }));
+      if (path === '/schedule/manual' && options?.body?.dry_run) return Promise.resolve({ conflicts: [{ type: 'overlap', date: '2026-10-02' }] });
+      return Promise.resolve([]);
+    });
+    render(<PlanTimeline plan={plan} tasks={[{ id: 21, title: '數學複習' }]} />);
+    fireEvent.click(await screen.findByRole('button', { name: '編輯任務' }));
+    fireEvent.change(screen.getByLabelText('日期'), { target: { value: '2026-10-02' } });
+    expect(await screen.findByText('這個時間放不下')).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: '儲存變更' }));
+    expect(screen.getByRole('button', { name: '儲存變更' })).toBeDisabled();
+    expect(api.mock.calls.filter(([path, options]) => path === '/schedule/manual' && !options?.body?.dry_run)).toHaveLength(0);
+  });
+
+  it('正式寫入遇到 stale 409 不能重送舊 block，只能重新載入', async () => {
+    const item = { task_id: 22, title: '英文單字', display_mode: 'range', completion: 'not_started',
+      day_blocks: [{ block_id: 31, date: '2026-10-01', start_time: '19:00', end_time: '20:00' }], warnings: [] };
+    api.mockImplementation((path, options) => {
+      if (path === '/schedule/timeline/1') return Promise.resolve(range({ active: true, active_version_id: 5, items: [item] }));
+      if (path === '/schedule/manual' && options?.body?.dry_run) return Promise.resolve({ conflicts: [] });
+      if (path === '/schedule/manual') return Promise.reject(Object.assign(new Error('排程已被其他變更取代'), { status: 409 }));
+      return Promise.resolve([]);
+    });
+    render(<PlanTimeline plan={plan} tasks={[{ id: 22, title: '英文單字' }]} />);
+    fireEvent.click(await screen.findByRole('button', { name: '編輯任務' }));
+    fireEvent.change(screen.getByLabelText('日期'), { target: { value: '2026-10-02' } });
+    await waitFor(() => expect(screen.getByRole('button', { name: '儲存變更' })).not.toBeDisabled());
+    fireEvent.click(screen.getByRole('button', { name: '儲存變更' }));
+    expect(await screen.findByText('排程已被其他變更取代')).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: '儲存變更' })).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: '重新載入' }));
+    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
+    expect(api.mock.calls.filter(([path, options]) => path === '/schedule/manual' && !options?.body?.dry_run)).toHaveLength(1);
+    expect(api.mock.calls.filter(([path]) => path === '/tasks/22')).toHaveLength(0);
+  });
+
+  it('結果未知時先關閉，列表鎖住該項直到重新載入確認', async () => {
+    const item = { task_id: 23, title: '國文默寫', display_mode: 'range', completion: 'not_started',
+      day_blocks: [{ block_id: 32, date: '2026-10-01' }], warnings: [] };
+    api.mockImplementation((path) => {
+      if (path === '/schedule/timeline/1') return Promise.resolve(range({ active: true, active_version_id: 5, items: [item] }));
+      if (path === '/tasks/23') return Promise.reject(new Error('回應遺失'));
+      if (path === '/tasks') return Promise.reject(new Error('讀回失敗'));
+      return Promise.resolve([]);
+    });
+    render(<PlanTimeline plan={plan} tasks={[{ id: 23, title: '國文默寫' }]} />);
+    fireEvent.click(await screen.findByRole('button', { name: '編輯任務' }));
+    fireEvent.change(screen.getByLabelText('任務名稱'), { target: { value: '國文默寫二' } });
+    fireEvent.click(screen.getByRole('button', { name: '儲存變更' }));
+    fireEvent.click(await screen.findByRole('button', { name: '先關閉' }));
+    expect(screen.getByRole('button', { name: '編輯任務' })).toBeDisabled();
+    expect(screen.getByRole('button', { name: '完成「國文默寫」' })).toBeDisabled();
+    fireEvent.click(screen.getByRole('button', { name: '重新載入確認' }));
+    await waitFor(() => expect(screen.getByRole('button', { name: '編輯任務' })).not.toBeDisabled());
+    expect(api.mock.calls.filter(([path]) => path === '/tasks/23')).toHaveLength(1);
   });
 
   it('多日安排依每天日期分區，同一任務在各日顯示當日時間', async () => {
