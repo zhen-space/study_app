@@ -8,6 +8,10 @@ import * as fx from './fixtures';
 import { today, addDays } from '../tt/helpers';
 
 vi.mock('../api', () => ({ api: vi.fn() }));
+// 長按需要真實等待 450ms 以上；機器忙碌時預設 5 秒的單測上限與 1 秒的 waitFor 不夠。
+vi.setConfig({ testTimeout: 30000 });
+const { configure } = await import('@testing-library/react');
+configure({ asyncUtilTimeout: 5000 });
 const { api } = await import('../api');
 const PlanDetailView = (await import('../tt/PlanDetailView')).default;
 
@@ -52,6 +56,9 @@ async function longPressDrag(title, target, { release = true } = {}) {
   const el = rowOf(title);
   fireEvent.touchStart(el, { touches: [{ clientX: 40, clientY: 40 }] });
   await wait(500);
+  // 機器忙碌時拖曳狀態可能晚一點才渲染：等到出現拖曳提示（最多 1.5 秒）再移動手指；
+  // 不該啟動拖曳的情況就等滿後照樣送出事件，由呼叫端斷言沒有拖曳。
+  for (let i = 0; i < 10 && !screen.queryByText('拖到要移動的日期分區後放開'); i++) await wait(150);
   document.elementFromPoint = () => document.querySelector(`[data-drop-date="${target}"]`);
   fireEvent.touchMove(el, { touches: [{ clientX: 40, clientY: 600 }] });
   if (release) await act(async () => { fireEvent.touchEnd(el, { touches: [] }); });
@@ -172,7 +179,7 @@ describe('375px 長按拖曳改期（ScheduleVersion domain）', () => {
     }));
     mount(); await ready();
     await longPressDrag('截止已過未排', D(1));
-    expect(await screen.findByText('這一天已經超過這個任務的截止日')).toBeInTheDocument();
+    expect(await screen.findByText('這一天已經超過這個任務的截止日', { selector: '.ui-error' })).toBeInTheDocument();
     expect(within(region('已逾期')).getByText('截止已過未排')).toBeInTheDocument();
     expect(manualWrites()).toHaveLength(1);
   });
@@ -184,7 +191,7 @@ describe('375px 長按拖曳改期（ScheduleVersion domain）', () => {
     mount(); await ready();
     activeVersion = 51;
     await longPressDrag('前天的進度', D(1));
-    expect(await screen.findByText('排程已在別處更新，已載入最新安排，請再拖一次。')).toBeInTheDocument();
+    expect(await screen.findByText('排程已在別處更新，已載入最新安排，請再拖一次。', { selector: '.ui-error' })).toBeInTheDocument();
     expect(within(region('已逾期')).getByText('前天的進度')).toBeInTheDocument();
     expect(manualWrites()).toHaveLength(1);
     await waitFor(() => expect(api.mock.calls.filter(([p]) => p === '/schedule/active').length).toBeGreaterThanOrEqual(2));
@@ -202,9 +209,9 @@ describe('375px 長按拖曳改期（ScheduleVersion domain）', () => {
       await longPressDrag('前天的進度', D(1));
       if (committed) {
         await waitFor(() => expect(reload).toHaveBeenCalled());
-        expect(screen.queryByText('連線中斷')).toBeNull();
+        expect(screen.queryByText('連線中斷', { selector: '.ui-error' })).toBeNull();
       } else {
-        expect(await screen.findByText('連線中斷')).toBeInTheDocument();
+        expect(await screen.findByText('連線中斷', { selector: '.ui-error' })).toBeInTheDocument();
         expect(within(region('已逾期')).getByText('前天的進度')).toBeInTheDocument();
       }
       expect(manualWrites()).toHaveLength(1);
@@ -271,5 +278,111 @@ describe('375px 長按拖曳改期（ScheduleVersion domain）', () => {
     expect(dragHint()).toBeNull();
     expect(manualWrites()).toHaveLength(0);
     expect(taskWrites()).toHaveLength(0);
+  });
+});
+
+describe('寫入後的權威刷新', () => {
+  for (const side of ['tasks', 'schedule']) {
+    it(`寫入成功但${side === 'tasks' ? '任務' : 'active 版本'}刷新失敗：兩邊都嘗試、仍鎖定，不能用舊 base 再拖`, async () => {
+      const reload = vi.fn().mockResolvedValue(undefined);
+      mount({ reload }); await ready();
+      if (side === 'tasks') reload.mockRejectedValueOnce(new Error('任務載入失敗'));
+      else handlers['/schedule/active'] = () => Promise.reject(new Error('排程載入失敗'));
+      const activeCalls = () => api.mock.calls.filter(([p]) => p === '/schedule/active').length;
+      const before = activeCalls();
+      await longPressDrag('前天的進度', D(1));
+      expect(await screen.findByText('日期已更新，但最新安排暫時無法載入')).toBeInTheDocument();
+      // 兩邊都有嘗試：一邊失敗不會跳過另一邊。
+      expect(reload).toHaveBeenCalled();
+      expect(activeCalls()).toBeGreaterThan(before);
+      // 已寫入：留在新日期、不再是已逾期；但整個計畫都鎖住。
+      expect(within(rowOf('前天的進度')).queryByText('已逾期')).toBeNull();
+      expect(screen.queryByRole('button', { name: /^改「|^替「/ })).toBeNull();
+      expect(screen.queryByRole('button', { name: /調整「.*」的時間/ })).toBeNull();
+      await longPressDrag('從沒排過', D(2));
+      expect(dragHint()).toBeNull();
+      expect(manualWrites()).toHaveLength(1);
+    });
+  }
+
+  it('重試仍有一邊失敗就維持鎖定；兩邊都成功才解鎖，之後以新版本移動', async () => {
+    const reload = vi.fn().mockResolvedValue(undefined);
+    mount({ reload }); await ready();
+    reload.mockRejectedValueOnce(new Error('任務載入失敗'));
+    await longPressDrag('前天的進度', D(1));
+    await screen.findByText('日期已更新，但最新安排暫時無法載入');
+    // 第一次重試：任務成功、active 版本失敗。
+    handlers['/schedule/active'] = () => Promise.reject(new Error('排程載入失敗'));
+    await act(async () => { fireEvent.click(screen.getByRole('button', { name: '重新載入確認' })); });
+    expect(await screen.findByText('排程載入失敗')).toBeInTheDocument();
+    expect(screen.getByText('日期已更新，但最新安排暫時無法載入')).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: '替「從沒排過」選擇日期' })).toBeNull();
+    // 第二次重試：兩邊都成功（伺服器已是新版本 51）。
+    delete handlers['/schedule/active'];
+    activeVersion = 51;
+    await act(async () => { fireEvent.click(screen.getByRole('button', { name: '重新載入確認' })); });
+    await waitFor(() => expect(screen.queryByText('日期已更新，但最新安排暫時無法載入')).toBeNull());
+    // 放下後 600ms 內的點擊視為瀏覽器補發的 click 而忽略；使用者真正點按鈕時已超過。
+    await wait(650);
+    fireEvent.click(screen.getByRole('button', { name: '替「從沒排過」選擇日期' }));
+    const sheet = await screen.findByRole('dialog', { name: '移到其他日期' });
+    fireEvent.change(within(sheet).getByLabelText('日期'), { target: { value: D(6) } });
+    await act(async () => { fireEvent.click(within(sheet).getByRole('button', { name: '移到這一天' })); });
+    expect(manualWrites()).toHaveLength(2);
+    expect(manualWrites()[1][1].body).toEqual({ base_version_id: 51, moves: [{ task_id: 2, date: D(6) }] });
+  });
+});
+
+describe('不靠長按的改日期與無障礙', () => {
+  it('已有日期的任務也有「改日期」按鈕（鍵盤可操作），走同一個 manual transaction', async () => {
+    mount(); await ready();
+    const btn = screen.getByRole('button', { name: '改「明天的進度」的日期' });
+    expect(btn.tagName).toBe('BUTTON');
+    btn.focus();
+    expect(document.activeElement).toBe(btn);
+    fireEvent.click(btn);
+    const sheet = await screen.findByRole('dialog', { name: '移到其他日期' });
+    expect(within(sheet).getByLabelText('日期')).toHaveValue(D(1));
+    fireEvent.change(within(sheet).getByLabelText('日期'), { target: { value: D(5) } });
+    await act(async () => { fireEvent.click(within(sheet).getByRole('button', { name: '移到這一天' })); });
+    expect(manualWrites()[0][1].body).toEqual({ base_version_id: 50, moves: [{ block_id: 101, date: D(5), start_time: '19:00', end_time: '20:00' }] });
+    expect(taskWrites()).toHaveLength(0);
+    await waitFor(() => expect(screen.getByRole('status')).toHaveTextContent(`已把「明天的進度」移到 ${md(D(5))}`));
+    // 不能移動的（分成多段）沒有改日期按鈕，但仍保留時間調整。
+    expect(screen.queryByRole('button', { name: '改「分兩段」的日期' })).toBeNull();
+    expect(screen.getByRole('button', { name: '調整「分兩段」的時間' })).toBeInTheDocument();
+  });
+
+  it('逾期／原定日期／改日期放在標題下方；拖曳 overlay 不進無障礙樹，狀態另行宣告', async () => {
+    mount(); await ready();
+    const sub = rowOf('前天的進度').querySelector('.ui-row-sub');
+    expect(within(sub).getByText('已逾期')).toBeInTheDocument();
+    expect(within(sub).getByText(`原定 ${md(D(-2))}`)).toBeInTheDocument();
+    expect(within(sub).getByRole('button', { name: '替「前天的進度」選擇日期' })).toBeInTheDocument();
+    expect(rowOf('前天的進度').querySelector('.ui-row-trail')).toBeNull();
+    await longPressDrag('前天的進度', D(1), { release: false });
+    const overlay = screen.getByText('拖到要移動的日期分區後放開').parentElement;
+    expect(overlay).toHaveAttribute('aria-hidden', 'true');
+    expect(screen.getByRole('status')).toHaveTextContent('已拿起「前天的進度」');
+    await act(async () => { fireEvent.touchCancel(rowOf('前天的進度'), { touches: [] }); });
+    expect(manualWrites()).toHaveLength(0);
+  });
+});
+
+describe('健康卡片：已逾期與尚未安排分開', () => {
+  it('同時列出已逾期與真正尚未安排；任務變動後重新取得 health', async () => {
+    handlers['/plans/12/health'] = () => Promise.resolve({ status: 'needs_replan', pending: 4, reasons: [
+      { type: 'overdue', count: 2, message: '有 2 項已逾期' },
+      { type: 'unplaced', count: 1, message: '有 1 項尚未安排' },
+    ] });
+    const reload = vi.fn().mockResolvedValue(undefined);
+    const { rerender } = mount({ reload }); await ready();
+    expect(await screen.findByText('有 2 項已逾期、有 1 項尚未安排。')).toBeInTheDocument();
+    const healthCalls = () => api.mock.calls.filter(([p]) => p === '/plans/12/health').length;
+    const before = healthCalls();
+    const moved = sample().map(t => (t.id === 1 ? { ...t, due_date: D(1), last_scheduled_date: undefined } : t));
+    rerender(<PlanDetailView planKey="plan:12" tasks={moved} lists={fx.lists} apiPlans={[plan]}
+      reload={reload} onBack={vi.fn()} goWizard={vi.fn()} adjustPlan={vi.fn()} />);
+    await waitFor(() => expect(healthCalls()).toBeGreaterThan(before));
   });
 });

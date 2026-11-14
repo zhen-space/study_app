@@ -6,6 +6,10 @@ import * as fx from './fixtures';
 import { today, addDays } from '../tt/helpers';
 
 vi.mock('../api', () => ({ api: vi.fn() }));
+// 長按需要真實等待 450ms 以上；機器忙碌時預設 5 秒的單測上限與 1 秒的 waitFor 不夠。
+vi.setConfig({ testTimeout: 30000 });
+const { configure } = await import('@testing-library/react');
+configure({ asyncUtilTimeout: 5000 });
 const { api } = await import('../api');
 const Tasks = (await import('../tt/Tasks')).default;
 
@@ -40,6 +44,9 @@ async function longPressDrag(title, dropDate, { release = true } = {}) {
   const el = row(title);
   fireEvent.touchStart(el, { touches: [{ clientX: 40, clientY: 40 }] });
   await wait(500);
+  // 機器忙碌時拖曳狀態可能晚一點才渲染：等到出現拖曳提示（最多 1.5 秒）再移動手指；
+  // 不該啟動拖曳的情況就等滿後照樣送出事件，由呼叫端斷言沒有拖曳。
+  for (let i = 0; i < 10 && !screen.queryByText('拖到要移動的日期分區後放開'); i++) await wait(150);
   document.elementFromPoint = () => document.querySelector(`[data-drop-date="${dropDate}"]`);
   fireEvent.touchMove(el, { touches: [{ clientX: 40, clientY: 400 }] });
   if (release) fireEvent.touchEnd(el, { touches: [] });
@@ -311,5 +318,32 @@ describe('375px 長按拖曳改日期', () => {
     await longPressDrag('沒有日期', TD);
     expect(writes()).toHaveLength(1);
     expect(find).toHaveValue('沒有');
+  });
+});
+
+describe('任務清單：不靠長按的改日期與提示', () => {
+  it('可移動的任務有「改日期」按鈕；計畫任務沒有；清單附近有長按提示', async () => {
+    api.mockResolvedValue({});
+    mount();
+    expect(screen.getByText('長按任務可移動日期')).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: '改「計畫過去安排」的日期' })).toBeNull();
+    const btn = screen.getByRole('button', { name: '改「今天要做」的日期' });
+    btn.focus();
+    expect(document.activeElement).toBe(btn);
+    fireEvent.click(btn);
+    // 按鈕不會同時打開任務明細。
+    expect(document.querySelector('.detail')).toBeNull();
+    const sheet = await screen.findByRole('dialog', { name: '移到其他日期' });
+    fireEvent.change(within(sheet).getByLabelText('日期'), { target: { value: D(3) } });
+    await act(async () => { fireEvent.click(within(sheet).getByRole('button', { name: '移到這一天' })); });
+    expect(writes()).toEqual([['/tasks/6', { method: 'PATCH', body: { due_date: D(3), due_time: null } }]]);
+  });
+
+  it('拖曳 overlay 不進無障礙樹，拿起時另以 live region 宣告', async () => {
+    mount();
+    await longPressDrag('沒有日期', TD, { release: false });
+    expect(screen.getByText('拖到要移動的日期分區後放開')).toHaveAttribute('aria-hidden', 'true');
+    expect(screen.getByRole('status')).toHaveTextContent('已拿起「沒有日期」');
+    fireEvent.touchCancel(row('沒有日期'), { touches: [] });
   });
 });

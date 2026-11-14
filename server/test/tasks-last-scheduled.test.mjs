@@ -56,3 +56,45 @@ test('GET /tasks 替「過去排過、active 版本已無安排」的未完成�
     await stop();
   }
 });
+
+test('GET /plans/:id/health 把「尚未安排」精確分成已逾期與真正從未安排（互斥，與計畫明細一致）', async () => {
+  const { base, H, stop, dbFile } = await startServer();
+  const db = createClient({ url: 'file:' + dbFile });
+  try {
+    const userId = Number((await db.execute('SELECT id FROM users ORDER BY id DESC LIMIT 1')).rows[0].id);
+    const plan = Number((await db.execute({ sql: "INSERT INTO plans (user_id,name,status,target_date) VALUES (?,?,'active',?)", args: [userId, '段考', day(30)] })).lastInsertRowid);
+    const mk = async (title, extra = {}) => Number((await db.execute({
+      sql: 'INSERT INTO tasks (user_id,title,plan_id,due_date,deadline_date) VALUES (?,?,?,?,?)',
+      args: [userId, title, plan, extra.due_date ?? null, extra.deadline_date ?? null],
+    })).lastInsertRowid);
+    const past = await mk('前天的進度');                         // 過去排過、active 已無安排 → 已逾期
+    const deadlinePast = await mk('截止已過', { deadline_date: day(-1) }); // 從沒排過但截止已過 → 已逾期
+    const never = await mk('從沒排過');                           // 真正尚未安排
+    const tomorrow = await mk('明天的進度', { due_date: day(1) }); // 有安排 → 都不算
+    const version = async (no, blocks) => {
+      const v = Number((await db.execute({
+        sql: "INSERT INTO schedule_versions (user_id,version_no,source,effective_from,block_count) VALUES (?,?,'initial',?,?)",
+        args: [userId, no, day(-3), blocks.length],
+      })).lastInsertRowid);
+      for (const [taskId, date] of blocks) {
+        await db.execute({ sql: 'INSERT INTO scheduled_blocks (user_id,schedule_version_id,task_id,date) VALUES (?,?,?,?)', args: [userId, v, taskId, date] });
+      }
+      return v;
+    };
+    await version(1, [[past, day(-2)], [tomorrow, day(1)]]);
+    const active = await version(2, [[tomorrow, day(1)]]);
+    await db.execute({ sql: 'INSERT OR REPLACE INTO user_schedule_state (user_id,active_version_id) VALUES (?,?)', args: [userId, active] });
+
+    const health = await fetch(`${base}/plans/${plan}/health`, { headers: H }).then(r => r.json());
+    const reason = type => health.reasons.find(r => r.type === type);
+    assert.equal(reason('overdue').count, 2);
+    assert.equal(reason('overdue').message, '有 2 項已逾期');
+    assert.equal(reason('unplaced').count, 1);
+    assert.equal(reason('unplaced').message, '有 1 項尚未安排');
+    assert.equal(health.pending, 4);
+    void never;
+  } finally {
+    db.close();
+    await stop();
+  }
+});

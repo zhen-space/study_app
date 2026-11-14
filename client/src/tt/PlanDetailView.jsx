@@ -102,6 +102,11 @@ export default function PlanDetailView({ planKey, tasks, lists, apiPlans = [], r
   const [moveState, setMoveState] = useState({});
   const moveBusyRef = useRef(new Set());
   const moveUnknownRef = useRef(new Set());
+  const pendingSyncRef = useRef(new Set());
+  // 拖曳的 overlay 只是視覺；狀態另外用這個 live region 宣告給 VoiceOver。
+  const [announce, setAnnounce] = useState('');
+  const [syncBusy, setSyncBusy] = useState(false);
+  const [syncError, setSyncError] = useState('');
   const [pickFor, setPickFor] = useState(null);
   const movePlanTaskRef = useRef(null);
   const { drag, start: startDrag, justEnded } = useTouchDrag((t, target) => movePlanTaskRef.current?.(t, target));
@@ -299,10 +304,20 @@ export default function PlanDetailView({ planKey, tasks, lists, apiPlans = [], r
   //   ・分成多段的任務不支援拖曳（不知道要搬哪一段），請用日期按鈕逐段調整
   const todayStr = today();
   const futureBlocksOf = t => blocksForTask(sched.blocks, t.id).filter(b => b.date >= todayStr);
+  // 寫入後權威資料（任務 mirror 與 active 版本）還沒成功重新載入、或結果無法確認時，
+  // 手上的 base_version 可能已過期：整個計畫都不能再移動，直到重新載入成功。
+  const syncBlocked = () => pendingSyncRef.current.size > 0 || moveUnknownRef.current.size > 0;
   const canMovePlanTask = t => workable && !readOnly && sched.active && sched.version?.id != null
     && !t.completed && futureBlocksOf(t).length <= 1
-    && !moveBusyRef.current.has(t.id) && !moveUnknownRef.current.has(t.id);
+    && !moveBusyRef.current.has(t.id) && !syncBlocked();
   const clearPlanMove = id => setPlanMoves(m => { const next = { ...m }; delete next[id]; return next; });
+  const clearMoveState = ids => setMoveState(st => Object.fromEntries(Object.entries(st).filter(([k]) => !ids.has(String(k)))));
+  // 兩邊都嘗試（任務＋active 版本），只有兩邊都成功才算同步完成。
+  const syncAuthoritative = async () => {
+    const results = await Promise.allSettled([reload(), sched.reload({ strict: true })]);
+    const failed = results.find(r => r.status === 'rejected');
+    return failed ? { ok: false, error: failed.reason?.message || '' } : { ok: true };
+  };
   async function movePlanTask(t, target) {
     if (target === PICK_DATE) { if (canMovePlanTask(t)) setPickFor(t); return; }
     const date = target;
@@ -316,19 +331,25 @@ export default function PlanDetailView({ planKey, tasks, lists, apiPlans = [], r
     moveBusyRef.current.add(t.id);
     setMoveState(st => ({ ...st, [t.id]: { busy: true } }));
     setPlanMoves(m => ({ ...m, [t.id]: date }));
+    setAnnounce(`正在把「${rowTitle(t)}」移到 ${md(date)}`);
     const fail = message => {
       clearPlanMove(t.id);
       moveBusyRef.current.delete(t.id);
       setMoveState(st => ({ ...st, [t.id]: { error: message } }));
+      setAnnounce(message);
     };
     try {
       await api('/schedule/manual', { method: 'POST', body: { base_version_id: base, moves: [move] } });
     } catch (e) {
       if (e.status >= 400 && e.status < 500) {
         if (e.status === 409 && !e.conflicts?.length) {
-          // stale：別處已更新排程。只讀回最新 active 版本，使用者再拖一次才會以新版本送出。
+          // stale：別處已更新排程。只讀回最新 active 版本，使用者再拖一次才會以新版本送出；
+          // 讀不到就鎖住，不能拿舊 base 再送。
           fail('排程已在別處更新，已載入最新安排，請再拖一次。');
-          await sched.reload();
+          try { await sched.reload({ strict: true }); } catch {
+            pendingSyncRef.current.add(t.id);
+            setMoveState(st => ({ ...st, [t.id]: { sync: true, error: '排程已在別處更新，但最新安排暫時無法載入；重新載入成功前不能再移動。' } }));
+          }
           return;
         }
         fail(e.conflicts?.length ? e.conflicts.map(conflictText).join('；') : (e.message || '這一天放不下'));
@@ -345,29 +366,39 @@ export default function PlanDetailView({ planKey, tasks, lists, apiPlans = [], r
         moveBusyRef.current.delete(t.id);
         moveUnknownRef.current.add(t.id);
         setMoveState(st => ({ ...st, [t.id]: { unknown: true, error: '無法確認日期是否已更新，請重新載入；確認前請勿再次移動。' } }));
+        setAnnounce('無法確認日期是否已更新，請重新載入。');
         return;
       }
     }
-    try {
-      await reload();
-      await sched.reload();
-      setMoveState(st => { const next = { ...st }; delete next[t.id]; return next; });
-    } catch {
-      setMoveState(st => ({ ...st, [t.id]: { error: '日期已更新，但畫面暫時無法重新載入。' } }));
-    }
+    // 已寫入：任務與 active 版本都要重新載入成功，才放掉樂觀位置與鎖定。
+    const synced = await syncAuthoritative();
     moveBusyRef.current.delete(t.id);
+    if (synced.ok) {
+      clearPlanMove(t.id);
+      clearMoveState(new Set([String(t.id)]));
+      setAnnounce(`已把「${rowTitle(t)}」移到 ${md(date)}`);
+    } else {
+      pendingSyncRef.current.add(t.id);
+      setMoveState(st => ({ ...st, [t.id]: { sync: true, error: '日期已更新，但最新安排暫時無法載入；重新載入成功前不能再移動。' } }));
+      setAnnounce('日期已更新，但最新安排暫時無法載入，請重新載入。');
+    }
   }
   movePlanTaskRef.current = movePlanTask;
   const moveUnknown = Object.values(moveState).some(st => st.unknown);
-  const confirmUnknownMoves = async () => {
-    try {
-      await reload();
-      await sched.reload();
-      moveUnknownRef.current.clear();
-      setMoveState(st => Object.fromEntries(Object.entries(st).filter(([, v]) => !v.unknown)));
-    } catch (e) {
-      setMoveState(st => Object.fromEntries(Object.entries(st).map(([k, v]) => [k, v.unknown ? { ...v, error: e.message || '仍然無法重新載入，請稍後再試。' } : v])));
-    }
+  const moveSyncPending = Object.values(moveState).some(st => st.sync);
+  // 重試權威刷新（結果未知與刷新失敗共用）：兩邊都成功才解鎖並放掉樂觀位置。
+  const retrySync = async () => {
+    if (syncBusy) return;
+    setSyncBusy(true); setSyncError('');
+    const r = await syncAuthoritative();
+    setSyncBusy(false);
+    if (!r.ok) { setSyncError(r.error || '仍然無法重新載入，請稍後再試。'); return; }
+    const ids = new Set([...pendingSyncRef.current, ...moveUnknownRef.current].map(String));
+    pendingSyncRef.current.clear();
+    moveUnknownRef.current.clear();
+    setPlanMoves(m => Object.fromEntries(Object.entries(m).filter(([k]) => !ids.has(k))));
+    clearMoveState(ids);
+    setAnnounce('已載入最新安排');
   };
 
   const toggle = async t => {
@@ -686,28 +717,38 @@ export default function PlanDetailView({ planKey, tasks, lists, apiPlans = [], r
     const block = t.completed || readOnly || planMoves[t.id] ? null : blocksForTask(sched.blocks, t.id)[0];
     const movable = canMovePlanTask(t);
     const ms = moveState[t.id];
-    const overdueTag = od && <span style={{ color: 'var(--danger)', fontWeight: 600, marginRight: 6 }}>已逾期</span>;
-    const pickButton = movable && !date && (
-      <button className="row-adjust" style={{ marginLeft: 6 }} aria-label={`替「${rowTitle(t)}」選擇日期`}
-        onClick={() => { if (!justEnded()) setPickFor(t); }}>選日期</button>
+    // 375px：狀態、原定日期與「改日期／選日期」放在標題下方並可換行，不擠壓標題；
+    // 右側只留既有的時間調整按鈕。每個可移動的任務都有不靠長按的改日期按鈕（鍵盤／VoiceOver）。
+    const moveButton = movable && (
+      <button type="button" className="row-move"
+        aria-label={date ? `改「${rowTitle(t)}」的日期` : `替「${rowTitle(t)}」選擇日期`}
+        onClick={() => { if (!justEnded()) setPickFor(t); }}>{date ? '改日期' : '選日期'}</button>
+    );
+    const meta = (od || !date || movable) && (
+      <span className="row-meta">
+        {od && <span style={{ color: 'var(--danger)', fontWeight: 600 }}>已逾期</span>}
+        {!date && (od
+          ? <span>{od === t.deadline_date ? '截止' : '原定'} {md(od)}</span>
+          : <span>尚未安排</span>)}
+        {moveButton}
+      </span>
     );
     const trailing = date
-      ? <>{overdueTag}{block
+      ? (block && !syncBlocked()
           ? <button className="row-adjust" aria-label={`調整「${rowTitle(t)}」的時間`}
               style={od ? { color: 'var(--danger)' } : undefined}
               onClick={() => { if (!justEnded()) setAdjustBlock({ block, task: t }); }}>{md(date)}</button>
-          : <span style={od ? { color: 'var(--danger)' } : undefined}>{md(date)}</span>}</>
-      : od
-        ? <>{overdueTag}<span className="ui-meta">{od === t.deadline_date ? '截止' : '原定'} {md(od)}</span>{pickButton}</>
-        : <><span className="ui-meta">尚未安排</span>{pickButton}</>;
+          : <span style={od ? { color: 'var(--danger)' } : undefined}>{md(date)}</span>)
+      : null;
     return (
-      <DraggableRow key={t.id} onLongPress={movable ? () => startDrag(t) : undefined} dragging={drag?.id === t.id}>
+      <DraggableRow key={t.id} onLongPress={movable ? () => { startDrag(t); setAnnounce(`已拿起「${rowTitle(t)}」，拖到日期後放開`); } : undefined} dragging={drag?.id === t.id}>
         <ListRow muted={!!t.completed}
           leading={<input type="checkbox" aria-label={t.title} checked={!!t.completed}
-            disabled={readOnly || !!taskToggleState?.committed || !!ms?.busy || !!ms?.unknown
+            disabled={readOnly || !!taskToggleState?.committed || !!ms?.busy || !!ms?.unknown || !!ms?.sync
               || (taskToggleState?.taskId === t.id && taskToggleBusyRef.current)}
             onChange={() => { if (!readOnly) toggle(t); }} />}
           title={rowTitle(t)}
+          subtitle={meta || null}
           trailing={trailing}
         />
         {ms?.error && <div role="alert" className="ui-error" style={{ margin: '4px 8px 0' }}>{ms.error}</div>}
@@ -896,7 +937,12 @@ export default function PlanDetailView({ planKey, tasks, lists, apiPlans = [], r
               <Icon name="wizard" size={15} style={{ color: 'var(--accent)' }} />
               <b>目前安排需要調整</b>
             </div>
-            <div className="ui-meta" style={{ marginTop: 2 }}>{health.reasons[0].message}。</div>
+            {/* 已逾期與尚未安排是兩件事，都要寫出來，不能只顯示第一個原因。 */}
+            <div className="ui-meta" style={{ marginTop: 2 }}>
+              {(health.reasons.some(r => r.type === 'overdue' || r.type === 'unplaced')
+                ? health.reasons.filter(r => r.type === 'overdue' || r.type === 'unplaced')
+                : health.reasons.slice(0, 1)).map(r => r.message).join('、')}。
+            </div>
             <div className="row" style={{ marginTop: 'var(--sp-3)' }}>
               <Button variant="primary" size="sm" onClick={() => setReplan(true)}>讓 AI 重新安排</Button>
             </div>
@@ -943,11 +989,16 @@ export default function PlanDetailView({ planKey, tasks, lists, apiPlans = [], r
             </div>
           </div>
         )}
-        {moveUnknown && (
+        {(moveUnknown || moveSyncPending) && (
           <SurfaceCard tone="accent" style={{ marginTop: 'var(--sp-3)' }}>
-            <div role="alert"><b>無法確認日期是否已更新</b></div>
-            <div className="ui-meta" style={{ marginTop: 'var(--sp-1)' }}>為避免重複送出，請先重新載入最新安排。</div>
-            <Button size="sm" style={{ marginTop: 'var(--sp-3)' }} onClick={confirmUnknownMoves}>重新載入確認</Button>
+            <div role="alert"><b>{moveUnknown ? '無法確認日期是否已更新' : '日期已更新，但最新安排暫時無法載入'}</b></div>
+            <div className="ui-meta" style={{ marginTop: 'var(--sp-1)' }}>
+              {moveUnknown ? '為避免重複送出，請先重新載入最新安排。' : '重新載入成功前，暫時不能再移動任務。'}
+            </div>
+            {syncError && <div className="ui-error" style={{ marginTop: 'var(--sp-2)' }}>{syncError}</div>}
+            <Button size="sm" style={{ marginTop: 'var(--sp-3)' }} disabled={syncBusy} onClick={retrySync}>
+              {syncBusy ? '重新載入中…' : '重新載入確認'}
+            </Button>
           </SurfaceCard>
         )}
 
@@ -1348,7 +1399,7 @@ export default function PlanDetailView({ planKey, tasks, lists, apiPlans = [], r
       {/* 「讓 AI 重新安排」是整份重排；這一支是使用者自己動某一格。
           兩者都走 2C persistence，只是決策者不同。 */}
       {drag && (
-        <div role="status" aria-live="polite" style={dragHintStyle}>
+        <div aria-hidden="true" style={dragHintStyle}>
           <div className="ui-meta">{DRAG_HINT}</div>
           <div className="row" style={{ gap: 8, marginTop: 8 }}>
             {[[todayStr, '今天'], [addDays(todayStr, 1), '明天'], [PICK_DATE, '其他日期…']].map(([d, label]) => (
@@ -1357,6 +1408,7 @@ export default function PlanDetailView({ planKey, tasks, lists, apiPlans = [], r
           </div>
         </div>
       )}
+      <div role="status" aria-live="polite" className="sr-only">{announce}</div>
       {pickFor && <DatePickSheet title={rowTitle(pickFor)} initial={effDate(pickFor) || ''}
         onClose={() => setPickFor(null)}
         onPick={d => { const t = pickFor; setPickFor(null); movePlanTask(t, d); }} />}

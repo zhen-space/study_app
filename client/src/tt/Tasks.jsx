@@ -239,7 +239,7 @@ function RepeatPicker({ value, dueDate, missPolicy, onChange }) {
   );
 }
 
-function TaskRow({ t, lists, sel, onSel, onToggle, onDragStart, onDropOn, onSwipeDelete, onLongPressDrag, dragging = false, mutationBusy = false, mutationError = '' }) {
+function TaskRow({ t, lists, sel, onSel, onToggle, onDragStart, onDropOn, onSwipeDelete, onLongPressDrag, onMoveDate, dragging = false, mutationBusy = false, mutationError = '' }) {
   const list = lists.find(l => l.id === t.list_id);
   const pastDue = t.due_date && t.due_date < today() && !t.completed;
   // 已逾期：日期／截止日／最後安排日早於今天且未完成（含 due_date 已因排程歷史變成 NULL 的計畫任務）。
@@ -336,12 +336,15 @@ function TaskRow({ t, lists, sel, onSel, onToggle, onDragStart, onDropOn, onSwip
                 「讀書計劃」標籤，那一格寬度換不到任何資訊，卻把長標題擠成好幾行。 */}
             {t.tags.map(tag => <span key={tag} className="chip chip--tag">#{tag}</span>)}
           </div>
-          {(list || t.due_date || overdueDay) && (
+          {(list || t.due_date || overdueDay || onMoveDate) && (
             <div className="trow-line2">
               {list && <span className="trow-subject"><span className="trow-swatch" style={{ background: list.color }} />{list.name}</span>}
               {overdueDay && <span className="trow-status" style={{ color: 'var(--red)', fontWeight: 600 }}>已逾期</span>}
               {overdueDay && !t.due_date && <span className="trow-due" style={{ color: 'var(--red)' }}>{t.deadline_date === overdueDay ? '截止' : '原定'} {relativeDay(overdueDay, today())}</span>}
               {t.due_date && <span className="trow-due" style={overdue ? { color: 'var(--red)' } : missedProgress ? { color: 'var(--warning, #b7791f)' } : undefined} title={missedProgress ? '未完成進度（原定日期已過）' : undefined}>{relativeDay(t.due_date, today())}{t.due_time ? ' ' + t.due_time : ''}</span>}
+              {/* 不靠長按也能改日期（鍵盤／VoiceOver）；長按拖曳只是捷徑。 */}
+              {onMoveDate && <button type="button" className="row-move" aria-label={`改「${t.title}」的日期`}
+                onClick={e => { e.stopPropagation(); onMoveDate(t); }}>改日期</button>}
             </div>
           )}
         </div>
@@ -1344,7 +1347,13 @@ export default function Tasks({ view, tasks, lists, filters, habits = [], reload
     if (target === PICK_DATE) { if (canMoveDate(t)) setPickFor(t); return; }
     moveTaskDate(t, target);
   });
-  const startTouchDrag = t => { if (canMoveDate(t)) startTouchDrag0(t); };
+  // 拖曳 overlay 只是視覺；狀態另外用 sr-only live region 宣告。
+  const [dragAnnounce, setDragAnnounce] = useState('');
+  const startTouchDrag = t => {
+    if (!canMoveDate(t)) return;
+    startTouchDrag0(t);
+    setDragAnnounce(`已拿起「${t.title}」，拖到日期分區後放開`);
+  };
   const selectFromRow = x => { if (justEnded()) return; selectTask(x); };
   // 拖曳中讓「今天／明天／無日期」即使沒有任務也出現，當作放置目標。
   const dropKeepEmpty = touchDrag ? [today(), addDays(today(), 1), ''] : [];
@@ -1364,6 +1373,9 @@ export default function Tasks({ view, tasks, lists, filters, habits = [], reload
       )}
       {collapsedGroups.size > 0 && (
         <button type="button" className="btn sm ghost" style={{ marginLeft: 'auto' }} onClick={expandAllGroups}>展開全部分組</button>
+      )}
+      {dateDragEnabled && shown.some(canMoveDate) && (
+        <span className="ui-meta" style={{ flexBasis: '100%', fontSize: 12 }}>長按任務可移動日期</span>
       )}
     </div>
   ) : null;
@@ -2037,7 +2049,8 @@ export default function Tasks({ view, tasks, lists, filters, habits = [], reload
             </div>
           )}
           {listControls}
-          {touchDrag && <div role="status" aria-live="polite" className="ui-meta" style={dragHintStyle}>{DRAG_HINT}</div>}
+          {touchDrag && <div aria-hidden="true" className="ui-meta" style={dragHintStyle}>{DRAG_HINT}</div>}
+          <div role="status" aria-live="polite" className="sr-only">{dragAnnounce}</div>
           {view.type === 'trash'
             ? shown.map(t => (
               <div key={t.id}>
@@ -2079,6 +2092,7 @@ export default function Tasks({ view, tasks, lists, filters, habits = [], reload
                     onDragStart={canDrag ? setDragT : undefined}
                     onDropOn={canDrag ? x => dropOn(x, sorted) : undefined}
                     onLongPressDrag={canMoveDate(t) ? startTouchDrag : undefined} dragging={touchDrag?.id === t.id}
+                    onMoveDate={canMoveDate(t) ? x => { if (!justEnded() && canMoveDate(x)) setPickFor(x); } : undefined}
                     onSwipeDelete={del} mutationBusy={pendingIds.has(t.id)} mutationError={mutationErrors[t.id]} />)}
                 </div>
               );

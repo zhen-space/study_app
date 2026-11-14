@@ -4,7 +4,7 @@ import { requireAuth } from '../middleware/auth.js';
 import { classifyScheduleHealth } from '../schedule/health.js';
 import { todayTW } from '../util/date.js';
 import { findSelfCollisions } from '../schedule/feasibility.js';
-import { transitionPlanLifecycle } from '../schedule/persistence.js';
+import { transitionPlanLifecycle, lastScheduledDates } from '../schedule/persistence.js';
 import { parseRetainChoice } from '../schedule/plan-cleanup.js';
 
 // Plan＝有目標、範圍、期限與生命週期的工作單位。
@@ -108,7 +108,7 @@ router.get('/plans/:id/health', async (req, res) => {
   if (!plan) return res.status(404).json({ error: '找不到這個計畫' });
   const today = todayTW();
   const [tasks, state] = await Promise.all([
-    q.all('SELECT id,due_date,completed,cancelled,deleted,estimated_minutes FROM tasks WHERE user_id=? AND plan_id=?', [req.userId, plan.id]),
+    q.all('SELECT id,due_date,deadline_date,completed,cancelled,deleted,estimated_minutes FROM tasks WHERE user_id=? AND plan_id=?', [req.userId, plan.id]),
     q.get('SELECT active_version_id FROM user_schedule_state WHERE user_id=?', [req.userId]),
   ]);
   // paused／completed／ended／archived Plan 是管理中的資料，不是未來排程工作量；
@@ -121,8 +121,17 @@ router.get('/plans/:id/health', async (req, res) => {
     ? activeBlocks.filter(b => Number(b.plan_id) === Number(plan.id) && !b.deleted && !b.completed && !b.cancelled)
     : [];
   const blockIds = new Set(planBlocks.map(b => Number(b.task_id)));
-  const overdue = pending.filter(t => t.due_date && t.due_date < today).length;
-  const unplaced = state?.active_version_id == null ? pending.filter(t => !t.due_date).length : pending.filter(t => !blockIds.has(Number(t.id))).length;
+  // 已逾期與尚未安排互斥，和計畫明細同一套定義：
+  //   ・已逾期：未完成，且 due_date／deadline_date 早於今天，或 active 版本已無安排、
+  //     最後一次安排日（歷史版本）早於今天——過去排過卻沒做完，不是「尚未安排」
+  //   ・尚未安排：active 版本沒有安排、也不是已逾期（從沒排過，或排過的日子還沒到卻被移出）
+  const hasActive = t => (state?.active_version_id == null ? !!t.due_date : blockIds.has(Number(t.id)));
+  const lastScheduled = await lastScheduledDates(req.userId,
+    pending.filter(t => !hasActive(t)).map(t => t.id), state?.active_version_id ?? null);
+  const isOverdue = t => (t.due_date && t.due_date < today) || (t.deadline_date && t.deadline_date < today)
+    || (!hasActive(t) && !!lastScheduled.get(Number(t.id)) && lastScheduled.get(Number(t.id)) < today);
+  const overdue = pending.filter(isOverdue).length;
+  const unplaced = pending.filter(t => !hasActive(t) && !isOverdue(t)).length;
   const lateTarget = plan.target_date ? pending.filter(t => t.due_date && t.due_date > plan.target_date).length : 0;
   const deadlineViolation = activeBlocks.filter(b => Number(b.plan_id) === Number(plan.id) && b.deadline_date && b.date > b.deadline_date).length;
   const collision = findSelfCollisions(planBlocks.filter(b => !b.deleted && !b.completed && !b.cancelled)).size > 0;

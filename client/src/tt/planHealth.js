@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
 import { api } from '../api';
-import { today } from './helpers';
+import { today, overdueSince } from './helpers';
 
 // 「這個計畫需要調整嗎？」的判斷。
 //
@@ -32,7 +32,8 @@ export function planHealth(plan, raw) {
   const reasons = [];
 
   // A. 過期未完成：目前唯一在任何情況下都可靠的訊號
-  const overdue = pending.filter(t => t.due_date && t.due_date < td);
+  // 與計畫明細同一套定義：含 due_date 已因排程歷史變成 NULL、但最後安排日已過的任務。
+  const overdue = pending.filter(t => overdueSince(t, td));
   if (overdue.length) reasons.push({ type: 'overdue', count: overdue.length, message: REASON_TEXT.overdue(overdue.length) });
 
   // B. 已經排到目標日之後：只有在計畫真的有設目標日時才判斷，
@@ -94,12 +95,15 @@ export function usePlansNeedingAdjustment(plans) {
 export function usePlanScheduleHealth(plan, raw) {
   const id = plan?.isLegacy || plan?.planId == null ? null : plan.planId;
   const [health, setHealth] = useState(null);
+  // 任務的日期／完成狀態改了（例如拖曳改期、勾選完成後重新載入），health 也要重抓，
+  // 不然卡片會停在舊的「已逾期／尚未安排」數字。
+  const taskKey = (plan?.items || []).map(t => `${t.id}:${t.due_date || ''}:${t.completed ? 1 : 0}`).join(',');
   useEffect(() => {
     let alive = true;
     if (!id) { setHealth(null); return undefined; }
     api(`/plans/${id}/health`).then(x => { if (alive) setHealth(x); }).catch(() => { if (alive) setHealth(null); });
     return () => { alive = false; };
-  }, [id]);
+  }, [id, taskKey]);
   if (!health || typeof health.status !== 'string') return planHealth(plan, raw);
   if (!['needs_replan', 'blocked'].includes(health.status) || !health.pending) return null;
   return { ...health, planId: id, planKey: plan?.key, name: plan?.name, needsAdjustment: true };

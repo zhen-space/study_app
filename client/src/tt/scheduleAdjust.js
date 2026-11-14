@@ -14,11 +14,15 @@ import { api } from '../api';
 export function useActiveSchedule() {
   const [state, setState] = useState({ loading: true, active: false, version: null, blocks: [] });
 
-  const load = useCallback(async () => {
+  // strict：寫入後的權威刷新。讀不到就丟出錯誤並保留最後已知的版本，讓呼叫端維持
+  // 鎖定、提供重試，不能把「讀取失敗」誤當成「已同步」或「沒有排程」。
+  const load = useCallback(async ({ strict = false } = {}) => {
     try {
       const r = await api('/schedule/active');
+      if (strict && (!r || typeof r.active !== 'boolean')) throw new Error('排程資料格式不正確');
       setState({ loading: false, ...r });
-    } catch {
+    } catch (e) {
+      if (strict) throw e;
       // 讀不到就當作「還沒進入 2C」：畫面照舊顯示，只是沒有調整入口。
       // 這裡不跳錯誤訊息——使用者只是在看今天要做什麼。
       setState({ loading: false, active: false, version: null, blocks: [] });
