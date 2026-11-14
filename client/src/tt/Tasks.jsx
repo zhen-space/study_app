@@ -5,6 +5,8 @@ import { relativeDay, zhDateShort } from './dateSemantics';
 import VocabCard from './VocabCard';
 import MemoCard from './MemoCard';
 import { SegmentedControl } from './ui';
+import DatePickSheet from './DatePickSheet';
+import { LONG_PRESS_MS, LONG_PRESS_SLOP, PICK_DATE, DRAG_HINT, dragHintStyle, dropZoneStyle, useTouchDrag } from './touchDrag';
 
 const WDC = '日一二三四五六';
 
@@ -236,11 +238,6 @@ function RepeatPicker({ value, dueDate, missPolicy, onChange }) {
     </div>
   );
 }
-
-// 長按多久才進入拖曳：比一般點擊長、又不會久到讓人以為沒反應（iOS 約 0.5 秒）。
-const LONG_PRESS_MS = 450;
-// 長按期間手指移動超過這個距離就視為捲動或左滑，取消拖曳。
-const LONG_PRESS_SLOP = 8;
 
 function TaskRow({ t, lists, sel, onSel, onToggle, onDragStart, onDropOn, onSwipeDelete, onLongPressDrag, dragging = false, mutationBusy = false, mutationError = '' }) {
   const list = lists.find(l => l.id === t.list_id);
@@ -813,11 +810,25 @@ export default function Tasks({ view, tasks, lists, filters, habits = [], reload
     pickTagFilter('');
     setQuickFind('');
   };
-  // 排序方式記起來：下次開啟還是同一個（default | time | priority | title）
+  // 分區方式（依日期／依科目）與組內排序分開記：以前同一個選單同時放「依科目」與
+  // 「照科目分堆」、「預設」與「依時間」，語意重複。舊偏好 taskSort=subjectGroup 視為依科目。
+  const [groupMode, setGroupMode] = useState(() => {
+    try {
+      const saved = localStorage.getItem('taskGroupMode');
+      if (saved === 'date' || saved === 'subject') return saved;
+      return localStorage.getItem('taskSort') === 'subjectGroup' ? 'subject' : 'date';
+    } catch { return 'date'; }
+  });
+  const pickGroupMode = v => { setGroupMode(v); try { localStorage.setItem('taskGroupMode', v); } catch {} };
+  // 組內排序（只在依日期時出現）：time | priority | title，記起來下次開啟還是同一個。
   const [sortBy, setSortBy] = useState(() => {
-    try { return localStorage.getItem('taskSort') || 'default'; } catch { return 'default'; }
+    try {
+      const saved = localStorage.getItem('taskSort');
+      return ['time', 'priority', 'title'].includes(saved) ? saved : 'time';
+    } catch { return 'time'; }
   });
   const pickSort = v => { setSortBy(v); try { localStorage.setItem('taskSort', v); } catch {} };
+  const bySubject = groupMode === 'subject' && !['completed', 'trash'].includes(view.type);
   const toggleGroup = label => setCollapsedGroups(groups => {
     const next = new Set(groups);
     if (next.has(label)) next.delete(label);
@@ -837,21 +848,13 @@ export default function Tasks({ view, tasks, lists, filters, habits = [], reload
   const byLesson = new Intl.Collator('zh-Hant', { numeric: true }).compare;
 
   const sortFns = {
-    default: defaultSort, // 依時間，同一天依課序
-    // 「依時間」是可持久化的正式選項；先前漏掉這個 key，返回／刷新後 select 雖仍
-    // 顯示依時間，實際卻直接沿用 API 陣列順序，清單會隨回應順序突然跳動。
-    time: defaultSort,
+    time: defaultSort, // 依時間，同一天依課序
     priority: (a, b) => b.priority - a.priority || defaultSort(a, b),
-    title: (a, b) => a.title.localeCompare(b.title, 'zh-Hant'),
-    // 依科目：每一組（已逾期／今天／某一天）裡面先照科目分堆，同一科內照課名順序
-    subject: (a, b) =>
-      ((subjOrd[String(a.list_id)] ?? 99) - (subjOrd[String(b.list_id)] ?? 99))
-      || byLesson(a.title, b.title)
-      || defaultSort(a, b),
-    // 照科目分堆：科目已經是分組標題了，組內只要照課名排
-    subjectGroup: (a, b) => byLesson(a.title, b.title) || defaultSort(a, b),
+    title: (a, b) => a.title.localeCompare(b.title, 'zh-Hant') || defaultSort(a, b),
   };
-  const applySort = list => sortFns[sortBy] ? [...list].sort(sortFns[sortBy]) : list;
+  // 依科目：科目已經是分組標題了，組內只要照課名排。
+  const subjectSort = (a, b) => byLesson(a.title, b.title) || defaultSort(a, b);
+  const applySort = list => [...list].sort(bySubject ? subjectSort : sortFns[sortBy]);
   // 已完成是歷史時間線，不應承接「任務」頁記住的科目分堆或優先級排序。
   // completed_at 是伺服器完成任務時寫入的 ISO 時間；舊資料沒有時間時以 id 新到舊穩定退化。
   const sortCompleted = list => [...list].sort((a, b) =>
@@ -1286,7 +1289,7 @@ export default function Tasks({ view, tasks, lists, filters, habits = [], reload
   // 只動一般任務的 due_date／due_time：計畫任務的日期屬於 ScheduleVersion（generic PATCH
   // 會被伺服器以 409 拒絕），學校作業的 deadline 是老師給的期限，都不能用拖曳改。
   // 明細開著的那一筆也不行：明細自動儲存會把整份草稿（含舊 due_date）再送一次，蓋掉拖曳結果。
-  const dateDragEnabled = sortBy !== 'subjectGroup' && !['completed', 'trash'].includes(view.type);
+  const dateDragEnabled = !bySubject && !['completed', 'trash'].includes(view.type);
   const canMoveDate = t => dateDragEnabled && !t.completed && !t.deleted
     && t.plan_id == null && t.task_kind !== 'school_assignment'
     && t.id !== selId && !mutationIds.current.has(t.id) && !uncertainMutationIds.current.has(t.id);
@@ -1335,67 +1338,34 @@ export default function Tasks({ view, tasks, lists, filters, habits = [], reload
     }
     finishMutation(t.id);
   }
-  const moveTaskDateRef = useRef(moveTaskDate);
-  moveTaskDateRef.current = moveTaskDate;
-  // { id, target }：target 是手指下方分區的日期鍵（'' 為無日期，undefined 為不能放）。
-  const [touchDrag, setTouchDrag] = useState(null);
-  const touchDragRef = useRef(null);
-  // 放下後列會移到新分區（重新掛載），瀏覽器補的 click 落在新列上；短時間內不打開明細。
-  const dragEndedAt = useRef(0);
-  const selectFromRow = x => { if (Date.now() - dragEndedAt.current < 600) return; selectTask(x); };
-  function startTouchDrag(t) {
-    if (!canMoveDate(t)) return;
-    try { navigator.vibrate?.(10); } catch {}
-    touchDragRef.current = { task: t, target: undefined };
-    setTouchDrag({ id: t.id, target: undefined });
-  }
-  const dragging = !!touchDrag;
-  useEffect(() => {
-    if (!dragging) return undefined;
-    const targetAt = (x, y) => {
-      const el = typeof document.elementFromPoint === 'function' ? document.elementFromPoint(x, y) : null;
-      const zone = el?.closest?.('[data-drop-date]');
-      return zone ? zone.getAttribute('data-drop-date') : undefined;
-    };
-    // 拖曳中不讓頁面捲動；touchmove 需非 passive 才能 preventDefault。
-    const onMove = e => {
-      const cur = touchDragRef.current;
-      if (!cur) return;
-      if (e.cancelable) e.preventDefault();
-      const p = e.touches?.[0];
-      if (!p) return;
-      const target = targetAt(p.clientX, p.clientY);
-      if (target !== cur.target) {
-        touchDragRef.current = { ...cur, target };
-        setTouchDrag({ id: cur.task.id, target });
-      }
-    };
-    const onEnd = e => {
-      const cur = touchDragRef.current;
-      touchDragRef.current = null;
-      dragEndedAt.current = Date.now();
-      setTouchDrag(null);
-      if (e.type === 'touchend' && cur && cur.target !== undefined) moveTaskDateRef.current(cur.task, cur.target);
-    };
-    document.addEventListener('touchmove', onMove, { passive: false });
-    document.addEventListener('touchend', onEnd);
-    document.addEventListener('touchcancel', onEnd);
-    return () => {
-      document.removeEventListener('touchmove', onMove);
-      document.removeEventListener('touchend', onEnd);
-      document.removeEventListener('touchcancel', onEnd);
-    };
-  }, [dragging]);
+  // 拖到「其他日期…」：先開日期選擇器，選好才寫入。
+  const [pickFor, setPickFor] = useState(null);
+  const { drag: touchDrag, start: startTouchDrag0, justEnded } = useTouchDrag((t, target) => {
+    if (target === PICK_DATE) { if (canMoveDate(t)) setPickFor(t); return; }
+    moveTaskDate(t, target);
+  });
+  const startTouchDrag = t => { if (canMoveDate(t)) startTouchDrag0(t); };
+  const selectFromRow = x => { if (justEnded()) return; selectTask(x); };
   // 拖曳中讓「今天／明天／無日期」即使沒有任務也出現，當作放置目標。
   const dropKeepEmpty = touchDrag ? [today(), addDays(today(), 1), ''] : [];
-  // 「依日期／依科目」分區切換：沿用既有排序偏好（taskSort），依科目＝照科目分堆。
-  const groupModeToggle = !['trash', 'completed'].includes(view.type) && shown.length > 0 ? (
-    <SegmentedControl ariaLabel="分區方式" value={sortBy === 'subjectGroup' ? 'subject' : 'date'}
-      options={[{ value: 'date', label: '依日期' }, { value: 'subject', label: '依科目' }]}
-      onChange={v => {
-        if (v === 'subject' && sortBy !== 'subjectGroup') pickSort('subjectGroup');
-        if (v === 'date' && sortBy === 'subjectGroup') pickSort('default');
-      }} />
+  // 清單控制列：375px 標題列只放標題與項數，分區切換與排序另起一列，不再擠在同一行。
+  // 「依日期／依科目」決定怎麼分區；「排序方式」只在依日期時出現，決定每一區裡的順序。
+  const listControls = !['trash', 'completed'].includes(view.type) && shown.length > 0 ? (
+    <div className="row task-list-controls" style={{ gap: 'var(--sp-2)', flexWrap: 'wrap', alignItems: 'center', margin: 'var(--sp-2) 0' }}>
+      <SegmentedControl ariaLabel="分區方式" value={groupMode}
+        options={[{ value: 'date', label: '依日期' }, { value: 'subject', label: '依科目' }]}
+        onChange={pickGroupMode} />
+      {!bySubject && shown.length > 1 && (
+        <select aria-label="排序方式" value={sortBy} onChange={e => pickSort(e.target.value)} style={{ fontSize: 13 }}>
+          <option value="time">依時間</option>
+          <option value="priority">依優先級</option>
+          <option value="title">依標題</option>
+        </select>
+      )}
+      {collapsedGroups.size > 0 && (
+        <button type="button" className="btn sm ghost" style={{ marginLeft: 'auto' }} onClick={expandAllGroups}>展開全部分組</button>
+      )}
+    </div>
   ) : null;
 
   async function duplicateTask(t) {
@@ -1908,18 +1878,7 @@ export default function Tasks({ view, tasks, lists, filters, habits = [], reload
             {subtitle && <div className="head-sub">{subtitle}</div>}
           </div>
           {!listLabel && <span className="muted">{shown.length} 項</span>}
-          {!listLabel && groupModeToggle}
-          {!listLabel && !['trash', 'completed'].includes(view.type) && shown.length > 1 && (
-            <select aria-label="排序方式" value={sortBy} onChange={e => pickSort(e.target.value)} style={{ marginLeft: 'auto', fontSize: 13 }}>
-              <option value="default">預設排序</option>
-              <option value="time">依時間</option>
-              <option value="subject">依科目</option>
-              <option value="subjectGroup">照科目分堆</option>
-              <option value="priority">依優先級</option>
-              <option value="title">依標題</option>
-            </select>
-          )}
-          {!listLabel && collapsedGroups.size > 0 && !['trash'].includes(view.type) && (
+          {!listLabel && collapsedGroups.size > 0 && view.type === 'completed' && (
             <button type="button" className="btn sm ghost" onClick={expandAllGroups}>展開全部分組</button>
           )}
           {!listLabel && view.type === 'list' && completedInList.length > 0 && (
@@ -2075,29 +2034,10 @@ export default function Tasks({ view, tasks, lists, filters, habits = [], reload
             <div className="row" style={{ marginTop: 'var(--section-gap)', marginBottom: 'var(--sp-2)' }}>
               <div className="ui-section-title" style={{ marginBottom: 0 }}>{listLabel}</div>
               <span className="muted">{shown.length} 項</span>
-              {groupModeToggle}
-              {!['trash', 'completed'].includes(view.type) && shown.length > 1 && (
-                <select aria-label="排序方式" value={sortBy} onChange={e => pickSort(e.target.value)}
-                  style={{ marginLeft: 'auto', fontSize: 13 }}>
-                  <option value="default">預設排序</option>
-                  <option value="time">依時間</option>
-                  <option value="subject">依科目</option>
-                  <option value="subjectGroup">照科目分堆</option>
-                  <option value="priority">依優先級</option>
-                  <option value="title">依標題</option>
-                </select>
-              )}
-              {collapsedGroups.size > 0 && !['trash'].includes(view.type) && (
-                <button type="button" className="btn sm ghost" onClick={expandAllGroups}>展開全部分組</button>
-              )}
             </div>
           )}
-          {touchDrag && (
-            <div role="status" aria-live="polite" className="ui-meta"
-              style={{ position: 'fixed', left: 16, right: 16, bottom: 'calc(env(safe-area-inset-bottom, 0px) + 84px)', zIndex: 30, padding: '10px 14px', borderRadius: 12, background: 'var(--surface-2)', boxShadow: '0 4px 16px rgba(0,0,0,.18)', textAlign: 'center' }}>
-              拖到要移動的日期分區後放開
-            </div>
-          )}
+          {listControls}
+          {touchDrag && <div role="status" aria-live="polite" className="ui-meta" style={dragHintStyle}>{DRAG_HINT}</div>}
           {view.type === 'trash'
             ? shown.map(t => (
               <div key={t.id}>
@@ -2114,10 +2054,11 @@ export default function Tasks({ view, tasks, lists, filters, habits = [], reload
             ))
             : (view.type === 'list' && showCompletedInList
               ? [...groupTasks(shown.filter(t => !t.completed), view.type), ['已完成', shown.filter(t => t.completed)]]
-              : (sortBy === 'subjectGroup' && !['completed', 'trash'].includes(view.type)
+              : (bySubject
                 ? groupBySubject(shown) : groupTasks(shown, view.type, { keepEmpty: dropKeepEmpty }))).map(([label, list, dropDate]) => {
               const sorted = view.type === 'completed' ? sortCompleted(list) : applySort(list);
-              const canDrag = sortBy === 'default';
+              // 桌機拖放排序寫入 order_index；只有「依日期＋依時間」時畫面順序才等於 order_index。
+              const canDrag = !bySubject && sortBy === 'time';
               // 拖曳中展開所有可放置的分區，收合的分區也能放進去。
               const collapsed = collapsedGroups.has(label) && !(touchDrag && dropDate !== undefined);
               const isDropZone = dateDragEnabled && dropDate !== undefined;
@@ -2125,14 +2066,14 @@ export default function Tasks({ view, tasks, lists, filters, habits = [], reload
               return (
                 <div className={'tgroup' + (dropOver ? ' drop-over' : '')} key={label}
                   data-drop-date={isDropZone ? dropDate : undefined}
-                  style={touchDrag && isDropZone ? { outline: dropOver ? '2px solid var(--primary)' : '1px dashed var(--separator)', borderRadius: 10, minHeight: 44 } : undefined}>
+                  style={touchDrag && isDropZone ? dropZoneStyle(dropOver) : undefined}>
                   <button type="button" className="glabel task-group-toggle" aria-expanded={!collapsed}
                     aria-label={`${collapsed ? '展開' : '收合'}${label}`} onClick={() => toggleGroup(label)}>
                     <span className="task-group-chevron" aria-hidden="true">⌄</span>
                     {label}
                     {/* 照科目分堆時，日期分組不見了，「這一科欠了幾項」就沒地方看。
                         分堆的用途正是這個，所以把每一科的項數與逾期數寫在標頭上。 */}
-                    {sortBy === 'subjectGroup' && !['completed', 'trash'].includes(view.type) && <SubjectCounts list={sorted} />}
+                    {bySubject && <SubjectCounts list={sorted} />}
                   </button>
                   {!collapsed && sorted.map(t => <TaskRow key={t.id} t={t} lists={lists} sel={t.id === selId} onSel={selectFromRow} onToggle={toggle}
                     onDragStart={canDrag ? setDragT : undefined}
@@ -2142,6 +2083,14 @@ export default function Tasks({ view, tasks, lists, filters, habits = [], reload
                 </div>
               );
             })}
+          {touchDrag && dateDragEnabled && (
+            <div className="tgroup" data-drop-date={PICK_DATE} style={dropZoneStyle(touchDrag.target === PICK_DATE)}>
+              <div className="glabel">其他日期…</div>
+            </div>
+          )}
+          {pickFor && <DatePickSheet title={pickFor.title} initial={pickFor.due_date || ''}
+            onClose={() => setPickFor(null)}
+            onPick={date => { const t = pickFor; setPickFor(null); moveTaskDate(t, date); }} />}
           {shown.length === 0 && <div className="muted" style={{ marginTop: 30, textAlign: 'center' }}>
             {showQuickFind && quickFind.trim() ? '找不到符合搜尋的任務' : '沒有任務'}
           </div>}

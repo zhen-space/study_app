@@ -1,11 +1,13 @@
 import { useEffect, useRef, useState } from 'react';
 import { api } from '../api';
 import Icon from './Icons';
-import { today } from './helpers';
+import { today, addDays, overdueSince } from './helpers';
 import { usePlans, bookOf, shortTitle, md, byLesson } from './plans';
 import { listBooks, selectItems } from './material';
 import { usePlanScheduleHealth } from './planHealth';
-import { useActiveSchedule, blocksForTask } from './scheduleAdjust';
+import { useActiveSchedule, blocksForTask, conflictText } from './scheduleAdjust';
+import DatePickSheet from './DatePickSheet';
+import { PICK_DATE, DRAG_HINT, dragHintStyle, dropZoneStyle, useLongPress, useTouchDrag } from './touchDrag';
 import AdjustBlockSheet from './AdjustBlockSheet';
 import ReplanSheet from './ReplanSheet';
 import ConstraintSheet from './ConstraintSheet';
@@ -14,7 +16,7 @@ import RollingExamSchedule from './RollingExamSchedule';
 import PlanContentPicker from './PlanContentPicker';
 import PlanRangeView from './PlanRangeView';
 import PlanTimeline from './PlanTimeline';
-import { Button, IconButton, PageHeader, SurfaceCard, ProgressBar, ListRow, BottomSheet, EmptyState } from './ui';
+import { Button, IconButton, PageHeader, SurfaceCard, ProgressBar, ListRow, BottomSheet, EmptyState, SegmentedControl } from './ui';
 
 // 單一計畫的內容。
 //
@@ -24,6 +26,20 @@ import { Button, IconButton, PageHeader, SurfaceCard, ProgressBar, ListRow, Bott
 //
 // 正式 Plan（有 planId）才有改名／改期限／完成／封存；
 // 舊資料沒有 plan id，這些操作對它沒有意義，一律不顯示。
+
+// 計畫內容的一列外層：可拖曳時接上長按；拖曳中半透明並加虛線框。
+function DraggableRow({ onLongPress, dragging, children }) {
+  const { style, ...handlers } = useLongPress(onLongPress);
+  return (
+    <div {...handlers} aria-grabbed={onLongPress ? dragging : undefined}
+      style={{ ...style, ...(dragging ? { opacity: 0.55, outline: '2px dashed var(--primary)', borderRadius: 10 } : {}) }}>
+      {children}
+    </div>
+  );
+}
+
+const WD = '日一二三四五六';
+const dayTitle = d => `${md(d)}（週${WD[new Date(d + 'T00:00:00').getDay()]}）`;
 
 const STATUS_LABEL = { draft: '草稿', active: '進行中', paused: '已暫停', completed: '已完成', ended: '已結束', archived: '已封存' };
 const EMPTY_ADDITIONS = [];
@@ -75,6 +91,29 @@ function RetainPicker({ kind, value, onChange }) {
 export default function PlanDetailView({ planKey, tasks, lists, apiPlans = [], reload, onBack, goWizard, adjustPlan, goLocks, goScheduleHistory }) {
   const plan = usePlans(tasks, lists, apiPlans).find(p => p.key === planKey);
   const [showDone, setShowDone] = useState(false);
+  // 計畫內容的分區：依科目（原本的呈現）或依日期，記在這台裝置上。
+  const [contentMode, setContentMode] = useState(() => {
+    try { return localStorage.getItem('planContentGroup') === 'date' ? 'date' : 'subject'; } catch { return 'subject'; }
+  });
+  const pickContentMode = v => { setContentMode(v); try { localStorage.setItem('planContentGroup', v); } catch {} };
+  // 長按拖曳改期（計畫任務走 ScheduleVersion manual transaction，不碰 due_date）：
+  // planMoves：寫入中先顯示在新日期（id → date）；moveState：每列的進行中／錯誤／未知。
+  const [planMoves, setPlanMoves] = useState({});
+  const [moveState, setMoveState] = useState({});
+  const moveBusyRef = useRef(new Set());
+  const moveUnknownRef = useRef(new Set());
+  const [pickFor, setPickFor] = useState(null);
+  const movePlanTaskRef = useRef(null);
+  const { drag, start: startDrag, justEnded } = useTouchDrag((t, target) => movePlanTaskRef.current?.(t, target));
+  // 伺服器資料（due_date mirror）已是新日期才放掉樂觀位置，舊資料晚到不會拉回。
+  useEffect(() => {
+    setPlanMoves(m => {
+      const ids = Object.keys(m);
+      if (!ids.length) return m;
+      const keep = ids.filter(id => (tasks.find(t => String(t.id) === id)?.due_date || null) !== m[id]);
+      return keep.length === ids.length ? m : Object.fromEntries(keep.map(id => [id, m[id]]));
+    });
+  }, [tasks]);
   // 教材脈絡只用來顯示；identity 一律是 task.material_book_id，不從標題猜。
   const [matBooks, setMatBooks] = useState(() => new Map());
   useEffect(() => {
@@ -251,6 +290,86 @@ export default function PlanDetailView({ planKey, tasks, lists, apiPlans = [], r
       taskToggleBusyRef.current = false;
     }
   };
+  // ── 長按拖曳改期 ───────────────────────────────────────────
+  // 計畫任務的日期屬於 ScheduledBlock／ScheduleVersion；due_date 只是 mirror，
+  // generic PATCH 會被伺服器拒絕。所以一律走 /schedule/manual（stale gate、衝突、
+  // 唯一性、mirror 都在同一筆交易）：
+  //   ・今天以後已有一段安排 → 以 block_id 搬動那一段（保留原時段）
+  //   ・沒有今天以後的安排（尚未安排、或過去的安排已成歷史的逾期任務）→ 以 task_id 重新加入
+  //   ・分成多段的任務不支援拖曳（不知道要搬哪一段），請用日期按鈕逐段調整
+  const todayStr = today();
+  const futureBlocksOf = t => blocksForTask(sched.blocks, t.id).filter(b => b.date >= todayStr);
+  const canMovePlanTask = t => workable && !readOnly && sched.active && sched.version?.id != null
+    && !t.completed && futureBlocksOf(t).length <= 1
+    && !moveBusyRef.current.has(t.id) && !moveUnknownRef.current.has(t.id);
+  const clearPlanMove = id => setPlanMoves(m => { const next = { ...m }; delete next[id]; return next; });
+  async function movePlanTask(t, target) {
+    if (target === PICK_DATE) { if (canMovePlanTask(t)) setPickFor(t); return; }
+    const date = target;
+    if (!date || date < todayStr || !canMovePlanTask(t)) return;
+    const base = sched.version.id;
+    const block = futureBlocksOf(t)[0] || null;
+    if (block ? block.date === date : t.due_date === date) return;
+    const move = block
+      ? { block_id: block.id, date, ...(block.start_time && block.end_time ? { start_time: block.start_time, end_time: block.end_time } : {}) }
+      : { task_id: t.id, date };
+    moveBusyRef.current.add(t.id);
+    setMoveState(st => ({ ...st, [t.id]: { busy: true } }));
+    setPlanMoves(m => ({ ...m, [t.id]: date }));
+    const fail = message => {
+      clearPlanMove(t.id);
+      moveBusyRef.current.delete(t.id);
+      setMoveState(st => ({ ...st, [t.id]: { error: message } }));
+    };
+    try {
+      await api('/schedule/manual', { method: 'POST', body: { base_version_id: base, moves: [move] } });
+    } catch (e) {
+      if (e.status >= 400 && e.status < 500) {
+        if (e.status === 409 && !e.conflicts?.length) {
+          // stale：別處已更新排程。只讀回最新 active 版本，使用者再拖一次才會以新版本送出。
+          fail('排程已在別處更新，已載入最新安排，請再拖一次。');
+          await sched.reload();
+          return;
+        }
+        fail(e.conflicts?.length ? e.conflicts.map(conflictText).join('；') : (e.message || '這一天放不下'));
+        return;
+      }
+      // 回應遺失：讀回 active 版本核對，絕不重送同一筆 manual transaction。
+      let latest = null;
+      try { latest = await api('/schedule/active'); } catch { /* 下面當成無法確認 */ }
+      const committed = latest?.version?.id != null && latest.version.id !== base
+        && blocksForTask(latest.blocks, t.id).some(b => b.date === date);
+      if (!committed) {
+        if (latest?.version?.id === base) { fail(e.message || '日期沒有更新，已移回原位。'); return; }
+        clearPlanMove(t.id);
+        moveBusyRef.current.delete(t.id);
+        moveUnknownRef.current.add(t.id);
+        setMoveState(st => ({ ...st, [t.id]: { unknown: true, error: '無法確認日期是否已更新，請重新載入；確認前請勿再次移動。' } }));
+        return;
+      }
+    }
+    try {
+      await reload();
+      await sched.reload();
+      setMoveState(st => { const next = { ...st }; delete next[t.id]; return next; });
+    } catch {
+      setMoveState(st => ({ ...st, [t.id]: { error: '日期已更新，但畫面暫時無法重新載入。' } }));
+    }
+    moveBusyRef.current.delete(t.id);
+  }
+  movePlanTaskRef.current = movePlanTask;
+  const moveUnknown = Object.values(moveState).some(st => st.unknown);
+  const confirmUnknownMoves = async () => {
+    try {
+      await reload();
+      await sched.reload();
+      moveUnknownRef.current.clear();
+      setMoveState(st => Object.fromEntries(Object.entries(st).filter(([, v]) => !v.unknown)));
+    } catch (e) {
+      setMoveState(st => Object.fromEntries(Object.entries(st).map(([k, v]) => [k, v.unknown ? { ...v, error: e.message || '仍然無法重新載入，請稍後再試。' } : v])));
+    }
+  };
+
   const toggle = async t => {
     if (taskToggleBusyRef.current || taskToggleState?.committed) return;
     taskToggleBusyRef.current = true;
@@ -521,10 +640,16 @@ export default function PlanDetailView({ planKey, tasks, lists, apiPlans = [], r
     }
   }, close);
 
-  // 依科目分組；同一科有多本書時再分小段。
-  // 尚未安排的已經有自己的區塊，這裡要排除掉，否則同一筆會出現兩次。
-  const unplacedIds = new Set(plan.unplaced.map(t => t.id));
-  const placed = plan.items.filter(t => !unplacedIds.has(t.id));
+  // 每列的有效日期：拖曳寫入中先顯示在新日期。
+  const effDate = t => planMoves[t.id] ?? t.due_date ?? null;
+  const overdueOf = t => overdueSince({ ...t, due_date: effDate(t) }, todayStr);
+  // 沒有日期的未完成任務分兩種，不能混為「尚未安排」：
+  //   ・已逾期：過去排過（或截止已過）、active 版本已無安排——due_date mirror 因此是 NULL
+  //   ・尚未安排：從沒排過、也沒有已過的截止日
+  const overdueUndated = plan.items.filter(t => !t.completed && !effDate(t) && overdueOf(t));
+  const neverPlaced = plan.items.filter(t => !t.completed && !effDate(t) && !overdueOf(t));
+  // 依科目分組；同一科有多本書時再分小段。沒有日期的已有自己的區塊，這裡排除，避免重複。
+  const placed = plan.items.filter(t => t.completed || effDate(t));
   // 教材脈絡優先用**正式 linkage**（material_book_id），沒有 linkage 的才退回
   // 舊的標題前綴解析。Manual Task 完全沒有教材也是正常的，不強迫每個 Task 屬於某本書。
   const bookLabelOf = t => (t.material_book_id != null
@@ -554,26 +679,75 @@ export default function PlanDetailView({ planKey, tasks, lists, apiPlans = [], r
   const visible = list => list.filter(t => showDone || !t.completed).sort((a, b) => byLesson(a.title, b.title));
 
   const Row = t => {
-    const late = !t.completed && t.due_date && t.due_date < today();
+    const date = effDate(t);
+    const od = overdueOf(t);
     // 已完成的不給調整：它已經退出未來排程，日期是歷史紀錄。
     // 已結束計畫整個唯讀：勾選框停用、時間不給調整（只顯示歷史日期）。
-    const block = t.completed || readOnly ? null : blocksForTask(sched.blocks, t.id)[0];
-    return (
-      <ListRow key={t.id} muted={!!t.completed}
-        leading={<input type="checkbox" aria-label={t.title} checked={!!t.completed}
-          disabled={readOnly || !!taskToggleState?.committed
-            || (taskToggleState?.taskId === t.id && taskToggleBusyRef.current)}
-          onChange={() => { if (!readOnly) toggle(t); }} />}
-        title={rowTitle(t)}
-        trailing={t.due_date
-          ? (block
-            ? <button className="row-adjust" aria-label={`調整「${rowTitle(t)}」的時間`}
-                style={late ? { color: 'var(--danger)' } : undefined}
-                onClick={() => setAdjustBlock({ block, task: t })}>{md(t.due_date)}</button>
-            : <span style={late ? { color: 'var(--danger)' } : undefined}>{md(t.due_date)}</span>)
-          : <span className="ui-meta">尚未安排</span>}
-      />
+    const block = t.completed || readOnly || planMoves[t.id] ? null : blocksForTask(sched.blocks, t.id)[0];
+    const movable = canMovePlanTask(t);
+    const ms = moveState[t.id];
+    const overdueTag = od && <span style={{ color: 'var(--danger)', fontWeight: 600, marginRight: 6 }}>已逾期</span>;
+    const pickButton = movable && !date && (
+      <button className="row-adjust" style={{ marginLeft: 6 }} aria-label={`替「${rowTitle(t)}」選擇日期`}
+        onClick={() => { if (!justEnded()) setPickFor(t); }}>選日期</button>
     );
+    const trailing = date
+      ? <>{overdueTag}{block
+          ? <button className="row-adjust" aria-label={`調整「${rowTitle(t)}」的時間`}
+              style={od ? { color: 'var(--danger)' } : undefined}
+              onClick={() => { if (!justEnded()) setAdjustBlock({ block, task: t }); }}>{md(date)}</button>
+          : <span style={od ? { color: 'var(--danger)' } : undefined}>{md(date)}</span>}</>
+      : od
+        ? <>{overdueTag}<span className="ui-meta">{od === t.deadline_date ? '截止' : '原定'} {md(od)}</span>{pickButton}</>
+        : <><span className="ui-meta">尚未安排</span>{pickButton}</>;
+    return (
+      <DraggableRow key={t.id} onLongPress={movable ? () => startDrag(t) : undefined} dragging={drag?.id === t.id}>
+        <ListRow muted={!!t.completed}
+          leading={<input type="checkbox" aria-label={t.title} checked={!!t.completed}
+            disabled={readOnly || !!taskToggleState?.committed || !!ms?.busy || !!ms?.unknown
+              || (taskToggleState?.taskId === t.id && taskToggleBusyRef.current)}
+            onChange={() => { if (!readOnly) toggle(t); }} />}
+          title={rowTitle(t)}
+          trailing={trailing}
+        />
+        {ms?.error && <div role="alert" className="ui-error" style={{ margin: '4px 8px 0' }}>{ms.error}</div>}
+      </DraggableRow>
+    );
+  };
+
+  // 一個有標題的區塊；dropDate 有值時（拖曳中）可當放置目標。
+  const sortRows = list => [...list].sort((a, b) =>
+    (effDate(a) || '').localeCompare(effDate(b) || '') || byLesson(a.title, b.title) || Number(a.id) - Number(b.id));
+  const sectionBox = (label, list, { note = '', dropDate, danger = false } = {}) => {
+    const isZone = dropDate !== undefined && workable;
+    const over = drag && isZone && drag.target === dropDate;
+    return (
+      <section key={label} className="ui-section" aria-label={label}
+        data-drop-date={isZone ? dropDate : undefined} style={drag && isZone ? dropZoneStyle(over) : undefined}>
+        <div className="row" style={{ marginBottom: 'var(--sp-1)' }}>
+          <div className="ui-section-title" style={{ marginBottom: 0, ...(danger ? { color: 'var(--danger)' } : {}) }}>{label}</div>
+          <span className="ui-meta">{list.length} 項</span>
+        </div>
+        {note && <div className="ui-meta" style={{ marginBottom: 'var(--sp-2)' }}>{note}</div>}
+        {sortRows(list).map(Row)}
+      </section>
+    );
+  };
+  // 依日期：已逾期 → 今天 → 之後每一天。拖曳中「今天」「明天」即使沒有任務也出現。
+  const dateSections = () => {
+    const open = plan.items.filter(t => !t.completed);
+    const overdueAll = open.filter(t => overdueOf(t));
+    const byDay = new Map();
+    for (const t of open) {
+      if (overdueOf(t) || !effDate(t)) continue;
+      if (!byDay.has(effDate(t))) byDay.set(effDate(t), []);
+      byDay.get(effDate(t)).push(t);
+    }
+    if (drag) for (const d of [todayStr, addDays(todayStr, 1)]) if (!byDay.has(d)) byDay.set(d, []);
+    return [
+      overdueAll.length > 0 && sectionBox('已逾期', overdueAll, { danger: true }),
+      ...[...byDay.keys()].sort().map(d => sectionBox(d === todayStr ? '今天' : dayTitle(d), byDay.get(d), { dropDate: d })),
+    ];
   };
 
   return (
@@ -758,22 +932,31 @@ export default function PlanDetailView({ planKey, tasks, lists, apiPlans = [], r
         )}
 
         {/* Plan 內容（第三區）：這個計畫選了哪些教材範圍、既有任務與學校作業。
-            跟「段考進度」（範圍目標）、「確切安排」（每日排程）分開，不混為一談。 */}
-        {isReal && plan.total > 0 && (
-          <div className="ui-section-title" style={{ marginTop: 'var(--sp-5)' }}>Plan 內容</div>
+            跟「段考進度」（範圍目標）、「確切安排」（每日排程）分開，不混為一談。
+            分區切換放在這一區自己的標題列，不擠進頁首。 */}
+        {plan.total > 0 && (
+          <div className="row" style={{ marginTop: 'var(--sp-5)', gap: 'var(--sp-2)', alignItems: 'center' }}>
+            {isReal && <div className="ui-section-title" style={{ marginBottom: 0 }}>Plan 內容</div>}
+            <div style={{ marginLeft: 'auto' }}>
+              <SegmentedControl ariaLabel="計畫內容分區" value={contentMode} onChange={pickContentMode}
+                options={[{ value: 'date', label: '依日期' }, { value: 'subject', label: '依科目' }]} />
+            </div>
+          </div>
+        )}
+        {moveUnknown && (
+          <SurfaceCard tone="accent" style={{ marginTop: 'var(--sp-3)' }}>
+            <div role="alert"><b>無法確認日期是否已更新</b></div>
+            <div className="ui-meta" style={{ marginTop: 'var(--sp-1)' }}>為避免重複送出，請先重新載入最新安排。</div>
+            <Button size="sm" style={{ marginTop: 'var(--sp-3)' }} onClick={confirmUnknownMoves}>重新載入確認</Button>
+          </SurfaceCard>
         )}
 
+        {/* 已逾期（沒有日期）：過去排過卻沒完成，不是「尚未安排」 */}
+        {contentMode === 'subject' && overdueUndated.length > 0
+          && sectionBox('已逾期', overdueUndated, { danger: true, note: '原本安排的日期已過、還沒完成；可長按拖到新的日期' })}
         {/* 尚未安排：在計畫裡 ≠ 已經排到日期，這是正式狀態 */}
-        {plan.unplaced.length > 0 && (
-          <section className="ui-section">
-            <div className="row" style={{ marginBottom: 'var(--sp-1)' }}>
-              <div className="ui-section-title" style={{ marginBottom: 0 }}>尚未安排</div>
-              <span className="ui-meta">{plan.unplaced.length} 項</span>
-            </div>
-            <div className="ui-meta" style={{ marginBottom: 'var(--sp-2)' }}>這些還沒排進行事曆</div>
-            {plan.unplaced.sort((a, b) => byLesson(a.title, b.title)).map(Row)}
-          </section>
-        )}
+        {contentMode === 'subject' && neverPlaced.length > 0
+          && sectionBox('尚未安排', neverPlaced, { note: '這些還沒排進行事曆' })}
 
         {plan.total === 0 && (
           <EmptyState
@@ -785,8 +968,14 @@ export default function PlanDetailView({ planKey, tasks, lists, apiPlans = [], r
           />
         )}
 
+        {contentMode === 'date' && dateSections()}
+        {contentMode === 'date' && neverPlaced.length > 0
+          && sectionBox('尚未安排', neverPlaced, { note: '這些還沒排進行事曆' })}
+        {contentMode === 'date' && showDone && plan.done > 0
+          && sectionBox('已完成', plan.items.filter(t => t.completed))}
+
         {/* 主分組＝科目。同一科有多本書時，才再用書名分小段 */}
-        {groups.map(({ subject, items }) => {
+        {contentMode === 'subject' && groups.map(({ subject, items }) => {
           const list = visible(items);
           if (!list.length) return null;
           const undone = items.filter(t => !t.completed).length;
@@ -1158,6 +1347,19 @@ export default function PlanDetailView({ planKey, tasks, lists, apiPlans = [], r
 
       {/* 「讓 AI 重新安排」是整份重排；這一支是使用者自己動某一格。
           兩者都走 2C persistence，只是決策者不同。 */}
+      {drag && (
+        <div role="status" aria-live="polite" style={dragHintStyle}>
+          <div className="ui-meta">{DRAG_HINT}</div>
+          <div className="row" style={{ gap: 8, marginTop: 8 }}>
+            {[[todayStr, '今天'], [addDays(todayStr, 1), '明天'], [PICK_DATE, '其他日期…']].map(([d, label]) => (
+              <div key={d} data-drop-date={d} style={{ flex: 1, padding: '10px 4px', textAlign: 'center', ...dropZoneStyle(drag.target === d) }}>{label}</div>
+            ))}
+          </div>
+        </div>
+      )}
+      {pickFor && <DatePickSheet title={rowTitle(pickFor)} initial={effDate(pickFor) || ''}
+        onClose={() => setPickFor(null)}
+        onPick={d => { const t = pickFor; setPickFor(null); movePlanTask(t, d); }} />}
       {adjustBlock && (
         <AdjustBlockSheet block={adjustBlock.block} task={adjustBlock.task} lists={lists}
           versionId={sched.version?.id}

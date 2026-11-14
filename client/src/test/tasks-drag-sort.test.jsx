@@ -87,7 +87,9 @@ describe('依日期／依科目分區', () => {
     const seg = screen.getByRole('tablist', { name: '分區方式' });
     expect(within(seg).getByRole('tab', { name: '依日期' })).toHaveAttribute('aria-selected', 'true');
     fireEvent.click(within(seg).getByRole('tab', { name: '依科目' }));
-    expect(localStorage.getItem('taskSort')).toBe('subjectGroup');
+    expect(localStorage.getItem('taskGroupMode')).toBe('subject');
+    // 依科目時不再出現重複語意的排序選單。
+    expect(screen.queryByLabelText('排序方式')).toBeNull();
     expect(screen.queryByRole('button', { name: '收合已逾期' })).toBeNull();
     const physics = section('物理');
     expect(within(physics).getByText('一般已過期')).toBeInTheDocument();
@@ -97,21 +99,42 @@ describe('依日期／依科目分區', () => {
     mount();
     expect(screen.getByRole('tab', { name: '依科目' })).toHaveAttribute('aria-selected', 'true');
     fireEvent.click(screen.getByRole('tab', { name: '依日期' }));
-    expect(localStorage.getItem('taskSort')).toBe('default');
+    expect(localStorage.getItem('taskGroupMode')).toBe('date');
     expect(section('已逾期')).toBeInTheDocument();
   });
 
   it('排序穩定：API 回應順序不同，分區與列順序相同', () => {
     const order = () => [...document.querySelectorAll('.tgroup')].map(g => [
       g.querySelector('.glabel').textContent, [...g.querySelectorAll('.trow .title')].map(x => x.textContent)]);
-    for (const mode of ['default', 'subjectGroup']) {
-      localStorage.setItem('taskSort', mode);
+    for (const mode of ['date', 'subject']) {
+      localStorage.setItem('taskGroupMode', mode);
       const { unmount } = mount(sample());
       const a = order(); unmount();
       mount(sample().reverse());
       expect(order()).toEqual(a);
       cleanup();
     }
+  });
+});
+
+describe('375px 控制列', () => {
+  it('分區切換與排序另起一列、不擠在標題列；排序選項不再與分區重複', () => {
+    mount();
+    const controls = document.querySelector('.task-list-controls');
+    const heading = screen.getByRole('heading', { name: '任務' }).parentElement;
+    expect(heading.contains(controls)).toBe(false);
+    expect(within(controls).getByRole('tablist', { name: '分區方式' })).toBeInTheDocument();
+    const sort = within(controls).getByLabelText('排序方式');
+    expect([...sort.options].map(o => o.textContent)).toEqual(['依時間', '依優先級', '依標題']);
+    expect(screen.getAllByRole('tablist', { name: '分區方式' })).toHaveLength(1);
+    expect(screen.getAllByLabelText('排序方式')).toHaveLength(1);
+  });
+
+  it('舊偏好（照科目分堆）自動轉成「依科目」', () => {
+    localStorage.setItem('taskSort', 'subjectGroup');
+    mount();
+    expect(screen.getByRole('tab', { name: '依科目' })).toHaveAttribute('aria-selected', 'true');
+    expect(section('物理')).toBeInTheDocument();
   });
 });
 
@@ -141,6 +164,17 @@ describe('375px 長按拖曳改日期', () => {
     mount([mk(9, '有時間的任務', { due_date: TD, due_time: '19:00' })]);
     await longPressDrag('有時間的任務', D(1));
     expect(writes()[0][1].body).toEqual({ due_date: D(1), due_time: '19:00' });
+  });
+
+  it('拖到「其他日期…」開日期選擇器，選好才寫入任意日期', async () => {
+    api.mockResolvedValue({});
+    mount();
+    await longPressDrag('沒有日期', '__pick__');
+    const sheet = await screen.findByRole('dialog', { name: '移到其他日期' });
+    expect(writes()).toHaveLength(0);
+    fireEvent.change(within(sheet).getByLabelText('日期'), { target: { value: D(20) } });
+    await act(async () => { fireEvent.click(within(sheet).getByRole('button', { name: '移到這一天' })); });
+    expect(writes()).toEqual([['/tasks/4', { method: 'PATCH', body: { due_date: D(20), due_time: null } }]]);
   });
 
   it('伺服器拒絕時回到原位並提示，不重送', async () => {
@@ -222,7 +256,7 @@ describe('375px 長按拖曳改日期', () => {
     await longPressDrag('沒有日期', TD);
     expect(writes()).toHaveLength(0);
     cleanup();
-    localStorage.setItem('taskSort', 'subjectGroup');
+    localStorage.setItem('taskGroupMode', 'subject');
     mount();
     await longPressDrag('沒有日期', TD);
     expect(screen.queryByText('拖到要移動的日期分區後放開')).toBeNull();

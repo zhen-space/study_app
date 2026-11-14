@@ -13,7 +13,7 @@ describe('任務群組收合', () => {
 
   it('照科目分堆後可個別收合與展開，不改動其他群組', () => {
     render(<Tasks view={{ type: 'tasks' }} tasks={tasks} lists={lists} filters={[]} reload={vi.fn()} title="任務" />);
-    fireEvent.change(screen.getByLabelText('排序方式'), { target: { value: 'subjectGroup' } });
+    fireEvent.click(screen.getByRole('tab', { name: '依科目' }));
 
     const physics = screen.getByRole('button', { name: '收合物理' });
     expect(physics).toHaveAttribute('aria-expanded', 'true');
@@ -31,7 +31,7 @@ describe('任務群組收合', () => {
   it('離開後再回來仍保留收合狀態', () => {
     const props = { view: { type: 'tasks' }, tasks, lists, filters: [], reload: vi.fn(), title: '任務' };
     const first = render(<Tasks {...props} />);
-    fireEvent.change(screen.getByLabelText('排序方式'), { target: { value: 'subjectGroup' } });
+    fireEvent.click(screen.getByRole('tab', { name: '依科目' }));
     fireEvent.click(screen.getByRole('button', { name: '收合物理' }));
     expect(localStorage.getItem('taskCollapsedGroups')).toContain('物理');
     first.unmount();
@@ -43,7 +43,7 @@ describe('任務群組收合', () => {
 
   it('可一鍵展開所有已收合分組並清除保存狀態', () => {
     render(<Tasks view={{ type: 'tasks' }} tasks={tasks} lists={lists} filters={[]} reload={vi.fn()} title="任務" />);
-    fireEvent.change(screen.getByLabelText('排序方式'), { target: { value: 'subjectGroup' } });
+    fireEvent.click(screen.getByRole('tab', { name: '依科目' }));
     fireEvent.click(screen.getByRole('button', { name: '收合物理' }));
     fireEvent.click(screen.getByRole('button', { name: '收合英文' }));
 
