@@ -374,6 +374,8 @@ describe('PlanDetail 的「調整計畫」入口', () => {
     const adjustPlan = vi.fn();
     mountDetail({ adjustPlan });
     await waitFor(() => expect(calls.some(([p]) => p === '/plans/12/exam')).toBe(true));
+    // 等待段考投影回應更新畫面，不能只等請求開始。
+    await flush();
     await click(btn(/調整計畫/));
     expect(document.querySelector('.sheet-panel')).toBeNull();
     expect(adjustPlan).toHaveBeenCalledWith(12, '', undefined, true);
