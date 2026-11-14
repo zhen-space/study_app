@@ -379,7 +379,8 @@ export default function PlanDetailView({ planKey, tasks, lists, apiPlans = [], r
       setAnnounce(`已把「${rowTitle(t)}」移到 ${md(date)}`);
     } else {
       pendingSyncRef.current.add(t.id);
-      setMoveState(st => ({ ...st, [t.id]: { sync: true, error: '日期已更新，但最新安排暫時無法載入；重新載入成功前不能再移動。' } }));
+      // 列上只說這一列的狀態；怎麼處理寫在上方的重新載入卡片，不重複整段說明。
+      setMoveState(st => ({ ...st, [t.id]: { sync: true, error: '已移到新日期，等待重新載入確認。' } }));
       setAnnounce('日期已更新，但最新安排暫時無法載入，請重新載入。');
     }
   }
