@@ -586,9 +586,14 @@ export function normalizeBlockTiming(block) {
 }
 
 // 單筆 move 的形狀檢查。時間要嘛兩個都給、要嘛兩個都不給（＝只排到某一天）。
+// 帶 block_id 是搬動既有 block；只帶 task_id 是替「active 版本裡沒有未來 block」
+// 的 Task 安排新的一段（例如過去的安排已成歷史、仍未完成的逾期任務）。
 function normalizeMove(move) {
-  const blockId = Number(move?.block_id);
-  if (!Number.isInteger(blockId)) throw new ScheduleInputError('缺少要調整的排程區塊');
+  const hasBlock = move?.block_id != null;
+  const blockId = hasBlock ? Number(move.block_id) : null;
+  const taskId = hasBlock ? null : Number(move?.task_id);
+  if (hasBlock && !Number.isInteger(blockId)) throw new ScheduleInputError('缺少要調整的排程區塊');
+  if (!hasBlock && !Number.isInteger(taskId)) throw new ScheduleInputError('缺少要調整的排程區塊');
   if (!YMD.test(move.date || '')) throw new ScheduleInputError('請指定有效的日期');
   const start = move.start_time || null;
   const end = move.end_time || null;
@@ -598,14 +603,20 @@ function normalizeMove(move) {
       throw new ScheduleInputError('結束時間必須晚於開始時間');
     }
   }
-  return { block_id: blockId, date: move.date, start_time: start, end_time: end };
+  return { block_id: blockId, task_id: taskId, date: move.date, start_time: start, end_time: end };
 }
 
 async function buildManualCandidate(db, userId, activeVersionId, moves, { planningDay, nowHM }) {
   const normalized = moves.map(normalizeMove);
   if (!normalized.length) throw new ScheduleInputError('沒有要調整的內容');
   const seen = new Set();
+  const seenTasks = new Set();
   for (const m of normalized) {
+    if (m.block_id == null) {
+      if (seenTasks.has(m.task_id)) throw new ScheduleInputError('同一個任務不能重複安排');
+      seenTasks.add(m.task_id);
+      continue;
+    }
     if (seen.has(m.block_id)) throw new ScheduleInputError('同一個排程區塊不能重複調整');
     seen.add(m.block_id);
   }
@@ -634,6 +645,13 @@ async function buildManualCandidate(db, userId, activeVersionId, moves, { planni
   const byId = new Map(futureBlocks.map(b => [Number(b.id), b]));
   const anyId = new Map(activeBlocks.map(b => [Number(b.id), b]));
   for (const m of normalized) {
+    if (m.block_id == null) {
+      // 新安排只給「目前沒有未來 block」的 Task；已有安排就搬既有 block，不能偷偷多塞一段。
+      if (futureBlocks.some(b => Number(b.task_id) === m.task_id)) {
+        throw new ScheduleInputError('這個任務已經有安排，請直接調整既有的時段');
+      }
+      continue;
+    }
     if (byId.has(m.block_id)) continue;
     // 指名要動一個已經過去的 block：這不是「找不到」，是「不能改歷史」。
     // 兩者要講清楚，否則使用者只會看到一句莫名其妙的「找不到」。
@@ -646,19 +664,28 @@ async function buildManualCandidate(db, userId, activeVersionId, moves, { planni
   // candidate＝整份「目前的未來」snapshot，只有被調整的那幾個換位置。
   // 其他 Plan 的未來 block 原封不動留在裡面，所以跨 Plan 碰撞是結構上就擋掉的，
   // 不需要另外一條規則去記得檢查。
-  const moveById = new Map(normalized.map(m => [m.block_id, m]));
+  const moveById = new Map(normalized.filter(m => m.block_id != null).map(m => [m.block_id, m]));
+  const touched = new Set();
   const candidate = futureBlocks.map(block => {
     const m = moveById.get(Number(block.id));
-    return normalizeBlockTiming(m
+    const next = normalizeBlockTiming(m
       ? { ...block, date: m.date, start_time: m.start_time, end_time: m.end_time }
       : block);
+    if (m) touched.add(next);
+    return next;
   });
+  for (const m of normalized) {
+    if (m.block_id != null) continue;
+    const placed = normalizeBlockTiming({ id: null, task_id: m.task_id, date: m.date, start_time: m.start_time, end_time: m.end_time });
+    touched.add(placed);
+    candidate.push(placed);
+  }
 
   // 只檢查被動到的那幾個。其餘 future block 是既有安排，不該因為使用者
   // 調了別的東西就被重新審一次、害整份排程都送不出去。
   const conflicts = [];
   for (const block of candidate) {
-    if (!moveById.has(Number(block.id))) continue;
+    if (!touched.has(block)) continue;
     const verdict = classifyPlacement(block, {
       task: tasks.get(Number(block.task_id)), events, planningDay, nowHM, dayOfWeek,
       messages: MANUAL_MESSAGES,
@@ -677,7 +704,7 @@ async function buildManualCandidate(db, userId, activeVersionId, moves, { planni
   const collided = findSelfCollisions(candidate);
   for (const index of collided) {
     const block = candidate[index];
-    if (!moveById.has(Number(block.id))) continue;
+    if (!touched.has(block)) continue;
     const other = candidate.find((x, i) => i !== index && timedOverlap(x, block));
     conflicts.push({
       block_id: block.id, task_id: block.task_id, type: 'schedule_collision',

@@ -123,13 +123,15 @@ export default function PlanTimeline({ plan, tasks = [], reloadTasks, onAddConte
     const before = it.completion;
     const completed = before !== 'completed';
     setMutationError(''); setBusy(it.task_id, true);
-    // 先更新目前這一列，手機上不必等整份 Task 與 Plan 重新載入才看到反應。
-    patchLocal(it.task_id, { completion: completed ? 'completed' : 'not_started', time_status: completed ? 'completed' : it.time_status });
+    // 完成：先劃掉這一列，手機上不必等重新載入才看到反應。
+    // 取消完成：逾期與每日分區要由伺服器依日期重算，不在本地先改成未完成，
+    // 否則沒有 block 的舊任務會暫時落到「未指定日期」。
+    if (completed) patchLocal(it.task_id, { completion: 'completed', time_status: 'completed' });
     try {
       await api(`/tasks/${it.task_id}`, { method: 'PATCH', body: { completed } });
     } catch (e) {
       if (e.status >= 400 && e.status < 500) {
-        patchLocal(it.task_id, { completion: before, time_status: it.time_status });
+        if (completed) patchLocal(it.task_id, { completion: before, time_status: it.time_status });
         setMutationError(e.message || '更新完成狀態失敗，請確認後再試。');
         setBusy(it.task_id, false); return;
       }
@@ -137,7 +139,7 @@ export default function PlanTimeline({ plan, tasks = [], reloadTasks, onAddConte
         const rows = await api('/tasks');
         const saved = Array.isArray(rows) && rows.find(t => Number(t.id) === Number(it.task_id));
         if (!saved || Boolean(saved.completed) !== completed) {
-          patchLocal(it.task_id, { completion: before, time_status: it.time_status });
+          if (completed) patchLocal(it.task_id, { completion: before, time_status: it.time_status });
           setMutationError(e.message || '更新完成狀態失敗，請稍後再試。');
           setBusy(it.task_id, false); return;
         }
@@ -147,6 +149,12 @@ export default function PlanTimeline({ plan, tasks = [], reloadTasks, onAddConte
         setMutationError('無法確認完成狀態是否已更新；確認前不會再次切換。');
         setBusy(it.task_id, false); return;
       }
+    }
+    if (!completed && !await load()) {
+      // 已取消完成，但拿不到重算後的位置：如實顯示未完成並鎖住，確認前不能再切換。
+      patchLocal(it.task_id, { completion: 'not_started', time_status: null });
+      markUncertain(it.task_id);
+      setMutationError('已取消完成，但最新日期安排暫時無法載入；重新載入確認後會顯示在正確日期。');
     }
     setBusy(it.task_id, false);
     refreshTasksLater();

@@ -136,7 +136,8 @@ describe('PlanTimeline', () => {
     });
     render(<PlanTimeline plan={plan} tasks={[{ id: 17, title: '交報告', deadline_date: '2026-10-03', deadline_time: '18:00' }]} />);
     fireEvent.click(await screen.findByRole('button', { name: '編輯任務' }));
-    expect(screen.queryByLabelText('日期')).not.toBeInTheDocument();
+    // 沒有 active block：同一張表單仍可選日期重新安排；不選日期就只改截止。
+    expect(screen.getByLabelText('日期')).toHaveValue('');
     expect(screen.getByLabelText('最晚完成日')).toHaveValue('2026-10-03');
     expect(screen.getByLabelText('最晚完成時間')).toHaveValue('18:00');
     fireEvent.change(screen.getByLabelText('最晚完成日'), { target: { value: '2026-10-04' } });
@@ -145,6 +146,7 @@ describe('PlanTimeline', () => {
     await waitFor(() => expect(api).toHaveBeenCalledWith('/tasks/17', expect.objectContaining({
       method: 'PATCH', body: expect.objectContaining({ deadline_date: '2026-10-04', deadline_time: '20:30' }),
     })));
+    expect(api.mock.calls.filter(([path]) => path === '/schedule/manual')).toHaveLength(0);
   });
 
   it('期限任務只改名稱時保留原截止時間', async () => {
