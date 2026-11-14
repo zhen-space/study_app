@@ -1,9 +1,12 @@
 import { useEffect, useRef, useState } from 'react';
 import { api } from '../api';
-import { matchView, groupTasks, defaultSort, PRI, today, addDays, thisWeekend, nextWeek } from './helpers';
+import { matchView, groupTasks, defaultSort, overdueSince, PRI, today, addDays, thisWeekend, nextWeek } from './helpers';
 import { relativeDay, zhDateShort } from './dateSemantics';
 import VocabCard from './VocabCard';
 import MemoCard from './MemoCard';
+import { SegmentedControl } from './ui';
+import DatePickSheet from './DatePickSheet';
+import { LONG_PRESS_MS, LONG_PRESS_SLOP, PICK_DATE, DRAG_HINT, dragHintStyle, dropZoneStyle, useTouchDrag } from './touchDrag';
 
 const WDC = '日一二三四五六';
 
@@ -51,7 +54,7 @@ const taskMatchesPatch = (candidate, body) => Object.entries(body).every(([key, 
 // 一科的項數與逾期數。逾期是紅的，其餘是次要資訊——這一行要能一眼看出
 // 「哪一科欠最多」，而不是變成又一排同樣重的數字。
 export function overdueCount(list, td = today()) {
-  return list.filter(t => !t.completed && !t.deleted && t.due_date && t.due_date < td).length;
+  return list.filter(t => overdueSince(t, td)).length;
 }
 export function SubjectCounts({ list }) {
   const od = overdueCount(list);
@@ -236,9 +239,11 @@ function RepeatPicker({ value, dueDate, missPolicy, onChange }) {
   );
 }
 
-function TaskRow({ t, lists, sel, onSel, onToggle, onDragStart, onDropOn, onSwipeDelete, mutationBusy = false, mutationError = '' }) {
+function TaskRow({ t, lists, sel, onSel, onToggle, onDragStart, onDropOn, onSwipeDelete, onLongPressDrag, onMoveDate, dragging = false, mutationBusy = false, mutationError = '' }) {
   const list = lists.find(l => l.id === t.list_id);
   const pastDue = t.due_date && t.due_date < today() && !t.completed;
+  // 已逾期：日期／截止日／最後安排日早於今天且未完成（含 due_date 已因排程歷史變成 NULL 的計畫任務）。
+  const overdueDay = overdueSince(t);
   // §M：計畫任務的 due_date 是 AI 排的每日進度——過了原定日是「未完成進度」（warning），
   // 不是「逾期」（danger）。逾期紅只留給非計畫任務的使用者截止。
   const overdue = pastDue && t.plan_id == null;
@@ -260,6 +265,44 @@ function TaskRow({ t, lists, sel, onSel, onToggle, onDragStart, onDropOn, onSwip
     if (s?.on && dx < -90) { setDx(0); onSwipeDelete(t); return; }
     setDx(0);
   };
+  // 長按拖曳：手指不動按住才啟動；先動了就是捲動或左滑，兩者互不搶。
+  // 勾選框與按鈕上不啟動，點擊勾選維持原本行為。啟動後的移動與放下交給清單統一處理。
+  const lp = useRef(null);
+  const suppressClick = useRef(false);
+  useEffect(() => () => clearTimeout(lp.current?.timer), []);
+  const touchStart = e => {
+    const p = e.touches[0];
+    if (onLongPressDrag && !e.target.closest?.('input,button,select,textarea,a')) {
+      clearTimeout(lp.current?.timer);
+      const l = { x: p.clientX, y: p.clientY, fired: false };
+      l.timer = setTimeout(() => {
+        if (lp.current !== l) return;
+        l.fired = true;
+        sw.current = null; setDx(0);
+        onLongPressDrag(t);
+      }, LONG_PRESS_MS);
+      lp.current = l;
+    }
+    start(e);
+  };
+  const touchMove = e => {
+    const l = lp.current;
+    if (l?.fired) return;
+    if (l) {
+      const p = e.touches[0];
+      if (Math.hypot(p.clientX - l.x, p.clientY - l.y) > LONG_PRESS_SLOP) { clearTimeout(l.timer); lp.current = null; }
+    }
+    move(e);
+  };
+  const touchEnd = e => {
+    const l = lp.current; lp.current = null;
+    if (l) {
+      clearTimeout(l.timer);
+      // 拖曳結束後瀏覽器仍會補一個 click，不能因此打開明細。
+      if (l.fired) { suppressClick.current = true; return; }
+    }
+    end(e);
+  };
   return (
     <div style={{ position: 'relative', overflow: 'hidden' }}>
       {dx < 0 && (
@@ -267,13 +310,18 @@ function TaskRow({ t, lists, sel, onSel, onToggle, onDragStart, onDropOn, onSwip
           {dx < -90 ? '放開就刪除' : '再滑一點'} 🗑
         </div>
       )}
-      <div ref={rowRef} className={'trow' + (t.completed ? ' done' : '') + (sel ? ' sel' : '')} onClick={() => { if (dx < 6) onSel(t); }}
+      <div ref={rowRef} className={'trow' + (t.completed ? ' done' : '') + (sel ? ' sel' : '') + (dragging ? ' dragging' : '')}
+        onClick={() => { if (suppressClick.current) { suppressClick.current = false; return; } if (dx < 6) onSel(t); }}
+        onContextMenu={onLongPressDrag ? e => e.preventDefault() : undefined}
         draggable={!!onDragStart}
         onDragStart={onDragStart ? () => onDragStart(t) : undefined}
         onDragOver={onDropOn ? e => e.preventDefault() : undefined}
         onDrop={onDropOn ? () => onDropOn(t) : undefined}
-        onTouchStart={start} onTouchMove={move} onTouchEnd={end} onTouchCancel={end}
-        style={{ transform: dx ? `translateX(${dx}px)` : undefined, transition: dx ? 'none' : 'transform .18s', position: 'relative', background: 'var(--card)' }}>
+        onTouchStart={touchStart} onTouchMove={touchMove} onTouchEnd={touchEnd} onTouchCancel={touchEnd}
+        aria-grabbed={onLongPressDrag ? dragging : undefined}
+        style={{ transform: dx ? `translateX(${dx}px)` : undefined, transition: dx ? 'none' : 'transform .18s', position: 'relative', background: 'var(--card)',
+          ...(onLongPressDrag ? { WebkitTouchCallout: 'none', WebkitUserSelect: 'none', userSelect: 'none' } : {}),
+          ...(dragging ? { opacity: 0.55, outline: '2px dashed var(--primary)' } : {}) }}>
         <input type="checkbox" checked={!!t.completed} disabled={mutationBusy}
           aria-label={t.completed ? `取消完成「${t.title}」` : `完成「${t.title}」`}
           onClick={e => e.stopPropagation()} onChange={() => onToggle(t)} />
@@ -288,10 +336,15 @@ function TaskRow({ t, lists, sel, onSel, onToggle, onDragStart, onDropOn, onSwip
                 「讀書計劃」標籤，那一格寬度換不到任何資訊，卻把長標題擠成好幾行。 */}
             {t.tags.map(tag => <span key={tag} className="chip chip--tag">#{tag}</span>)}
           </div>
-          {(list || t.due_date) && (
+          {(list || t.due_date || overdueDay || onMoveDate) && (
             <div className="trow-line2">
               {list && <span className="trow-subject"><span className="trow-swatch" style={{ background: list.color }} />{list.name}</span>}
+              {overdueDay && <span className="trow-status" style={{ color: 'var(--red)', fontWeight: 600 }}>已逾期</span>}
+              {overdueDay && !t.due_date && <span className="trow-due" style={{ color: 'var(--red)' }}>{t.deadline_date === overdueDay ? '截止' : '原定'} {relativeDay(overdueDay, today())}</span>}
               {t.due_date && <span className="trow-due" style={overdue ? { color: 'var(--red)' } : missedProgress ? { color: 'var(--warning, #b7791f)' } : undefined} title={missedProgress ? '未完成進度（原定日期已過）' : undefined}>{relativeDay(t.due_date, today())}{t.due_time ? ' ' + t.due_time : ''}</span>}
+              {/* 不靠長按也能改日期（鍵盤／VoiceOver）；長按拖曳只是捷徑。 */}
+              {onMoveDate && <button type="button" className="row-move" aria-label={`改「${t.title}」的日期`}
+                onClick={e => { e.stopPropagation(); onMoveDate(t); }}>改日期</button>}
             </div>
           )}
         </div>
@@ -760,11 +813,25 @@ export default function Tasks({ view, tasks, lists, filters, habits = [], reload
     pickTagFilter('');
     setQuickFind('');
   };
-  // 排序方式記起來：下次開啟還是同一個（default | time | priority | title）
+  // 分區方式（依日期／依科目）與組內排序分開記：以前同一個選單同時放「依科目」與
+  // 「照科目分堆」、「預設」與「依時間」，語意重複。舊偏好 taskSort=subjectGroup 視為依科目。
+  const [groupMode, setGroupMode] = useState(() => {
+    try {
+      const saved = localStorage.getItem('taskGroupMode');
+      if (saved === 'date' || saved === 'subject') return saved;
+      return localStorage.getItem('taskSort') === 'subjectGroup' ? 'subject' : 'date';
+    } catch { return 'date'; }
+  });
+  const pickGroupMode = v => { setGroupMode(v); try { localStorage.setItem('taskGroupMode', v); } catch {} };
+  // 組內排序（只在依日期時出現）：time | priority | title，記起來下次開啟還是同一個。
   const [sortBy, setSortBy] = useState(() => {
-    try { return localStorage.getItem('taskSort') || 'default'; } catch { return 'default'; }
+    try {
+      const saved = localStorage.getItem('taskSort');
+      return ['time', 'priority', 'title'].includes(saved) ? saved : 'time';
+    } catch { return 'time'; }
   });
   const pickSort = v => { setSortBy(v); try { localStorage.setItem('taskSort', v); } catch {} };
+  const bySubject = groupMode === 'subject' && !['completed', 'trash'].includes(view.type);
   const toggleGroup = label => setCollapsedGroups(groups => {
     const next = new Set(groups);
     if (next.has(label)) next.delete(label);
@@ -784,21 +851,13 @@ export default function Tasks({ view, tasks, lists, filters, habits = [], reload
   const byLesson = new Intl.Collator('zh-Hant', { numeric: true }).compare;
 
   const sortFns = {
-    default: defaultSort, // 依時間，同一天依課序
-    // 「依時間」是可持久化的正式選項；先前漏掉這個 key，返回／刷新後 select 雖仍
-    // 顯示依時間，實際卻直接沿用 API 陣列順序，清單會隨回應順序突然跳動。
-    time: defaultSort,
+    time: defaultSort, // 依時間，同一天依課序
     priority: (a, b) => b.priority - a.priority || defaultSort(a, b),
-    title: (a, b) => a.title.localeCompare(b.title, 'zh-Hant'),
-    // 依科目：每一組（已逾期／今天／某一天）裡面先照科目分堆，同一科內照課名順序
-    subject: (a, b) =>
-      ((subjOrd[String(a.list_id)] ?? 99) - (subjOrd[String(b.list_id)] ?? 99))
-      || byLesson(a.title, b.title)
-      || defaultSort(a, b),
-    // 照科目分堆：科目已經是分組標題了，組內只要照課名排
-    subjectGroup: (a, b) => byLesson(a.title, b.title) || defaultSort(a, b),
+    title: (a, b) => a.title.localeCompare(b.title, 'zh-Hant') || defaultSort(a, b),
   };
-  const applySort = list => sortFns[sortBy] ? [...list].sort(sortFns[sortBy]) : list;
+  // 依科目：科目已經是分組標題了，組內只要照課名排。
+  const subjectSort = (a, b) => byLesson(a.title, b.title) || defaultSort(a, b);
+  const applySort = list => [...list].sort(bySubject ? subjectSort : sortFns[sortBy]);
   // 已完成是歷史時間線，不應承接「任務」頁記住的科目分堆或優先級排序。
   // completed_at 是伺服器完成任務時寫入的 ISO 時間；舊資料沒有時間時以 id 新到舊穩定退化。
   const sortCompleted = list => [...list].sort((a, b) =>
@@ -813,7 +872,8 @@ export default function Tasks({ view, tasks, lists, filters, habits = [], reload
       by.get(k).push(t);
     }
     return [...by.entries()]
-      .sort((a, b) => (subjOrd[a[0]] ?? 99) - (subjOrd[b[0]] ?? 99))
+      // 同序（例如科目已刪除）再依科目 id，避免分組順序隨 API 回應順序跳動。
+      .sort((a, b) => ((subjOrd[a[0]] ?? 99) - (subjOrd[b[0]] ?? 99)) || a[0].localeCompare(b[0], 'en', { numeric: true }))
       .map(([k, l]) => [lists.find(x => String(x.id) === k)?.name || '未分科目', l]);
   };
 
@@ -821,6 +881,8 @@ export default function Tasks({ view, tasks, lists, filters, habits = [], reload
   const [hidden, setHidden] = useState(new Set());
   // 樂觀覆蓋：編輯後畫面立刻變，不用等「存檔→重抓」兩趟往返；重抓回來就清掉
   const [over, setOver] = useState({});
+  // id → { due_date, due_time }：長按拖曳到其他日期分區後，寫入完成前先顯示在新位置。
+  const [dateMoves, setDateMoves] = useState({});
   // 重抓回來就清掉樂觀狀態——但 hidden 不能無條件清空：
   // 勾完成之後可能先收到一份「還沒寫進去」的舊資料（別的地方也會觸發重載），
   // 清掉的話那一列會冒出來、等下一份資料到了才又消失，看起來就是閃一下。
@@ -835,8 +897,19 @@ export default function Tasks({ view, tasks, lists, filters, habits = [], reload
       return keep.length === h.size ? h : new Set(keep);
     });
     setOver({});
+    // 拖曳改日期的樂觀位置：伺服器資料已是同一個日期才放掉，舊資料晚到時不會跳回原位。
+    setDateMoves(m => {
+      const ids = Object.keys(m);
+      if (!ids.length) return m;
+      const keep = ids.filter(id => {
+        const t = tasks.find(x => String(x.id) === id);
+        return t && (t.due_date || null) !== m[id].due_date;
+      });
+      return keep.length === ids.length ? m : Object.fromEntries(keep.map(id => [id, m[id]]));
+    });
   }, [tasks]);
-  const tv = Object.keys(over).length ? tasks.map(t => over[t.id] ? { ...t, ...over[t.id] } : t) : tasks;
+  const tvBase = Object.keys(over).length ? tasks.map(t => over[t.id] ? { ...t, ...over[t.id] } : t) : tasks;
+  const tv = Object.keys(dateMoves).length ? tvBase.map(t => dateMoves[t.id] ? { ...t, ...dateMoves[t.id] } : t) : tvBase;
   const completedInList = view.type === 'list'
     ? tv.filter(t => !t.deleted && t.completed && Number(t.list_id) === Number(view.id) && !hidden.has(t.id))
     : [];
@@ -852,10 +925,11 @@ export default function Tasks({ view, tasks, lists, filters, habits = [], reload
     all: () => true,
     today: t => t.due_date === tdF,
     week: t => t.due_date && t.due_date >= tdF && t.due_date <= weekEnd,
-    overdue: t => t.due_date && t.due_date < tdF && !t.completed,
+    overdue: t => !!overdueSince(t, tdF),
     priority: t => Number(t.priority) > 0,
     recurring: t => Boolean(t.recurring),
-    unscheduled: t => !t.due_date,
+    // 過去排過、仍未完成的計畫任務 due_date 會是 NULL，但它是已逾期，不是未排程。
+    unscheduled: t => !t.due_date && !overdueSince(t, tdF),
   };
   const availableTags = [...new Set(shownAll.flatMap(t => t.tags || []))]
     .sort((a, b) => a.localeCompare(b, 'zh-Hant'));
@@ -1214,6 +1288,98 @@ export default function Tasks({ view, tasks, lists, filters, habits = [], reload
     await reload('tasks').catch(() => setRefreshError('任務已更新，但畫面暫時無法重新載入。'));
     finishMutation(t.id);
   }
+  // ── 長按拖曳改日期（375px 觸控）─────────────────────────────
+  // 只動一般任務的 due_date／due_time：計畫任務的日期屬於 ScheduleVersion（generic PATCH
+  // 會被伺服器以 409 拒絕），學校作業的 deadline 是老師給的期限，都不能用拖曳改。
+  // 明細開著的那一筆也不行：明細自動儲存會把整份草稿（含舊 due_date）再送一次，蓋掉拖曳結果。
+  const dateDragEnabled = !bySubject && !['completed', 'trash'].includes(view.type);
+  const canMoveDate = t => dateDragEnabled && !t.completed && !t.deleted
+    && t.plan_id == null && t.task_kind !== 'school_assignment'
+    && t.id !== selId && !mutationIds.current.has(t.id) && !uncertainMutationIds.current.has(t.id);
+  async function moveTaskDate(t, date) {
+    const body = { due_date: date || null, due_time: date ? (t.due_time || null) : null };
+    if (body.due_date === (t.due_date || null) || !canMoveDate(t)) return;
+    if (!beginMutation(t.id)) return;
+    setRefreshError('');
+    setDateMoves(m => ({ ...m, [t.id]: body }));
+    const rollback = message => {
+      setDateMoves(m => { const next = { ...m }; delete next[t.id]; return next; });
+      setMutationErrors(errors => ({ ...errors, [t.id]: message }));
+    };
+    try {
+      await api(`/tasks/${t.id}`, { method: 'PATCH', body });
+    } catch (e) {
+      if (e.status >= 400 && e.status < 500) {
+        rollback(e.message || '日期沒有更新，已移回原位。');
+        finishMutation(t.id);
+        return;
+      }
+      // 回應遺失不代表沒有寫入：讀回核對後才決定成功或回復，絕不自動重送。
+      try {
+        const latest = await api('/tasks');
+        const saved = Array.isArray(latest) && latest.find(item => Number(item.id) === Number(t.id));
+        if (!saved || (saved.due_date || null) !== body.due_date || (saved.due_time || null) !== body.due_time) {
+          rollback(e.message || '日期沒有更新，已移回原位。');
+          finishMutation(t.id);
+          return;
+        }
+      } catch {
+        // 無法確認：畫面回到伺服器最後已知的位置，並鎖住這一筆直到重新載入。
+        uncertainMutationIds.current.add(t.id);
+        const message = '無法確認日期是否已更新，請重新載入；確認前請勿再次移動。';
+        rollback(message);
+        setRefreshError(message);
+        return;
+      }
+    }
+    // 新位置由 [tasks] effect 在伺服器資料確認同一日期後才放掉；舊回應晚到不會拉回原位。
+    try {
+      await reload('tasks');
+    } catch {
+      // 已寫入：保留新位置，只提示畫面暫時無法同步。
+      setRefreshError('日期已更新，但畫面暫時無法重新載入。');
+    }
+    finishMutation(t.id);
+  }
+  // 拖到「其他日期…」：先開日期選擇器，選好才寫入。
+  const [pickFor, setPickFor] = useState(null);
+  const { drag: touchDrag, start: startTouchDrag0, justEnded } = useTouchDrag((t, target) => {
+    if (target === PICK_DATE) { if (canMoveDate(t)) setPickFor(t); return; }
+    moveTaskDate(t, target);
+  });
+  // 拖曳 overlay 只是視覺；狀態另外用 sr-only live region 宣告。
+  const [dragAnnounce, setDragAnnounce] = useState('');
+  const startTouchDrag = t => {
+    if (!canMoveDate(t)) return;
+    startTouchDrag0(t);
+    setDragAnnounce(`已拿起「${t.title}」，拖到日期分區後放開`);
+  };
+  const selectFromRow = x => { if (justEnded()) return; selectTask(x); };
+  // 拖曳中讓「今天／明天／無日期」即使沒有任務也出現，當作放置目標。
+  const dropKeepEmpty = touchDrag ? [today(), addDays(today(), 1), ''] : [];
+  // 清單控制列：375px 標題列只放標題與項數，分區切換與排序另起一列，不再擠在同一行。
+  // 「依日期／依科目」決定怎麼分區；「排序方式」只在依日期時出現，決定每一區裡的順序。
+  const listControls = !['trash', 'completed'].includes(view.type) && shown.length > 0 ? (
+    <div className="row task-list-controls" style={{ gap: 'var(--sp-2)', flexWrap: 'wrap', alignItems: 'center', margin: 'var(--sp-2) 0' }}>
+      <SegmentedControl ariaLabel="分區方式" value={groupMode}
+        options={[{ value: 'date', label: '依日期' }, { value: 'subject', label: '依科目' }]}
+        onChange={pickGroupMode} />
+      {!bySubject && shown.length > 1 && (
+        <select aria-label="排序方式" value={sortBy} onChange={e => pickSort(e.target.value)} style={{ fontSize: 13 }}>
+          <option value="time">依時間</option>
+          <option value="priority">依優先級</option>
+          <option value="title">依標題</option>
+        </select>
+      )}
+      {collapsedGroups.size > 0 && (
+        <button type="button" className="btn sm ghost" style={{ marginLeft: 'auto' }} onClick={expandAllGroups}>展開全部分組</button>
+      )}
+      {dateDragEnabled && shown.some(canMoveDate) && (
+        <span className="ui-meta" style={{ flexBasis: '100%', fontSize: 12 }}>長按任務可移動日期</span>
+      )}
+    </div>
+  ) : null;
+
   async function duplicateTask(t) {
     if (duplicateBusyRef.current) return;
     duplicateBusyRef.current = true;
@@ -1724,17 +1890,7 @@ export default function Tasks({ view, tasks, lists, filters, habits = [], reload
             {subtitle && <div className="head-sub">{subtitle}</div>}
           </div>
           {!listLabel && <span className="muted">{shown.length} 項</span>}
-          {!listLabel && !['trash', 'completed'].includes(view.type) && shown.length > 1 && (
-            <select aria-label="排序方式" value={sortBy} onChange={e => pickSort(e.target.value)} style={{ marginLeft: 'auto', fontSize: 13 }}>
-              <option value="default">預設排序</option>
-              <option value="time">依時間</option>
-              <option value="subject">依科目</option>
-              <option value="subjectGroup">照科目分堆</option>
-              <option value="priority">依優先級</option>
-              <option value="title">依標題</option>
-            </select>
-          )}
-          {!listLabel && collapsedGroups.size > 0 && !['trash'].includes(view.type) && (
+          {!listLabel && collapsedGroups.size > 0 && view.type === 'completed' && (
             <button type="button" className="btn sm ghost" onClick={expandAllGroups}>展開全部分組</button>
           )}
           {!listLabel && view.type === 'list' && completedInList.length > 0 && (
@@ -1890,22 +2046,11 @@ export default function Tasks({ view, tasks, lists, filters, habits = [], reload
             <div className="row" style={{ marginTop: 'var(--section-gap)', marginBottom: 'var(--sp-2)' }}>
               <div className="ui-section-title" style={{ marginBottom: 0 }}>{listLabel}</div>
               <span className="muted">{shown.length} 項</span>
-              {!['trash', 'completed'].includes(view.type) && shown.length > 1 && (
-                <select aria-label="排序方式" value={sortBy} onChange={e => pickSort(e.target.value)}
-                  style={{ marginLeft: 'auto', fontSize: 13 }}>
-                  <option value="default">預設排序</option>
-                  <option value="time">依時間</option>
-                  <option value="subject">依科目</option>
-                  <option value="subjectGroup">照科目分堆</option>
-                  <option value="priority">依優先級</option>
-                  <option value="title">依標題</option>
-                </select>
-              )}
-              {collapsedGroups.size > 0 && !['trash'].includes(view.type) && (
-                <button type="button" className="btn sm ghost" onClick={expandAllGroups}>展開全部分組</button>
-              )}
             </div>
           )}
+          {listControls}
+          {touchDrag && <div aria-hidden="true" className="ui-meta" style={dragHintStyle}>{DRAG_HINT}</div>}
+          <div role="status" aria-live="polite" className="sr-only">{dragAnnounce}</div>
           {view.type === 'trash'
             ? shown.map(t => (
               <div key={t.id}>
@@ -1922,28 +2067,44 @@ export default function Tasks({ view, tasks, lists, filters, habits = [], reload
             ))
             : (view.type === 'list' && showCompletedInList
               ? [...groupTasks(shown.filter(t => !t.completed), view.type), ['已完成', shown.filter(t => t.completed)]]
-              : (sortBy === 'subjectGroup' && !['completed', 'trash'].includes(view.type)
-                ? groupBySubject(shown) : groupTasks(shown, view.type))).map(([label, list]) => {
+              : (bySubject
+                ? groupBySubject(shown) : groupTasks(shown, view.type, { keepEmpty: dropKeepEmpty }))).map(([label, list, dropDate]) => {
               const sorted = view.type === 'completed' ? sortCompleted(list) : applySort(list);
-              const canDrag = sortBy === 'default';
-              const collapsed = collapsedGroups.has(label);
+              // 桌機拖放排序寫入 order_index；只有「依日期＋依時間」時畫面順序才等於 order_index。
+              const canDrag = !bySubject && sortBy === 'time';
+              // 拖曳中展開所有可放置的分區，收合的分區也能放進去。
+              const collapsed = collapsedGroups.has(label) && !(touchDrag && dropDate !== undefined);
+              const isDropZone = dateDragEnabled && dropDate !== undefined;
+              const dropOver = touchDrag && isDropZone && touchDrag.target === dropDate;
               return (
-                <div className="tgroup" key={label}>
+                <div className={'tgroup' + (dropOver ? ' drop-over' : '')} key={label}
+                  data-drop-date={isDropZone ? dropDate : undefined}
+                  style={touchDrag && isDropZone ? dropZoneStyle(dropOver) : undefined}>
                   <button type="button" className="glabel task-group-toggle" aria-expanded={!collapsed}
                     aria-label={`${collapsed ? '展開' : '收合'}${label}`} onClick={() => toggleGroup(label)}>
                     <span className="task-group-chevron" aria-hidden="true">⌄</span>
                     {label}
                     {/* 照科目分堆時，日期分組不見了，「這一科欠了幾項」就沒地方看。
                         分堆的用途正是這個，所以把每一科的項數與逾期數寫在標頭上。 */}
-                    {sortBy === 'subjectGroup' && !['completed', 'trash'].includes(view.type) && <SubjectCounts list={sorted} />}
+                    {bySubject && <SubjectCounts list={sorted} />}
                   </button>
-                  {!collapsed && sorted.map(t => <TaskRow key={t.id} t={t} lists={lists} sel={t.id === selId} onSel={selectTask} onToggle={toggle}
+                  {!collapsed && sorted.map(t => <TaskRow key={t.id} t={t} lists={lists} sel={t.id === selId} onSel={selectFromRow} onToggle={toggle}
                     onDragStart={canDrag ? setDragT : undefined}
                     onDropOn={canDrag ? x => dropOn(x, sorted) : undefined}
+                    onLongPressDrag={canMoveDate(t) ? startTouchDrag : undefined} dragging={touchDrag?.id === t.id}
+                    onMoveDate={canMoveDate(t) ? x => { if (!justEnded() && canMoveDate(x)) setPickFor(x); } : undefined}
                     onSwipeDelete={del} mutationBusy={pendingIds.has(t.id)} mutationError={mutationErrors[t.id]} />)}
                 </div>
               );
             })}
+          {touchDrag && dateDragEnabled && (
+            <div className="tgroup" data-drop-date={PICK_DATE} style={dropZoneStyle(touchDrag.target === PICK_DATE)}>
+              <div className="glabel">其他日期…</div>
+            </div>
+          )}
+          {pickFor && <DatePickSheet title={pickFor.title} initial={pickFor.due_date || ''}
+            onClose={() => setPickFor(null)}
+            onPick={date => { const t = pickFor; setPickFor(null); moveTaskDate(t, date); }} />}
           {shown.length === 0 && <div className="muted" style={{ marginTop: 30, textAlign: 'center' }}>
             {showQuickFind && quickFind.trim() ? '找不到符合搜尋的任務' : '沒有任務'}
           </div>}

@@ -59,23 +59,42 @@ export function matchView(t, view, ctx) {
 }
 
 const WDH = '日一二三四五六';
-export function groupTasks(tasks, viewType) {
+
+// 已逾期：未完成，且「任務日期」「截止日」或「最後一次安排日」早於今天（今天不算）。
+// 計畫任務的 due_date 是 active 排程的 mirror，過去的安排成為歷史後會變成 NULL；
+// 伺服器另外附上 last_scheduled_date，這裡據此判定，不把它誤當成「無日期」。
+// 回傳逾期的那一天（最早的那個），沒有逾期回傳 null。
+export function overdueSince(t, td = today()) {
+  if (!t || t.completed || t.deleted) return null;
+  const past = [t.due_date, t.deadline_date, t.due_date ? null : t.last_scheduled_date]
+    .filter(d => d && d < td).sort();
+  return past[0] || null;
+}
+
+const dayLabel = d => `${+d.slice(5, 7)}/${+d.slice(8)}（週${WDH[new Date(d + 'T00:00:00').getDay()]}）`;
+
+// 每一組是 [標題, 任務, 日期鍵]。日期鍵是拖曳放下時要寫入的 due_date：
+// 今天／某一天＝該日期，無日期＝''，已逾期＝undefined（不能放進過去）。
+// keepEmpty：拖曳期間要讓「今天／明天／無日期」即使沒有任務也能當放置目標。
+export function groupTasks(tasks, viewType, { keepEmpty = [] } = {}) {
   const td = today();
   if (viewType === 'completed') return [['已完成', tasks]];
   if (viewType === 'trash') return [['垃圾桶', tasks]];
   if (viewType === 'search') return [['搜尋結果', tasks]];
-  const overdue = tasks.filter(t => t.due_date && t.due_date < td);
-  const todays = tasks.filter(t => t.due_date === td);
-  const later = tasks.filter(t => t.due_date && t.due_date > td);
-  const nodate = tasks.filter(t => !t.due_date);
+  const isOverdue = t => (t.due_date && t.due_date < td) || !!overdueSince(t, td);
+  const overdue = tasks.filter(isOverdue);
+  const rest = tasks.filter(t => !isOverdue(t));
+  const todays = rest.filter(t => t.due_date === td);
+  const later = rest.filter(t => t.due_date && t.due_date > td);
+  const nodate = rest.filter(t => !t.due_date);
   // 之後：一天一組，寫出日期
   const byDate = {};
   later.forEach(t => { (byDate[t.due_date] = byDate[t.due_date] || []).push(t); });
-  const laterGroups = Object.keys(byDate).sort().map(d =>
-    [`${+d.slice(5, 7)}/${+d.slice(8)}（週${WDH[new Date(d + 'T00:00:00').getDay()]}）`, byDate[d]]);
+  for (const d of keepEmpty) if (d && d > td && !byDate[d]) byDate[d] = [];
+  const laterGroups = Object.keys(byDate).sort().map(d => [dayLabel(d), byDate[d], d]);
   return [
-    ['已逾期', overdue], ['今天', todays], ...laterGroups, ['無日期', nodate],
-  ].filter(([, l]) => l.length);
+    ['已逾期', overdue, undefined], ['今天', todays, td], ...laterGroups, ['無日期', nodate, ''],
+  ].filter(([, l, key]) => l.length || (key !== undefined && keepEmpty.includes(key)));
 }
 // 預設排序：依時間；同一天依課序（order_index，再依建立先後）
 export function defaultSort(a, b) {

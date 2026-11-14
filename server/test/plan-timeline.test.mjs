@@ -331,4 +331,37 @@ describe('段考進度時間軸 projection', () => {
     assert.equal(item.time_status, 'past_due');
     assert.equal(item.last_scheduled_date, D(-2));
   });
+  test('T18 逾期任務重新加入新版本：due_date mirror 同交易更新；同一 base 重送被 stale 擋下；已有安排不可重複加入', async () => {
+    const u = nextUser(); await mkUser(u);
+    const plan = await mkPlan(u); const list = await mkList(u);
+    const past = await mkTask(u, plan, list, { title: '前天的進度' });
+    const trigger = await mkTask(u, plan, list, { title: '觸發新版本' });
+    await seedVersion(u, [
+      { task_id: past, date: D(-2), planned_minutes: 60 },
+      { task_id: trigger, date: D(3), planned_minutes: 60 },
+    ]);
+    await sched.transitionTaskOutcome(u, trigger, 'completed');
+    const due = async id => (await q.get('SELECT due_date FROM tasks WHERE id=?', [id])).due_date;
+    assert.equal(await due(past), null, '前提：過去的安排成為歷史後 mirror 為 NULL');
+    const base = (await tl(u, plan)).active_version_id;
+    const versions = async () => Number((await q.get('SELECT COUNT(*) AS n FROM schedule_versions WHERE user_id=?', [u])).n);
+    const before = await versions();
+
+    await sched.applyManualAdjustment(u, { baseVersionId: base, moves: [{ task_id: past, date: D(1) }] });
+    assert.equal(await due(past), D(1), 'mirror 與新版本同一筆交易寫入');
+    assert.equal(await versions(), before + 1);
+
+    // 回應遺失後若用同一個 base 重送：stale gate 拒絕，不會多出版本或第二段安排。
+    await assert.rejects(sched.applyManualAdjustment(u, { baseVersionId: base, moves: [{ task_id: past, date: D(1) }] }), e => e.status === 409);
+    assert.equal(await versions(), before + 1);
+    const next = (await tl(u, plan)).active_version_id;
+    await assert.rejects(sched.applyManualAdjustment(u, { baseVersionId: next, moves: [{ task_id: past, date: D(2) }] }), /已經有安排/);
+    const item = (await tl(u, plan)).items.find(i => i.task_id === Number(past));
+    assert.deepEqual(item.day_blocks.map(b => b.date), [D(1)]);
+
+    // 已有一段安排：以 block_id 搬動，mirror 跟著更新。
+    const blockId = item.day_blocks[0].block_id;
+    await sched.applyManualAdjustment(u, { baseVersionId: next, moves: [{ block_id: blockId, date: D(4) }] });
+    assert.equal(await due(past), D(4));
+  });
 });
