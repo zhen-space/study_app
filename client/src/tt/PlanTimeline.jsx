@@ -56,7 +56,7 @@ function ItemLine({ it, busy, uncertain, readOnly, onToggle, onEdit }) {
           {it.locked && <span className="ui-meta" title="已鎖定">🔒 已鎖定</span>}
         </div>
         <div className="timeline-item-actions">
-          {!readOnly && <button type="button" className="timeline-action" onClick={() => onEdit(it, block)}>編輯任務</button>}
+          {!readOnly && <button type="button" className="timeline-action" disabled={busy || uncertain} onClick={() => onEdit(it, block)}>編輯任務</button>}
         </div>
       </div>
     </div>
@@ -263,7 +263,12 @@ export default function PlanTimeline({ plan, tasks = [], reloadTasks, onAddConte
       {editingItem && <TimelineTaskEditSheet item={editingItem.item} block={editingItem.block}
         task={tasks.find(tk => Number(tk.id) === Number(editingItem.item.task_id))}
         versionId={t.active_version_id}
-        onSaved={changes => savedTask(editingItem.item, changes)} onReload={load} onClose={() => setEditingItem(null)} />}
+        onSaved={changes => savedTask(editingItem.item, changes)} onReload={load}
+        onUncertain={() => {
+          markUncertain(editingItem.item.task_id);
+          setMutationError('無法確認任務變更是否已儲存；確認前不會再次送出。');
+        }}
+        onClose={() => setEditingItem(null)} />}
     </SurfaceCard>
   );
 }

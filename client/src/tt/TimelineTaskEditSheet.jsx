@@ -8,7 +8,7 @@ const HM = t => (t || '').slice(0, 5);
 
 // 確切安排的單一編輯入口：任務內容、排定日期與時段都在這裡修改。
 // Task 欄位仍走 PATCH；日期／時段仍走 ScheduleVersion manual transaction。
-export default function TimelineTaskEditSheet({ item, block, task, versionId, onSaved, onReload, onClose }) {
+export default function TimelineTaskEditSheet({ item, block, task, versionId, onSaved, onReload, onUncertain, onClose }) {
   const original = task || item || {};
   const [draft, setDraft] = useState({
     title: original.title || '',
@@ -26,6 +26,7 @@ export default function TimelineTaskEditSheet({ item, block, task, versionId, on
   const [saving, setSaving] = useState(false);
   const [committed, setCommitted] = useState(false);
   const [uncertain, setUncertain] = useState(false);
+  const [stale, setStale] = useState(false);
   const [error, setError] = useState('');
   const busy = useRef(false);
   const composing = useRef(false);
@@ -88,6 +89,12 @@ export default function TimelineTaskEditSheet({ item, block, task, versionId, on
           setError('日期／時間是否已儲存暫時無法確認，確認前不會再次送出。');
           busy.current = false; setSaving(false); return;
         }
+        // 409 且沒有 conflicts 是 stale gate：畫面上的版本已過期，舊 block 不能再送，只能重新載入。
+        if (e.status === 409 && !e.conflicts?.length) {
+          setStale(true);
+          setError(e.message || '排程已被其他變更更新，請重新載入後再編輯。');
+          busy.current = false; setSaving(false); return;
+        }
         setConflicts(e.conflicts || []);
         setError(e.message || '日期／時間儲存失敗');
         busy.current = false; setSaving(false); return;
@@ -140,8 +147,14 @@ export default function TimelineTaskEditSheet({ item, block, task, versionId, on
     }
   }
 
+  // 結果未知時關閉：交給時間軸鎖住這一項，確認前不能再從列表重新送出。
+  const close = () => {
+    if (uncertain) onUncertain?.();
+    onClose();
+  };
+
   async function reloadToConfirm() {
-    if (busy.current || !committed) return;
+    if (busy.current || (!committed && !stale)) return;
     busy.current = true; setSaving(true); setError('');
     try {
       const ok = await onReload?.();
@@ -153,12 +166,12 @@ export default function TimelineTaskEditSheet({ item, block, task, versionId, on
     }
   }
 
-  const blocked = checking || checkFailed || conflicts.length > 0 || (!taskChanged && !scheduleChanged);
+  const blocked = stale || checking || checkFailed || conflicts.length > 0 || (!taskChanged && !scheduleChanged);
   return (
-    <BottomSheet onClose={saving ? undefined : onClose} label="編輯任務">
+    <BottomSheet onClose={saving ? undefined : close} label="編輯任務">
       <div className="row">
         <b>編輯任務</b>
-        <button className="icon-btn" style={{ marginLeft: 'auto' }} aria-label="關閉" disabled={saving} onClick={saving ? undefined : onClose}>
+        <button className="icon-btn" style={{ marginLeft: 'auto' }} aria-label="關閉" disabled={saving} onClick={saving ? undefined : close}>
           <Icon name="x" size={14} />
         </button>
       </div>
@@ -167,7 +180,7 @@ export default function TimelineTaskEditSheet({ item, block, task, versionId, on
           <b>{uncertain ? '暫時無法確認儲存結果' : '變更已儲存'}</b>
           {error && <SurfaceCard tone="warning" role="alert" style={{ marginTop: 'var(--sp-3)' }}>{error}</SurfaceCard>}
           <div className="row" style={{ marginTop: 'var(--sp-4)', gap: 'var(--sp-2)' }}>
-            <Button variant="tertiary" disabled={saving} onClick={onClose}>先關閉</Button>
+            <Button variant="tertiary" disabled={saving} onClick={close}>先關閉</Button>
             <Button variant="primary" style={{ marginLeft: 'auto' }} disabled={saving} onClick={reloadToConfirm}>
               {saving ? '載入中…' : '重新載入確認'}
             </Button>
@@ -213,9 +226,11 @@ export default function TimelineTaskEditSheet({ item, block, task, versionId, on
           {conflicts.map((c, i) => <div key={i} className="ui-meta">・{conflictText(c)}</div>)}
         </SurfaceCard>}
         {error && <SurfaceCard tone="warning" role="alert" style={{ marginTop: 'var(--sp-4)' }}>{error}</SurfaceCard>}
-        <Button variant="primary" block style={{ marginTop: 'var(--sp-4)' }} disabled={saving || blocked} onClick={save}>
+        {stale ? <Button variant="primary" block style={{ marginTop: 'var(--sp-4)' }} disabled={saving} onClick={reloadToConfirm}>
+          {saving ? '載入中…' : '重新載入'}
+        </Button> : <Button variant="primary" block style={{ marginTop: 'var(--sp-4)' }} disabled={saving || blocked} onClick={save}>
           {saving ? '儲存中…' : checking ? '確認時間中…' : '儲存變更'}
-        </Button>
+        </Button>}
       </>}
     </BottomSheet>
   );
