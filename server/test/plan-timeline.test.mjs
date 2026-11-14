@@ -229,4 +229,46 @@ describe('段考進度時間軸 projection', () => {
     assert.equal(r.items[0].kind, 'manual');
     assert.equal(r.items[0].display_mode, 'range');
   });
+  test('T14 新版本丟掉過去 block 後，未完成的過去安排仍判為已逾期（今天到期不算）', async () => {
+    const u = nextUser(); await mkUser(u);
+    const plan = await mkPlan(u); const list = await mkList(u);
+    const past = await mkTask(u, plan, list, { title: '前天的進度' });
+    const todayTask = await mkTask(u, plan, list, { title: '今天的進度' });
+    const trigger = await mkTask(u, plan, list, { title: '觸發新版本' });
+    const pastDeadline = await mkTask(u, plan, list, { title: '截止已過', deadline_date: D(-1) });
+    const dueToday = await mkTask(u, plan, list, { title: '今天截止', deadline_date: D(0), deadline_time: '00:01' });
+    const donePast = await mkTask(u, plan, list, { title: '過去已完成' });
+    await seedVersion(u, [
+      { task_id: past, date: D(-2), planned_minutes: 60 },
+      { task_id: donePast, date: D(-3), planned_minutes: 60 },
+      { task_id: todayTask, date: D(0), planned_minutes: 60 },
+      { task_id: trigger, date: D(1), planned_minutes: 60 },
+    ]);
+    await sched.transitionTaskOutcome(u, donePast, 'completed');
+    // 真實流程：任一 lifecycle 都只帶 date>=今天 的 block，前天的安排不在 active 版本。
+    await sched.transitionTaskOutcome(u, trigger, 'completed');
+    const r = await tl(u, plan);
+    const item = id => r.items.find(i => i.task_id === Number(id));
+    assert.equal(item(past).day_blocks.length, 0, '前提：過去的 block 已不在 active 版本');
+    assert.equal(item(past).overdue, true);
+    assert.equal(item(past).time_status, 'past_due');
+    assert.equal(item(past).last_scheduled_date, D(-2));
+    assert.equal(item(pastDeadline).overdue, true);
+    assert.equal(item(todayTask).overdue, false);
+    assert.equal(item(todayTask).time_status, 'today');
+    assert.equal(item(dueToday).overdue, false);
+    assert.equal(item(donePast).overdue, false);
+    assert.equal(item(trigger).overdue, false);
+  });
+
+  test('T15 歷史版本後來被重排到未來 → 不算逾期', () => {
+    const tasks = [{ id: 1, title: '重排過', list_id: 1, estimated_minutes: 60, completed: 0 }];
+    const r = buildPlanTimeline({
+      plan: { id: 1, status: 'active', target_date: D(30) }, activeVersionId: 2, tasks,
+      blocks: [{ id: 5, task_id: 1, date: D(2), planned_minutes: 60 }],
+      lastScheduledByTask: new Map([[1, D(-4)]]), today: TODAY,
+    });
+    assert.equal(r.items[0].overdue, false);
+    assert.equal(r.items[0].last_scheduled_date, D(2));
+  });
 });

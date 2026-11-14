@@ -52,7 +52,8 @@ function ItemLine({ it, busy, uncertain, readOnly, onToggle, onEdit }) {
           {it.subject_name && <span className="ui-meta">{it.subject_name}</span>}
           <StatusLabel status={it.time_status} />
           {block?.start_time && block?.end_time && <span className="ui-meta">{block.start_time}–{block.end_time}</span>}
-          {!block && it.display_mode === 'deadline' && it.deadline_date && <span className="ui-meta">{dueLabel(it)}</span>}
+          {it.overdue && it.last_scheduled_date && <span className="ui-meta">原定 {md(it.last_scheduled_date)}</span>}
+          {(it.overdue || (!block && it.display_mode === 'deadline')) && it.deadline_date && <span className="ui-meta">{dueLabel(it)}</span>}
           {it.locked && <span className="ui-meta" title="已鎖定">🔒 已鎖定</span>}
         </div>
         <div className="timeline-item-actions">
@@ -172,9 +173,10 @@ export default function PlanTimeline({ plan, tasks = [], reloadTasks, onAddConte
   const readOnly = plan?.status === 'ended' || plan?.status === 'archived' || !t.active;
   // CURRENT projection 可能同時把同一 Task 放進多個 bucket。畫面只讀 items，
   // 已逾期置頂；其餘按 ScheduledBlock 的每一天呈現。
+  // 逾期由後端以台北時區判定（含已不在 active 版本的過去安排），前端不自行推算日期。
   const uniqueItems = [...new Map((t.items || []).map(it => [Number(it.task_id), it])).values()];
   const overdueItems = uniqueItems.filter(it => it.completion !== 'completed'
-    && (it.time_status === 'past_due' || it.warnings?.includes('past_due')));
+    && (it.overdue ?? (it.time_status === 'past_due' || it.warnings?.includes('past_due'))));
   const completedItems = uniqueItems.filter(it => it.completion === 'completed');
   const normalItems = uniqueItems.filter(it => it.completion !== 'completed' && !overdueItems.includes(it));
   const days = new Map();
