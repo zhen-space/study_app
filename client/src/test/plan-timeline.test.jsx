@@ -35,7 +35,7 @@ describe('PlanTimeline', () => {
     const check = await screen.findByRole('button', { name: '完成「背英文」' });
     expect(check).toHaveClass('timeline-check');
     fireEvent.click(check);
-    expect(check).toHaveAttribute('aria-pressed', 'true');
+    expect(screen.getByRole('button', { name: '取消完成「背英文」' })).toHaveAttribute('aria-pressed', 'true');
     expect(screen.getByText('背英文')).toHaveStyle({ textDecoration: 'line-through' });
     finishPatch({ completed: true });
     await waitFor(() => expect(check).not.toBeDisabled());
@@ -72,7 +72,7 @@ describe('PlanTimeline', () => {
     const check = await screen.findByRole('button', { name: '完成「化學題目」' });
     fireEvent.click(check);
     expect(await screen.findByRole('alert')).toHaveTextContent('確認前不會再次切換');
-    expect(check).toBeDisabled();
+    expect(screen.getByRole('button', { name: '取消完成「化學題目」' })).toBeDisabled();
     fireEvent.click(screen.getByRole('button', { name: '重新載入確認' }));
     await waitFor(() => expect(screen.getByRole('button', { name: '完成「化學題目」' })).not.toBeDisabled());
     expect(api.mock.calls.filter(([path]) => path === '/tasks/14')).toHaveLength(1);
@@ -136,7 +136,7 @@ describe('PlanTimeline', () => {
     expect(screen.getByLabelText('日期')).toHaveValue('2026-10-01');
   });
 
-  it('日期區間 → 科目 → 內容；點開顯示每日安排', async () => {
+  it('未完成任務置頂並保留科目、日期與每日安排', async () => {
     const item = {
       task_id: 10, kind: 'material', subject_id: 1, subject_name: '數學',
       material: { book_title: '課本', path: [{ title: '第一章' }], item_title: 'Ch1 閱讀' },
@@ -150,6 +150,7 @@ describe('PlanTimeline', () => {
     }));
     render(<PlanTimeline plan={plan} />);
     await waitFor(() => expect(screen.getByText('日期安排')).toBeTruthy());
+    expect(screen.getByText('未完成任務（1）')).toBeTruthy();
     expect(screen.getByText('9/25–9/27')).toBeTruthy();
     expect(screen.getByText('數學')).toBeTruthy();
     expect(screen.getByText('課本 · 第一章 · Ch1 閱讀')).toBeTruthy();
@@ -159,12 +160,13 @@ describe('PlanTimeline', () => {
     await waitFor(() => expect(screen.getByText(/9\/25 19:00–20:00/)).toBeTruthy());
   });
 
-  it('School Assignment 顯示「某日前」，不混進日期區間', async () => {
+  it('School Assignment 在未完成區顯示「某日前」', async () => {
     const sa = { task_id: 20, kind: 'school_assignment', subject_name: '物理', title: '交物理講義', display_mode: 'deadline', deadline_date: '2026-10-01', deadline_time: '18:00', completion: 'not_started', day_blocks: [], warnings: [] };
     mockTimeline(range({ items: [sa], deadlines: [sa] }));
     render(<PlanTimeline plan={plan} />);
-    await waitFor(() => expect(screen.getByText('要交／要完成')).toBeTruthy());
-    expect(screen.getByText('10/1 18:00 前：交物理講義')).toBeTruthy();
+    await waitFor(() => expect(screen.getByText('未完成任務（1）')).toBeTruthy());
+    expect(screen.getByText('交物理講義')).toBeTruthy();
+    expect(screen.getByText('10/1 18:00 前')).toBeTruthy();
   });
 
   it('排不下／期限衝突另列並提供調整', async () => {
@@ -185,6 +187,41 @@ describe('PlanTimeline', () => {
     await waitFor(() => expect(screen.getByText(/尚未排入/)).toBeTruthy());
     expect(screen.getByText('尚未填預估時間')).toBeTruthy();
     expect(screen.getByText('安排有缺口')).toBeTruthy();
+  });
+
+  it('未完成任務固定在已完成紀錄前，同一任務不在日期與期限區重複', async () => {
+    const done = { task_id: 61, title: '昨天完成的閱讀', display_mode: 'completed', completion: 'completed',
+      range_start: '2026-10-01', range_end: '2026-10-01', day_blocks: [], warnings: [] };
+    const open = { task_id: 62, title: '今天要交的作業', display_mode: 'deadline', completion: 'not_started',
+      deadline_date: '2026-10-02', deadline_time: '20:00', day_blocks: [], warnings: [] };
+    mockTimeline(range({
+      active: true, items: [done, open], deadlines: [open],
+      segments: [{ range_start: '2026-10-02', range_end: '2026-10-02', groups: [{ task_ids: [62] }] }],
+    }));
+    render(<PlanTimeline plan={plan} />);
+    const incomplete = await screen.findByText('未完成任務（1）');
+    const completed = screen.getByText('已完成紀錄（1）');
+    expect(incomplete.compareDocumentPosition(completed) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(screen.getAllByText('今天要交的作業')).toHaveLength(1);
+    expect(screen.getAllByText('昨天完成的閱讀')).toHaveLength(1);
+    expect(screen.queryByText('要交／要完成')).not.toBeInTheDocument();
+  });
+
+  it('375px 未完成、gap 與 unscheduled 都維持單一列及明確警示', async () => {
+    Object.defineProperty(window, 'innerWidth', { configurable: true, value: 375 });
+    const gap = { task_id: 71, title: '超過期限的數學', display_mode: 'gap', completion: 'not_started',
+      time_status: 'schedule_gap', warnings: ['deadline_violation'], day_blocks: [] };
+    const un = { task_id: 72, title: '尚未估時的英文', display_mode: 'unscheduled', completion: 'not_started',
+      time_status: 'schedule_gap', warnings: ['missing_estimate'], day_blocks: [] };
+    mockTimeline(range({ active: true, items: [gap, un], gaps: [gap], unscheduled: [un] }));
+    render(<PlanTimeline plan={plan} />);
+    expect(await screen.findByText('未完成任務（2）')).toBeVisible();
+    expect(screen.getAllByText('超過期限的數學')).toHaveLength(1);
+    expect(screen.getAllByText('尚未估時的英文')).toHaveLength(1);
+    expect(screen.getByText('目前安排超過期限')).toBeVisible();
+    expect(screen.getByText('尚未填預估時間')).toBeVisible();
+    expect(screen.getByText('需要調整（排不下或期限衝突）')).toBeVisible();
+    expect(screen.getByText('尚未排入（1）')).toBeVisible();
   });
 
   it('空狀態提供「加入內容」與「調整計畫」', async () => {
@@ -209,7 +246,8 @@ describe('PlanTimeline', () => {
     render(<PlanTimeline plan={plan} />);
     expect(await screen.findByText('老師指定：老師講義第三章')).toBeInTheDocument();
     expect(screen.getByText('今天')).toBeInTheDocument();
-    expect(screen.getByText('9/30 20:00 前：英文作業')).toBeInTheDocument();
+    expect(screen.getByText('英文作業')).toBeInTheDocument();
+    expect(screen.getByText('9/30 20:00 前')).toBeInTheDocument();
     expect(screen.getByText('已逾期')).toBeInTheDocument();
   });
 
