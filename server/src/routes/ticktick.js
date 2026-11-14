@@ -3,7 +3,7 @@ import { q } from '../db/init.js';
 import { requireAuth } from '../middleware/auth.js';
 import { calculateScheduleDiff } from '../schedule/diff.js';
 import { todayTW, twDayOf } from '../util/date.js';
-import { transitionTaskDeletion, transitionTaskOutcome } from '../schedule/persistence.js';
+import { transitionTaskDeletion, transitionTaskOutcome, getActiveVersionId, lastScheduledDates } from '../schedule/persistence.js';
 import { setCompletion } from '../material/service.js';
 import {
   TASK_KINDS, DEFAULT_TASK_KIND, REMINDER_DAYS_BEFORE,
@@ -209,6 +209,15 @@ router.get('/tasks', async (req, res) => {
         t.updated_at = updatedAt;
       }
     }
+  }
+  // 計畫任務的 due_date 是 active 版本的 mirror；過去的安排成為歷史後會變成 NULL。
+  // 附上最後安排日（唯讀），讓清單能把「過去排過、仍未完成」的任務標成已逾期，
+  // 而不是誤當成「無日期」。只查自己的、未完成且目前沒有 due_date 的計畫任務。
+  const historyIds = rows.filter(t => t.user_id === req.userId && t.plan_id != null && !t.completed
+    && !t.deleted && !t.cancelled && !t.due_date).map(t => t.id);
+  if (historyIds.length) {
+    const last = await lastScheduledDates(req.userId, historyIds, await getActiveVersionId(req.userId));
+    for (const t of rows) if (last.has(Number(t.id))) t.last_scheduled_date = last.get(Number(t.id));
   }
   // ?task_kind=school_assignment：只是既有清單的 filter，不是另一支端點。
   // 舊資料的 task_kind 是 NULL（沒有 backfill），語意上就是 standard。

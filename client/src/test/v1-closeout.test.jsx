@@ -155,7 +155,8 @@ describe('任務頁：照科目分堆看得出各科逾期幾項', () => {
     await draw(
       <Tasks view={{ type: 'tasks' }} tasks={subjTasks} lists={fx.lists}
         filters={[]} habits={[]} reload={() => {}} title="所有任務" />);
-    const overdue = screen.getByText('已逾期').closest('.glabel');
+    // 每列也會標「已逾期」狀態；這裡要的是分組標題。
+    const overdue = screen.getByRole('button', { name: '收合已逾期' });
     expect(within(overdue).queryByText(/^\d+ 項$/)).toBeNull();
     expect(errors).toEqual([]);
   });

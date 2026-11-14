@@ -2086,6 +2086,26 @@ function isBusy(e) {
 // 是歷史紀錄。把它清成 NULL 會讓行事曆上的完成紀錄整批消失。
 const MIRROR_WHERE = `user_id=? AND plan_id IS NOT NULL AND COALESCE(deleted,0)=0 AND completed=0 AND COALESCE(cancelled,0)=0`;
 
+// 歷史安排日期（唯讀）：新版本只帶今天以後的 block，過去沒完成的安排會從 active
+// 版本消失，due_date mirror 也跟著變成 NULL。對指定的 Task，取「最近一個仍含它、
+// 且不晚於 active 版本」的版本中最後的安排日期，供逾期判定使用；不改任何狀態。
+export async function lastScheduledDates(userId, taskIds, activeVersionId) {
+  const out = new Map();
+  const ids = [...new Set(taskIds.map(Number))].filter(Number.isInteger);
+  if (!ids.length || activeVersionId == null) return out;
+  const rows = await q.all(
+    `SELECT b.task_id, MAX(b.date) AS last_date
+       FROM scheduled_blocks b
+      WHERE b.user_id=? AND b.task_id IN (${ids.map(() => '?').join(',')})
+        AND b.schedule_version_id=(
+          SELECT MAX(b2.schedule_version_id) FROM scheduled_blocks b2
+           WHERE b2.user_id=b.user_id AND b2.task_id=b.task_id AND b2.schedule_version_id<=?)
+      GROUP BY b.task_id`,
+    [userId, ...ids, activeVersionId]);
+  for (const r of rows) if (r.last_date) out.set(Number(r.task_id), r.last_date);
+  return out;
+}
+
 async function mirrorDueDates(tx, userId, versionId) {
   const updatedAt = new Date().toISOString();
   await tx.run(
