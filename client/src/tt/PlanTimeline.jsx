@@ -48,14 +48,35 @@ function CompletionButton({ it, busy, disabled, onToggle }) {
   </button>;
 }
 
+function itemScheduleMeta(it) {
+  if (it.display_mode === 'deadline' && it.deadline_date) return dueLabel(it);
+  if (it.display_mode === 'gap') {
+    return it.warnings?.includes('deadline_violation') ? REASON_LABEL.deadline_violation : REASON_LABEL.schedule_gap;
+  }
+  if (it.display_mode === 'unscheduled') {
+    return it.warnings?.map(w => REASON_LABEL[w]).filter(Boolean)[0] || REASON_LABEL.schedule_gap;
+  }
+  if (it.range_start && it.range_end) return RANGE_LABEL(it.range_start, it.range_end);
+  if (it.day_blocks?.length) {
+    const dates = it.day_blocks.map(b => b.date).filter(Boolean).sort();
+    if (dates.length) return RANGE_LABEL(dates[0], dates[dates.length - 1]);
+  }
+  return null;
+}
+
 function ItemLine({ it, expanded, busy, uncertain, readOnly, onToggle, onEdit, onAdjustBlock }) {
+  const scheduleMeta = itemScheduleMeta(it);
+  const warning = it.display_mode === 'gap' || it.display_mode === 'unscheduled';
   return (
     <div className="timeline-item">
       <CompletionButton it={it} busy={busy} disabled={readOnly || uncertain} onToggle={onToggle} />
       <div className="timeline-item-main">
         <div className="timeline-item-title" style={{ textDecoration: it.completion === 'completed' ? 'line-through' : 'none' }}>{itemTitle(it)}</div>
         <div className="timeline-item-meta">
+          {it.subject_name && <span className="ui-meta">{it.subject_name}</span>}
           <StatusLabel status={it.time_status} />
+          {warning && <span aria-hidden="true">⚠️</span>}
+          {scheduleMeta && <span className="ui-meta" style={{ color: warning ? 'var(--warning, #b7791f)' : undefined }}>{scheduleMeta}</span>}
           {it.locked && <span className="ui-meta" title="已鎖定">🔒 已鎖定</span>}
         </div>
         <div className="timeline-item-actions">
@@ -194,9 +215,13 @@ export default function PlanTimeline({ plan, tasks = [], lists = [], reloadTasks
     segments: [], deadlines: [], gaps: [], unscheduled: [], items: [],
     no_active_schedule: false, ...state.data,
   };
-  const byId = new Map((t.items || []).map(i => [i.task_id, i]));
-  const hasAnything = t.segments.length || t.deadlines.length || t.gaps.length || t.unscheduled.length;
+  const hasAnything = t.items.length || t.segments.length || t.deadlines.length || t.gaps.length || t.unscheduled.length;
   const readOnly = plan?.status === 'ended' || plan?.status === 'archived' || !t.active;
+  // CURRENT projection 可能同時把同一 Task 放進 items 與 range/deadline/gap bucket。
+  // 以 task_id 去重後只呈現一次：未完成置頂；完成項目保留在歷史區。
+  const uniqueItems = [...new Map((t.items || []).map(it => [Number(it.task_id), it])).values()];
+  const incompleteItems = uniqueItems.filter(it => it.completion !== 'completed');
+  const completedItems = uniqueItems.filter(it => it.completion === 'completed');
 
   // 空狀態：沒有可呈現的計畫安排 → 引導「加入內容」或「調整計畫」。
   if (!hasAnything) {
@@ -234,45 +259,21 @@ export default function PlanTimeline({ plan, tasks = [], lists = [], reloadTasks
           onClick={() => confirmUncertain([...uncertainIds][0])}>重新載入確認</Button>}
       </div>}
 
-      {/* 日期區間 → 應完成內容（同區間按科目分組）。 */}
-      {t.segments.map((seg, si) => (
-        <div key={`seg${si}`} style={{ marginTop: 12 }}>
-          <div style={{ fontWeight: 600 }}>{RANGE_LABEL(seg.range_start, seg.range_end)}</div>
-          {seg.groups.map((g, gi) => (
-            <div key={`g${gi}`} style={{ marginTop: 4, marginLeft: 6 }}>
-              {g.subject_name && <div className="ui-meta" style={{ fontWeight: 600 }}>{g.subject_name}</div>}
-              {g.task_ids.map(id => byId.get(id)).filter(Boolean).map(it => (
-                <ItemLine key={it.task_id} it={it} expanded={expanded} busy={busyIds.has(it.task_id)} uncertain={uncertainIds.has(it.task_id)} readOnly={readOnly}
-                  onToggle={toggle} onEdit={setEditingItem} onAdjustBlock={openAdjust} />
-              ))}
-            </div>
+      {incompleteItems.length > 0 && (
+        <section aria-labelledby="timeline-incomplete-title" style={{ marginTop: 14 }}>
+          <div id="timeline-incomplete-title" style={{ fontWeight: 600 }}>未完成任務（{incompleteItems.length}）</div>
+          {incompleteItems.map(it => (
+            <ItemLine key={it.task_id} it={it} expanded={expanded} busy={busyIds.has(it.task_id)} uncertain={uncertainIds.has(it.task_id)} readOnly={readOnly}
+              onToggle={toggle} onEdit={setEditingItem} onAdjustBlock={openAdjust} />
           ))}
-        </div>
-      ))}
-
-      {/* 老師要求的繳交／完成期限（不與日期區間混列）。 */}
-      {t.deadlines.length > 0 && (
-        <div style={{ marginTop: 14 }}>
-          <div className="ui-meta" style={{ fontWeight: 600 }}>要交／要完成</div>
-          {t.deadlines.map(it => (
-            <ItemLine key={it.task_id} it={{ ...it, title: `${dueLabel(it)}：${itemTitle(it)}`, material: null, kind: 'standard' }} expanded={expanded}
-              busy={busyIds.has(it.task_id)} uncertain={uncertainIds.has(it.task_id)} readOnly={readOnly} onToggle={toggle} onEdit={() => setEditingItem(it)} onAdjustBlock={openAdjust} />
-          ))}
-        </div>
+        </section>
       )}
 
       {/* 排不下／期限衝突：明確標記，不假裝有完成區間。 */}
       {t.gaps.length > 0 && (
         <div style={{ marginTop: 14 }}>
           <div className="ui-meta" style={{ fontWeight: 600, color: 'var(--warning, #b7791f)' }}>需要調整（排不下或期限衝突）</div>
-          {t.gaps.map(it => (
-            <div key={it.task_id} className="row" style={{ gap: 6, marginTop: 4, alignItems: 'baseline' }}>
-              <span aria-hidden="true">⚠️</span>
-              <span>{itemTitle(it)}</span>
-              <StatusLabel status="schedule_gap" />
-              {it.warnings?.includes('deadline_violation') && <span className="ui-meta">{REASON_LABEL.deadline_violation}</span>}
-            </div>
-          ))}
+          <div className="ui-meta" style={{ marginTop: 4 }}>⚠️ 上方標示的任務尚未形成可執行的日期安排。</div>
           {onAdjust && <Button size="sm" style={{ marginTop: 8 }} onClick={onAdjust}>調整計畫</Button>}
         </div>
       )}
@@ -281,18 +282,18 @@ export default function PlanTimeline({ plan, tasks = [], lists = [], reloadTasks
       {t.unscheduled.length > 0 && (
         <div style={{ marginTop: 14 }}>
           <div className="ui-meta" style={{ fontWeight: 600 }}>尚未排入（{t.unscheduled.length}）</div>
-          {t.unscheduled.map(it => (
-            <div key={it.task_id} className="row" style={{ gap: 6, marginTop: 4, alignItems: 'baseline' }}>
-              <span className="ui-meta">•</span>
-              <span>{itemTitle(it)}</span>
-              <StatusLabel status={it.time_status || 'schedule_gap'} />
-              <span className="ui-meta" style={{ color: 'var(--warning, #b7791f)' }}>
-                {it.warnings?.map(w => REASON_LABEL[w]).filter(Boolean)[0] || REASON_LABEL.schedule_gap}
-              </span>
-            </div>
-          ))}
+          <div className="ui-meta" style={{ marginTop: 4, color: 'var(--warning, #b7791f)' }}>⚠️ 上方標示的任務仍需補齊資料或安排時間。</div>
           {onAdjust && <Button size="sm" style={{ marginTop: 8 }} onClick={onAdjust}>安排這些內容</Button>}
         </div>
+      )}
+      {completedItems.length > 0 && (
+        <section aria-labelledby="timeline-completed-title" style={{ marginTop: 14 }}>
+          <div id="timeline-completed-title" className="ui-meta" style={{ fontWeight: 600 }}>已完成紀錄（{completedItems.length}）</div>
+          {completedItems.map(it => (
+            <ItemLine key={it.task_id} it={it} expanded={expanded} busy={busyIds.has(it.task_id)} uncertain={uncertainIds.has(it.task_id)} readOnly={readOnly}
+              onToggle={toggle} onEdit={setEditingItem} onAdjustBlock={openAdjust} />
+          ))}
+        </section>
       )}
       {editingItem && <TimelineTaskEditSheet item={editingItem}
         task={tasks.find(tk => Number(tk.id) === Number(editingItem.task_id))}
