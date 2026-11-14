@@ -669,6 +669,9 @@ export default function PlanDetailView({ planKey, tasks, lists, apiPlans = [], r
             afterSubjects={(
               <PlanTimeline
                 plan={plan}
+                tasks={tasks}
+                lists={lists}
+                reloadTasks={reload}
                 refreshKey={examRefreshKey}
                 onAddContent={plan.status === 'active' ? () => setSheet('addContent') : undefined}
                 onAdjust={plan.status === 'active' ? () => setShowRolling(true) : undefined}

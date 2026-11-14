@@ -585,6 +585,38 @@ select { -webkit-appearance: none; appearance: none; padding-right: 26px;
   text-underline-offset: 3px; text-decoration-color: var(--text-3);
 }
 .row-adjust:hover { text-decoration-color: var(--accent); }
+/* 計畫「確切安排」必須能直接操作。視覺仍緊湊，但手機觸控目標至少 44px。 */
+.timeline-item {
+  display: grid; grid-template-columns: 44px minmax(0, 1fr); gap: var(--sp-2);
+  align-items: start; padding: 6px 0;
+}
+.timeline-check {
+  width: 44px; height: 44px; display: grid; place-items: center; padding: 0;
+  border: 0; background: transparent; cursor: pointer;
+}
+.timeline-check > span {
+  width: 24px; height: 24px; display: grid; place-items: center; border-radius: 50%;
+  border: 2px solid var(--text-3); color: var(--surface-2); font-size: 15px; font-weight: 800;
+}
+.timeline-check.is-done > span { border-color: var(--success); background: var(--success); }
+.timeline-check:focus-visible { outline: 2px solid var(--accent); outline-offset: 0; border-radius: var(--radius-sm); }
+.timeline-check:disabled { cursor: default; opacity: .55; }
+.timeline-item-main { min-width: 0; padding-top: 3px; }
+.timeline-item-title { overflow-wrap: anywhere; line-height: 1.45; }
+.timeline-item-meta, .timeline-item-actions { display: flex; align-items: center; flex-wrap: wrap; gap: var(--sp-2); }
+.timeline-item-actions { margin-top: 2px; }
+.timeline-action, .timeline-day {
+  min-height: 36px; padding: 6px 8px; border: 0; border-radius: var(--radius-sm);
+  color: var(--accent); background: transparent; cursor: pointer; text-align: left;
+}
+.timeline-action:hover, .timeline-day:hover { background: var(--accent-soft); }
+.timeline-days { display: grid; gap: 2px; margin-top: 2px; }
+.timeline-day { color: var(--text-2); width: fit-content; max-width: 100%; }
+@media (max-width: 420px) {
+  .timeline-item { margin-left: -6px; }
+  .timeline-item-actions { gap: 0; }
+  .timeline-action { min-height: 44px; }
+}
 /* 排程精靈：科目先後順序的上下移動。
    第一個不能再往上、最後一個不能再往下——停用了就要看得出來停用，
    不然使用者只會覺得「按了沒反應」。（.btn 這支舊樣式沒有 :disabled 樣態） */

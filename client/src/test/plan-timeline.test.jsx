@@ -20,6 +20,122 @@ const range = (t) => ({
 });
 
 describe('PlanTimeline', () => {
+  it('完成按鈕使用大觸控目標並立即反映，不等待整頁重載', async () => {
+    let finishPatch;
+    const pending = new Promise(resolve => { finishPatch = resolve; });
+    const item = { task_id: 10, kind: 'standard', title: '背英文', display_mode: 'range', range_start: '2026-10-01', range_end: '2026-10-01',
+      completion: 'not_started', time_status: 'today', day_blocks: [{ block_id: 7, date: '2026-10-01' }], warnings: [] };
+    api.mockImplementation((path, options) => {
+      if (path === '/schedule/timeline/1') return Promise.resolve(range({ active: true, active_version_id: 5, items: [item],
+        segments: [{ range_start: '2026-10-01', range_end: '2026-10-01', groups: [{ task_ids: [10] }] }] }));
+      if (path === '/tasks/10' && options?.method === 'PATCH') return pending;
+      return Promise.resolve([]);
+    });
+    render(<PlanTimeline plan={plan} />);
+    const check = await screen.findByRole('button', { name: '完成「背英文」' });
+    expect(check).toHaveClass('timeline-check');
+    fireEvent.click(check);
+    expect(check).toHaveAttribute('aria-pressed', 'true');
+    expect(screen.getByText('背英文')).toHaveStyle({ textDecoration: 'line-through' });
+    finishPatch({ completed: true });
+    await waitFor(() => expect(check).not.toBeDisabled());
+  });
+
+  it('完成寫入失敗會回復畫面並顯示錯誤', async () => {
+    const item = { task_id: 11, kind: 'standard', title: '物理題目', display_mode: 'range', range_start: '2026-10-01', range_end: '2026-10-01',
+      completion: 'not_started', time_status: 'today', day_blocks: [{ block_id: 8, date: '2026-10-01' }], warnings: [] };
+    api.mockImplementation((path) => {
+      if (path === '/schedule/timeline/1') return Promise.resolve(range({ active: true, active_version_id: 5, items: [item],
+        segments: [{ range_start: '2026-10-01', range_end: '2026-10-01', groups: [{ task_ids: [11] }] }] }));
+      if (path === '/tasks/11') return Promise.reject(new Error('連線失敗'));
+      if (path === '/tasks') return Promise.resolve([{ id: 11, completed: false }]);
+      return Promise.resolve([]);
+    });
+    render(<PlanTimeline plan={plan} />);
+    fireEvent.click(await screen.findByRole('button', { name: '完成「物理題目」' }));
+    expect(await screen.findByRole('alert')).toHaveTextContent('連線失敗');
+    expect(screen.getByRole('button', { name: '完成「物理題目」' })).toHaveAttribute('aria-pressed', 'false');
+  });
+
+  it('完成結果未知時鎖住原按鈕，只允許唯讀重新載入確認', async () => {
+    const item = { task_id: 14, kind: 'standard', title: '化學題目', display_mode: 'range', range_start: '2026-10-01', range_end: '2026-10-01',
+      completion: 'not_started', time_status: 'today', day_blocks: [{ block_id: 18, date: '2026-10-01' }], warnings: [] };
+    const timeline = range({ active: true, active_version_id: 5, items: [item],
+      segments: [{ range_start: '2026-10-01', range_end: '2026-10-01', groups: [{ task_ids: [14] }] }] });
+    api.mockImplementation((path) => {
+      if (path === '/schedule/timeline/1') return Promise.resolve(timeline);
+      if (path === '/tasks/14') return Promise.reject(new Error('回應遺失'));
+      if (path === '/tasks') return Promise.reject(new Error('讀回失敗'));
+      return Promise.resolve([]);
+    });
+    render(<PlanTimeline plan={plan} />);
+    const check = await screen.findByRole('button', { name: '完成「化學題目」' });
+    fireEvent.click(check);
+    expect(await screen.findByRole('alert')).toHaveTextContent('確認前不會再次切換');
+    expect(check).toBeDisabled();
+    fireEvent.click(screen.getByRole('button', { name: '重新載入確認' }));
+    await waitFor(() => expect(screen.getByRole('button', { name: '完成「化學題目」' })).not.toBeDisabled());
+    expect(api.mock.calls.filter(([path]) => path === '/tasks/14')).toHaveLength(1);
+  });
+
+  it('可直接編輯任務，排定日期仍由 ScheduleVersion 調整', async () => {
+    const item = { task_id: 12, kind: 'standard', title: '舊名稱', estimated_minutes: 30, display_mode: 'range', range_start: '2026-10-01', range_end: '2026-10-01',
+      completion: 'not_started', day_blocks: [{ block_id: 9, date: '2026-10-01', start_time: '19:00', end_time: '19:30' }], warnings: [] };
+    api.mockImplementation((path, options) => {
+      if (path === '/schedule/timeline/1') return Promise.resolve(range({ active: true, active_version_id: 5, items: [item],
+        segments: [{ range_start: '2026-10-01', range_end: '2026-10-01', groups: [{ task_ids: [12] }] }] }));
+      if (path === '/tasks/12' && options?.method === 'PATCH') return Promise.resolve({ id: 12, ...options.body });
+      return Promise.resolve([]);
+    });
+    render(<PlanTimeline plan={plan} tasks={[{ id: 12, title: '舊名稱', estimated_minutes: 30 }]} />);
+    fireEvent.click(await screen.findByRole('button', { name: '編輯任務' }));
+    const title = screen.getByLabelText('任務名稱');
+    fireEvent.change(title, { target: { value: '新名稱' } });
+    fireEvent.click(screen.getByRole('button', { name: '儲存任務' }));
+    await waitFor(() => expect(api).toHaveBeenCalledWith('/tasks/12', expect.objectContaining({ method: 'PATCH', body: expect.objectContaining({ title: '新名稱' }) })));
+    expect(await screen.findByText('新名稱')).toBeInTheDocument();
+  });
+
+  it('任務編輯結果未知時禁止重送，只能重新載入或關閉', async () => {
+    const item = { task_id: 15, kind: 'standard', title: '歷史作業', estimated_minutes: 30, display_mode: 'range', range_start: '2026-10-01', range_end: '2026-10-01',
+      completion: 'not_started', day_blocks: [{ block_id: 19, date: '2026-10-01' }], warnings: [] };
+    const timeline = range({ active: true, active_version_id: 5, items: [item],
+      segments: [{ range_start: '2026-10-01', range_end: '2026-10-01', groups: [{ task_ids: [15] }] }] });
+    api.mockImplementation((path) => {
+      if (path === '/schedule/timeline/1') return Promise.resolve(timeline);
+      if (path === '/tasks/15') return Promise.reject(new Error('回應遺失'));
+      if (path === '/tasks') return Promise.reject(new Error('讀回失敗'));
+      return Promise.resolve([]);
+    });
+    render(<PlanTimeline plan={plan} tasks={[{ id: 15, title: '歷史作業', estimated_minutes: 30 }]} />);
+    fireEvent.click(await screen.findByRole('button', { name: '編輯任務' }));
+    fireEvent.change(screen.getByLabelText('任務名稱'), { target: { value: '歷史作業新版' } });
+    fireEvent.click(screen.getByRole('button', { name: '儲存任務' }));
+    expect(await screen.findByText('暫時無法確認儲存結果')).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: '儲存任務' })).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: '重新載入確認' }));
+    await waitFor(() => expect(screen.queryByText('暫時無法確認儲存結果')).not.toBeInTheDocument());
+    expect(api.mock.calls.filter(([path]) => path === '/tasks/15')).toHaveLength(1);
+  });
+
+  it('375px 每一項仍可直接完成、編輯並開啟既有日期／時間調整交易', async () => {
+    Object.defineProperty(window, 'innerWidth', { configurable: true, value: 375 });
+    const item = { task_id: 13, kind: 'standard', title: '數學練習', display_mode: 'range', range_start: '2026-10-01', range_end: '2026-10-01',
+      completion: 'not_started', day_blocks: [{ block_id: 10, date: '2026-10-01', start_time: '19:00', end_time: '20:00' }], warnings: [] };
+    api.mockImplementation((path) => {
+      if (path === '/schedule/timeline/1') return Promise.resolve(range({ active: true, active_version_id: 5, items: [item],
+        segments: [{ range_start: '2026-10-01', range_end: '2026-10-01', groups: [{ task_ids: [13] }] }] }));
+      if (path === '/schedule/locks') return Promise.resolve([]);
+      return Promise.resolve({ conflicts: [] });
+    });
+    render(<PlanTimeline plan={plan} tasks={[{ id: 13, title: '數學練習' }]} />);
+    expect(await screen.findByRole('button', { name: '完成「數學練習」' })).toHaveClass('timeline-check');
+    expect(screen.getByRole('button', { name: '編輯任務' })).toBeVisible();
+    fireEvent.click(await screen.findByRole('button', { name: '改日期／時間' }));
+    expect(screen.getByRole('dialog', { name: '調整這一項' })).toBeInTheDocument();
+    expect(screen.getByLabelText('日期')).toHaveValue('2026-10-01');
+  });
+
   it('日期區間 → 科目 → 內容；點開顯示每日安排', async () => {
     const item = {
       task_id: 10, kind: 'material', subject_id: 1, subject_name: '數學',
