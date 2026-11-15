@@ -1,8 +1,9 @@
 import { useEffect, useRef, useState, useCallback } from 'react';
 import { api } from '../api';
 import { md } from './plans';
-import { SurfaceCard, Button, EmptyState } from './ui';
+import { SurfaceCard, Button, EmptyState, SegmentedControl } from './ui';
 import TimelineTaskEditSheet from './TimelineTaskEditSheet';
+import { useLongPress } from './touchDrag';
 
 // 排程摘要（確切安排 B 層）：讀後端 projection（/schedule/timeline/:planId），
 // 把「已排定的每日安排」按每天日期直接呈現，不必再開 Calendar。
@@ -41,15 +42,19 @@ function CompletionButton({ it, busy, disabled, onToggle }) {
   </button>;
 }
 
-function ItemLine({ it, busy, uncertain, readOnly, onToggle, onEdit }) {
-  const block = it.day_blocks?.[0] || null;
+function ItemLine({ it, block: selectedBlock, busy, uncertain, readOnly, onToggle, onEdit,
+  task, movable = false, dragging = false, onStartMove, onPickDate, showDate = false, moveError = '' }) {
+  const block = selectedBlock === undefined ? (it.day_blocks?.[0] || null) : selectedBlock;
+  const { style: pressStyle, ...pressHandlers } = useLongPress(movable ? () => onStartMove?.(task, block, itemTitle(it)) : undefined);
   return (
-    <div className="timeline-item">
+    <div className="timeline-item" {...pressHandlers} aria-grabbed={movable ? dragging : undefined}
+      style={{ ...pressStyle, ...(dragging ? { opacity: .55, outline: '2px dashed var(--primary)', borderRadius: 10 } : {}) }}>
       <CompletionButton it={it} busy={busy} disabled={readOnly || uncertain} onToggle={onToggle} />
       <div className="timeline-item-main">
         <div className="timeline-item-title" style={{ textDecoration: it.completion === 'completed' ? 'line-through' : 'none' }}>{itemTitle(it)}</div>
         <div className="timeline-item-meta">
           {it.subject_name && <span className="ui-meta">{it.subject_name}</span>}
+          {showDate && block?.date && <span className="ui-meta">{md(block.date)}</span>}
           <StatusLabel status={it.time_status} />
           {block?.start_time && block?.end_time && <span className="ui-meta">{block.start_time}–{block.end_time}</span>}
           {it.overdue && it.last_scheduled_date && <span className="ui-meta">原定 {md(it.last_scheduled_date)}</span>}
@@ -58,13 +63,19 @@ function ItemLine({ it, busy, uncertain, readOnly, onToggle, onEdit }) {
         </div>
         <div className="timeline-item-actions">
           {!readOnly && <button type="button" className="timeline-action" disabled={busy || uncertain} onClick={() => onEdit(it, block)}>編輯任務</button>}
+          {movable && <button type="button" className="timeline-action" disabled={busy || uncertain}
+            aria-label={`${block?.date ? '改' : '替'}「${itemTitle(it)}」${block?.date ? '的日期' : '選擇日期'}`}
+            onClick={() => onPickDate?.(task, block)}>{block?.date ? '改日期' : '選日期'}</button>}
         </div>
+        {moveError && <div role="alert" className="ui-error" style={{ marginTop: 4 }}>{moveError}</div>}
       </div>
     </div>
   );
 }
 
-export default function PlanTimeline({ plan, tasks = [], reloadTasks, onAddContent, onAdjust, refreshKey = 0 }) {
+export default function PlanTimeline({ plan, tasks = [], reloadTasks, onAddContent, onAdjust, refreshKey = 0,
+  groupMode = 'date', onGroupModeChange, canMoveTask, onStartMove, onPickDate, draggingTaskId = null,
+  moveState = {} }) {
   const planId = plan?.planId;
   const [state, setState] = useState({ loading: true, data: null, error: '' });
   const [busyIds, setBusyIds] = useState(() => new Set());
@@ -201,6 +212,27 @@ export default function PlanTimeline({ plan, tasks = [], reloadTasks, onAddConte
     }
   }
   const dailySections = [...days.entries()].sort(([a], [b]) => a.localeCompare(b));
+  const taskFor = it => tasks.find(tk => Number(tk.id) === Number(it.task_id));
+  const movableFor = (it, block) => {
+    const task = taskFor(it);
+    return !!task && !!canMoveTask?.(task, block);
+  };
+  const subjectRows = [];
+  for (const it of uniqueItems.filter(it => it.completion !== 'completed')) {
+    const blocks = (it.day_blocks || []).filter(b => b.date);
+    if (blocks.length) for (const block of blocks) subjectRows.push({ item: it, block });
+    else subjectRows.push({ item: it, block: null });
+  }
+  subjectRows.sort((a, b) => (a.item.subject_name || '').localeCompare(b.item.subject_name || '', 'zh-Hant')
+    || (a.block?.date || '').localeCompare(b.block?.date || '')
+    || (a.block?.start_time || '').localeCompare(b.block?.start_time || '')
+    || itemTitle(a.item).localeCompare(itemTitle(b.item), 'zh-Hant'));
+  const subjectGroups = new Map();
+  for (const row of subjectRows) {
+    const label = row.item.subject_name || '未分科目';
+    if (!subjectGroups.has(label)) subjectGroups.set(label, []);
+    subjectGroups.get(label).push(row);
+  }
 
   // 空狀態：沒有可呈現的計畫安排 → 引導「加入內容」或「調整計畫」。
   if (!hasAnything) {
@@ -226,7 +258,12 @@ export default function PlanTimeline({ plan, tasks = [], reloadTasks, onAddConte
       <div className="row" style={{ alignItems: 'baseline', flexWrap: 'wrap', gap: 8 }}>
         <b>日期安排</b>
         <span className="ui-meta">目前生效的確切安排</span>
+        <div style={{ marginLeft: 'auto' }}>
+          <SegmentedControl ariaLabel="日期安排分區" value={groupMode} onChange={onGroupModeChange}
+            options={[{ value: 'date', label: '依日期' }, { value: 'subject', label: '依科目' }]} />
+        </div>
       </div>
+      {!readOnly && <div className="ui-meta" style={{ marginTop: 6 }}>長按任務可移動日期；也可直接點「改日期」。</div>}
       {state.error && <div role="alert" style={{ color: 'var(--danger)', marginTop: 8 }}>{state.error} <Button size="sm" onClick={load}>重試</Button></div>}
       {mutationError && <div role="alert" className="ui-error" style={{ marginTop: 8 }}>
         {mutationError}
@@ -235,33 +272,55 @@ export default function PlanTimeline({ plan, tasks = [], reloadTasks, onAddConte
           onClick={() => confirmUncertain([...uncertainIds][0])}>重新載入確認</Button>}
       </div>}
 
-      {overdueItems.length > 0 && (
+      {groupMode === 'date' && overdueItems.length > 0 && (
         <section aria-labelledby="timeline-overdue-title" style={{ marginTop: 14 }}>
           <div id="timeline-overdue-title" style={{ fontWeight: 600, color: 'var(--danger)' }}>已逾期（{overdueItems.length}）</div>
           {overdueItems.map(it => (
             <ItemLine key={it.task_id} it={it} busy={busyIds.has(it.task_id)} uncertain={uncertainIds.has(it.task_id)} readOnly={readOnly}
+              task={taskFor(it)} movable={movableFor(it, null)} dragging={Number(draggingTaskId) === Number(it.task_id)}
+              moveError={moveState[it.task_id]?.error || ''}
+              onStartMove={onStartMove} onPickDate={onPickDate}
               onToggle={toggle} onEdit={(item, block) => setEditingItem({ item, block })} />
           ))}
         </section>
       )}
-      {dailySections.map(([date, rows]) => (
-        <section key={date} aria-label={`${md(date)}安排`} style={{ marginTop: 14 }}>
+      {groupMode === 'date' && dailySections.map(([date, rows]) => (
+        <section key={date} aria-label={`${md(date)}安排`} data-drop-date={date} style={{ marginTop: 14 }}>
           <div style={{ fontWeight: 600 }}>{md(date)}</div>
           {rows.map(({ item, block }) => (
-            <ItemLine key={`${item.task_id}:${block?.block_id || 'deadline'}`} it={{ ...item, day_blocks: block ? [block] : [] }}
+            <ItemLine key={`${item.task_id}:${block?.block_id || block?.id || 'deadline'}`} it={{ ...item, day_blocks: block ? [block] : [] }} block={block}
               busy={busyIds.has(item.task_id)} uncertain={uncertainIds.has(item.task_id)} readOnly={readOnly}
+              task={taskFor(item)} movable={movableFor(item, block)} dragging={Number(draggingTaskId) === Number(item.task_id)}
+              moveError={moveState[item.task_id]?.error || ''}
+              onStartMove={onStartMove} onPickDate={onPickDate}
               onToggle={toggle} onEdit={(selected, selectedBlock) => setEditingItem({ item: selected, block: selectedBlock })} />
           ))}
         </section>
       ))}
-      {undatedItems.length > 0 && (
+      {groupMode === 'date' && undatedItems.length > 0 && (
         <section aria-labelledby="timeline-undated-title" style={{ marginTop: 14 }}>
           <div id="timeline-undated-title" style={{ fontWeight: 600 }}>未指定日期</div>
           {undatedItems.map(it => <ItemLine key={it.task_id} it={it} busy={busyIds.has(it.task_id)} uncertain={uncertainIds.has(it.task_id)}
-            readOnly={readOnly} onToggle={toggle} onEdit={(item, block) => setEditingItem({ item, block })} />)}
+            readOnly={readOnly} task={taskFor(it)} movable={movableFor(it, null)} dragging={Number(draggingTaskId) === Number(it.task_id)}
+            moveError={moveState[it.task_id]?.error || ''}
+            onStartMove={onStartMove} onPickDate={onPickDate}
+            onToggle={toggle} onEdit={(item, block) => setEditingItem({ item, block })} />)}
         </section>
       )}
-      {completedItems.length > 0 && (
+      {groupMode === 'subject' && [...subjectGroups.entries()].map(([subject, rows]) => (
+        <section key={subject} aria-label={`${subject}安排`} style={{ marginTop: 14 }}>
+          <div style={{ fontWeight: 600 }}>{subject}</div>
+          {rows.map(({ item, block }, index) => (
+            <ItemLine key={`${item.task_id}:${block?.block_id || block?.id || index}`} it={item} block={block} showDate
+              busy={busyIds.has(item.task_id)} uncertain={uncertainIds.has(item.task_id)} readOnly={readOnly}
+              task={taskFor(item)} movable={movableFor(item, block)} dragging={Number(draggingTaskId) === Number(item.task_id)}
+              moveError={moveState[item.task_id]?.error || ''}
+              onStartMove={onStartMove} onPickDate={onPickDate}
+              onToggle={toggle} onEdit={(selected, selectedBlock) => setEditingItem({ item: selected, block: selectedBlock })} />
+          ))}
+        </section>
+      ))}
+      {groupMode === 'date' && completedItems.length > 0 && (
         <section aria-labelledby="timeline-completed-title" style={{ marginTop: 14 }}>
           <div id="timeline-completed-title" className="ui-meta" style={{ fontWeight: 600 }}>已完成紀錄（{completedItems.length}）</div>
           {completedItems.map(it => (
