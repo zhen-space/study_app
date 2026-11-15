@@ -15,7 +15,9 @@ import * as fx from './fixtures';
 
 vi.mock('../api', () => ({ api: vi.fn() }));
 const { api } = await import('../api');
-const Shell = (await import('../tt/Shell')).default;
+const shellModule = await import('../tt/Shell');
+const Shell = shellModule.default;
+const { applyLatestReload } = shellModule;
 const WizardView = (await import('../tt/WizardView')).default;
 
 let calls;
@@ -39,6 +41,12 @@ const setApi = (over = {}) => {
   });
 };
 const fail = msg => Promise.reject(new Error(msg));
+const deferred = () => {
+  let resolve;
+  let reject;
+  const promise = new Promise((ok, no) => { resolve = ok; reject = no; });
+  return { promise, resolve, reject };
+};
 const gets = path => calls.filter(([p, o]) => (p === path || p.startsWith(path + '?')) && (o?.method || 'GET') === 'GET');
 const sent = (method, path) => calls.filter(([p, o]) => p === path && o?.method === method);
 
@@ -126,6 +134,36 @@ describe('mutation 後 reload', () => {
     await waitFor(() => expect(gets('/tasks')).toHaveLength(2));
     expect(screen.queryByText(/畫面暫時無法重新載入/)).toBeNull();
     noCrash();
+  });
+});
+
+describe('並行 reload 的 CURRENT 契約', () => {
+  it('較舊成功回應晚到時，不會覆蓋較新的任務資料', async () => {
+    const requestRef = { current: 1 };
+    const oldReload = deferred();
+    const applied = [];
+    const oldResult = applyLatestReload(oldReload.promise, requestRef, 1, value => applied.push(value));
+
+    requestRef.current = 2;
+    await applyLatestReload(Promise.resolve('較新資料'), requestRef, 2, value => applied.push(value));
+    oldReload.resolve('較舊資料');
+    await oldResult;
+
+    expect(applied).toEqual(['較新資料']);
+  });
+
+  it('較舊失敗回應晚到時，不會讓已成功的較新刷新誤報失敗', async () => {
+    const requestRef = { current: 1 };
+    const oldReload = deferred();
+    const applied = [];
+    const oldResult = applyLatestReload(oldReload.promise, requestRef, 1, value => applied.push(value));
+
+    requestRef.current = 2;
+    await applyLatestReload(Promise.resolve('CURRENT'), requestRef, 2, value => applied.push(value));
+    oldReload.reject(new Error('舊刷新離線'));
+
+    await expect(oldResult).resolves.toBeUndefined();
+    expect(applied).toEqual(['CURRENT']);
   });
 });
 

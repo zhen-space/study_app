@@ -44,4 +44,29 @@ describe('Task Detail 中文 IME autosave', () => {
     expect(onSave).toHaveBeenCalledOnce();
     expect(onSave.mock.calls[0][0].subtasks[0].title).toBe('第一題更新');
   });
+
+  it('375px 新增子任務按 Enter 選字時不會提前送出半成品', () => {
+    Object.defineProperty(window, 'innerWidth', { configurable: true, value: 375 });
+    const onSave = vi.fn();
+    render(<Detail task={{ ...base, task_kind: 'task' }} lists={[]} onSave={onSave} onDelete={vi.fn()} onClose={vi.fn()} />);
+    const input = screen.getByPlaceholderText('＋新增子任務');
+    const form = input.closest('form');
+
+    fireEvent.compositionStart(input);
+    fireEvent.change(input, { target: { value: '物ㄌ' } });
+    fireEvent.keyDown(input, { key: 'Enter', isComposing: true });
+    fireEvent.submit(form);
+    expect(onSave).not.toHaveBeenCalled();
+    expect(input).toHaveValue('物ㄌ');
+
+    fireEvent.compositionEnd(input, { data: '理' });
+    fireEvent.change(input, { target: { value: '物理第二題' } });
+    fireEvent.submit(form);
+    expect(onSave).toHaveBeenCalledOnce();
+    expect(onSave.mock.calls[0][0].subtasks).toEqual([
+      { title: '第一題', done: false },
+      { title: '物理第二題', done: false },
+    ]);
+    expect(input).toHaveValue('');
+  });
 });
