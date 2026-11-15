@@ -89,3 +89,55 @@ describe('AdjustBlockSheet 儲存恢復', () => {
     expect(api.mock.calls.filter(isWrite)).toHaveLength(1);
   });
 });
+
+describe('AdjustBlockSheet 鎖定恢復', () => {
+  it('建立已提交後使用 canonical response，不再用額外 GET 冒充失敗', async () => {
+    let reads = 0;
+    api.mockImplementation(async (url, options) => {
+      if (url === '/schedule/locks' && !options) {
+        reads += 1;
+        return [];
+      }
+      if (url === '/schedule/locks' && options?.method === 'POST') {
+        return { id: 21, type: 'task', task_id: 7, existing: false };
+      }
+      return {};
+    });
+    render(<AdjustBlockSheet block={block} task={task} lists={[]}
+      versionId={5} reload={vi.fn()} onClose={vi.fn()} />);
+    await waitFor(() => expect(reads).toBe(1));
+
+    fireEvent.click(screen.getByRole('button', { name: '鎖定這一項' }));
+
+    expect(await screen.findByRole('button', { name: '解除鎖定' })).toBeEnabled();
+    expect(screen.getByText(/已鎖定：AI 重新排程時不會改動這一項/)).toBeInTheDocument();
+    expect(reads).toBe(1);
+    expect(screen.queryByRole('alert')).toBeNull();
+  });
+
+  it('解除已提交後直接清除本地投影，不再用額外 GET 冒充失敗', async () => {
+    let reads = 0;
+    let deletes = 0;
+    api.mockImplementation(async (url, options) => {
+      if (url === '/schedule/locks' && !options) {
+        reads += 1;
+        return [{ id: 22, type: 'task', task_id: 7 }];
+      }
+      if (url === '/schedule/locks/22' && options?.method === 'DELETE') {
+        deletes += 1;
+        return { ok: true, existing: false };
+      }
+      return {};
+    });
+    render(<AdjustBlockSheet block={block} task={task} lists={[]}
+      versionId={5} reload={vi.fn()} onClose={vi.fn()} />);
+    expect(await screen.findByRole('button', { name: '解除鎖定' })).toBeEnabled();
+
+    fireEvent.click(screen.getByRole('button', { name: '解除鎖定' }));
+
+    expect(await screen.findByRole('button', { name: '鎖定這一項' })).toBeEnabled();
+    expect(deletes).toBe(1);
+    expect(reads).toBe(1);
+    expect(screen.queryByRole('alert')).toBeNull();
+  });
+});

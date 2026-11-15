@@ -27,6 +27,17 @@ import GlobalAdd from './GlobalAdd';
 import Icon from './Icons';
 import { dueNotifications, notify } from './notify';
 
+// 同一份資源可被多個操作同時刷新。只有最後啟動的請求有資格更新畫面或回報失敗；
+// 較舊請求無論成功或失敗，都只是過時的觀測，不能污染 CURRENT 狀態。
+export async function applyLatestReload(promise, requestRef, requestId, apply) {
+  try {
+    const value = await promise;
+    if (requestId === requestRef.current) apply(value);
+  } catch (error) {
+    if (requestId === requestRef.current) throw error;
+  }
+}
+
 export default function Shell({ onLogout }) {
   // 資訊架構：今天（執行）｜計畫（計畫管理）｜讀書（主要動作）｜任務（任務管理）｜行事曆（時間管理）
   // 其餘既有功能（習慣、寵物、統計、矩陣、單字、備忘錄、精靈）移到側邊「更多」，功能都還在。
@@ -43,6 +54,7 @@ export default function Shell({ onLogout }) {
   const [petData, setPetData] = useState(null);
   const [shortcutError, setShortcutError] = useState('');
   const [apiPlans, setApiPlans] = useState([]);   // 正式 Plan（Phase 2A）
+  const tasksReloadRequest = useRef(0);
   const plansReloadRequest = useRef(0);
 
   // 改一筆任務不需要把清單／篩選／習慣整包重抓——之前每個動作都打 5 支 API，
@@ -56,9 +68,10 @@ export default function Shell({ onLogout }) {
   // 一律等全部請求落定才 settle（allSettled），失敗時其他成功的資料仍會套用，
   // 也避免 caller 已顯示錯誤／重試時，上一輪請求還在背景覆寫狀態。
   const reload = async (scope) => {
+    const taskRequest = ++tasksReloadRequest.current;
     const planRequest = ++plansReloadRequest.current;
     const jobs = [
-      api('/tasks').then(setTasks),
+      applyLatestReload(api('/tasks'), tasksReloadRequest, taskRequest, setTasks),
       api('/pet').then(setPetData).catch(() => {}),   // 完成任務會加金幣
       // 帶 includeArchived：計畫頁要能顯示（並恢復）已封存的計畫。
       // 較舊 reload 晚回來時不能覆蓋 CURRENT 狀態；CURRENT 讀取失敗也不能把

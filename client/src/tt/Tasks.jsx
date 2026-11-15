@@ -376,6 +376,7 @@ export function Detail({ task, lists, onSave, onDelete, onDuplicate, onClose, sa
   };
   const finishEditing = () => { if (!composingRef.current) onClose(); };
   const [newSub, setNewSub] = useState('');
+  const newSubComposingRef = useRef(false);
   const [newTag, setNewTag] = useState('');
   const [menu, setMenu] = useState(false);
 
@@ -643,8 +644,11 @@ export function Detail({ task, lists, onSave, onDelete, onDuplicate, onClose, sa
             <button className="icon-btn" onClick={() => up({ subtasks: t.subtasks.filter((_, j) => j !== i) })}>✕</button>
           </div>
         ))}
-        <form onSubmit={e => { e.preventDefault(); if (newSub.trim()) { up({ subtasks: [...t.subtasks, { title: newSub.trim(), done: false }] }); setNewSub(''); } }}>
-          <input placeholder="＋新增子任務" value={newSub} onChange={e => setNewSub(e.target.value)} style={{ width: '100%', marginTop: 4 }} />
+        <form onSubmit={e => { e.preventDefault(); if (newSubComposingRef.current) return; if (newSub.trim()) { up({ subtasks: [...t.subtasks, { title: newSub.trim(), done: false }] }); setNewSub(''); } }}>
+          <input placeholder="＋新增子任務" value={newSub}
+            onCompositionStart={() => { newSubComposingRef.current = true; }}
+            onCompositionEnd={() => { newSubComposingRef.current = false; }}
+            onChange={e => setNewSub(e.target.value)} style={{ width: '100%', marginTop: 4 }} />
         </form>
       </div>
 

@@ -44,10 +44,15 @@ export default function AdjustBlockSheet({ block, task, lists = [], versionId, r
   async function toggleLock() {
     setLockBusy(true); setErr('');
     try {
-      if (taskLock) await api(`/schedule/locks/${taskLock.id}`, { method: 'DELETE' });
-      else await api('/schedule/locks', { method: 'POST', body: { type: 'task', task_id: task.id } });
-      const ls = await api('/schedule/locks');
-      setTaskLock((ls || []).find(l => l.type === 'task' && Number(l.task_id) === Number(task.id)) || null);
+      if (taskLock) {
+        await api(`/schedule/locks/${taskLock.id}`, { method: 'DELETE' });
+        setTaskLock(null);
+      } else {
+        const created = await api('/schedule/locks', { method: 'POST', body: { type: 'task', task_id: task.id } });
+        // POST 回傳伺服器正規化後的完整 lock（含 existing）。mutation 已提交後
+        // 直接以回應更新投影，避免額外 GET 失敗被誤報成「鎖定失敗」而誘導重送。
+        setTaskLock(created);
+      }
     } catch (e) { setErr(e.message); }
     setLockBusy(false);
   }
