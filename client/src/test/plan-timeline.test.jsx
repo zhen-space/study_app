@@ -421,4 +421,49 @@ describe('PlanTimeline', () => {
     expect(await screen.findByText('目前沒有可顯示的排程')).toBeInTheDocument();
     expect(api).toHaveBeenCalledTimes(2);
   });
+
+  it('切換計畫後立即清除舊日期安排，新計畫失敗也不能操作舊任務', async () => {
+    let rejectPlanB;
+    const planB = new Promise((resolve, reject) => { void resolve; rejectPlanB = reject; });
+    const oldItem = { task_id: 81, title: '甲計畫任務', display_mode: 'range', completion: 'not_started',
+      day_blocks: [{ block_id: 81, date: '2026-10-01' }], warnings: [] };
+    api.mockImplementation(path => {
+      if (path === '/schedule/timeline/1') return Promise.resolve(range({ active: true, items: [oldItem] }));
+      if (path === '/schedule/timeline/2') return planB;
+      return Promise.resolve([]);
+    });
+    const view = render(<PlanTimeline plan={plan} />);
+    expect(await screen.findByText('甲計畫任務')).toBeInTheDocument();
+
+    view.rerender(<PlanTimeline plan={{ planId: 2, status: 'active' }} />);
+    expect(screen.queryByText('甲計畫任務')).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: '完成「甲計畫任務」' })).not.toBeInTheDocument();
+    expect(screen.getByText('正在載入日期安排…')).toBeInTheDocument();
+
+    rejectPlanB(new Error('乙計畫暫時無法載入'));
+    expect(await screen.findByRole('alert')).toHaveTextContent('乙計畫暫時無法載入');
+    expect(screen.queryByText('甲計畫任務')).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: '完成「甲計畫任務」' })).not.toBeInTheDocument();
+  });
+
+  it('較慢的舊計畫回應不能覆蓋目前計畫', async () => {
+    let resolvePlanA;
+    const planA = new Promise(resolve => { resolvePlanA = resolve; });
+    const itemA = { task_id: 91, title: '較慢的甲任務', display_mode: 'range', completion: 'not_started', day_blocks: [], warnings: [] };
+    const itemB = { task_id: 92, title: '目前的乙任務', display_mode: 'range', completion: 'not_started', day_blocks: [], warnings: [] };
+    api.mockImplementation(path => {
+      if (path === '/schedule/timeline/1') return planA;
+      if (path === '/schedule/timeline/2') return Promise.resolve(range({ active: true, items: [itemB] }));
+      return Promise.resolve([]);
+    });
+    const view = render(<PlanTimeline plan={plan} />);
+    await waitFor(() => expect(api).toHaveBeenCalledWith('/schedule/timeline/1'));
+
+    view.rerender(<PlanTimeline plan={{ planId: 2, status: 'active' }} />);
+    expect(await screen.findByText('目前的乙任務')).toBeInTheDocument();
+    resolvePlanA(range({ active: true, items: [itemA] }));
+
+    await waitFor(() => expect(screen.queryByText('較慢的甲任務')).not.toBeInTheDocument());
+    expect(screen.getByText('目前的乙任務')).toBeInTheDocument();
+  });
 });
