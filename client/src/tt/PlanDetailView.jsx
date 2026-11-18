@@ -16,7 +16,7 @@ import RollingExamSchedule from './RollingExamSchedule';
 import PlanContentPicker from './PlanContentPicker';
 import PlanRangeView from './PlanRangeView';
 import PlanTimeline from './PlanTimeline';
-import { Button, IconButton, PageHeader, SurfaceCard, ProgressBar, ListRow, BottomSheet, EmptyState, SegmentedControl } from './ui';
+import { Button, IconButton, PageHeader, SurfaceCard, ProgressBar, ListRow, BottomSheet, EmptyState } from './ui';
 
 // 單一計畫的內容。
 //
@@ -307,8 +307,8 @@ export default function PlanDetailView({ planKey, tasks, lists, apiPlans = [], r
   // 寫入後權威資料（任務 mirror 與 active 版本）還沒成功重新載入、或結果無法確認時，
   // 手上的 base_version 可能已過期：整個計畫都不能再移動，直到重新載入成功。
   const syncBlocked = () => pendingSyncRef.current.size > 0 || moveUnknownRef.current.size > 0;
-  const canMovePlanTask = t => workable && !readOnly && sched.active && sched.version?.id != null
-    && !t.completed && futureBlocksOf(t).length <= 1
+  const canMovePlanTask = (t, selectedBlock = null) => workable && !readOnly && sched.active && sched.version?.id != null
+    && !t.completed && (selectedBlock || futureBlocksOf(t).length <= 1)
     && !moveBusyRef.current.has(t.id) && !syncBlocked();
   const clearPlanMove = id => setPlanMoves(m => { const next = { ...m }; delete next[id]; return next; });
   const clearMoveState = ids => setMoveState(st => Object.fromEntries(Object.entries(st).filter(([k]) => !ids.has(String(k)))));
@@ -318,15 +318,24 @@ export default function PlanDetailView({ planKey, tasks, lists, apiPlans = [], r
     const failed = results.find(r => r.status === 'rejected');
     return failed ? { ok: false, error: failed.reason?.message || '' } : { ok: true };
   };
-  async function movePlanTask(t, target) {
-    if (target === PICK_DATE) { if (canMovePlanTask(t)) setPickFor(t); return; }
+  async function movePlanTask(payload, target) {
+    const t = payload?.task || payload;
+    const selectedBlock = payload?.block || null;
+    if (!t) return;
+    if (target === PICK_DATE) { if (canMovePlanTask(t, selectedBlock)) setPickFor({ task: t, block: selectedBlock }); return; }
     const date = target;
-    if (!date || date < todayStr || !canMovePlanTask(t)) return;
+    if (!date || date < todayStr || !canMovePlanTask(t, selectedBlock)) return;
     const base = sched.version.id;
-    const block = futureBlocksOf(t)[0] || null;
+    // 首屏日期安排知道使用者正在操作哪一個 ScheduledBlock；多段任務必須搬該段，
+    // 不能退回「永遠取第一段」。頁底舊內容列沒有精確 block 時才沿用單段規則。
+    const selectedId = selectedBlock?.id ?? selectedBlock?.block_id;
+    const block = selectedBlock
+      ? (blocksForTask(sched.blocks, t.id).find(b => Number(b.id ?? b.block_id) === Number(selectedId)) || selectedBlock)
+      : (futureBlocksOf(t)[0] || null);
     if (block ? block.date === date : t.due_date === date) return;
+    const blockId = block?.id ?? block?.block_id;
     const move = block
-      ? { block_id: block.id, date, ...(block.start_time && block.end_time ? { start_time: block.start_time, end_time: block.end_time } : {}) }
+      ? { block_id: blockId, date, ...(block.start_time && block.end_time ? { start_time: block.start_time, end_time: block.end_time } : {}) }
       : { task_id: t.id, date };
     moveBusyRef.current.add(t.id);
     setMoveState(st => ({ ...st, [t.id]: { busy: true } }));
@@ -376,6 +385,8 @@ export default function PlanDetailView({ planKey, tasks, lists, apiPlans = [], r
     if (synced.ok) {
       clearPlanMove(t.id);
       clearMoveState(new Set([String(t.id)]));
+      // 日期安排投影自己讀 /schedule/timeline；移動成功後也要立即刷新首屏卡片。
+      setExamRefreshKey(k => k + 1);
       setAnnounce(`已把「${rowTitle(t)}」移到 ${md(date)}`);
     } else {
       pendingSyncRef.current.add(t.id);
@@ -889,6 +900,16 @@ export default function PlanDetailView({ planKey, tasks, lists, apiPlans = [], r
                 lists={lists}
                 reloadTasks={reload}
                 refreshKey={examRefreshKey}
+                groupMode={contentMode}
+                onGroupModeChange={pickContentMode}
+                canMoveTask={canMovePlanTask}
+                draggingTaskId={drag?.id || null}
+                moveState={moveState}
+                onStartMove={(task, block, label) => {
+                  startDrag({ id: task.id, task, block });
+                  setAnnounce(`已拿起「${label}」，拖到日期後放開`);
+                }}
+                onPickDate={(task, block) => { if (!justEnded()) setPickFor({ task, block }); }}
                 onAddContent={plan.status === 'active' ? () => setSheet('addContent') : undefined}
                 onAdjust={plan.status === 'active' ? () => setShowRolling(true) : undefined}
               />
@@ -981,14 +1002,8 @@ export default function PlanDetailView({ planKey, tasks, lists, apiPlans = [], r
         {/* Plan 內容（第三區）：這個計畫選了哪些教材範圍、既有任務與學校作業。
             跟「段考進度」（範圍目標）、「確切安排」（每日排程）分開，不混為一談。
             分區切換放在這一區自己的標題列，不擠進頁首。 */}
-        {plan.total > 0 && (
-          <div className="row" style={{ marginTop: 'var(--sp-5)', gap: 'var(--sp-2)', alignItems: 'center' }}>
-            {isReal && <div className="ui-section-title" style={{ marginBottom: 0 }}>Plan 內容</div>}
-            <div style={{ marginLeft: 'auto' }}>
-              <SegmentedControl ariaLabel="計畫內容分區" value={contentMode} onChange={pickContentMode}
-                options={[{ value: 'date', label: '依日期' }, { value: 'subject', label: '依科目' }]} />
-            </div>
-          </div>
+        {plan.total > 0 && isReal && (
+          <div className="ui-section-title" style={{ marginTop: 'var(--sp-5)' }}>Plan 內容</div>
         )}
         {(moveUnknown || moveSyncPending) && (
           <SurfaceCard tone="accent" style={{ marginTop: 'var(--sp-3)' }}>
@@ -1410,9 +1425,10 @@ export default function PlanDetailView({ planKey, tasks, lists, apiPlans = [], r
         </div>
       )}
       <div role="status" aria-live="polite" className="sr-only">{announce}</div>
-      {pickFor && <DatePickSheet title={rowTitle(pickFor)} initial={effDate(pickFor) || ''}
+      {pickFor && <DatePickSheet title={rowTitle(pickFor.task || pickFor)}
+        initial={pickFor.block?.date || effDate(pickFor.task || pickFor) || ''}
         onClose={() => setPickFor(null)}
-        onPick={d => { const t = pickFor; setPickFor(null); movePlanTask(t, d); }} />}
+        onPick={d => { const payload = pickFor; setPickFor(null); movePlanTask(payload, d); }} />}
       {adjustBlock && (
         <AdjustBlockSheet block={adjustBlock.block} task={adjustBlock.task} lists={lists}
           versionId={sched.version?.id}

@@ -105,23 +105,41 @@ describe('已逾期與尚未安排', () => {
 });
 
 describe('依日期／依科目', () => {
-  it('精簡切換在計畫內容標題列（不在頁首），依日期按日期分區並記住偏好', async () => {
+  const timeline = () => ({ active: true, active_version_id: 50, segments: [], deadlines: [], gaps: [], unscheduled: [], no_active_schedule: false,
+    items: [
+      { task_id: 1, title: '前天的進度', subject_name: '物理', completion: 'not_started', overdue: true, time_status: 'past_due', last_scheduled_date: D(-2), day_blocks: [] },
+      { task_id: 2, title: '從沒排過', subject_name: '物理', completion: 'not_started', display_mode: 'unscheduled', day_blocks: [] },
+      { task_id: 3, title: '明天的進度', subject_name: '物理', completion: 'not_started', day_blocks: [{ block_id: 101, date: D(1), start_time: '19:00', end_time: '20:00' }] },
+    ] });
+
+  it('切換直接顯示在首屏「日期安排」卡片，依日期／依科目真實重排並記住偏好', async () => {
+    handlers['/schedule/timeline/12'] = () => Promise.resolve(timeline());
     const { unmount } = mount(); await ready();
-    const toggles = screen.getAllByRole('tablist', { name: '計畫內容分區' });
-    expect(toggles).toHaveLength(1);
-    expect(document.querySelector('.main-head').contains(toggles[0])).toBe(false);
-    expect(within(toggles[0]).getByRole('tab', { name: '依科目' })).toHaveAttribute('aria-selected', 'true');
-    fireEvent.click(within(toggles[0]).getByRole('tab', { name: '依日期' }));
+    const toggle = await screen.findByRole('tablist', { name: '日期安排分區' });
+    const card = screen.getByText('目前生效的確切安排').closest('.ui-card');
+    expect(card).toContainElement(toggle);
+    expect(document.querySelector('.main-head').contains(toggle)).toBe(false);
+    expect(within(toggle).getByRole('tab', { name: '依科目' })).toHaveAttribute('aria-selected', 'true');
+    expect(within(card).getByRole('region', { name: '物理安排' })).toBeInTheDocument();
+    fireEvent.click(within(toggle).getByRole('tab', { name: '依日期' }));
     expect(localStorage.getItem('planContentGroup')).toBe('date');
-    const sections = [...document.querySelectorAll('section[aria-label]')].map(s => s.getAttribute('aria-label'))
-      .filter(l => ['已逾期', '尚未安排'].includes(l) || /週/.test(l));
-    expect(sections[0]).toBe('已逾期');
-    expect(sections.at(-1)).toBe('尚未安排');
-    expect(within(region(`${md(D(1))}（週${'日一二三四五六'[new Date(D(1) + 'T00:00:00').getDay()]}）`)).getByText('明天的進度')).toBeInTheDocument();
-    expect(within(rowOf('前天的進度')).getByText('已逾期')).toBeInTheDocument();
+    expect(within(card).getByRole('region', { name: `${md(D(1))}安排` })).toHaveTextContent('明天的進度');
     unmount();
     mount(); await ready();
-    expect(screen.getByRole('tab', { name: '依日期' })).toHaveAttribute('aria-selected', 'true');
+    expect(await screen.findByRole('tab', { name: '依日期' })).toHaveAttribute('aria-selected', 'true');
+  });
+
+  it('首屏日期列有明顯改日期入口，精確搬動該 ScheduledBlock', async () => {
+    handlers['/schedule/timeline/12'] = () => Promise.resolve(timeline());
+    mount(); await ready();
+    const card = (await screen.findByText('目前生效的確切安排')).closest('.ui-card');
+    fireEvent.click(within(card).getByRole('button', { name: '改「明天的進度」的日期' }));
+    const sheet = await screen.findByRole('dialog', { name: '移到其他日期' });
+    expect(within(sheet).getByLabelText('日期')).toHaveValue(D(1));
+    fireEvent.change(within(sheet).getByLabelText('日期'), { target: { value: D(5) } });
+    await act(async () => { fireEvent.click(within(sheet).getByRole('button', { name: '移到這一天' })); });
+    expect(manualWrites().at(-1)[1].body).toEqual({ base_version_id: 50,
+      moves: [{ block_id: 101, date: D(5), start_time: '19:00', end_time: '20:00' }] });
   });
 });
 

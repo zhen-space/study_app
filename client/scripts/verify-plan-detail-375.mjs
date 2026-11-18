@@ -123,33 +123,32 @@ try {
     const o = await overflow();
     check(`${name}：沒有水平溢位`, o.scrollWidth <= o.vw && !o.over.length, JSON.stringify(o));
   };
-  const region = name => page.getByRole('region', { name, exact: true });
+  const scheduleCard = () => page.getByText('目前生效的確切安排').locator('..').locator('..');
+  const scheduleRegion = name => scheduleCard().getByRole('region', { name });
   const openPlan = async () => {
     await page.goto(base + '/?go=plans');
     await page.getByText('段考驗證').first().click();
-    await page.getByRole('tablist', { name: '計畫內容分區' }).waitFor();
+    await page.getByRole('tablist', { name: '日期安排分區' }).waitFor();
   };
 
-  // ① 依日期／依科目切換（畫面上可見）
+  // ① 依日期／依科目切換直接位於「日期安排」卡片，不靠捲到頁底才找到
   await openPlan();
-  const toggle = page.getByRole('tablist', { name: '計畫內容分區' });
-  await toggle.scrollIntoViewIfNeeded();
-  check('切換在畫面上可見', await toggle.isVisible());
+  const toggle = scheduleCard().getByRole('tablist', { name: '日期安排分區' });
+  check('切換位於日期安排卡片且可見', await toggle.isVisible());
   check('預設依科目', await toggle.getByRole('tab', { name: '依科目' }).getAttribute('aria-selected') === 'true');
-  check('依科目：已逾期與尚未安排分開', await region('已逾期').getByText(/前天的進度/).isVisible()
-    && await region('尚未安排').getByText('從沒排過').isVisible()
-    && await region('尚未安排').getByText(/前天的進度/).count() === 0);
+  check('依科目：實際按科目分區', await scheduleRegion('數學安排').getByText(/前天的進度/).isVisible()
+    && await scheduleRegion('數學安排').getByText('從沒排過').isVisible());
   await noOverflow('依科目');
   await page.screenshot({ path: path.join(shotDir, '1-subject.png'), fullPage: true });
   await toggle.getByRole('tab', { name: '依日期' }).click();
   check('切到依日期', await toggle.getByRole('tab', { name: '依日期' }).getAttribute('aria-selected') === 'true');
-  check('依日期：明天的任務在日期分區', await page.locator('section[aria-label*="週"]').getByText('明天的進度').isVisible());
+  check('依日期：明天的任務在日期分區', await scheduleRegion(`${md(day(1))}安排`).getByText('明天的進度').isVisible());
   await noOverflow('依日期');
   await page.screenshot({ path: path.join(shotDir, '2-date.png'), fullPage: true });
 
   // ② 已有日期的任務：用「改日期」按鈕（不靠長按）
   const target = day(5);
-  await page.getByRole('button', { name: '改「明天的進度」的日期' }).click();
+  await scheduleCard().getByRole('button', { name: '改「明天的進度」的日期' }).click();
   const sheet = page.getByRole('dialog', { name: '移到其他日期' });
   await sheet.waitFor();
   await noOverflow('日期選擇器');
@@ -157,7 +156,7 @@ try {
   await sheet.getByLabel('日期').fill(target);
   await sheet.getByRole('button', { name: '移到這一天' }).click();
   await sheet.waitFor({ state: 'detached' });
-  await page.locator(`section[aria-label^="${md(target)}"]`).getByText('明天的進度').waitFor();
+  await scheduleRegion(`${md(target)}安排`).getByText('明天的進度').waitFor();
   const datedDue = await waitDue(dated, target);
   check('改日期：資料庫 due_date 更新', datedDue === target, datedDue);
   check('改日期：只走 manual transaction（block_id）', manual.length === 1 && manual[0].moves[0].block_id != null && manual[0].moves[0].date === target, JSON.stringify(manual));
@@ -165,8 +164,7 @@ try {
   check('改日期：live region 宣告結果', status.includes(`移到 ${md(target)}`), status);
 
   // ③ 長按拖曳：已逾期 → 明天
-  const row = region('已逾期').getByText(/前天的進度/);
-  await row.scrollIntoViewIfNeeded();
+  const row = scheduleCard().getByText(/前天的進度/);
   const box = await row.boundingBox();
   const cdp = await ctx.newCDPSession(page);
   const sx = box.x + 20;
@@ -186,7 +184,7 @@ try {
   await noOverflow('拖曳中');
   await page.screenshot({ path: path.join(shotDir, '4-dragging.png') });
   await cdp.send('Input.dispatchTouchEvent', { type: 'touchEnd', touchPoints: [] });
-  await page.waitForFunction(() => !document.querySelector('section[aria-label="已逾期"]'), null, { timeout: 5000 }).catch(() => {});
+  await scheduleCard().getByText(/前天的進度/).waitFor();
   const overdueDue = await waitDue(overdue, day(1));
   check('長按：資料庫 due_date 變成明天', overdueDue === day(1), String(overdueDue));
   check('長按：以 task_id 重新加入，不 PATCH due_date', manual.length === 2 && manual[1].moves[0].task_id === overdue && taskPatches.length === 0, JSON.stringify(manual));
@@ -197,10 +195,10 @@ try {
   await page.reload();
   await page.waitForLoadState('networkidle');
   await openPlan();
-  check('重新整理：仍是依日期', await page.getByRole('tab', { name: '依日期' }).getAttribute('aria-selected') === 'true');
-  check('重新整理：已逾期消失、任務在明天', await region('已逾期').count() === 0
-    && await page.locator(`section[aria-label^="${md(day(1))}"]`).getByText(/前天的進度/).isVisible());
-  check('重新整理：改日期的任務仍在新日期', await page.locator(`section[aria-label^="${md(target)}"]`).getByText('明天的進度').isVisible());
+  check('重新整理：仍是依日期', await scheduleCard().getByRole('tab', { name: '依日期' }).getAttribute('aria-selected') === 'true');
+  check('重新整理：已逾期消失、任務在明天', await scheduleCard().getByText('已逾期（1）').count() === 0
+    && await scheduleRegion(`${md(day(1))}安排`).getByText(/前天的進度/).isVisible());
+  check('重新整理：改日期的任務仍在新日期', await scheduleRegion(`${md(target)}安排`).getByText('明天的進度').isVisible());
   await noOverflow('重新整理後');
   await page.screenshot({ path: path.join(shotDir, '5-after-reload.png'), fullPage: true });
 
@@ -208,7 +206,7 @@ try {
   let failActive = false;
   await page.route('**/api/schedule/active', route => (failActive ? route.fulfill({ status: 503, contentType: 'application/json', body: '{"error":"暫時無法載入"}' }) : route.continue()));
   failActive = true;
-  await page.getByRole('button', { name: '替「從沒排過」選擇日期' }).click();
+  await scheduleCard().getByRole('button', { name: '替「從沒排過」選擇日期' }).click();
   await sheet.waitFor();
   await sheet.getByLabel('日期').fill(day(3));
   await sheet.getByRole('button', { name: '移到這一天' }).click();
