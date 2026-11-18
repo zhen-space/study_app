@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import Tasks from '../tt/Tasks';
 import { api } from '../api';
 
@@ -21,6 +21,12 @@ const baseTask = {
   completed: false,
   deleted: false,
   task_kind: 'task',
+};
+
+const openDuplicate = () => {
+  fireEvent.click(screen.getByText('整理物理筆記'));
+  fireEvent.click(screen.getByRole('button', { name: '更多' }));
+  fireEvent.click(screen.getByRole('menuitem', { name: '複製任務' }));
 };
 
 describe('複製任務', () => {
@@ -131,5 +137,68 @@ describe('複製任務', () => {
     fireEvent.click(screen.getByRole('button', { name: '重新載入' }));
     await waitFor(() => expect(screen.queryByRole('alert')).not.toBeInTheDocument());
     expect(reload).toHaveBeenCalledWith('tasks');
+  });
+
+  it('無法確認的複製在同帳號卸載重掛後仍鎖住，讀回確認後才解除', async () => {
+    localStorage.setItem('token', 'session-a');
+    let postCount = 0;
+    let resolveRemountRead;
+    const remountRead = new Promise(resolve => { resolveRemountRead = resolve; });
+    let readCount = 0;
+    api.mockImplementation((url, options) => {
+      if (url === '/tasks' && options?.method === 'POST') {
+        postCount += 1;
+        return postCount === 1 ? Promise.reject(new Error('回應中斷')) : Promise.resolve({ id: 3 });
+      }
+      if (url === '/tasks') {
+        readCount += 1;
+        return readCount === 1 ? Promise.reject(new Error('離線')) : remountRead;
+      }
+      return Promise.resolve([]);
+    });
+    const reload = vi.fn().mockResolvedValue();
+    const props = { view: { type: 'tasks' }, tasks: [baseTask], lists: [{ id: 10, name: '物理' }], filters: [], reload, title: '任務' };
+    const first = render(<Tasks {...props} />);
+    openDuplicate();
+    expect(await screen.findByRole('alert')).toHaveTextContent('無法確認任務是否已複製');
+    first.unmount();
+
+    render(<Tasks {...props} />);
+    expect(await screen.findByRole('alert')).toHaveTextContent('正在確認剛才的任務是否已複製');
+    openDuplicate();
+    expect(postCount).toBe(1);
+
+    const copied = { ...baseTask, id: 2, subtasks: [{ title: '第一章', done: false }] };
+    await act(async () => { resolveRemountRead([baseTask, copied]); });
+    await waitFor(() => expect(screen.queryByRole('alert')).not.toBeInTheDocument());
+    expect(reload).toHaveBeenCalledWith('tasks');
+
+    fireEvent.click(screen.getByRole('button', { name: '更多' }));
+    fireEvent.click(screen.getByRole('menuitem', { name: '複製任務' }));
+    await waitFor(() => expect(postCount).toBe(2));
+  });
+
+  it('不同登入身分不承接上一個帳號的複製 fence 或任務內容', async () => {
+    localStorage.setItem('token', 'session-a');
+    let postCount = 0;
+    api.mockImplementation((url, options) => {
+      if (url === '/tasks' && options?.method === 'POST') {
+        postCount += 1;
+        return postCount === 1 ? Promise.reject(new Error('回應中斷')) : Promise.resolve({ id: 3 });
+      }
+      if (url === '/tasks') return Promise.reject(new Error('離線'));
+      return Promise.resolve([]);
+    });
+    const props = { view: { type: 'tasks' }, tasks: [baseTask], lists: [{ id: 10, name: '物理' }], filters: [], reload: vi.fn().mockResolvedValue(), title: '任務' };
+    const first = render(<Tasks {...props} />);
+    openDuplicate();
+    expect(await screen.findByRole('alert')).toHaveTextContent('無法確認任務是否已複製');
+    first.unmount();
+
+    localStorage.setItem('token', 'session-b');
+    render(<Tasks {...props} />);
+    expect(screen.queryByText(/正在確認剛才的任務/)).not.toBeInTheDocument();
+    openDuplicate();
+    await waitFor(() => expect(postCount).toBe(2));
   });
 });
