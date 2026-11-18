@@ -113,6 +113,19 @@ describe('依日期／依科目', () => {
       { task_id: 3, title: '明天的進度', subject_name: '物理', completion: 'not_started', day_blocks: [{ block_id: 101, date: D(1), start_time: '19:00', end_time: '20:00' }] },
     ] });
 
+  it('日期安排沒有項目時，Plan 內容仍可切換依日期／依科目並真實重排', async () => {
+    mount(); await ready();
+    const toggle = await screen.findByRole('tablist', { name: 'Plan 內容分區' });
+    expect(within(toggle).getByRole('tab', { name: '依科目' })).toHaveAttribute('aria-selected', 'true');
+    expect(region('尚未安排')).toHaveTextContent('從沒排過');
+
+    fireEvent.click(within(toggle).getByRole('tab', { name: '依日期' }));
+
+    expect(localStorage.getItem('planContentGroup')).toBe('date');
+    expect(region(new RegExp(`^${md(D(1))}`))).toHaveTextContent('明天的進度');
+    expect(region('尚未安排')).toHaveTextContent('從沒排過');
+  });
+
   it('切換直接顯示在首屏「日期安排」卡片，依日期／依科目真實重排並記住偏好', async () => {
     handlers['/schedule/timeline/12'] = () => Promise.resolve(timeline());
     const { unmount } = mount(); await ready();

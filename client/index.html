@@ -45,21 +45,38 @@
     </script>
     <script type="module" src="/src/main.jsx"></script>
     <script>
-      window.APP_VER = '7.51.0';
+      window.APP_VER = '7.52.0';
       // 每次打開都檢查新版：SW 更新完成就自動重新載入一次，確保拿到最新程式
       if ('serviceWorker' in navigator) {
-        navigator.serviceWorker.register('/sw.js').then(reg => {
-          reg.update();
-          reg.addEventListener('updatefound', () => {
-            const w = reg.installing;
-            w && w.addEventListener('statechange', () => {
-              if (w.state === 'activated' && !sessionStorage.getItem('swReloaded')) {
-                sessionStorage.setItem('swReloaded', '1');
-                location.reload();
-              }
-            });
+        const SW_VERSION = 'tt-v8';
+        const SW_RELOAD_KEY = 'swReloadedVersion';
+        let swReloading = false;
+        const reloadForSwVersion = () => {
+          if (swReloading) return;
+          try {
+            // 同一版 SW 最多重載一次；下次版本號改變時仍會正常載入新版。
+            if (sessionStorage.getItem(SW_RELOAD_KEY) === SW_VERSION) return;
+            sessionStorage.setItem(SW_RELOAD_KEY, SW_VERSION);
+          } catch (e) {}
+          swReloading = true;
+          location.reload();
+        };
+        const watchWorker = worker => {
+          if (!worker) return;
+          worker.addEventListener('statechange', () => {
+            if (worker.state === 'activated') reloadForSwVersion();
           });
+        };
+        navigator.serviceWorker.register('/sw.js').then(reg => {
+          // 先監聽再要求更新，避免更新很快時漏掉 updatefound。
+          reg.addEventListener('updatefound', () => {
+            watchWorker(reg.installing);
+          });
+          void reg.update();
         });
+        // controllerchange 是更新完成的最後保險；與 statechange 共用同一個版本 gate，
+        // 即使兩個事件都到也只會重載一次。
+        navigator.serviceWorker.addEventListener('controllerchange', reloadForSwVersion);
         // App 從背景回前景也檢查一次
         document.addEventListener('visibilitychange', () => {
           if (!document.hidden) navigator.serviceWorker.getRegistration().then(r => r && r.update());
