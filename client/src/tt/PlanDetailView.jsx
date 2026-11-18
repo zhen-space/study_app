@@ -16,7 +16,7 @@ import RollingExamSchedule from './RollingExamSchedule';
 import PlanContentPicker from './PlanContentPicker';
 import PlanRangeView from './PlanRangeView';
 import PlanTimeline from './PlanTimeline';
-import { Button, IconButton, PageHeader, SurfaceCard, ProgressBar, ListRow, BottomSheet, EmptyState } from './ui';
+import { Button, IconButton, PageHeader, SurfaceCard, ProgressBar, ListRow, BottomSheet, EmptyState, SegmentedControl } from './ui';
 
 // 單一計畫的內容。
 //
@@ -1003,7 +1003,13 @@ export default function PlanDetailView({ planKey, tasks, lists, apiPlans = [], r
             跟「段考進度」（範圍目標）、「確切安排」（每日排程）分開，不混為一談。
             分區切換放在這一區自己的標題列，不擠進頁首。 */}
         {plan.total > 0 && isReal && (
-          <div className="ui-section-title" style={{ marginTop: 'var(--sp-5)' }}>Plan 內容</div>
+          <div className="row" style={{ marginTop: 'var(--sp-5)', alignItems: 'center', flexWrap: 'wrap', gap: 'var(--sp-2)' }}>
+            <div className="ui-section-title" style={{ marginBottom: 0 }}>Plan 內容</div>
+            <div style={{ marginLeft: 'auto', maxWidth: '100%' }}>
+              <SegmentedControl ariaLabel="Plan 內容分區" value={contentMode} onChange={pickContentMode}
+                options={[{ value: 'date', label: '依日期' }, { value: 'subject', label: '依科目' }]} />
+            </div>
+          </div>
         )}
         {(moveUnknown || moveSyncPending) && (
           <SurfaceCard tone="accent" style={{ marginTop: 'var(--sp-3)' }}>

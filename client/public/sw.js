@@ -1,4 +1,4 @@
-const CACHE = 'tt-v7';   // 換版號強制丟掉舊快取，確保拿到新程式
+const CACHE = 'tt-v8';   // 換版號強制丟掉舊快取，確保拿到新程式
 const SHELL = ['/', '/manifest.webmanifest', '/icon-192.png'];
 
 // 裝好就先把外殼放進新快取：不然「舊快取剛被清掉、新快取還是空的」那一瞬間，
