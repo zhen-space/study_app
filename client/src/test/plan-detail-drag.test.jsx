@@ -8,10 +8,11 @@ import * as fx from './fixtures';
 import { today, addDays } from '../tt/helpers';
 
 vi.mock('../api', () => ({ api: vi.fn() }));
-// 長按需要真實等待 450ms 以上；機器忙碌時預設 5 秒的單測上限與 1 秒的 waitFor 不夠。
+// 長按需要真實等待 450ms 以上；完整 CI 同時跑多個 jsdom 檔案時，狀態更新可能
+// 被延後超過 5 秒。這裡只放寬非同步斷言的等待上限，不縮短長按門檻或跳過驗收。
 vi.setConfig({ testTimeout: 30000 });
 const { configure } = await import('@testing-library/react');
-configure({ asyncUtilTimeout: 5000 });
+configure({ asyncUtilTimeout: 15000 });
 const { api } = await import('../api');
 const PlanDetailView = (await import('../tt/PlanDetailView')).default;
 
