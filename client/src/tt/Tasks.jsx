@@ -17,8 +17,26 @@ const WDC = '日一二三四五六';
 // 登入憑證，取回時憑證不同（換人登入、重新登入、已登出）就直接丟棄。
 // 憑證只放在這個記憶體變數裡做嚴格比對，不寫入 storage、不顯示也不記 log。
 let orphanedQuickDraft = null;
+// 「複製任務」的 POST 可能已提交、只有回應遺失；如果連讀回也失敗，單靠元件內
+// 的 ref 會在切頁卸載後失效，回來再按一次就可能建立第二筆。這個 fence 只活在
+// 記憶體，並綁定發出請求時的登入憑證；換帳號或登出時立即丟棄，不能洩漏任務內容。
+let uncertainDuplicateFence = null;
 const currentAuthToken = () => {
   try { return localStorage.getItem('token') || null; } catch { return null; }
+};
+const duplicateFenceForCurrentUser = () => {
+  const fence = uncertainDuplicateFence;
+  if (!fence) return null;
+  const owner = currentAuthToken();
+  if (!owner || fence.owner !== owner) {
+    uncertainDuplicateFence = null;
+    return null;
+  }
+  return fence;
+};
+const clearDuplicateFence = owner => {
+  if (!uncertainDuplicateFence || uncertainDuplicateFence.owner !== owner) return;
+  uncertainDuplicateFence = null;
 };
 const takeOrphanedQuickDraft = () => {
   const draft = orphanedQuickDraft;
@@ -757,6 +775,7 @@ export function Detail({ task, lists, onSave, onDelete, onDuplicate, onClose, sa
 export default function Tasks({ view, tasks, lists, filters, habits = [], reload, title, subtitle = '', listLabel = '', goVocab, goMemo, topSlot = null, onNav }) {
   const [selId, setSelId] = useState(null);
   const [restoredQuick] = useState(takeOrphanedQuickDraft);
+  const [restoredDuplicateFence] = useState(duplicateFenceForCurrentUser);
   const [quick, setQuick] = useState(restoredQuick?.title ?? '');
   const [quickErr, setQuickErr] = useState(restoredQuick?.error ?? '');
   const [quickBusy, setQuickBusy] = useState(!!restoredQuick?.pending);
@@ -1207,7 +1226,8 @@ export default function Tasks({ view, tasks, lists, filters, habits = [], reload
   const [pendingIds, setPendingIds] = useState(new Set());
   const [mutationErrors, setMutationErrors] = useState({});
   const uncertainMutationIds = useRef(new Set());
-  const [refreshError, setRefreshError] = useState('');
+  const [refreshError, setRefreshError] = useState(restoredDuplicateFence
+    ? '正在確認剛才的任務是否已複製；確認前請勿再次複製。' : '');
   const [refreshBusy, setRefreshBusy] = useState(false);
   // 錯誤列的「重新載入」預設只重抓 tasks scope；習慣打卡刷新失敗時要整包重抓才看得到習慣。
   // 這個旗標在成功整包重抓前都保留，之後其他任務錯誤蓋掉文案也照樣整包重抓（tasks 是子集，不會漏）。
@@ -1215,7 +1235,7 @@ export default function Tasks({ view, tasks, lists, filters, habits = [], reload
   const overdueRescheduleBusyRef = useRef(false);
   const overdueRescheduleUncertainRef = useRef(false);
   const [overdueRescheduleBusy, setOverdueRescheduleBusy] = useState(false);
-  const duplicateBusyRef = useRef(false);
+  const duplicateBusyRef = useRef(Boolean(restoredDuplicateFence));
   const duplicateTags = value => [...(value || [])].map(String).sort().join('\u0000');
   const duplicateSubtasks = value => JSON.stringify((value || []).map(item => ({
     title: String(item.title || ''), done: Boolean(item.done),
@@ -1232,6 +1252,33 @@ export default function Tasks({ view, tasks, lists, filters, habits = [], reload
     && (candidate.miss_policy || 'keep') === body.miss_policy
     && (candidate.estimated_minutes ?? null) === body.estimated_minutes
     && (candidate.task_kind || 'task') === body.task_kind;
+  useEffect(() => {
+    if (!restoredDuplicateFence) return undefined;
+    let cancelled = false;
+    const confirmRestoredDuplicate = async () => {
+      try {
+        const latest = await api('/tasks');
+        if (!Array.isArray(latest)) throw new Error('任務清單格式不正確');
+        const committed = latest.some(candidate => !restoredDuplicateFence.beforeIds.includes(String(candidate.id))
+          && duplicateMatches(candidate, restoredDuplicateFence.body));
+        if (cancelled) return;
+        clearDuplicateFence(restoredDuplicateFence.owner);
+        duplicateBusyRef.current = false;
+        setRefreshError('');
+        if (committed) await reload('tasks').catch(() => {
+          if (!cancelled) setRefreshError('任務已複製，但畫面暫時無法重新載入。');
+        });
+      } catch {
+        if (!cancelled) {
+          setRefreshError('仍無法確認任務是否已複製，請稍後重新載入；確認前請勿再次複製。');
+        }
+      }
+    };
+    confirmRestoredDuplicate();
+    return () => { cancelled = true; };
+  // 只處理掛載時承接的 fence；一般 tasks/reload 變化不能重送確認請求。
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
   const beginMutation = id => {
     if (mutationIds.current.has(id)) return false;
     mutationIds.current.add(id);
@@ -1404,6 +1451,7 @@ export default function Tasks({ view, tasks, lists, filters, habits = [], reload
     // API 與畫面資料的 id 可能一邊是 number、一邊是 string；統一後才能排除原任務，
     // 否則回應遺失時可能把原任務誤認成「新複製成功」。
     const beforeIds = new Set(tasks.map(task => String(task.id)));
+    const owner = currentAuthToken();
     let committed = false;
     try {
       await api('/tasks', { method: 'POST', body });
@@ -1421,6 +1469,7 @@ export default function Tasks({ view, tasks, lists, filters, habits = [], reload
         }
       } catch {
         // 無法判定是否已寫入時維持鎖定；重新載入成功後才允許下一次複製。
+        if (owner) uncertainDuplicateFence = { owner, body, beforeIds: [...beforeIds] };
         setRefreshError('無法確認任務是否已複製，請先重新載入；重新載入前請勿再次複製。');
         return;
       }
@@ -1753,6 +1802,7 @@ export default function Tasks({ view, tasks, lists, filters, habits = [], reload
     try {
       await (needsAll ? reload() : reload('tasks'));
       setRefreshError('');
+      clearDuplicateFence(currentAuthToken());
       duplicateBusyRef.current = false;
       if (reorderUncertainRef.current) {
         reorderUncertainRef.current = false;
