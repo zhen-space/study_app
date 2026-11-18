@@ -77,7 +77,8 @@ export default function PlanTimeline({ plan, tasks = [], reloadTasks, onAddConte
   groupMode = 'date', onGroupModeChange, canMoveTask, onStartMove, onPickDate, draggingTaskId = null,
   moveState = {} }) {
   const planId = plan?.planId;
-  const [state, setState] = useState({ loading: true, data: null, error: '' });
+  const [state, setState] = useState({ planId, loading: true, data: null, error: '' });
+  const requestSeqRef = useRef(0);
   const [busyIds, setBusyIds] = useState(() => new Set());
   const busyRef = useRef(new Set());
   const [uncertainIds, setUncertainIds] = useState(() => new Set());
@@ -86,18 +87,41 @@ export default function PlanTimeline({ plan, tasks = [], reloadTasks, onAddConte
 
   const load = useCallback(async () => {
     void refreshKey;
-    if (planId == null) { setState({ loading: false, data: null, error: '' }); return true; }
-    setState(s => ({ ...s, loading: true, error: '' }));
+    const requestedPlanId = planId;
+    const requestSeq = ++requestSeqRef.current;
+    if (requestedPlanId == null) {
+      setState({ planId: requestedPlanId, loading: false, data: null, error: '' });
+      return true;
+    }
+    setState(s => s.planId === requestedPlanId
+      ? { ...s, loading: true, error: '' }
+      : { planId: requestedPlanId, loading: true, data: null, error: '' });
     try {
-      const d = await api(`/schedule/timeline/${planId}`);
+      const d = await api(`/schedule/timeline/${requestedPlanId}`);
       if (!d || !Array.isArray(d.segments)) throw new Error('日期安排資料格式不正確');
-      setState({ loading: false, data: d, error: '' });
+      if (requestSeq !== requestSeqRef.current) return false;
+      setState({ planId: requestedPlanId, loading: false, data: d, error: '' });
       return true;
     } catch (e) {
-      setState(s => ({ loading: false, data: s.data, error: e.message || '無法載入日期安排' }));
+      if (requestSeq !== requestSeqRef.current) return false;
+      setState(s => ({ planId: requestedPlanId, loading: false,
+        data: s.planId === requestedPlanId ? s.data : null,
+        error: e.message || '無法載入日期安排' }));
       return false;
     }
   }, [planId, refreshKey]);
+
+  useEffect(() => {
+    // 切換計畫時，上一個計畫的資料與可寫入狀態都不能短暫出現在新計畫。
+    // 同時讓尚未完成的舊請求失效，避免慢回應覆蓋目前計畫。
+    requestSeqRef.current += 1;
+    busyRef.current.clear();
+    setBusyIds(new Set());
+    setUncertainIds(new Set());
+    setMutationError('');
+    setEditingItem(null);
+    setState({ planId, loading: planId != null, data: null, error: '' });
+  }, [planId]);
   useEffect(() => { load(); }, [load]);
 
   const setBusy = (id, value) => {
@@ -175,18 +199,21 @@ export default function PlanTimeline({ plan, tasks = [], reloadTasks, onAddConte
     refreshTasksLater();
   };
 
-  if (state.loading && !state.data) return <div className="ui-meta" style={{ marginTop: 'var(--sp-5)' }}>正在載入日期安排…</div>;
-  if (state.error && !state.data) return (
+  const visibleState = state.planId === planId
+    ? state
+    : { planId, loading: planId != null, data: null, error: '' };
+  if (visibleState.loading && !visibleState.data) return <div className="ui-meta" style={{ marginTop: 'var(--sp-5)' }}>正在載入日期安排…</div>;
+  if (visibleState.error && !visibleState.data) return (
     <SurfaceCard style={{ marginTop: 'var(--sp-5)' }}>
       <b>日期安排</b>
-      <div role="alert" style={{ color: 'var(--danger)', marginTop: 8 }}>{state.error}</div>
+      <div role="alert" style={{ color: 'var(--danger)', marginTop: 8 }}>{visibleState.error}</div>
       <Button size="sm" style={{ marginTop: 10 }} onClick={load}>重試</Button>
     </SurfaceCard>
   );
-  if (!state.data) return null;
+  if (!visibleState.data) return null;
   const t = {
     segments: [], deadlines: [], gaps: [], unscheduled: [], items: [],
-    no_active_schedule: false, ...state.data,
+    no_active_schedule: false, ...visibleState.data,
   };
   const hasAnything = t.items.length || t.segments.length || t.deadlines.length || t.gaps.length || t.unscheduled.length;
   const readOnly = plan?.status === 'ended' || plan?.status === 'archived' || !t.active;
