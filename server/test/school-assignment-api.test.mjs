@@ -53,6 +53,38 @@ test('建立學校作業：期限存 deadline_*，不碰 due_date/due_time', asy
   } finally { f.stop(); }
 });
 
+test('建立請求可安全重送：同 key 同內容回原作業，不重複 INSERT', async () => {
+  const f = await fixture();
+  try {
+    const list = await f.mkList('數學');
+    const payload = body(list.id, { client_request_id: 'school_assignment_req_0001' });
+    const first = await (await f.post('/tasks', payload)).json();
+    const retry = await (await f.post('/tasks', payload)).json();
+    assert.equal(retry.id, first.id);
+    const rows = (await (await f.get('/tasks?task_kind=school_assignment')).json())
+      .filter(task => task.title === payload.title);
+    assert.equal(rows.length, 1);
+  } finally { f.stop(); }
+});
+
+test('同一建立 key 換內容 fail closed；不同帳號可各自使用同 key', async () => {
+  const f = await fixture();
+  try {
+    const key = 'school_assignment_req_0002';
+    const list = await f.mkList('物理');
+    const first = await f.post('/tasks', body(list.id, { client_request_id: key }));
+    assert.equal(first.status, 200);
+    const changed = await f.post('/tasks', body(list.id, { client_request_id: key, title: '偷換內容' }));
+    assert.equal(changed.status, 409);
+    assert.match((await changed.json()).error, /不同內容/);
+
+    const other = await f.secondUser();
+    const otherList = await f.mkList('物理', other.H);
+    const isolated = await f.post('/tasks', body(otherList.id, { client_request_id: key }), other.H);
+    assert.equal(isolated.status, 200);
+  } finally { f.stop(); }
+});
+
 test('一般任務不受影響（regression）', async () => {
   const f = await fixture();
   try {
