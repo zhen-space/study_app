@@ -622,6 +622,35 @@ describe('Plan Detail', () => {
     { ...mt(83, '買參考書'), material_book_id: null, material_content_item_id: null },
   ];
 
+  it('切換計畫後，較慢的舊科目回應不會覆蓋目前計畫', async () => {
+    const oldRequests = [];
+    const oldProjection = { plan: PLAN,
+      subjects: [{ subject_list_id: 1, subject_name: '物理', exam_date: fx.TODAY }], material: [], manual_scope: [] };
+    const nextPlan = { ...PLAN, id: 71, name: '第二次段考', primary_list_id: 2 };
+    const nextProjection = { plan: nextPlan,
+      subjects: [{ subject_list_id: 2, subject_name: '地科', exam_date: fx.TODAY }], material: [], manual_scope: [] };
+    setApi({
+      '/plans/70/exam': () => new Promise(resolve => { oldRequests.push(resolve); }),
+      '/plans/71/exam': nextProjection,
+      '/schedule/timeline/70': { items: [], deadlines: [], gaps: [], unscheduled: [], segments: [] },
+      '/schedule/timeline/71': { items: [], deadlines: [], gaps: [], unscheduled: [], segments: [] },
+    });
+    const view = render(<PlanDetailView planKey="plan:70" tasks={TASKS} lists={fx.lists} apiPlans={[PLAN, nextPlan]}
+      reload={() => {}} onBack={() => {}} goWizard={() => {}} adjustPlan={() => {}} />);
+    await waitFor(() => expect(oldRequests.length).toBe(2));
+
+    view.rerender(<PlanDetailView planKey="plan:71" tasks={[]} lists={fx.lists} apiPlans={[PLAN, nextPlan]}
+      reload={() => {}} onBack={() => {}} goWizard={() => {}} adjustPlan={() => {}} />);
+    await waitFor(() => expect(screen.getByText('第二次段考')).toBeTruthy());
+    await waitFor(() => expect(screen.getAllByText('地科').length).toBeGreaterThan(0));
+
+    await act(async () => { oldRequests.forEach(resolve => resolve(oldProjection)); await Promise.resolve(); });
+    fireEvent.click(screen.getByRole('button', { name: '加入科目' }));
+    expect(screen.getByRole('option', { name: '物理' })).toBeTruthy();
+    expect(screen.queryByRole('option', { name: '地科' })).toBeNull();
+    expect(screen.queryByText('舊範圍')).toBeNull();
+  });
+
   const mount = async () => {
     setApi({ '/plans': [PLAN], '/tasks': TASKS });
     render(<PlanDetailView planKey="plan:70" tasks={TASKS} lists={fx.lists} apiPlans={[PLAN]}

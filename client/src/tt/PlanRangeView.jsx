@@ -31,21 +31,27 @@ export default function PlanRangeView({ plan, lists = [], onAddRange, onArrange,
   const [loadError, setLoadError] = useState('');
   const previewBusyRef = useRef(false);
   const removeBusyRef = useRef(false);
+  // 同一個畫面可能因 plan 切換、refreshKey 或套用後 strict refresh 同時讀取。
+  // 較慢的舊回應不得蓋掉較新的段考範圍投影。
+  const loadRequestRef = useRef(0);
   const [removeError, setRemoveError] = useState('');
 
   const load = useCallback(async (strict = false) => {
     if (planId == null) return;
+    const requestId = ++loadRequestRef.current;
     if (!strict) { setLoadBusy(true); setLoadError(''); }
     try {
       const ex = await api(`/plans/${planId}/exam`);
       if (!ex || !Array.isArray(ex.subjects)) throw new Error('段考範圍資料不完整');
+      if (requestId !== loadRequestRef.current) return;
       setExam(ex);
       setLoadError('');
     } catch (e) {
+      if (requestId !== loadRequestRef.current) return;
       if (strict) throw e;
       setLoadError(e.message || '暫時無法載入段考範圍');
     } finally {
-      if (!strict) setLoadBusy(false);
+      if (!strict && requestId === loadRequestRef.current) setLoadBusy(false);
     }
   }, [planId]);
   useEffect(() => { load(); }, [load, refreshKey]);
