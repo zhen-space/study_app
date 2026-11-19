@@ -158,7 +158,11 @@ describe('標準任務 UI 不 regression', () => {
 /* ==================== 串接：表單 ==================== */
 describe('新增／編輯表單', () => {
   const lists = [{ id: 1, name: '數學' }, { id: 2, name: '英文' }];
-  beforeEach(() => { api.mockReset(); api.mockResolvedValue({}); });
+  const tokenFor = userId => `x.${btoa(JSON.stringify({ userId })).replace(/=/g, '').replace(/\+/g, '-').replace(/\//g, '_')}.y`;
+  beforeEach(() => {
+    api.mockReset(); api.mockResolvedValue({});
+    localStorage.clear(); sessionStorage.clear();
+  });
 
   async function fillMinimum() {
     fireEvent.change(screen.getByPlaceholderText(/第 3 章習題/), { target: { value: '第 1 章' } });
@@ -274,6 +278,94 @@ describe('新增／編輯表單', () => {
     fireEvent.click(screen.getByRole('button', { name: '重新載入' }));
     await waitFor(() => expect(onClose).toHaveBeenCalledTimes(1));
     expect(api.mock.calls.filter(([, options]) => options?.method === 'POST')).toHaveLength(1);
+  });
+
+  it('不確定的新增跨卸載與頁面重掛仍只用原 key，讀回前不送第二次 POST', async () => {
+    localStorage.setItem('token', tokenFor(7));
+    let posts = 0;
+    let reads = 0;
+    let resolveRestoredRead;
+    const restoredRead = new Promise(resolve => { resolveRestoredRead = resolve; });
+    api.mockImplementation((path, options) => {
+      if (path === '/tasks' && options?.method === 'POST') {
+        posts += 1;
+        return Promise.reject(new Error('回應中斷'));
+      }
+      if (path === '/tasks') {
+        reads += 1;
+        return reads === 1 ? Promise.reject(new Error('離線')) : restoredRead;
+      }
+      return Promise.resolve([]);
+    });
+    const first = render(<SchoolAssignmentForm lists={lists} tasks={[]} onClose={vi.fn()} onSaved={vi.fn()} />);
+    await fillMinimum();
+    fireEvent.click(screen.getByRole('button', { name: '新增作業' }));
+    expect(await screen.findByRole('alert')).toHaveTextContent('仍然無法確認作業是否已儲存');
+    const firstKey = api.mock.calls.find(([, options]) => options?.method === 'POST')[1].body.client_request_id;
+    expect(firstKey).toBeTruthy();
+    first.unmount();
+
+    const onClose = vi.fn();
+    const onSaved = vi.fn();
+    render(<SchoolAssignmentForm lists={lists} tasks={[]} onClose={onClose} onSaved={onSaved} />);
+    expect(await screen.findByRole('alert')).toHaveTextContent('正在確認剛才的作業是否已建立');
+    expect(screen.getByRole('button', { name: '儲存中…' })).toBeDisabled();
+    fireEvent.submit(document.querySelector('.sa-form'));
+    expect(posts).toBe(1);
+
+    const created = sa({ id: 93, list_id: 1, title: '第 1 章', deadline_date: '2026-09-20' });
+    await act(async () => { resolveRestoredRead([created]); });
+    await waitFor(() => expect(onClose).toHaveBeenCalledTimes(1));
+    expect(onSaved).toHaveBeenCalledWith(created);
+    expect(posts).toBe(1);
+  });
+
+  it('不同登入身分不承接上一個帳號的作業 fence 或表單內容', async () => {
+    localStorage.setItem('token', tokenFor(7));
+    api.mockImplementation((path, options) => options?.method === 'POST'
+      ? Promise.reject(new Error('回應中斷')) : Promise.reject(new Error('離線')));
+    const first = render(<SchoolAssignmentForm lists={lists} tasks={[]} onClose={vi.fn()} onSaved={vi.fn()} />);
+    await fillMinimum();
+    fireEvent.change(screen.getByPlaceholderText(/第 3 章習題/), { target: { value: '甲帳號私密作業' } });
+    fireEvent.click(screen.getByRole('button', { name: '新增作業' }));
+    expect(await screen.findByRole('alert')).toHaveTextContent('仍然無法確認作業是否已儲存');
+    first.unmount();
+
+    localStorage.setItem('token', tokenFor(8));
+    api.mockReset(); api.mockResolvedValue({ id: 94 });
+    render(<SchoolAssignmentForm lists={lists} tasks={[]} onClose={vi.fn()} onSaved={vi.fn()} />);
+    expect(screen.queryByDisplayValue('甲帳號私密作業')).not.toBeInTheDocument();
+    expect(screen.queryByText(/正在確認剛才的作業/)).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: '新增作業' })).not.toBeDisabled();
+  });
+
+  it('讀回尚未出現時只用原 request key 安全重送，不產生第二把 key', async () => {
+    localStorage.setItem('token', tokenFor(7));
+    const postKeys = [];
+    let reads = 0;
+    api.mockImplementation((path, options) => {
+      if (path === '/tasks' && options?.method === 'POST') {
+        postKeys.push(options.body.client_request_id);
+        if (postKeys.length === 1) return Promise.reject(new Error('回應中斷'));
+        return Promise.resolve(sa({ id: 95, list_id: 1, title: '第 1 章', deadline_date: '2026-09-20' }));
+      }
+      if (path === '/tasks') {
+        reads += 1;
+        return reads === 1 ? Promise.reject(new Error('離線')) : Promise.resolve([]);
+      }
+      return Promise.resolve([]);
+    });
+    const first = render(<SchoolAssignmentForm lists={lists} tasks={[]} onClose={vi.fn()} onSaved={vi.fn()} />);
+    await fillMinimum();
+    fireEvent.click(screen.getByRole('button', { name: '新增作業' }));
+    expect(await screen.findByRole('alert')).toHaveTextContent('仍然無法確認作業是否已儲存');
+    first.unmount();
+
+    const onClose = vi.fn();
+    render(<SchoolAssignmentForm lists={lists} tasks={[]} onClose={onClose} onSaved={vi.fn()} />);
+    await waitFor(() => expect(onClose).toHaveBeenCalledTimes(1));
+    expect(postKeys).toHaveLength(2);
+    expect(postKeys[1]).toBe(postKeys[0]);
   });
 
   it('Task 已建立但 refresh 失敗時仍關閉，不誤報失敗或鼓勵重複 POST', async () => {

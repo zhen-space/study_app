@@ -194,6 +194,17 @@ CREATE TABLE IF NOT EXISTS tasks (
   estimated_minutes INTEGER,
   created_at TEXT DEFAULT CURRENT_TIMESTAMP
 );
+-- 非冪等的單筆 Task 建立請求。client_request_id 只是一把隨機鑰匙，不含登入憑證；
+-- body_hash 防止同一把鑰匙被拿去送不同內容。marker 與 Task 在同一交易寫入，
+-- 所以回應遺失後重送只會取回原 Task，不會再 INSERT 一筆。
+CREATE TABLE IF NOT EXISTS task_create_requests (
+  user_id INTEGER NOT NULL,
+  request_key TEXT NOT NULL,
+  body_hash TEXT NOT NULL,
+  task_id INTEGER,
+  created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (user_id, request_key)
+);
 CREATE TABLE IF NOT EXISTS habits (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   user_id INTEGER NOT NULL,

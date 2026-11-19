@@ -1,4 +1,5 @@
 import { Router } from 'express';
+import { createHash } from 'node:crypto';
 import { q } from '../db/init.js';
 import { requireAuth } from '../middleware/auth.js';
 import { calculateScheduleDiff } from '../schedule/diff.js';
@@ -23,6 +24,17 @@ const asArr = s => { if (Array.isArray(s)) return s; try { const v = JSON.parse(
 const cleanTags = arr => arr.filter(x => typeof x === 'string' && x.trim() && !/^[a-zA-Z]{1,2}$/.test(x.trim()));
 const parseTask = t => ({ ...t, tags: cleanTags(asArr(t.tags)), subtasks: asArr(t.subtasks) });
 const estimate = value => value == null || value === '' ? null : (Number.isInteger(Number(value)) && Number(value) > 0 && Number(value) <= 1440 ? Number(value) : undefined);
+const stableJson = value => {
+  if (Array.isArray(value)) return `[${value.map(stableJson).join(',')}]`;
+  if (value && typeof value === 'object') return `{${Object.keys(value).sort()
+    .map(key => `${JSON.stringify(key)}:${stableJson(value[key])}`).join(',')}}`;
+  return JSON.stringify(value);
+};
+const taskCreateHash = body => {
+  const clean = { ...body };
+  delete clean.client_request_id;
+  return createHash('sha256').update(stableJson(clean)).digest('hex');
+};
 
 // task_kind 只有兩種，而且**跟有沒有綁教材無關**——教材身分一律看
 // material_content_item_id。做成三選一就會逼出「綁教材的學校作業」無處可放。
@@ -236,6 +248,10 @@ router.post('/tasks', async (req, res) => {
   const kindErr = validateTaskKind(req.body);
   if (kindErr) return res.status(400).json({ error: kindErr });
   const taskKind = req.body.task_kind || DEFAULT_TASK_KIND;
+  const requestKey = req.body.client_request_id == null ? null : String(req.body.client_request_id);
+  if (requestKey != null && !/^[A-Za-z0-9_-]{16,128}$/.test(requestKey)) {
+    return res.status(400).json({ error: '建立請求識別碼格式不正確' });
+  }
   // 學校作業的期限走 deadline_date/deadline_time，不碰 due_date/due_time——
   // 後者是排程結果的鏡射。若使用者想安排什麼時候做，要走 Plan + 排程器。
   if (taskKind === 'school_assignment') {
@@ -287,7 +303,24 @@ router.post('/tasks', async (req, res) => {
   }
   const rem = reminderFields(req.body);
   // Task 與 selection provenance 必須同成同敗，避免只留下無法由取消選取追蹤的孤兒 Task。
-  const taskId = await q.tx(async tx => {
+  const bodyHash = requestKey ? taskCreateHash(req.body) : null;
+  const createResult = await q.tx(async tx => {
+    if (requestKey) {
+      const marker = await tx.run(`INSERT OR IGNORE INTO task_create_requests
+        (user_id,request_key,body_hash,task_id) VALUES (?,?,?,NULL)`,
+      [req.userId, requestKey, bodyHash]);
+      if (!marker.changes) {
+        const existing = await tx.get(`SELECT body_hash,task_id FROM task_create_requests
+          WHERE user_id=? AND request_key=?`, [req.userId, requestKey]);
+        if (!existing || existing.body_hash !== bodyHash) {
+          return { status: 409, error: '同一建立請求不能送出不同內容' };
+        }
+        if (existing.task_id == null) {
+          return { status: 409, error: '這筆建立請求仍在處理中，請稍後重試' };
+        }
+        return { taskId: existing.task_id };
+      }
+    }
     const r = await tx.run(`INSERT INTO tasks (user_id,list_id,title,notes,due_date,due_time,priority,tags,subtasks,recurring,miss_policy,plan_id,deadline_date,estimated_minutes,material_content_item_id,material_book_id,
       task_kind,school_assignment_type,deadline_time,reminder_kind,reminder_days_before,reminder_custom_date,reminder_time_override,updated_at)
       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
@@ -305,8 +338,12 @@ router.post('/tasks', async (req, res) => {
         'UPDATE plan_material_items SET task_id=?,updated_at=CURRENT_TIMESTAMP WHERE user_id=? AND plan_id=? AND content_item_id=?',
         [r.lastInsertRowid, req.userId, plan_id, materialItem.id]);
     }
-    return r.lastInsertRowid;
+    if (requestKey) await tx.run(`UPDATE task_create_requests SET task_id=?
+      WHERE user_id=? AND request_key=?`, [r.lastInsertRowid, req.userId, requestKey]);
+    return { taskId: r.lastInsertRowid };
   });
+  if (createResult.error) return res.status(createResult.status).json({ error: createResult.error });
+  const taskId = createResult.taskId;
   res.json(parseTask(await q.get('SELECT * FROM tasks WHERE id=?', [taskId])));
 });
 
