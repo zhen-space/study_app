@@ -130,6 +130,8 @@ export default function PlanDetailView({ planKey, tasks, lists, apiPlans = [], r
   const [newSubject, setNewSubject] = useState({ subject_list_id: '', exam_date: '' });
   const [examSubjectIds, setExamSubjectIds] = useState(() => new Set());
   const [examSubjectsLoad, setExamSubjectsLoad] = useState({ loading: true, error: '' });
+  // plan 切換與套用後 strict refresh 可能交錯；只讓最後一次科目投影寫入。
+  const examSubjectsRequestRef = useRef(0);
   const [examRefreshKey, setExamRefreshKey] = useState(0);
   const [editSubject, setEditSubject] = useState(null);
   const [busy, setBusy] = useState(false);
@@ -158,13 +160,16 @@ export default function PlanDetailView({ planKey, tasks, lists, apiPlans = [], r
   const health = usePlanScheduleHealth(plan, apiPlans.find(p => p.id === plan?.planId));
   const refreshExamSubjects = async (planId, strict = false) => {
     if (planId == null) return;
+    const requestId = ++examSubjectsRequestRef.current;
     setExamSubjectsLoad({ loading: true, error: '' });
     try {
       const projection = await api(`/plans/${planId}/exam`);
       if (!Array.isArray(projection?.subjects)) throw new Error('段考科目資料不完整');
+      if (requestId !== examSubjectsRequestRef.current) return;
       setExamSubjectIds(new Set((projection.subjects || []).map(s => Number(s.subject_list_id))));
       setExamSubjectsLoad({ loading: false, error: '' });
     } catch (e) {
+      if (requestId !== examSubjectsRequestRef.current) return;
       // 不知道現有科目時不能把所有科目都當成可加入，否則離線／API 失敗會把學生
       // 帶進必定失敗的重複科目流程。套用成功後刷新失敗也要交給既有 committed
       // recovery，不能關掉提示後讓畫面假裝已同步。

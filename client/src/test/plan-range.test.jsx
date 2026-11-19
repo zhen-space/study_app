@@ -1,7 +1,7 @@
 // Plan Detail 首屏（PlanRangeView）：白話呈現「各科考試哪天 → 要讀完哪些範圍
 // （科目→教材→課/章＋手動範圍）→（有排程才顯示）每天要做的」。資料來自 /plans/:id/exam。
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import { render, screen, waitFor, cleanup, fireEvent } from '@testing-library/react';
+import { render, screen, waitFor, cleanup, fireEvent, act } from '@testing-library/react';
 
 vi.mock('../api', () => ({ api: vi.fn() }));
 const { api } = await import('../api');
@@ -18,11 +18,35 @@ function mockApi({ exam = null, timeline = null } = {}) {
   });
 }
 const mat = o => ({ material_completed: false, ...o });
+const deferred = () => {
+  let resolve;
+  const promise = new Promise(res => { resolve = res; });
+  return { promise, resolve };
+};
 
 beforeEach(() => api.mockReset());
 afterEach(() => cleanup());
 
 describe('PlanRangeView', () => {
+  it('refreshKey 新讀取完成後，較慢的舊回應不會覆蓋目前範圍', async () => {
+    const oldRequest = deferred();
+    const fresh = { plan: { target_date: '2099-10-02' },
+      subjects: [{ subject_list_id: 2, subject_name: '物理', exam_date: '2099-10-02' }],
+      material: [mat({ content_item_id: 21, subject_list_id: 2, book_id: 7, book_title: '物理講義', chapter_title: '第二章', title: '目前範圍' })], manual_scope: [] };
+    const old = { plan: { target_date: '2099-10-02' },
+      subjects: [{ subject_list_id: 1, subject_name: '數學', exam_date: '2099-10-01' }],
+      material: [mat({ content_item_id: 11, subject_list_id: 1, book_id: 5, book_title: '數學課本', chapter_title: '第一章', title: '舊範圍' })], manual_scope: [] };
+    api.mockReturnValueOnce(oldRequest.promise).mockResolvedValueOnce(fresh);
+
+    const view = render(<PlanRangeView plan={plan} lists={LISTS} refreshKey={0} />);
+    view.rerender(<PlanRangeView plan={plan} lists={LISTS} refreshKey={1} />);
+    expect(await screen.findByText('目前範圍')).toBeInTheDocument();
+
+    await act(async () => { oldRequest.resolve(old); await oldRequest.promise; });
+    expect(screen.getByText('目前範圍')).toBeInTheDocument();
+    expect(screen.queryByText('舊範圍')).not.toBeInTheDocument();
+  });
+
   it('段考範圍讀取失敗時不誤報為空範圍，並可直接重試', async () => {
     const exam = { plan: { target_date: '2099-10-02' },
       subjects: [{ subject_list_id: 1, subject_name: '數學', exam_date: '2099-10-02' }],
