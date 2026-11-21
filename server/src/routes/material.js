@@ -281,7 +281,10 @@ router.post('/material/import/preview', handle(async (req, res) => {
 // Commit：把使用者確認過的 canonical draft 一次建立完整教材樹。
 // 全成功或全不做——不會留下半本教材。
 router.post('/material/import/commit', handle(async (req, res) => {
-  res.status(201).json(await material.commitMaterialDraft(req.userId, req.body?.draft ?? req.body));
+  const body = req.body || {};
+  res.status(201).json(await material.commitMaterialDraft(req.userId, body.draft ?? body, {
+    clientRequestId: body.client_request_id ?? null,
+  }));
 }));
 
 /* ---------- 舊教材的 just-in-time 整理 ---------- */

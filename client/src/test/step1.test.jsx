@@ -378,6 +378,7 @@ describe('加入教材', () => {
     await flush();
 
     const d = body.draft;
+    expect(body.client_request_id).toMatch(/^material_|^[0-9a-f-]{20,}$/i);
     expect(d.book.title).toBe('自己打的教材');
     expect(d.chapters.length).toBe(1);
     // 單元練習直接屬於章，不在任何一節底下
