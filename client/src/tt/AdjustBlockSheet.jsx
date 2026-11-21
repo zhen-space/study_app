@@ -30,6 +30,7 @@ export default function AdjustBlockSheet({ block, task, lists = [], versionId, r
   const [checking, setChecking] = useState(false);
   const [saving, setSaving] = useState(false);
   const [committed, setCommitted] = useState(null);
+  const [uncertain, setUncertain] = useState(false);
   const saveBusy = useRef(false);
   const [err, setErr] = useState('');
   const [writeFailed, setWriteFailed] = useState(false);
@@ -90,7 +91,7 @@ export default function AdjustBlockSheet({ block, task, lists = [], versionId, r
   }, [date, timed, start, end, changed, versionId]);
 
   async function save() {
-    if (saveBusy.current || committed) return;
+    if (saveBusy.current || committed || uncertain) return;
     saveBusy.current = true;
     setSaving(true); setErr(''); setWriteFailed(false);
     let saved;
@@ -100,6 +101,15 @@ export default function AdjustBlockSheet({ block, task, lists = [], versionId, r
         body: { base_version_id: versionId, moves: [move()] },
       });
     } catch (e) {
+      // 網路錯誤／5xx 可能是交易已提交、只有回應遺失；此時不能把同一個
+      // base_version_id 再送一次，否則會用舊版本重複嘗試 mutation。
+      if (!(e.status >= 400 && e.status < 500) && !e.conflicts?.length) {
+        setUncertain(true);
+        setErr('無法確認新安排是否已儲存；確認前不會再次送出。');
+        setSaving(false);
+        saveBusy.current = false;
+        return;
+      }
       setConflicts(e.conflicts || []);
       setErr(e.conflicts?.length ? '' : e.message);
       setWriteFailed(!e.conflicts?.length);
@@ -118,7 +128,7 @@ export default function AdjustBlockSheet({ block, task, lists = [], versionId, r
     }
   }
   async function retryReload() {
-    if (saveBusy.current || !committed) return;
+    if (saveBusy.current || (!committed && !uncertain)) return;
     saveBusy.current = true;
     setSaving(true); setErr('');
     try {
@@ -141,25 +151,27 @@ export default function AdjustBlockSheet({ block, task, lists = [], versionId, r
   const blocked = conflicts.length > 0 || (!!err && !writeFailed);
 
   return (
-    <BottomSheet onClose={saving ? undefined : onClose} label="調整這一項">
+    <BottomSheet onClose={(saving || uncertain) ? undefined : onClose} label="調整這一項">
       <div className="row">
         <b>調整這一項</b>
-        <button className="icon-btn" style={{ marginLeft: 'auto' }} aria-label="關閉" disabled={saving} onClick={saving ? undefined : onClose}>
+        <button className="icon-btn" style={{ marginLeft: 'auto' }} aria-label="關閉" disabled={saving || uncertain} onClick={(saving || uncertain) ? undefined : onClose}>
           <Icon name="x" size={14} />
         </button>
       </div>
 
-      {committed && <div style={{ display: 'grid', gap: 'var(--sp-3)', marginTop: 'var(--sp-3)' }}>
-        <b>新安排已儲存</b>
-        <div className="ui-meta">畫面尚未更新，請勿再次儲存。你可以只重試載入最新安排。</div>
-        {err && <SurfaceCard tone="warning" role="alert">新安排已儲存，但畫面暫時無法更新。{err}</SurfaceCard>}
+      {(committed || uncertain) && <div style={{ display: 'grid', gap: 'var(--sp-3)', marginTop: 'var(--sp-3)' }}>
+        <b>{uncertain ? '暫時無法確認儲存結果' : '新安排已儲存'}</b>
+        <div className="ui-meta">{uncertain
+          ? '可能已經儲存，確認前不會再次送出。你可以只重新載入最新安排。'
+          : '畫面尚未更新，請勿再次儲存。你可以只重試載入最新安排。'}</div>
+        {err && <SurfaceCard tone="warning" role="alert">{uncertain ? err : `新安排已儲存，但畫面暫時無法更新。${err}`}</SurfaceCard>}
         <div className="row" style={{ gap: 'var(--sp-2)' }}>
-          <Button variant="tertiary" disabled={saving} onClick={onClose}>先關閉</Button>
+          {!uncertain && <Button variant="tertiary" disabled={saving} onClick={onClose}>先關閉</Button>}
           <Button variant="primary" disabled={saving} onClick={retryReload}>{saving ? '載入中…' : '重新載入'}</Button>
         </div>
       </div>}
 
-      {!committed && <>
+      {!committed && !uncertain && <>
       <div style={{ marginTop: 'var(--sp-3)', fontWeight: 600 }}>{shortTitle(task?.title || '')}</div>
       <div className="ui-meta">
         {/* 全 App 的日期都用 md（8/18），這裡不要突然冒出 ISO 格式 */}

@@ -130,11 +130,30 @@ describe('ReplanSheet 套用後恢復', () => {
   });
 
   it('真正套用失敗保留預覽並允許重試', async () => {
-    applyWizardSchedule.mockRejectedValueOnce(new Error('套用失敗')).mockResolvedValueOnce({ planId: 7 }); mount();
+    const rejected = Object.assign(new Error('套用失敗'), { status: 422 });
+    applyWizardSchedule.mockRejectedValueOnce(rejected).mockResolvedValueOnce({ planId: 7 }); mount();
     const button = await openPreview(); fireEvent.click(button);
     expect(await screen.findByText('套用失敗')).toBeInTheDocument();
     fireEvent.click(button);
     await waitFor(() => expect(applyWizardSchedule).toHaveBeenCalledTimes(2));
+  });
+
+  it('回應遺失時鎖住套用，只能重新載入確認', async () => {
+    const reload = vi.fn().mockResolvedValue();
+    const onClose = vi.fn();
+    applyWizardSchedule.mockRejectedValue(new Error('連線中斷'));
+    mount(reload, onClose);
+    fireEvent.click(await openPreview());
+
+    expect(await screen.findByText('暫時無法確認套用結果')).toBeInTheDocument();
+    expect(screen.getByRole('alert')).toHaveTextContent('確認前不會再次送出');
+    expect(screen.queryByRole('button', { name: '套用新版安排' })).toBeNull();
+    expect(screen.getByRole('button', { name: '關閉' })).toBeDisabled();
+    expect(screen.queryByRole('button', { name: '先關閉' })).toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: '重新載入' }));
+    await waitFor(() => expect(onClose).toHaveBeenCalledOnce());
+    expect(applyWizardSchedule).toHaveBeenCalledOnce();
+    expect(reload).toHaveBeenCalledOnce();
   });
 
   it('過期預覽不會重送，回到重新預覽並保留明確提示', async () => {

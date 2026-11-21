@@ -124,12 +124,15 @@ describe('ScheduleHistory restore recovery', () => {
     expect(screen.queryByRole('alert')).toBeNull();
   });
 
-  it('一般 API 失敗在 sheet 內提示、保留 preview，並可直接重試', async () => {
+  it('明確 4xx 在 sheet 內提示、保留 preview，並可直接重試', async () => {
     let attempts = 0;
     standardApi({
       '/schedule/versions/1/restore': async () => {
         attempts += 1;
-        if (attempts === 1) throw new Error('暫時無法恢復');
+        if (attempts === 1) {
+          const error = new Error('暫時無法恢復'); error.status = 422;
+          throw error;
+        }
         return { applied: true, version: { version_id: 1 } };
       },
     });
@@ -142,6 +145,35 @@ describe('ScheduleHistory restore recovery', () => {
     expect(within(dialog).getByText('恢復 V1')).toBeTruthy();
     fireEvent.click(within(dialog).getByRole('button', { name: '確認恢復' }));
     await waitFor(() => expect(attempts).toBe(2));
+  });
+
+  it('回應遺失時鎖住 restore mutation，只重新載入正式紀錄確認', async () => {
+    let restoreAttempts = 0;
+    let listAttempts = 0;
+    standardApi({
+      '/schedule/versions': async () => { listAttempts += 1; return versions; },
+      '/schedule/versions/1/restore': async () => {
+        restoreAttempts += 1;
+        throw new Error('連線中斷');
+      },
+    });
+    const onRestored = vi.fn().mockResolvedValue();
+    render(<ScheduleHistoryView onRestored={onRestored} />);
+    await selectVersion();
+    fireEvent.click(screen.getByRole('button', { name: '恢復這個版本' }));
+    const dialog = await screen.findByRole('dialog', { name: '恢復排程版本' });
+    fireEvent.click(within(dialog).getByRole('button', { name: '確認恢復' }));
+
+    expect(await within(dialog).findByText('暫時無法確認恢復結果')).toBeTruthy();
+    expect(within(dialog).getByRole('alert')).toHaveTextContent('確認前不會再次送出');
+    expect(within(dialog).queryByRole('button', { name: '確認恢復' })).toBeNull();
+    expect(within(dialog).getByRole('button', { name: '關閉' })).toBeDisabled();
+    fireEvent.click(within(dialog).getByRole('button', { name: '重新載入確認' }));
+
+    await waitFor(() => expect(screen.queryByRole('dialog', { name: '恢復排程版本' })).toBeNull());
+    expect(restoreAttempts).toBe(1);
+    expect(listAttempts).toBe(2);
+    expect(onRestored).toHaveBeenCalledOnce();
   });
 
   it('375px：restore preview pending 時切換版本會丟棄舊提案且不重複讀取', async () => {

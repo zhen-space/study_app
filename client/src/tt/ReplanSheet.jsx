@@ -33,6 +33,7 @@ export default function ReplanSheet({ plan, health, raw, lists = [], reload, onC
   const previewBusy = useRef(false);
   const applyBusy = useRef(false);
   const [applied, setApplied] = useState(false);
+  const [uncertain, setUncertain] = useState(false);
   const loadProfile = useCallback(async () => {
     const request = ++profileRequest.current;
     setProfileLoading(true); setProfileError('');
@@ -98,7 +99,7 @@ export default function ReplanSheet({ plan, health, raw, lists = [], reload, onC
   }
 
   async function apply() {
-    if (applyBusy.current || applied) return;
+    if (applyBusy.current || applied || uncertain) return;
     applyBusy.current = true;
     setStage('saving'); setErr('');
     try {
@@ -118,8 +119,14 @@ export default function ReplanSheet({ plan, health, raw, lists = [], reload, onC
         setPreview(null);
         setErr('排程已在預覽後更新，請重新產生安排。');
         setStage('confirm');
-      } else {
+      } else if (e.status >= 400 && e.status < 500) {
         setErr(e.message); setStage('preview');
+      } else {
+        // 網路錯誤／5xx 可能已經建立新版安排；未知結果只能重新載入確認，
+        // 不能保留「套用新版安排」讓舊 preview 再送一次。
+        setUncertain(true);
+        setErr('無法確認新版安排是否已套用；確認前不會再次送出。');
+        setStage('uncertain');
       }
       applyBusy.current = false; return;
     }
@@ -152,7 +159,7 @@ export default function ReplanSheet({ plan, health, raw, lists = [], reload, onC
   }
 
   const previewLoading = stage === 'loading';
-  const closeLocked = stage === 'saving' || previewLoading;
+  const closeLocked = stage === 'saving' || previewLoading || uncertain;
   const Head = ({ title }) => (
     <div className="row">
       <b>{title}</b>
@@ -166,20 +173,22 @@ export default function ReplanSheet({ plan, health, raw, lists = [], reload, onC
   return (
     <BottomSheet onClose={closeLocked ? undefined : onClose}>
       <>
-        {applied ? (
+        {applied || uncertain ? (
           <>
-            <Head title="新版安排已套用" />
+            <Head title={uncertain ? '暫時無法確認套用結果' : '新版安排已套用'} />
             <SurfaceCard tone="accent" style={{ marginTop: 'var(--sp-3)' }}>
-              <b>安排已安全儲存</b>
+              <b>{uncertain ? '請先載入最新安排確認' : '安排已安全儲存'}</b>
               <div className="ui-meta" style={{ marginTop: 4 }}>
-                {stage === 'saving' ? '正在重新載入最新安排…' : '畫面尚未更新，請勿再次套用。你可以只重試載入最新資料。'}
+                {stage === 'saving' ? '正在重新載入最新安排…' : uncertain
+                  ? '這次可能已經套用；確認前不會再次送出，只會重新載入最新資料。'
+                  : '畫面尚未更新，請勿再次套用。你可以只重試載入最新資料。'}
               </div>
             </SurfaceCard>
             {err && <div className="error" role="alert" style={{ marginTop: 10 }}>
-              新版安排已套用，但畫面暫時無法更新。{err}
+              {uncertain ? err : `新版安排已套用，但畫面暫時無法更新。${err}`}
             </div>}
             <div className="row" style={{ marginTop: 14 }}>
-              <Button variant="secondary" disabled={stage === 'saving'} onClick={onClose}>先關閉</Button>
+              {!uncertain && <Button variant="secondary" disabled={stage === 'saving'} onClick={onClose}>先關閉</Button>}
               <Button variant="primary" style={{ marginLeft: 'auto' }} disabled={stage === 'saving'} onClick={retryRefresh}>
                 {stage === 'saving' ? '載入中…' : '重新載入'}
               </Button>
