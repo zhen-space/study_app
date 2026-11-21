@@ -508,6 +508,18 @@ CREATE TABLE IF NOT EXISTS material_books (
   updated_at TEXT DEFAULT CURRENT_TIMESTAMP
 );
 
+-- 整本教材建立的冪等 marker。client_request_id 只是一把隨機鑰匙，不含登入憑證；
+-- payload_hash 以驗證後的 canonical draft 計算，避免同一把鑰匙被拿去建立不同教材。
+-- marker 與 Book／完整教材樹在同一交易寫入，所以回應遺失後重送只會取回原 Book。
+CREATE TABLE IF NOT EXISTS material_import_commit_requests (
+  user_id INTEGER NOT NULL,
+  request_key TEXT NOT NULL,
+  payload_hash TEXT NOT NULL,
+  result_book_id INTEGER,
+  created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (user_id, request_key)
+);
+
 -- 章 / 節 / 主題共用一張表的自我參照樹。層級由 kind 表示，不用不同表，
 -- 因為「節底下可以有主題、也可以沒有」這件事不該逼出兩套查詢。
 CREATE TABLE IF NOT EXISTS material_nodes (

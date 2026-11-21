@@ -6,6 +6,10 @@ import MergeReview from './MergeReview';
 import PhotoQueue from './PhotoQueue';
 import { Button } from './ui';
 import { canonicalizeLeafContent, materialContentCount } from './materialDraft';
+import {
+  clearMaterialCommitFence, createMaterialCommitFence, createMaterialRequestId,
+  loadMaterialCommitFence, saveMaterialCommitFence,
+} from './materialCommitFence';
 
 // 「加入教材」。學生只要在兩件事之間選一個：拍照，或自己打。
 //
@@ -20,9 +24,10 @@ import { canonicalizeLeafContent, materialContentCount } from './materialDraft';
 // appendToBook（可選）：{ id, title }。設了就是「增加目錄／匯入更多內容」模式——
 //   產生 draft 後直接走合併到這本書（略過同名偵測與另存），不建立新書。
 export default function AddMaterialFlow({ lists = [], onCancel, onCreated, onAddSubject = null, appendToBook = null, defaultSubjectId = null, defaultBookType = '', outlineSources = [] }) {
+  const restoredCommitFence = loadMaterialCommitFence();
   const [mode, setMode] = useState(null);      // null｜'photo'｜'manual'
   const [draft, setDraft] = useState(null);
-  const [busy, setBusy] = useState(false);
+  const [busy, setBusy] = useState(Boolean(restoredCommitFence));
   const [status, setStatus] = useState('');
   const [err, setErr] = useState('');
   const [problems, setProblems] = useState([]);
@@ -32,9 +37,11 @@ export default function AddMaterialFlow({ lists = [], onCancel, onCreated, onAdd
   const [mergeTarget, setMergeTarget] = useState(null);
   const [created, setCreated] = useState(null);
   const [reuseSourceId, setReuseSourceId] = useState('');
-  const [commitUnknown, setCommitUnknown] = useState(false);
+  const [commitUnknown, setCommitUnknown] = useState(Boolean(restoredCommitFence));
   const parseBusy = useRef(false);
-  const operationBusy = useRef(false);
+  const operationBusy = useRef(Boolean(restoredCommitFence));
+  const commitFenceRef = useRef(restoredCommitFence);
+  const replayStarted = useRef(false);
 
   // 增補模式從編輯器切到合併預覽時，等新畫面真的提交後才解除同步鎖。
   // 否則同一拍快速點「預覽合併」又點舊畫面的「取消」，會留下 mergeTarget 但清掉 draft。
@@ -60,6 +67,53 @@ export default function AddMaterialFlow({ lists = [], onCancel, onCreated, onAdd
     setDraft(next);
     setErr('');
     setProblems([]);
+  };
+
+  const finishCommit = async fence => {
+    if (!fence || operationBusy.current) return;
+    operationBusy.current = true;
+    setBusy(true); setErr(''); setProblems([]);
+    try {
+      const r = await commitDraft(fence.body.draft, { clientRequestId: fence.body.client_request_id });
+      clearMaterialCommitFence(fence.owner);
+      commitFenceRef.current = null;
+      setCommitUnknown(false);
+      setDraft(fence.body.draft);
+      setCreated(r);
+      try { await onCreated?.(r); }
+      catch { setErr('教材已建立，但畫面暫時無法更新。請重新載入，請勿再次建立。'); }
+    } catch (e2) {
+      if (e2.status >= 400 && e2.status < 500) {
+        clearMaterialCommitFence(fence.owner);
+        commitFenceRef.current = null;
+        setCommitUnknown(false);
+        setDraft(fence.body.draft);
+        setErr(readable(e2));
+        setProblems(e2.payload?.problems || []);
+      } else {
+        // network／所有 5xx 都可能已經 commit；保留 exact request，只能 replay 同一個 key。
+        setCommitUnknown(true);
+        setErr('無法確認教材是否已建立；只會重新確認同一筆請求，不會建立第二本教材。');
+      }
+    } finally {
+      operationBusy.current = false;
+      setBusy(false);
+    }
+  };
+
+  const beginCommit = async candidate => {
+    const fence = createMaterialCommitFence(candidate) || {
+      owner: null,
+      body: { draft: candidate, client_request_id: createMaterialRequestId() },
+    };
+    commitFenceRef.current = fence;
+    if (fence.owner && !saveMaterialCommitFence(fence)) {
+      commitFenceRef.current = null;
+      setErr('瀏覽器無法安全保存這次建立請求，尚未建立教材。請釋出儲存空間後再試。');
+      setProblems([]);
+      return;
+    }
+    await finishCommit(fence);
   };
 
   // PhotoQueue 確認後：逐張正向＋壓縮 → 一次送 AI 解析。部分頁沒讀到內容會如實標示，不假裝全部成功。
@@ -111,15 +165,11 @@ export default function AddMaterialFlow({ lists = [], onCancel, onCreated, onAdd
         setBusy(false);
         return;
       }
-      const r = await commitDraft(candidate);
-      setCreated(r);
-      try { await onCreated?.(r); }
-      catch { setErr('教材已建立，但畫面暫時無法更新。請重新載入，請勿再次建立。'); }
+      operationBusy.current = false;
+      await beginCommit(candidate);
     } catch (e2) {
-      if (e2.status == null) {
-        setCommitUnknown(true);
-        setErr('連線中斷，無法確認教材是否已建立。請返回教材庫重新載入，確認前請勿再次建立。');
-      } else {
+      // fence 尚未建立代表失敗發生在唯讀同名檢查，安全保留編輯／重試。
+      if (!commitFenceRef.current) {
         setErr(readable(e2));
         setProblems(e2.payload?.problems || []);
       }
@@ -134,16 +184,11 @@ export default function AddMaterialFlow({ lists = [], onCancel, onCreated, onAdd
     operationBusy.current = true;
     setBusy(true); setErr(''); setProblems([]); setConflict(null);
     try {
-      const r = await commitDraft(draft);
-      setCreated(r);
-      try { await onCreated?.(r); }
-      catch { setErr('教材已建立，但畫面暫時無法更新。請重新載入，請勿再次建立。'); }
+      operationBusy.current = false;
+      await beginCommit(canonicalizeLeafContent(draft));
     }
     catch (e2) {
-      if (e2.status == null) {
-        setCommitUnknown(true);
-        setErr('連線中斷，無法確認教材是否已建立。請返回教材庫重新載入，確認前請勿再次建立。');
-      } else {
+      if (!commitFenceRef.current) {
         setErr(readable(e2)); setProblems(e2.payload?.problems || []);
       }
     }
@@ -158,6 +203,21 @@ export default function AddMaterialFlow({ lists = [], onCancel, onCreated, onAdd
     catch { setErr('教材已建立，但仍無法更新畫面。請稍後再試。'); }
     finally { operationBusy.current = false; setBusy(false); }
   };
+
+  const retryUnknownCommit = async () => {
+    if (operationBusy.current || !commitFenceRef.current) return;
+    await finishCommit(commitFenceRef.current);
+  };
+
+  useEffect(() => {
+    if (!restoredCommitFence || replayStarted.current) return;
+    replayStarted.current = true;
+    // 重新掛載只 replay session fence 裡的 exact request，不再跑同名檢查或產生新 key。
+    operationBusy.current = false;
+    finishCommit(restoredCommitFence);
+  // 只承接掛載當下已存在的 fence。
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   const cancelDraft = () => {
     if (operationBusy.current) return;
@@ -179,10 +239,13 @@ export default function AddMaterialFlow({ lists = [], onCancel, onCreated, onAdd
   if (commitUnknown) {
     return (
       <div className="am">
-        <h3 className="am-title">請先確認教材庫</h3>
+        <h3 className="am-title">正在確認教材是否已建立</h3>
         <div className="mt-err" role="alert">{err}</div>
         <div className="am-foot">
-          <Button variant="primary" onClick={onCancel}>返回教材庫</Button>
+          <Button variant="tertiary" disabled={busy} onClick={onCancel}>返回教材庫</Button>
+          <Button variant="primary" disabled={busy} onClick={retryUnknownCommit}>
+            {busy ? '確認中…' : '重新確認'}
+          </Button>
         </div>
       </div>
     );

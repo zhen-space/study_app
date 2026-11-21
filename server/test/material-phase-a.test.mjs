@@ -298,6 +298,73 @@ describe('A4 Transactional commit', () => {
     assert.equal(tree.progress.total_items, 6);
   });
 
+  test('同一使用者以相同 request id 重送相同 canonical draft，只建立一本並回原結果', async () => {
+    const requestKey = 'material_commit_req_0001';
+    const before = (await ok('GET', '/material/books')).length;
+    const draft = goodDraft({ book: { title: '回應遺失重送教材', publisher: '南一' } });
+    const first = await ok('POST', '/material/import/commit', {
+      client_request_id: requestKey, draft,
+    });
+    // 刻意換掉 JSON 欄位順序；雜湊應以驗證後的 canonical draft 為準。
+    const replay = await ok('POST', '/material/import/commit', {
+      draft: { chapters: draft.chapters, book: { publisher: '南一', title: '回應遺失重送教材' } },
+      client_request_id: requestKey,
+    });
+    assert.equal(replay.book.id, first.book.id);
+    assert.deepEqual(replay.summary, first.summary);
+    assert.equal((await ok('GET', '/material/books')).length, before + 1);
+  });
+
+  test('同一使用者重用 request id 建立不同教材時回 409，且不新增 Book', async () => {
+    const requestKey = 'material_commit_req_0002';
+    await ok('POST', '/material/import/commit', {
+      client_request_id: requestKey,
+      draft: goodDraft({ book: { title: '原教材' } }),
+    });
+    const before = (await ok('GET', '/material/books')).length;
+    const changed = await api('POST', '/material/import/commit', {
+      client_request_id: requestKey,
+      draft: goodDraft({ book: { title: '偷換成另一教材' } }),
+    });
+    assert.equal(changed.status, 409);
+    assert.equal(changed.json.code, 'IDEMPOTENCY_KEY_REUSED');
+    assert.equal((await ok('GET', '/material/books')).length, before);
+  });
+
+  test('request id 以 user_id 隔離，另一個帳號可安全使用相同 key', async () => {
+    const requestKey = 'material_commit_req_shared';
+    const first = await ok('POST', '/material/import/commit', {
+      client_request_id: requestKey,
+      draft: goodDraft({ book: { title: '第一位學生的教材' } }),
+    });
+    const reg = await fetch(S.base + '/auth/register', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ email: `material-${Date.now()}@test.local`, password: '12345678', name: '另一位學生' }),
+    });
+    assert.equal(reg.status, 200);
+    const { token } = await reg.json();
+    const other = await fetch(S.base + '/material/import/commit', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+      body: JSON.stringify({
+        client_request_id: requestKey,
+        draft: goodDraft({ book: { title: '第二位學生的教材' } }),
+      }),
+    });
+    assert.equal(other.status, 201);
+    const otherJson = await other.json();
+    assert.notEqual(otherJson.book.id, first.book.id);
+  });
+
+  test('request id 格式不合法時在寫入前拒絕', async () => {
+    const before = (await ok('GET', '/material/books')).length;
+    const r = await api('POST', '/material/import/commit', {
+      client_request_id: '太短', draft: goodDraft({ book: { title: '不該建立' } }),
+    });
+    assert.equal(r.status, 400);
+    assert.equal((await ok('GET', '/material/books')).length, before);
+  });
+
   test('draft 不合法時整筆拒絕，不留下任何 Book', async () => {
     const before = (await ok('GET', '/material/books')).length;
     const r = await api('POST', '/material/import/commit', {

@@ -8,6 +8,7 @@
 //      需要讓某個 Task 退出未來排程時，一律呼叫既有的 lifecycle
 //      transitionTaskOutcome，不另外寫一套（契約 10）。
 
+import { createHash } from 'node:crypto';
 import { q } from '../db/init.js';
 import { transitionTaskOutcome } from '../schedule/persistence.js';
 import {
@@ -27,6 +28,34 @@ export class MaterialInputError extends Error {
 }
 
 const now = () => new Date().toISOString();
+
+const stableJson = value => {
+  if (Array.isArray(value)) return `[${value.map(stableJson).join(',')}]`;
+  if (value && typeof value === 'object') return `{${Object.keys(value).sort()
+    .map(key => `${JSON.stringify(key)}:${stableJson(value[key])}`).join(',')}}`;
+  return JSON.stringify(value);
+};
+
+const materialDraftHash = draft =>
+  createHash('sha256').update(stableJson(draft)).digest('hex');
+
+const isDatabaseBusy = error => error?.code === 'SQLITE_BUSY'
+  || /SQLITE_BUSY|database is locked/i.test(String(error?.message || ''));
+const wait = ms => new Promise(resolve => setTimeout(resolve, ms));
+const materialCommitLocks = new Map();
+const withMaterialCommitLock = async (key, fn) => {
+  const previous = materialCommitLocks.get(key) || Promise.resolve();
+  let release;
+  const gate = new Promise(resolve => { release = resolve; });
+  const tail = previous.catch(() => {}).then(() => gate);
+  materialCommitLocks.set(key, tail);
+  await previous.catch(() => {});
+  try { return await fn(); }
+  finally {
+    release();
+    if (materialCommitLocks.get(key) === tail) materialCommitLocks.delete(key);
+  }
+};
 
 /* ---------- 取用（一律綁 user_id，避免跨帳號窺探） ---------- */
 
@@ -890,14 +919,38 @@ export const assertSubject = (userId, subjectListId) =>
 // 半本教材是最糟的結果：Book 存在但沒有章、章建了一半、ContentItem 缺一截。
 // 學生看到的是一本壞掉的書，而且沒有任何入口可以修。所以全部包在一個
 // transaction 裡，任何一步失敗就整筆 rollback。
-export async function commitMaterialDraft(userId, input) {
+export async function commitMaterialDraft(userId, input, { clientRequestId = null } = {}) {
   const { draft, problems } = validateDraft(input);
   if (problems.length) {
     const err = new MaterialInputError('教材內容有問題，尚未建立', 400);
     err.problems = problems;
     throw err;
   }
-  return writeDraftTree(userId, draft);
+  const requestKey = clientRequestId == null ? null : String(clientRequestId);
+  if (requestKey != null && !/^[A-Za-z0-9_-]{16,128}$/.test(requestKey)) {
+    throw new MaterialInputError('建立請求識別碼格式不正確', 400);
+  }
+  const idempotency = requestKey == null ? null : {
+    requestKey,
+    payloadHash: materialDraftHash(draft),
+  };
+  // SQLite 同時開始兩筆 write transaction 時，輸家可能先拿到 SQLITE_BUSY，還來不及
+  // 讀到贏家寫下的 marker。只對有冪等 key 的請求做 bounded replay：每次仍是同一份
+  // canonical payload，不會因此新增第二本；贏家提交後，下一輪直接取回原 Book。
+  const commit = async () => {
+    const delays = [0, 20, 50, 100, 200];
+    for (let attempt = 0; attempt < delays.length; attempt++) {
+      if (delays[attempt]) await wait(delays[attempt]);
+      try { return await writeDraftTree(userId, draft, { idempotency }); }
+      catch (error) {
+        if (!idempotency || !isDatabaseBusy(error) || attempt === delays.length - 1) throw error;
+      }
+    }
+    throw new Error('教材建立重試未完成');
+  };
+  return idempotency
+    ? withMaterialCommitLock(`${userId}:${idempotency.requestKey}`, commit)
+    : commit();
 }
 
 // 真正的寫入層，與驗證分開。
@@ -917,16 +970,50 @@ export const LEGACY_SOURCE_KIND = LEGACY_KIND;
 // 或「有來源記錄但沒有教材」（那列 legacy 從此再也無法正式化）。
 // verifyInTx：在**交易內**執行的最後一道檢查。放在交易外會有 TOCTOU——
 // 檢查完到寫入之間，舊資料仍可能被改動。
-export async function writeDraftTree(userId, draft, { sources = [], verifyInTx = null } = {}) {
-  // 科目必須是這位使用者自己的 lists.id。用名稱比對是不行的：
-  // 名稱可以重複、可以改，不是 identity。
-  if (draft.book.subject_list_id != null) {
-    const l = await q.get('SELECT id FROM lists WHERE id=? AND user_id=?',
-      [draft.book.subject_list_id, userId]);
-    if (!l) throw new MaterialInputError('找不到這個科目', 400);
-  }
-
-  const bookId = await q.tx(async tx => {
+export async function writeDraftTree(userId, draft, {
+  sources = [], verifyInTx = null, idempotency = null,
+} = {}) {
+  const book = await q.tx(async tx => {
+    if (idempotency) {
+      const claimed = await tx.run(
+        `INSERT OR IGNORE INTO material_import_commit_requests
+           (user_id,request_key,payload_hash,result_book_id) VALUES (?,?,?,NULL)`,
+        [userId, idempotency.requestKey, idempotency.payloadHash]);
+      if (!claimed.changes) {
+        const prior = await tx.get(
+          `SELECT payload_hash,result_book_id FROM material_import_commit_requests
+           WHERE user_id=? AND request_key=?`,
+          [userId, idempotency.requestKey]);
+        if (prior.payload_hash !== idempotency.payloadHash) {
+          const err = new MaterialInputError('這個建立請求識別碼已用於不同教材', 409);
+          err.code = 'IDEMPOTENCY_KEY_REUSED';
+          throw err;
+        }
+        if (prior.result_book_id == null) {
+          const err = new MaterialInputError('這筆教材建立請求仍在處理中，請稍後重試', 409);
+          err.code = 'IDEMPOTENCY_REQUEST_PENDING';
+          throw err;
+        }
+        // 只依實體 Book 判斷 replay 結果是否仍存在。hard delete 會讓這列自然消失；
+        // 不依賴後加 migration 欄位，舊 schema 啟動期間也不會因缺欄位變成 500。
+        const priorBook = await tx.get(
+          'SELECT * FROM material_books WHERE id=? AND user_id=?',
+          [prior.result_book_id, userId]);
+        if (!priorBook) {
+          const err = new MaterialInputError('原教材建立結果已不存在，不能重播這筆請求', 409);
+          err.code = 'IDEMPOTENCY_RESULT_MISSING';
+          throw err;
+        }
+        return priorBook;
+      }
+    }
+    // 科目 ownership 要在同一交易內、且在 replay 判斷之後確認。否則第一次已成功後
+    // 科目剛好被刪除，原請求重送反而取不回既有結果；交易外查也會留下 TOCTOU。
+    if (draft.book.subject_list_id != null) {
+      const l = await tx.get('SELECT id FROM lists WHERE id=? AND user_id=?',
+        [draft.book.subject_list_id, userId]);
+      if (!l) throw new MaterialInputError('找不到這個科目', 400);
+    }
     if (verifyInTx) await verifyInTx(tx);
     const b = await tx.run(
       `INSERT INTO material_books (user_id,title,publisher,subject_list_id,book_type,source)
@@ -977,10 +1064,20 @@ export async function writeDraftTree(userId, draft, { sources = [], verifyInTx =
          VALUES (?,?,?,?)`,
         [userId, id, src.source_kind, src.source_row_id]);
     }
-    return id;
+    if (idempotency) {
+      await tx.run(
+        `UPDATE material_import_commit_requests SET result_book_id=?
+         WHERE user_id=? AND request_key=?`,
+        [id, userId, idempotency.requestKey]);
+    }
+    const created = await tx.get('SELECT * FROM material_books WHERE id=? AND user_id=?', [id, userId]);
+    if (!created) throw new Error('教材建立後無法在同一交易讀回結果');
+    return created;
   });
 
-  return { book: await getBook(userId, bookId), summary: draftSummary(draft) };
+  // Book 與 marker 都在上面的交易內讀回；不可在 commit 後再查一次，否則 hard delete
+  // 剛好插進兩者之間時會回 201 + null，讓 client 誤判建立結果。
+  return { book, summary: draftSummary(draft) };
 }
 
 // preview 用：只驗證與統計，**完全不寫資料庫**。

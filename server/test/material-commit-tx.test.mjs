@@ -37,6 +37,10 @@ const counts = async () => ({
   items: Number((await q.get('SELECT COUNT(*) c FROM material_content_items WHERE user_id=?', [USER])).c),
 });
 
+const requestCount = async requestKey => Number((await q.get(
+  'SELECT COUNT(*) c FROM material_import_commit_requests WHERE user_id=? AND request_key=?',
+  [USER, requestKey])).c);
+
 const okDraft = () => validateDraft({
   book: { title: '正常教材', subject_list_id: 1 },
   chapters: [{
@@ -47,6 +51,36 @@ const okDraft = () => validateDraft({
 }).draft;
 
 describe('writeDraftTree 的交易邊界', () => {
+  test('同一 request key + canonical draft 只建立一本；換內容則 409', async () => {
+    const before = await counts();
+    const requestKey = 'material_commit_service_0001';
+    const first = await svc.commitMaterialDraft(USER, okDraft(), { clientRequestId: requestKey });
+    // validateDraft 會補齊同一份 canonical shape；重送必須取回原結果。
+    const replay = await svc.commitMaterialDraft(USER, okDraft(), { clientRequestId: requestKey });
+    assert.deepEqual(replay.book, first.book, 'replay 必須回原完整 Book，不可只回 id 或 null');
+    assert.equal((await counts()).books, before.books + 1);
+
+    await assert.rejects(
+      () => svc.commitMaterialDraft(USER, {
+        ...okDraft(), book: { ...okDraft().book, title: '偷換內容' },
+      }, { clientRequestId: requestKey }),
+      e => e?.status === 409 && e?.code === 'IDEMPOTENCY_KEY_REUSED');
+    assert.equal((await counts()).books, before.books + 1);
+  });
+
+  test('原 Book 已 hard delete 時，replay fail closed，不回 201 + undefined', async () => {
+    const requestKey = 'material_commit_deleted_0001';
+    const first = await svc.commitMaterialDraft(USER, {
+      ...okDraft(), book: { ...okDraft().book, title: '即將刪除的教材' },
+    }, { clientRequestId: requestKey });
+    await svc.hardDeleteBook(USER, first.book.id);
+    await assert.rejects(
+      () => svc.commitMaterialDraft(USER, {
+        ...okDraft(), book: { ...okDraft().book, title: '即將刪除的教材' },
+      }, { clientRequestId: requestKey }),
+      e => e?.status === 409 && e?.code === 'IDEMPOTENCY_RESULT_MISSING');
+  });
+
   test('正常寫入：Book、章節、內容一次到位', async () => {
     const before = await counts();
     await svc.writeDraftTree(USER, okDraft());
@@ -82,6 +116,23 @@ describe('writeDraftTree 的交易邊界', () => {
     const orphan = await q.get(
       'SELECT id FROM material_books WHERE user_id=? AND title=?', [USER, '不該留下的書']);
     assert.equal(orphan, undefined, '★ 不得留下沒有內容的空 Book');
+  });
+
+  test('★ 教材樹交易失敗時，冪等 marker 也必須一起 rollback', async () => {
+    const requestKey = 'material_commit_tx_fail_0001';
+    const before = await counts();
+    const draft = {
+      book: { title: '冪等 marker 不得殘留', publisher: '', subject_list_id: 1 },
+      chapters: [
+        { title: '第一章', order: 0, content_items: [], children: [] },
+        { title: '第二章', order: 1, content_items: [{ title: null, kind: 'past_exam', order: 0 }], children: [] },
+      ],
+    };
+    await assert.rejects(() => svc.writeDraftTree(USER, draft, {
+      idempotency: { requestKey, payloadHash: 'test-payload-hash' },
+    }));
+    assert.deepEqual(await counts(), before);
+    assert.equal(await requestCount(requestKey), 0, '失敗交易不得留下會 poison 重試的 marker');
   });
 
   test('★ 節點寫入失敗 → 同樣整筆回滾，不留下半本教材', async () => {

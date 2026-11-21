@@ -63,7 +63,9 @@ export const importPreview = ({ files, subjectListId = null, title = '' }) =>
 
 // 確認之後整本一次建立（全成功或全不做）。手動建立教材走的是同一支——
 // 前端也不維護第二套「建立整本教材」的路徑。
-export const commitDraft = draft => api('/material/import/commit', { method: 'POST', body: { draft } });
+export const commitDraft = (draft, { clientRequestId = null } = {}) => api('/material/import/commit', {
+  method: 'POST', body: { draft, ...(clientRequestId ? { client_request_id: clientRequestId } : {}) },
+});
 
 /* ---------- 同名偵測 + 合併／增補目錄 ---------- */
 

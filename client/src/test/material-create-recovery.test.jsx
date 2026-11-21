@@ -1,5 +1,5 @@
 import { act } from 'react';
-import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 vi.mock('../tt/material', () => ({
@@ -25,6 +25,8 @@ function deferred() {
   return { promise, resolve };
 }
 
+const tokenFor = userId => `x.${btoa(JSON.stringify({ userId }))}.y`;
+
 function readyManual(props = {}) {
   render(<AddMaterialFlow lists={[{ id: 1, name: '英文' }]} onCancel={vi.fn()} {...props} />);
   fireEvent.click(screen.getByText('自己建立教材'));
@@ -37,6 +39,9 @@ function readyManual(props = {}) {
 describe('AddMaterialFlow committed recovery', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    localStorage.clear();
+    sessionStorage.clear();
+    localStorage.setItem('token', tokenFor('user-a'));
     nameCheck.mockResolvedValue({ has_conflict: false, same_name_books: [] });
     commitDraft.mockResolvedValue({ book: { id: 77, title: '英文課本' } });
     fileToPayload.mockImplementation(async file => ({ filename: file.name, mime: file.type, data: 'AAAA' }));
@@ -100,7 +105,7 @@ describe('AddMaterialFlow committed recovery', () => {
     expect(commitDraft).toHaveBeenCalledOnce();
   });
 
-  it('keeps the draft editable and retryable after a real commit failure', async () => {
+  it('所有 5xx 都視為結果不明，鎖住新建立並只重送同一個 request id', async () => {
     const serverError = Object.assign(new Error('建立失敗'), { status: 500 });
     commitDraft
       .mockRejectedValueOnce(serverError)
@@ -109,28 +114,43 @@ describe('AddMaterialFlow committed recovery', () => {
     const submit = readyManual({ onCreated });
 
     fireEvent.click(submit);
-    expect(await screen.findByRole('alert')).toHaveTextContent('建立失敗');
-    expect(screen.getByLabelText('教材名稱')).toHaveValue('英文課本');
-    expect(submit).toBeEnabled();
-    fireEvent.click(submit);
+    expect(await screen.findByRole('alert')).toHaveTextContent('只會重新確認同一筆請求');
+    expect(screen.queryByRole('button', { name: '建立教材' })).not.toBeInTheDocument();
+    const firstId = commitDraft.mock.calls[0][1].clientRequestId;
+    fireEvent.click(screen.getByRole('button', { name: '重新確認' }));
 
     await waitFor(() => expect(commitDraft).toHaveBeenCalledTimes(2));
+    expect(commitDraft.mock.calls[1][1].clientRequestId).toBe(firstId);
+    expect(commitDraft.mock.calls[1][0]).toEqual(commitDraft.mock.calls[0][0]);
     expect(await screen.findByText('教材已建立')).toBeInTheDocument();
+    expect(sessionStorage.getItem('tt-material-create-commit-v1')).toBeNull();
   });
 
-  it('回應遺失時鎖住再次建立，要求先回教材庫確認', async () => {
-    const onCancel = vi.fn();
-    commitDraft.mockRejectedValueOnce(new TypeError('Failed to fetch'));
-    const submit = readyManual({ onCancel, onCreated: vi.fn() });
+  it('回應遺失後重新整理，只 replay 原本的完整請求', async () => {
+    commitDraft
+      .mockRejectedValueOnce(new TypeError('Failed to fetch'))
+      .mockResolvedValueOnce({ book: { id: 77, title: '英文課本' } });
+    const submit = readyManual({ onCreated: vi.fn() });
 
     fireEvent.click(submit);
 
-    expect(await screen.findByText('請先確認教材庫')).toBeInTheDocument();
+    expect(await screen.findByText('正在確認教材是否已建立')).toBeInTheDocument();
     expect(screen.getByRole('alert')).toHaveTextContent('無法確認教材是否已建立');
     expect(screen.queryByRole('button', { name: '建立教材' })).not.toBeInTheDocument();
-    fireEvent.click(screen.getByRole('button', { name: '返回教材庫' }));
-    expect(onCancel).toHaveBeenCalledOnce();
-    expect(commitDraft).toHaveBeenCalledOnce();
+    const firstDraft = commitDraft.mock.calls[0][0];
+    const firstId = commitDraft.mock.calls[0][1].clientRequestId;
+    expect(JSON.parse(sessionStorage.getItem('tt-material-create-commit-v1')).body.client_request_id).toBe(firstId);
+
+    cleanup();
+    const onCreated = vi.fn();
+    render(<AddMaterialFlow lists={[{ id: 1, name: '英文' }]} onCancel={vi.fn()} onCreated={onCreated} />);
+    await waitFor(() => expect(onCreated).toHaveBeenCalledWith({ book: { id: 77, title: '英文課本' } }));
+
+    expect(commitDraft).toHaveBeenCalledTimes(2);
+    expect(commitDraft.mock.calls[1][0]).toEqual(firstDraft);
+    expect(commitDraft.mock.calls[1][1].clientRequestId).toBe(firstId);
+    expect(nameCheck).toHaveBeenCalledTimes(1);
+    expect(sessionStorage.getItem('tt-material-create-commit-v1')).toBeNull();
   });
 
   it('同名教材選擇另存時回應遺失也不允許重送', async () => {
@@ -144,9 +164,35 @@ describe('AddMaterialFlow committed recovery', () => {
     fireEvent.click(submit);
     fireEvent.click(await screen.findByRole('button', { name: /另存成新教材/ }));
 
-    expect(await screen.findByText('請先確認教材庫')).toBeInTheDocument();
+    expect(await screen.findByText('正在確認教材是否已建立')).toBeInTheDocument();
     expect(screen.queryByRole('button', { name: /另存成新教材/ })).not.toBeInTheDocument();
     expect(commitDraft).toHaveBeenCalledOnce();
+  });
+
+  it('明確 4xx 會清除 fence 並恢復原草稿讓使用者修正', async () => {
+    commitDraft.mockRejectedValueOnce(Object.assign(new Error('教材內容格式錯誤'), { status: 422 }));
+    const submit = readyManual({ onCreated: vi.fn() });
+
+    fireEvent.click(submit);
+
+    expect(await screen.findByRole('alert')).toHaveTextContent('教材內容格式錯誤');
+    expect(screen.getByLabelText('教材名稱')).toHaveValue('英文課本');
+    expect(screen.getByRole('button', { name: '建立教材' })).toBeEnabled();
+    expect(sessionStorage.getItem('tt-material-create-commit-v1')).toBeNull();
+  });
+
+  it('帳號切換會丟棄前一個帳號的 fence，不會替對方 replay', () => {
+    sessionStorage.setItem('tt-material-create-commit-v1', JSON.stringify({
+      owner: 'user-a',
+      body: { draft: { book: { title: '別人的教材' }, chapters: [] }, client_request_id: 'request-a' },
+    }));
+    localStorage.setItem('token', tokenFor('user-b'));
+
+    render(<AddMaterialFlow lists={[{ id: 1, name: '英文' }]} onCancel={vi.fn()} onCreated={vi.fn()} />);
+
+    expect(screen.getByText('加入教材')).toBeInTheDocument();
+    expect(commitDraft).not.toHaveBeenCalled();
+    expect(sessionStorage.getItem('tt-material-create-commit-v1')).toBeNull();
   });
 
   it('取消只有標題的葉章草稿不會寫入任何教材', () => {
