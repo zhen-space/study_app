@@ -141,11 +141,17 @@ router.post('/material/books/:id/unarchive', handle(async (req, res) => {
 /* ---------- Node / ContentItem ---------- */
 
 router.post('/material/nodes', handle(async (req, res) => {
-  res.status(201).json(await material.createNode(req.userId, req.body || {}));
+  const body = req.body || {};
+  res.status(201).json(await material.createNode(req.userId, body, {
+    clientRequestId: body.client_request_id ?? null,
+  }));
 }));
 
 router.post('/material/content-items', handle(async (req, res) => {
-  res.status(201).json(await material.createContentItem(req.userId, req.body || {}));
+  const body = req.body || {};
+  res.status(201).json(await material.createContentItem(req.userId, body, {
+    clientRequestId: body.client_request_id ?? null,
+  }));
 }));
 
 // 打錯字要有得救。改名不換 identity——完成度、Plan selection 與既有 Task
