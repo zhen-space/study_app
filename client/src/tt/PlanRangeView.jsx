@@ -27,6 +27,7 @@ export default function PlanRangeView({ plan, lists = [], onAddRange, onArrange,
   const [removal, setRemoval] = useState(null);
   const [removeBusy, setRemoveBusy] = useState(false);
   const [removeCommitted, setRemoveCommitted] = useState(false);
+  const [removeUncertain, setRemoveUncertain] = useState(false);
   const [loadBusy, setLoadBusy] = useState(false);
   const [loadError, setLoadError] = useState('');
   const previewBusyRef = useRef(false);
@@ -74,6 +75,7 @@ export default function PlanRangeView({ plan, lists = [], onAddRange, onArrange,
       await load(true);
       setRemoval(null);
       setRemoveCommitted(false);
+      setRemoveUncertain(false);
       setRemoveError('');
       setRemoveBusy(false);
       removeBusyRef.current = false;
@@ -85,19 +87,19 @@ export default function PlanRangeView({ plan, lists = [], onAddRange, onArrange,
   }
 
   async function retryRemovalLoad() {
-    if (removeBusyRef.current || !removeCommitted) return;
+    if (removeBusyRef.current || (!removeCommitted && !removeUncertain)) return;
     removeBusyRef.current = true;
     setRemoveBusy(true); setRemoveError('');
     await finishRemoval();
   }
 
   function closeRemoval() {
-    if (previewBusyRef.current || removeBusyRef.current) return;
-    setRemoval(null); setRemoveError(''); setRemoveCommitted(false);
+    if (previewBusyRef.current || removeBusyRef.current || removeUncertain) return;
+    setRemoval(null); setRemoveError(''); setRemoveCommitted(false); setRemoveUncertain(false);
   }
 
   async function confirmRemoval() {
-    if (!removal || removeBusyRef.current || removeCommitted) return;
+    if (!removal || removeBusyRef.current || removeCommitted || removeUncertain) return;
     removeBusyRef.current = true;
     setRemoveBusy(true); setRemoveError('');
     try {
@@ -109,7 +111,13 @@ export default function PlanRangeView({ plan, lists = [], onAddRange, onArrange,
       if (e.status === 409 || e.payload?.code === 'STALE_SCHEDULE_PREVIEW') {
         setRemoval(null);
         setRemoveError('排程或範圍已更新，請重新點「移除」取得最新預覽。');
-      } else setRemoveError(e.message);
+      } else if (e.status >= 400 && e.status < 500) {
+        setRemoveError(e.message);
+      } else {
+        // 網路錯誤／5xx 可能已完成交易；鎖住原 preview，只允許重新讀取權威投影。
+        setRemoveUncertain(true);
+        setRemoveError('無法確認教材範圍是否已移除；確認前不會再次送出。');
+      }
       setRemoveBusy(false);
       removeBusyRef.current = false;
       return;
@@ -243,13 +251,15 @@ export default function PlanRangeView({ plan, lists = [], onAddRange, onArrange,
         </SurfaceCard>
       )}
 
-      {removal && <BottomSheet onClose={closeRemoval} label="移除教材範圍">
-        {removeCommitted ? <>
-          <b>教材範圍已移除</b>
-          <div className="ui-meta" style={{ marginTop: 8 }}>變更已正式儲存，請勿再次移除。你可以只重試載入最新範圍。</div>
-          {removeError && <div role="alert" style={{ color: 'var(--danger)', marginTop: 8 }}>範圍已移除，但畫面暫時無法更新。{removeError}</div>}
+      {removal && <BottomSheet onClose={removeUncertain ? undefined : closeRemoval} label="移除教材範圍">
+        {(removeCommitted || removeUncertain) ? <>
+          <b>{removeUncertain ? '暫時無法確認移除結果' : '教材範圍已移除'}</b>
+          <div className="ui-meta" style={{ marginTop: 8 }}>{removeUncertain
+            ? '這次可能已經移除；確認前不會再次送出，只會重新載入最新範圍。'
+            : '變更已正式儲存，請勿再次移除。你可以只重試載入最新範圍。'}</div>
+          {removeError && <div role="alert" style={{ color: 'var(--danger)', marginTop: 8 }}>{removeUncertain ? removeError : `範圍已移除，但畫面暫時無法更新。${removeError}`}</div>}
           <div className="row" style={{ marginTop: 16, gap: 8 }}>
-            <Button disabled={removeBusy} onClick={closeRemoval}>先關閉</Button>
+            {!removeUncertain && <Button disabled={removeBusy} onClick={closeRemoval}>先關閉</Button>}
             <Button variant="primary" disabled={removeBusy} style={{ marginLeft: 'auto' }} onClick={retryRemovalLoad}>{removeBusy ? '載入中…' : '重新載入'}</Button>
           </div>
         </> : <>

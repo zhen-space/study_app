@@ -20,6 +20,7 @@ export default function RollingExamSchedule({
   const [loading, setLoading] = useState(false);
   const [applying, setApplying] = useState(false);
   const [committed, setCommitted] = useState(null);
+  const [uncertain, setUncertain] = useState(false);
   const applyBusy = useRef(false);
   const previewRequest = useRef(0);
   const [error, setError] = useState('');
@@ -29,7 +30,7 @@ export default function RollingExamSchedule({
   // React 的 applying 還沒重繪前，backdrop／Escape 仍可能拿到上一版 onClose。
   // 套用是會建立新版排程的交易，送出後必須留在畫面上接住成功或錯誤結果。
   const requestClose = () => {
-    if (applyBusy.current) return;
+    if (applyBusy.current || uncertain) return;
     onClose?.();
   };
 
@@ -81,7 +82,7 @@ export default function RollingExamSchedule({
   };
 
   const confirmApply = async () => {
-    if (applyBusy.current || committed || !canConfirm(preview)) return;
+    if (applyBusy.current || committed || uncertain || !canConfirm(preview)) return;
     applyBusy.current = true;
     setApplying(true); setError('');
     let saved;
@@ -95,8 +96,13 @@ export default function RollingExamSchedule({
         setError(refreshed
           ? '排程已被其他變更取代，已為你重新預覽，請再確認一次。'
           : '排程已被其他變更取代，但重新預覽失敗。請按「重新預覽」再試一次。');
-      } else {
+      } else if (e.status >= 400 && e.status < 500) {
         setError(e.message || '套用失敗');
+      } else {
+        // 網路錯誤／5xx 可能已建立新版排程。這時不能保留原 preview 讓使用者
+        // 用舊 base_version 再送一次，只能重新載入正式資料收斂畫面。
+        setUncertain(true);
+        setError('無法確認新版安排是否已套用；確認前不會再次送出。');
       }
       setApplying(false);
       applyBusy.current = false;
@@ -116,7 +122,7 @@ export default function RollingExamSchedule({
   };
 
   const retryApplied = async () => {
-    if (applyBusy.current || !committed) return;
+    if (applyBusy.current || (!committed && !uncertain)) return;
     applyBusy.current = true;
     setApplying(true); setError('');
     try {
@@ -142,25 +148,27 @@ export default function RollingExamSchedule({
           {examSubject ? `${examSubject.operation === 'update' ? '修改' : '加入'}${examSubject.subject_name || '科目'}並重新安排`
             : addTaskIds.length || materialSelections.length ? '加入內容並重新安排' : '調整這次段考安排'}
         </h3>
-        {committed && <div style={{ display: 'grid', gap: 'var(--sp-3)' }}>
-          <b>新版安排已套用</b>
-          <div className="ui-meta">畫面尚未更新，請勿再次套用。你可以只重試載入最新資料。</div>
-          {error && <div className="ui-card ui-card--warning" role="alert">新版安排已套用，但畫面暫時無法更新。{error}</div>}
+        {(committed || uncertain) && <div style={{ display: 'grid', gap: 'var(--sp-3)' }}>
+          <b>{uncertain ? '暫時無法確認套用結果' : '新版安排已套用'}</b>
+          <div className="ui-meta">{uncertain
+            ? '這次可能已經套用；確認前不會再次送出，只會重新載入最新資料。'
+            : '畫面尚未更新，請勿再次套用。你可以只重試載入最新資料。'}</div>
+          {error && <div className="ui-card ui-card--warning" role="alert">{uncertain ? error : `新版安排已套用，但畫面暫時無法更新。${error}`}</div>}
           <div className="row" style={{ gap: 'var(--sp-2)' }}>
-              <Button variant="tertiary" disabled={applying} onClick={requestClose}>先關閉</Button>
+            {!uncertain && <Button variant="tertiary" disabled={applying} onClick={requestClose}>先關閉</Button>}
             <Button variant="primary" disabled={applying} onClick={retryApplied}>{applying ? '載入中…' : '重新載入'}</Button>
           </div>
         </div>}
-        {!committed && error && <div className="ui-card ui-card--warning" role="alert" style={{ marginBottom: 'var(--sp-3)' }}>{error}</div>}
-        {!committed && loading && <div className="ui-meta">預覽中…</div>}
-        {!committed && !loading && !preview && error && (
+        {!committed && !uncertain && error && <div className="ui-card ui-card--warning" role="alert" style={{ marginBottom: 'var(--sp-3)' }}>{error}</div>}
+        {!committed && !uncertain && loading && <div className="ui-meta">預覽中…</div>}
+        {!committed && !uncertain && !loading && !preview && error && (
           <div className="row" style={{ gap: 'var(--sp-2)' }}>
             <Button variant="tertiary" onClick={requestClose}>先關閉</Button>
             <Button variant="primary" style={{ marginLeft: 'auto' }} onClick={() => doPreview(null)}>重新預覽</Button>
           </div>
         )}
 
-        {!committed && preview && !loading && (
+        {!committed && !uncertain && preview && !loading && (
           <>
             <div className="ui-meta" style={{ marginBottom: 'var(--sp-2)' }}>
               先檢查下方變動；按「套用新版安排」後才會更新。<br />
