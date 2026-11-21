@@ -6,6 +6,7 @@ import * as fx from './fixtures';
 vi.mock('../api', () => ({ api: vi.fn() }));
 const { api } = await import('../api');
 const Tasks = (await import('../tt/Tasks')).default;
+const tokenFor = userId => `x.${btoa(JSON.stringify({ userId })).replace(/=/g, '').replace(/\+/g, '-').replace(/\//g, '_')}.y`;
 
 const props = {
   view: { type: 'tasks' }, tasks: [], lists: fx.lists, filters: [], reload: vi.fn(),
@@ -13,7 +14,7 @@ const props = {
 };
 
 describe('任務快速新增', () => {
-  beforeEach(() => { api.mockReset(); props.reload.mockReset(); localStorage.removeItem('token'); });
+  beforeEach(() => { api.mockReset(); props.reload.mockReset(); localStorage.removeItem('token'); sessionStorage.clear(); });
 
   it('中文輸入法按 Enter 選字時不送出，組字完成後才建立', async () => {
     api.mockResolvedValue({ id: 99 });
@@ -29,7 +30,7 @@ describe('任務快速新增', () => {
     fireEvent.compositionEnd(input, { data: '物理' });
     fireEvent.change(input, { target: { value: '物理作業' } });
     await act(async () => { fireEvent.submit(input.closest('form')); });
-    expect(api).toHaveBeenCalledWith('/tasks', { method: 'POST', body: { title: '物理作業' } });
+    expect(api).toHaveBeenCalledWith('/tasks', { method: 'POST', body: expect.objectContaining({ title: '物理作業', client_request_id: expect.any(String) }) });
     expect(input).toHaveValue('');
   });
 
@@ -54,7 +55,7 @@ describe('任務快速新增', () => {
 
     expect(api).toHaveBeenCalledWith('/tasks', {
       method: 'POST',
-      body: { title: '準備數學小考', due_date: expect.any(String), list_id: fx.lists[0].id, priority: 3, tags: ['複習'] },
+      body: expect.objectContaining({ title: '準備數學小考', due_date: expect.any(String), list_id: fx.lists[0].id, priority: 3, tags: ['複習'], client_request_id: expect.any(String) }),
     });
     expect(input).toHaveValue('');
     expect(screen.queryByLabelText('快速新增選項')).not.toBeInTheDocument();
@@ -72,7 +73,7 @@ describe('任務快速新增', () => {
 
     expect(api).toHaveBeenCalledWith('/tasks', {
       method: 'POST',
-      body: { title: '每週整理筆記', recurring: 'weekly', due_date: expect.any(String) },
+      body: expect.objectContaining({ title: '每週整理筆記', recurring: 'weekly', due_date: expect.any(String), client_request_id: expect.any(String) }),
     });
     expect(input).toHaveValue('');
     expect(screen.queryByLabelText('快速新增選項')).not.toBeInTheDocument();
@@ -90,7 +91,7 @@ describe('任務快速新增', () => {
 
     expect(api).toHaveBeenCalledWith('/tasks', {
       method: 'POST',
-      body: { title: '整理化學錯題', tags: ['錯題'] },
+      body: expect.objectContaining({ title: '整理化學錯題', tags: ['錯題'], client_request_id: expect.any(String) }),
     });
     expect(input).toHaveValue('');
   });
@@ -107,7 +108,7 @@ describe('任務快速新增', () => {
 
     expect(api).toHaveBeenCalledWith('/tasks', {
       method: 'POST',
-      body: { title: '準備英文報告', notes: '帶講義第 3 頁' },
+      body: expect.objectContaining({ title: '準備英文報告', notes: '帶講義第 3 頁', client_request_id: expect.any(String) }),
     });
     expect(screen.queryByLabelText('快速新增選項')).not.toBeInTheDocument();
   });
@@ -124,7 +125,7 @@ describe('任務快速新增', () => {
 
     expect(api).toHaveBeenCalledWith('/tasks', {
       method: 'POST',
-      body: { title: '晚間複習', due_time: '20:30', due_date: expect.any(String) },
+      body: expect.objectContaining({ title: '晚間複習', due_time: '20:30', due_date: expect.any(String), client_request_id: expect.any(String) }),
     });
     expect(input).toHaveValue('');
     expect(screen.queryByLabelText('快速新增選項')).not.toBeInTheDocument();
@@ -233,8 +234,8 @@ describe('任務快速新增', () => {
     expect(api.mock.calls.filter(([path, options]) => path === '/tasks' && options?.method === 'POST')).toHaveLength(1);
   });
 
-  it('送出中切到別頁、之後 POST 失敗時，回來仍保留內容與錯誤，可直接重送', async () => {
-    localStorage.setItem('token', 'session-a');
+  it('送出中切頁且回應未知時，重掛只用同一把 key 安全重送', async () => {
+    localStorage.setItem('token', tokenFor('user-a'));
     let rejectPost;
     api.mockImplementationOnce(() => new Promise((_, reject) => { rejectPost = reject; }));
     const first = render(<Tasks {...props} />);
@@ -245,30 +246,24 @@ describe('任務快速新增', () => {
 
     // 例如在 Render 冷啟動時切到「今天」或行事曆：Tasks 卸載，請求才失敗。
     first.unmount();
+    api.mockRejectedValueOnce(new Error('離線'));
     await act(async () => { rejectPost(new Error('伺服器暫時沒有回應')); });
 
-    api.mockResolvedValueOnce({ id: 107 });
+    const firstBody = api.mock.calls.find(([path, options]) => path === '/tasks' && options?.method === 'POST')[1].body;
+    api.mockResolvedValueOnce([]).mockResolvedValueOnce({ id: 107 });
     props.reload.mockResolvedValue();
     // 正式環境包在 StrictMode：開發時的重複初始化／重複掛載也不能把草稿吃掉。
     render(<StrictMode><Tasks {...props} /></StrictMode>);
     const input = screen.getByPlaceholderText('＋ 新增任務，按 Enter 儲存');
-    expect(input).toHaveValue('化學實驗報告');
-    expect(input).not.toBeDisabled();
-    expect(input).toHaveAttribute('aria-invalid', 'true');
-    expect(screen.getByRole('alert')).toHaveTextContent('伺服器暫時沒有回應');
-    expect(screen.getByLabelText('快速新增優先級')).toHaveValue('3');
-    expect(screen.getByLabelText('快速新增備註')).toHaveValue('附圖表');
-    expect(props.reload).not.toHaveBeenCalled();
-
-    await act(async () => { fireEvent.submit(input.closest('form')); });
-    expect(api).toHaveBeenLastCalledWith('/tasks', {
-      method: 'POST', body: { title: '化學實驗報告', priority: 3, notes: '附圖表' },
-    });
-    expect(input).toHaveValue('');
+    await waitFor(() => expect(input).toHaveValue(''));
+    const sent = api.mock.calls.filter(([path, options]) => path === '/tasks' && options?.method === 'POST');
+    expect(sent).toHaveLength(2);
+    expect(sent[0][1].body).toEqual(expect.objectContaining({ title: '化學實驗報告', priority: 3, notes: '附圖表', client_request_id: expect.any(String) }));
+    expect(sent[1][1].body).toEqual(firstBody);
   });
 
   it('送出中登出並換另一個帳號登入、之後 POST 失敗時，不把前一位的草稿給新帳號', async () => {
-    localStorage.setItem('token', 'session-a');
+    localStorage.setItem('token', tokenFor('user-a'));
     let rejectPost;
     api.mockImplementationOnce(() => new Promise((_, reject) => { rejectPost = reject; }));
     const first = render(<Tasks {...props} />);
@@ -279,7 +274,7 @@ describe('任務快速新增', () => {
     // App.jsx 登出只移除 token 並導向 /login，不會重新載入 JS 模組。
     first.unmount();
     localStorage.removeItem('token');
-    localStorage.setItem('token', 'session-b');
+    localStorage.setItem('token', tokenFor('user-b'));
     await act(async () => { rejectPost(new Error('伺服器暫時沒有回應')); });
 
     const second = render(<StrictMode><Tasks {...props} /></StrictMode>);
@@ -289,7 +284,7 @@ describe('任務快速新增', () => {
     second.unmount();
 
     // 不只是對 B 隱藏：草稿已丟棄，A 之後再用同一個 token 回來也不會再冒出來。
-    localStorage.setItem('token', 'session-a');
+    localStorage.setItem('token', tokenFor('user-a'));
     render(<Tasks {...props} />);
     expect(screen.getByPlaceholderText('＋ 新增任務，按 Enter 儲存')).toHaveValue('');
     expect(screen.queryByRole('alert')).toBeNull();

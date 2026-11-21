@@ -1,9 +1,12 @@
-import { useRef, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { api } from '../api';
 import { today, addDays } from './helpers';
 import { BottomSheet, Button } from './ui';
 import Icon from './Icons';
 import SchoolAssignmentForm from './SchoolAssignmentForm';
+import { clearTaskCreateFence, createRequestId, currentUserId, loadTaskCreateFence, saveTaskCreateFence } from './taskCreateFence';
+
+const GLOBAL_TASK_FENCE_KEY = 'tt-global-task-create-fence-v1';
 
 // 全 App 統一的 Global Add（Phase 1 §A）。
 //
@@ -33,29 +36,62 @@ const sameQuickTask = (task, body) => task.title === body.title
   && Number(task.priority || 0) === Number(body.priority || 0)
   && (task.notes || '') === (body.notes || '');
 
-function QuickTaskSheet({ onClose, onCreated, tasks = [], lists = [] }) {
-  const [title, setTitle] = useState('');
+function QuickTaskSheet({ onClose, onCreated, tasks = [], lists = [], restoredFence = null }) {
+  const initial = restoredFence?.body || {};
+  const [title, setTitle] = useState(initial.title || '');
   const [due, setDue] = useState('today');   // today | tomorrow | none
-  const [customDate, setCustomDate] = useState('');
-  const [time, setTime] = useState('');
-  const [listId, setListId] = useState('');
-  const [priority, setPriority] = useState(0);
-  const [notes, setNotes] = useState('');
+  const [customDate, setCustomDate] = useState(initial.due_date || '');
+  const [time, setTime] = useState(initial.due_time || '');
+  const [listId, setListId] = useState(initial.list_id == null ? '' : String(initial.list_id));
+  const [priority, setPriority] = useState(initial.priority || 0);
+  const [notes, setNotes] = useState(initial.notes || '');
   const [busy, setBusy] = useState(false);
-  const [err, setErr] = useState('');
+  const [err, setErr] = useState(restoredFence ? '正在確認剛才的任務是否已新增；確認前不會再次送出。' : '');
   // state 要等重新 render 才生效；手機連點會在 busy 變 true 前再進來，用 ref 同步上鎖。
-  const busyRef = useRef(false);
-  const pendingRef = useRef(null);
-  const resolvePending = (latestTasks, originalError) => {
+  const busyRef = useRef(Boolean(restoredFence));
+  const pendingRef = useRef(restoredFence ? { ...restoredFence, error: null } : null);
+  const restoreStartedRef = useRef(false);
+  const finishCreated = async () => {
     const pending = pendingRef.current;
-    if (!pending) return false;
+    pendingRef.current = null;
+    if (pending?.owner) clearTaskCreateFence(GLOBAL_TASK_FENCE_KEY, pending.owner);
+    await onCreated?.();
+  };
+  const resolvePending = async (originalError = pendingRef.current?.error) => {
+    const pending = pendingRef.current;
+    if (!pending) return;
+    let latestTasks;
+    try { latestTasks = await api('/tasks'); }
+    catch {
+      setErr('無法確認任務是否新增，請重新載入；重新載入前請勿再次新增。');
+      busyRef.current = false; setBusy(false);
+      return;
+    }
     const committed = latestTasks.some(task => !pending.beforeIds.has(String(task.id))
       && sameQuickTask(task, pending.body));
-    pendingRef.current = null;
-    if (committed) { onCreated?.(); return true; }
+    if (committed) { await finishCreated(); return; }
+    if (pending.owner && !originalError?.status) {
+      try {
+        await api('/tasks', { method: 'POST', body: pending.body });
+        await finishCreated();
+        return;
+      } catch (retryError) {
+        pending.error = retryError;
+        if (!retryError?.status || retryError.status === 409) {
+          setErr('仍然無法確認任務是否新增，請稍後再重新載入。');
+          busyRef.current = false; setBusy(false);
+          return;
+        }
+        clearTaskCreateFence(GLOBAL_TASK_FENCE_KEY, pending.owner);
+        pendingRef.current = null;
+        originalError = retryError;
+      }
+    } else {
+      pendingRef.current = null;
+      if (pending.owner) clearTaskCreateFence(GLOBAL_TASK_FENCE_KEY, pending.owner);
+    }
     setErr(originalError?.message || '任務沒有新增成功，已重新載入；可再次新增。');
     busyRef.current = false; setBusy(false);
-    return false;
   };
   const submit = async e => {
     e?.preventDefault?.();
@@ -63,7 +99,7 @@ function QuickTaskSheet({ onClose, onCreated, tasks = [], lists = [] }) {
     busyRef.current = true;
     setBusy(true);
     setErr('');
-    const body = { title: title.trim() };
+    const body = { title: title.trim(), client_request_id: createRequestId('global') };
     if (due === 'today') body.due_date = today();
     else if (due === 'tomorrow') body.due_date = addDays(today(), 1);
     else if (due === 'custom' && customDate) body.due_date = customDate;
@@ -74,26 +110,33 @@ function QuickTaskSheet({ onClose, onCreated, tasks = [], lists = [] }) {
     if (listId) body.list_id = Number(listId);
     if (priority) body.priority = priority;
     if (notes.trim()) body.notes = notes.trim();
-    pendingRef.current = { body, beforeIds: new Set(tasks.map(task => String(task.id))) };
+    const owner = currentUserId();
+    pendingRef.current = { body, beforeIds: new Set(tasks.map(task => String(task.id))), owner, error: null };
+    if (owner) saveTaskCreateFence(GLOBAL_TASK_FENCE_KEY, {
+      owner, body, beforeIds: [...pendingRef.current.beforeIds],
+    });
     try {
       await api('/tasks', { method: 'POST', body });
     } catch (e2) {
-      try { resolvePending(await api('/tasks'), e2); }
-      catch {
-        setErr('無法確認任務是否新增，請重新載入；重新載入前請勿再次新增。');
-        busyRef.current = false; setBusy(false);
-      }
+      pendingRef.current.error = e2;
+      await resolvePending(e2);
       return;
     }
-    pendingRef.current = null;
-    onCreated?.();
+    await finishCreated();
   };
   const retryConfirm = async () => {
     if (busyRef.current || !pendingRef.current) return;
     busyRef.current = true; setBusy(true);
-    try { resolvePending(await api('/tasks')); }
-    catch { setErr('仍然無法重新載入，請稍後再試。'); busyRef.current = false; setBusy(false); }
+    await resolvePending();
   };
+  useEffect(() => {
+    if (restoredFence && !restoreStartedRef.current) {
+      restoreStartedRef.current = true;
+      resolvePending();
+    }
+  // 只承接掛載前留下的 fence。
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
   return (
     <BottomSheet onClose={busy ? undefined : onClose} label="新增任務">
       <form onSubmit={submit} className="ga-quick">
@@ -147,8 +190,9 @@ function QuickTaskSheet({ onClose, onCreated, tasks = [], lists = [] }) {
 //   onPlan()                  —— 建立計畫（導向精靈）
 //   onCalendarAdd('event'|'anniversary') —— 行程 / 重要日子（導向行事曆並開對應表單）
 export default function GlobalAdd({ lists = [], tasks = [], reload, defaultReminderTime, onPlan, onCalendarAdd }) {
+  const [restoredTaskFence, setRestoredTaskFence] = useState(() => loadTaskCreateFence(GLOBAL_TASK_FENCE_KEY));
   const [open, setOpen] = useState(false);     // 第一層選單
-  const [flow, setFlow] = useState(null);      // 'school' | 'task'
+  const [flow, setFlow] = useState(restoredTaskFence ? 'task' : null);      // 'school' | 'task'
   // 已寫入但畫面刷新失敗：表單已關閉，這裡提示並只提供「重新載入」，不重送寫入。
   const [refreshError, setRefreshError] = useState('');
   const [refreshBusy, setRefreshBusy] = useState(false);
@@ -196,8 +240,8 @@ export default function GlobalAdd({ lists = [], tasks = [], reload, defaultRemin
           onClose={() => setFlow(null)} onSaved={() => refreshAfterSave('作業已儲存，但畫面暫時無法重新載入。')} />
       )}
       {flow === 'task' && (
-        <QuickTaskSheet tasks={tasks} lists={lists} onClose={() => setFlow(null)}
-          onCreated={() => { setFlow(null); refreshAfterSave('任務已新增，但畫面暫時無法重新載入。'); }} />
+        <QuickTaskSheet tasks={tasks} lists={lists} restoredFence={restoredTaskFence} onClose={() => setFlow(null)}
+          onCreated={() => { setRestoredTaskFence(null); setFlow(null); refreshAfterSave('任務已新增，但畫面暫時無法重新載入。'); }} />
       )}
       {refreshError && (
         <div className="toast" role="alert">

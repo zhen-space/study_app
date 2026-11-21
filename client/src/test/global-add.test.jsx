@@ -86,10 +86,10 @@ describe('Global Add', () => {
     });
     await click(within(dialog).getByRole('button', { name: '新增任務' }));
     const post = calls.find(([p, o]) => p === '/tasks' && o?.method === 'POST');
-    expect(post?.[1]?.body).toEqual({
+    expect(post?.[1]?.body).toEqual(expect.objectContaining({
       title: '準備物理小考', due_date: '2030-05-06', due_time: '20:30',
-      list_id: fx.lists[0].id, priority: 3, notes: '帶講義第 3 頁',
-    });
+      list_id: fx.lists[0].id, priority: 3, notes: '帶講義第 3 頁', client_request_id: expect.any(String),
+    }));
   });
 
   it('選「學校作業」→ 開學校作業表單（同一顆 ＋，不是另一套入口）', async () => {

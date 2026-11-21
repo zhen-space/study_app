@@ -7,45 +7,14 @@ import MemoCard from './MemoCard';
 import { SegmentedControl } from './ui';
 import DatePickSheet from './DatePickSheet';
 import { LONG_PRESS_MS, LONG_PRESS_SLOP, PICK_DATE, DRAG_HINT, dragHintStyle, dropZoneStyle, useTouchDrag } from './touchDrag';
+import { clearTaskCreateFence, createRequestId, currentUserId, loadTaskCreateFence, saveTaskCreateFence } from './taskCreateFence';
 
 const WDC = '日一二三四五六';
 
-// 快速新增送出後、POST 回來前切到別頁（今天／行事曆等）會讓 Tasks 卸載；
-// 這時 POST 才失敗的話，元件 state 已經不在，輸入會無聲消失、任務也沒建立。
-// 先把當時的草稿與錯誤記在模組層，下次掛載時取回一次。
-// 登出只清 token、不會重新載入 JS，模組變數會跨帳號存活；所以草稿綁定送出當下的
-// 登入憑證，取回時憑證不同（換人登入、重新登入、已登出）就直接丟棄。
-// 憑證只放在這個記憶體變數裡做嚴格比對，不寫入 storage、不顯示也不記 log。
-let orphanedQuickDraft = null;
-// 「複製任務」的 POST 可能已提交、只有回應遺失；如果連讀回也失敗，單靠元件內
-// 的 ref 會在切頁卸載後失效，回來再按一次就可能建立第二筆。這個 fence 只活在
-// 記憶體，並綁定發出請求時的登入憑證；換帳號或登出時立即丟棄，不能洩漏任務內容。
-let uncertainDuplicateFence = null;
-const currentAuthToken = () => {
-  try { return localStorage.getItem('token') || null; } catch { return null; }
-};
-const duplicateFenceForCurrentUser = () => {
-  const fence = uncertainDuplicateFence;
-  if (!fence) return null;
-  const owner = currentAuthToken();
-  if (!owner || fence.owner !== owner) {
-    uncertainDuplicateFence = null;
-    return null;
-  }
-  return fence;
-};
-const clearDuplicateFence = owner => {
-  if (!uncertainDuplicateFence || uncertainDuplicateFence.owner !== owner) return;
-  uncertainDuplicateFence = null;
-};
-const takeOrphanedQuickDraft = () => {
-  const draft = orphanedQuickDraft;
-  orphanedQuickDraft = null;
-  if (!draft) return null;
-  const owner = currentAuthToken();
-  if (!owner || draft.owner !== owner) return null;
-  return draft.values;
-};
+// 快速新增／複製在送出後先留下 session fence。重新掛載時以 userId 隔離帳號，
+// 並沿用同一把 client_request_id 確認或重送，不保存登入 token。
+const QUICK_CREATE_FENCE_KEY = 'tt-task-quick-create-fence-v1';
+const DUPLICATE_CREATE_FENCE_KEY = 'tt-task-duplicate-create-fence-v1';
 
 const taskMatchesQuickCreate = (candidate, body) => {
   const tags = value => [...(value || [])].map(String).sort().join('\u0000');
@@ -774,18 +743,18 @@ export function Detail({ task, lists, onSave, onDelete, onDuplicate, onClose, sa
 
 export default function Tasks({ view, tasks, lists, filters, habits = [], reload, title, subtitle = '', listLabel = '', goVocab, goMemo, topSlot = null, onNav }) {
   const [selId, setSelId] = useState(null);
-  const [restoredQuick] = useState(takeOrphanedQuickDraft);
-  const [restoredDuplicateFence] = useState(duplicateFenceForCurrentUser);
-  const [quick, setQuick] = useState(restoredQuick?.title ?? '');
-  const [quickErr, setQuickErr] = useState(restoredQuick?.error ?? '');
-  const [quickBusy, setQuickBusy] = useState(!!restoredQuick?.pending);
-  const [quickDue, setQuickDue] = useState(restoredQuick?.due ?? '');
-  const [quickTime, setQuickTime] = useState(restoredQuick?.time ?? '');
-  const [quickListId, setQuickListId] = useState(restoredQuick?.listId ?? '');
-  const [quickPriority, setQuickPriority] = useState(restoredQuick?.priority ?? 0);
-  const [quickTag, setQuickTag] = useState(restoredQuick?.tag ?? '');
-  const [quickNotes, setQuickNotes] = useState(restoredQuick?.notes ?? '');
-  const [quickRecurring, setQuickRecurring] = useState(restoredQuick?.recurring ?? '');
+  const [restoredQuick] = useState(() => loadTaskCreateFence(QUICK_CREATE_FENCE_KEY));
+  const [restoredDuplicateFence] = useState(() => loadTaskCreateFence(DUPLICATE_CREATE_FENCE_KEY));
+  const [quick, setQuick] = useState(restoredQuick?.body?.title ?? '');
+  const [quickErr, setQuickErr] = useState(restoredQuick ? '正在確認剛才的任務是否已新增；確認前不會再次送出。' : '');
+  const [quickBusy, setQuickBusy] = useState(!!restoredQuick);
+  const [quickDue, setQuickDue] = useState(restoredQuick?.body?.due_date ?? '');
+  const [quickTime, setQuickTime] = useState(restoredQuick?.body?.due_time ?? '');
+  const [quickListId, setQuickListId] = useState(restoredQuick?.body?.list_id == null ? '' : String(restoredQuick.body.list_id));
+  const [quickPriority, setQuickPriority] = useState(restoredQuick?.body?.priority ?? 0);
+  const [quickTag, setQuickTag] = useState(restoredQuick?.body?.tags?.[0] ?? '');
+  const [quickNotes, setQuickNotes] = useState(restoredQuick?.body?.notes ?? '');
+  const [quickRecurring, setQuickRecurring] = useState(restoredQuick?.body?.recurring ?? '');
   const [collapsedGroups, setCollapsedGroups] = useState(() => {
     try {
       const saved = JSON.parse(localStorage.getItem('taskCollapsedGroups') || '[]');
@@ -802,13 +771,22 @@ export default function Tasks({ view, tasks, lists, filters, habits = [], reload
     try { localStorage.setItem('taskShowCompletedInList', String(next)); } catch {}
     return next;
   });
-  const quickBusyRef = useRef(!!restoredQuick?.pending);
-  const quickPendingRef = useRef(restoredQuick?.pending ?? null);
+  const quickBusyRef = useRef(!!restoredQuick);
+  const quickPendingRef = useRef(restoredQuick ? { ...restoredQuick, error: null } : null);
+  const quickRestoreStartedRef = useRef(false);
   const quickComposing = useRef(false);
   const mountedRef = useRef(false);
   useEffect(() => {
     mountedRef.current = true;
     return () => { mountedRef.current = false; };
+  }, []);
+  useEffect(() => {
+    if (restoredQuick && !quickRestoreStartedRef.current) {
+      quickRestoreStartedRef.current = true;
+      confirmQuickCreate();
+    }
+  // 只承接本次掛載前留下的 fence；一般 tasks 更新不能觸發重送。
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
   // §E 第一層 filters（只在「任務」總表出現）：全部／今天／逾期／未排程。記在 localStorage。
   const [taskFilter, setTaskFilter] = useState(() => {
@@ -1236,6 +1214,7 @@ export default function Tasks({ view, tasks, lists, filters, habits = [], reload
   const overdueRescheduleUncertainRef = useRef(false);
   const [overdueRescheduleBusy, setOverdueRescheduleBusy] = useState(false);
   const duplicateBusyRef = useRef(Boolean(restoredDuplicateFence));
+  const duplicateRestoreStartedRef = useRef(false);
   const duplicateTags = value => [...(value || [])].map(String).sort().join('\u0000');
   const duplicateSubtasks = value => JSON.stringify((value || []).map(item => ({
     title: String(item.title || ''), done: Boolean(item.done),
@@ -1253,7 +1232,8 @@ export default function Tasks({ view, tasks, lists, filters, habits = [], reload
     && (candidate.estimated_minutes ?? null) === body.estimated_minutes
     && (candidate.task_kind || 'task') === body.task_kind;
   useEffect(() => {
-    if (!restoredDuplicateFence) return undefined;
+    if (!restoredDuplicateFence || duplicateRestoreStartedRef.current) return undefined;
+    duplicateRestoreStartedRef.current = true;
     let cancelled = false;
     const confirmRestoredDuplicate = async () => {
       try {
@@ -1262,15 +1242,33 @@ export default function Tasks({ view, tasks, lists, filters, habits = [], reload
         const committed = latest.some(candidate => !restoredDuplicateFence.beforeIds.includes(String(candidate.id))
           && duplicateMatches(candidate, restoredDuplicateFence.body));
         if (cancelled) return;
-        clearDuplicateFence(restoredDuplicateFence.owner);
+        if (committed) {
+          clearTaskCreateFence(DUPLICATE_CREATE_FENCE_KEY, restoredDuplicateFence.owner);
+          duplicateBusyRef.current = false;
+          setRefreshError('');
+          await reload('tasks').catch(() => {
+          if (!cancelled) setRefreshError('任務已複製，但畫面暫時無法重新載入。');
+          });
+          return;
+        }
+        // 第一次讀回為空不能證明原請求沒有稍後完成；只用同一把 key 安全重送。
+        await api('/tasks', { method: 'POST', body: restoredDuplicateFence.body });
+        if (cancelled) return;
+        clearTaskCreateFence(DUPLICATE_CREATE_FENCE_KEY, restoredDuplicateFence.owner);
         duplicateBusyRef.current = false;
         setRefreshError('');
-        if (committed) await reload('tasks').catch(() => {
+        await reload('tasks').catch(() => {
           if (!cancelled) setRefreshError('任務已複製，但畫面暫時無法重新載入。');
         });
-      } catch {
+      } catch (error) {
+        if (error?.status && error.status !== 409) {
+          clearTaskCreateFence(DUPLICATE_CREATE_FENCE_KEY, restoredDuplicateFence.owner);
+          duplicateBusyRef.current = false;
+        }
         if (!cancelled) {
-          setRefreshError('仍無法確認任務是否已複製，請稍後重新載入；確認前請勿再次複製。');
+          setRefreshError(error?.status && error.status !== 409
+            ? (error.message || '複製任務失敗，請再試一次。')
+            : '仍無法確認任務是否已複製，請稍後重新載入；確認前請勿再次複製。');
         }
       }
     };
@@ -1447,11 +1445,13 @@ export default function Tasks({ view, tasks, lists, filters, habits = [], reload
       miss_policy: t.miss_policy || 'keep',
       estimated_minutes: t.estimated_minutes ?? null,
       task_kind: 'task',
+      client_request_id: createRequestId('duplicate'),
     };
     // API 與畫面資料的 id 可能一邊是 number、一邊是 string；統一後才能排除原任務，
     // 否則回應遺失時可能把原任務誤認成「新複製成功」。
     const beforeIds = new Set(tasks.map(task => String(task.id)));
-    const owner = currentAuthToken();
+    const owner = currentUserId();
+    if (owner) saveTaskCreateFence(DUPLICATE_CREATE_FENCE_KEY, { owner, body, beforeIds: [...beforeIds] });
     let committed = false;
     try {
       await api('/tasks', { method: 'POST', body });
@@ -1463,18 +1463,34 @@ export default function Tasks({ view, tasks, lists, filters, habits = [], reload
         committed = Array.isArray(latest)
           && latest.some(candidate => !beforeIds.has(String(candidate.id)) && duplicateMatches(candidate, body));
         if (!committed) {
-          setRefreshError(e.message || '複製任務失敗，請再試一次。');
-          duplicateBusyRef.current = false;
-          return;
+          // 讀回暫時為空時，只能用同一把 key 重送，不能解鎖產生新 key。
+          if (!owner) {
+            setRefreshError(e.message || '複製任務失敗，請再試一次。');
+            duplicateBusyRef.current = false;
+            return;
+          }
+          try {
+            await api('/tasks', { method: 'POST', body });
+            committed = true;
+          } catch (retryError) {
+            if (retryError?.status && retryError.status !== 409) {
+              if (owner) clearTaskCreateFence(DUPLICATE_CREATE_FENCE_KEY, owner);
+              setRefreshError(retryError.message || '複製任務失敗，請再試一次。');
+              duplicateBusyRef.current = false;
+            } else {
+              setRefreshError('無法確認任務是否已複製，請先重新載入；重新載入前請勿再次複製。');
+            }
+            return;
+          }
         }
       } catch {
         // 無法判定是否已寫入時維持鎖定；重新載入成功後才允許下一次複製。
-        if (owner) uncertainDuplicateFence = { owner, body, beforeIds: [...beforeIds] };
         setRefreshError('無法確認任務是否已複製，請先重新載入；重新載入前請勿再次複製。');
         return;
       }
     }
     showToast(`已複製「${t.title}」`);
+    if (owner) clearTaskCreateFence(DUPLICATE_CREATE_FENCE_KEY, owner);
     try {
       await reload('tasks');
     } catch {
@@ -1494,8 +1510,9 @@ export default function Tasks({ view, tasks, lists, filters, habits = [], reload
     setQuickErr('');
   };
   async function finishQuickCreate() {
+    const owner = quickPendingRef.current?.owner;
     quickPendingRef.current = null;
-    orphanedQuickDraft = null;
+    if (owner) clearTaskCreateFence(QUICK_CREATE_FENCE_KEY, owner);
     if (!mountedRef.current) return;
     clearQuickDraft();
     try { await reload('tasks'); }
@@ -1514,23 +1531,47 @@ export default function Tasks({ view, tasks, lists, filters, habits = [], reload
         await finishQuickCreate();
         return;
       }
+      // 讀回為空仍可能是原 POST 尚在完成；只以同一 key 重送。
+      if (pending.owner && !pending.error?.status) {
+        try {
+          await api('/tasks', { method: 'POST', body: pending.body });
+          await finishQuickCreate();
+          return;
+        } catch (retryError) {
+          pending.error = retryError;
+          if (retryError?.status && retryError.status !== 409) {
+            clearTaskCreateFence(QUICK_CREATE_FENCE_KEY, pending.owner);
+            quickPendingRef.current = null;
+            quickBusyRef.current = false;
+            if (mountedRef.current) {
+              setQuickBusy(false);
+              setQuickErr(retryError.message || '新增任務失敗');
+            }
+          } else if (mountedRef.current) {
+            setQuickErr('仍無法確認任務是否已新增，請稍後再確認；確認前請勿重複送出。');
+          }
+          return;
+        }
+      }
     } catch {
       if (mountedRef.current) {
         setQuickErr('仍無法確認任務是否已新增，請稍後再確認；確認前請勿重複送出。');
       }
       return;
     }
+    if (pending.owner) clearTaskCreateFence(QUICK_CREATE_FENCE_KEY, pending.owner);
     quickPendingRef.current = null;
     quickBusyRef.current = false;
     if (mountedRef.current) {
       setQuickBusy(false);
-      setQuickErr(pending.error || '新增任務失敗');
+      setQuickErr(pending.error?.message || pending.error || '新增任務失敗');
     }
   }
   async function quickAdd(e) {
     e.preventDefault();
     if (quickComposing.current || !quick.trim() || quickBusyRef.current) return;
     const body = { title: quick.trim() };
+    body.client_request_id = createRequestId('quick');
     if (view.type === 'list') body.list_id = view.id;
     if (view.type === 'today') body.due_date = today();
     const quickTags = new Set(view.type === 'tag' ? [view.tag] : []);
@@ -1557,60 +1598,18 @@ export default function Tasks({ view, tasks, lists, filters, habits = [], reload
     quickBusyRef.current = true;
     setQuickBusy(true); setQuickErr('');
     // api() 同步讀取 token 帶進這次請求；在同一個 tick 記下，草稿就屬於發出請求的那個身分。
-    const owner = currentAuthToken();
+    const owner = currentUserId();
     // 讀回資料的 id 可能是字串，畫面資料則是數字；統一後才能排除原有同內容任務，
     // 避免 POST 真正失敗時把舊任務誤認成這次快速新增成功。
     const beforeIds = tasks.map(task => String(task.id));
+    const pending = { body, beforeIds, owner, error: null };
+    quickPendingRef.current = pending;
+    if (owner) saveTaskCreateFence(QUICK_CREATE_FENCE_KEY, { owner, body, beforeIds });
     try {
       await api('/tasks', { method: 'POST', body });
     } catch (err) {
-      const pending = { body, beforeIds, error: err.message || '新增任務失敗' };
-      quickPendingRef.current = pending;
-      try {
-        const latest = await api('/tasks');
-        const committed = Array.isArray(latest)
-          && latest.some(candidate => !beforeIds.includes(String(candidate.id))
-            && taskMatchesQuickCreate(candidate, body));
-        if (committed) {
-          await finishQuickCreate();
-          return;
-        }
-        quickPendingRef.current = null;
-      } catch {
-        // POST 可能已寫入但回應遺失；連讀回也失敗時不能解鎖重送，否則會建立重複任務。
-        if (!mountedRef.current) {
-          if (!owner) return;
-          orphanedQuickDraft = {
-            owner,
-            values: {
-              title: quick, due: quickDue, time: quickTime, listId: quickListId, priority: quickPriority,
-              tag: quickTag, notes: quickNotes, recurring: quickRecurring, pending,
-              error: '無法確認任務是否已新增，請先重新確認；確認前請勿重複送出。',
-            },
-          };
-          return;
-        }
-        setQuickErr('無法確認任務是否已新增，請先重新確認；確認前請勿重複送出。');
-        return;
-      }
-      quickBusyRef.current = false;
-      if (!mountedRef.current) {
-        // 沒有登入身分可綁定時不留草稿，寧可遺失也不能讓下一個登入者看到。
-        if (!owner) return;
-        // 草稿只保留使用者輸入的欄位；檢視帶入的預設值（科目、今天、標籤）
-        // 回來時依當下檢視重新套用，和同一實例切換清單時的行為一致。
-        orphanedQuickDraft = {
-          owner,
-          values: {
-            title: quick, due: quickDue, time: quickTime, listId: quickListId, priority: quickPriority,
-            tag: quickTag, notes: quickNotes, recurring: quickRecurring,
-            error: `剛才送出的任務沒有新增成功：${err.message || '新增任務失敗'}`,
-          },
-        };
-        return;
-      }
-      setQuickErr(err.message || '新增任務失敗');
-      setQuickBusy(false);
+      pending.error = err;
+      await confirmQuickCreate(pending);
       return;
     }
     // 寫入成功和重新載入是兩個邊界。refresh 失敗時任務已存在，不能把它
@@ -1802,7 +1801,8 @@ export default function Tasks({ view, tasks, lists, filters, habits = [], reload
     try {
       await (needsAll ? reload() : reload('tasks'));
       setRefreshError('');
-      clearDuplicateFence(currentAuthToken());
+      const owner = currentUserId();
+      if (owner) clearTaskCreateFence(DUPLICATE_CREATE_FENCE_KEY, owner);
       duplicateBusyRef.current = false;
       if (reorderUncertainRef.current) {
         reorderUncertainRef.current = false;

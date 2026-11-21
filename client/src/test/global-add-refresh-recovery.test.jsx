@@ -7,6 +7,7 @@ import { render, screen, fireEvent, waitFor } from '@testing-library/react';
 vi.mock('../api', () => ({ api: vi.fn() }));
 const { api } = await import('../api');
 const GlobalAdd = (await import('../tt/GlobalAdd')).default;
+const tokenFor = userId => `x.${btoa(JSON.stringify({ userId })).replace(/=/g, '').replace(/\+/g, '-').replace(/\//g, '_')}.y`;
 
 const posts = () => api.mock.calls.filter(([path, opts]) => path === '/tasks' && opts?.method === 'POST');
 
@@ -18,7 +19,49 @@ async function openQuickTask(reload) {
 }
 
 describe('Global Add 快速任務：寫入與刷新分開處理', () => {
-  beforeEach(() => { api.mockReset(); });
+  beforeEach(() => { api.mockReset(); localStorage.clear(); sessionStorage.clear(); });
+
+  it('第一次讀回為空時只用同一把 key 安全重送', async () => {
+    localStorage.setItem('token', tokenFor('user-a'));
+    let postCount = 0;
+    api.mockImplementation((path, opts) => {
+      if (opts?.method === 'POST') {
+        postCount += 1;
+        return postCount === 1 ? Promise.reject(new Error('回應中斷')) : Promise.resolve({ id: 506 });
+      }
+      return Promise.resolve([]);
+    });
+    const reload = vi.fn().mockResolvedValue(undefined);
+    await openQuickTask(reload);
+    fireEvent.click(screen.getByRole('button', { name: '不指定日期' }));
+    fireEvent.click(screen.getByRole('button', { name: '新增任務' }));
+
+    await waitFor(() => expect(screen.queryByLabelText('任務標題')).toBeNull());
+    const sent = posts();
+    expect(sent).toHaveLength(2);
+    expect(sent[1][1].body).toEqual(sent[0][1].body);
+    expect(sent[0][1].body.client_request_id).toEqual(expect.any(String));
+  });
+
+  it('整頁重掛後承接同帳號 fence，換帳號則清除', async () => {
+    localStorage.setItem('token', tokenFor('user-a'));
+    let rejectPost;
+    api.mockImplementationOnce(() => new Promise((_, reject) => { rejectPost = reject; }));
+    const reload = vi.fn().mockResolvedValue(undefined);
+    const first = render(<GlobalAdd lists={[]} reload={reload} />);
+    fireEvent.click(screen.getByRole('button', { name: '新增' }));
+    fireEvent.click(screen.getByRole('button', { name: '新增任務' }));
+    fireEvent.change(screen.getByLabelText('任務標題'), { target: { value: '跨頁任務' } });
+    fireEvent.click(screen.getByRole('button', { name: '新增任務' }));
+    first.unmount();
+    api.mockRejectedValueOnce(new Error('離線'));
+    await act(async () => { rejectPost(new Error('回應中斷')); });
+
+    localStorage.setItem('token', tokenFor('user-b'));
+    render(<GlobalAdd lists={[]} reload={reload} />);
+    expect(screen.queryByLabelText('任務標題')).toBeNull();
+    expect(sessionStorage.getItem('tt-global-task-create-fence-v1')).toBeNull();
+  });
 
   it('POST 成功但 reload 失敗：關閉表單、提示已新增，重新載入只重抓不重送 POST', async () => {
     api.mockImplementation((path, opts) => Promise.resolve(opts?.method === 'POST' ? { id: 501 } : []));
@@ -116,7 +159,7 @@ describe('Global Add 快速任務：寫入與刷新分開處理', () => {
 });
 
 describe('Global Add 學校作業：寫入成功但刷新失敗', () => {
-  beforeEach(() => { api.mockReset(); });
+  beforeEach(() => { api.mockReset(); localStorage.clear(); sessionStorage.clear(); });
 
   it('表單關閉後仍提示已儲存，重新載入不重送 POST', async () => {
     api.mockResolvedValue({ id: 601 });
