@@ -22,6 +22,7 @@ const baseTask = {
   deleted: false,
   task_kind: 'task',
 };
+const tokenFor = userId => `x.${btoa(JSON.stringify({ userId })).replace(/=/g, '').replace(/\+/g, '-').replace(/\//g, '_')}.y`;
 
 const openDuplicate = () => {
   fireEvent.click(screen.getByText('整理物理筆記'));
@@ -32,6 +33,7 @@ const openDuplicate = () => {
 describe('複製任務', () => {
   beforeEach(() => {
     localStorage.clear();
+    sessionStorage.clear();
     api.mockReset();
     api.mockImplementation(url => url.includes('attachments') || url === '/study-sessions' ? Promise.resolve([]) : Promise.resolve({}));
   });
@@ -140,7 +142,7 @@ describe('複製任務', () => {
   });
 
   it('無法確認的複製在同帳號卸載重掛後仍鎖住，讀回確認後才解除', async () => {
-    localStorage.setItem('token', 'session-a');
+    localStorage.setItem('token', tokenFor('user-a'));
     let postCount = 0;
     let resolveRemountRead;
     const remountRead = new Promise(resolve => { resolveRemountRead = resolve; });
@@ -179,7 +181,7 @@ describe('複製任務', () => {
   });
 
   it('不同登入身分不承接上一個帳號的複製 fence 或任務內容', async () => {
-    localStorage.setItem('token', 'session-a');
+    localStorage.setItem('token', tokenFor('user-a'));
     let postCount = 0;
     api.mockImplementation((url, options) => {
       if (url === '/tasks' && options?.method === 'POST') {
@@ -195,7 +197,7 @@ describe('複製任務', () => {
     expect(await screen.findByRole('alert')).toHaveTextContent('無法確認任務是否已複製');
     first.unmount();
 
-    localStorage.setItem('token', 'session-b');
+    localStorage.setItem('token', tokenFor('user-b'));
     render(<Tasks {...props} />);
     expect(screen.queryByText(/正在確認剛才的任務/)).not.toBeInTheDocument();
     openDuplicate();
