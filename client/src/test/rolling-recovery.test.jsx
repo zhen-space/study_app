@@ -53,11 +53,48 @@ describe('RollingExamSchedule 套用恢復', () => {
   });
 
   it('真正 apply 失敗保留 preview 並允許重試', async () => {
-    api.mockResolvedValueOnce(preview()).mockRejectedValueOnce(new Error('套用失敗')).mockResolvedValueOnce({ version_id: 43 });
+    const rejected = Object.assign(new Error('套用失敗'), { status: 422 });
+    api.mockResolvedValueOnce(preview()).mockRejectedValueOnce(rejected).mockResolvedValueOnce({ version_id: 43 });
     const { button } = await mount(); fireEvent.click(button);
     expect(await screen.findByRole('alert')).toHaveTextContent('套用失敗');
     expect(button).toBeEnabled(); fireEvent.click(button);
     await waitFor(() => expect(api.mock.calls.filter(c => c[0] === '/schedule/rolling/apply')).toHaveLength(2));
+  });
+
+  it.each([
+    ['網路中斷', new Error('連線中斷')],
+    ['伺服器 500', Object.assign(new Error('暫時失敗'), { status: 500 })],
+  ])('%s 時鎖住 apply，只能重新載入確認', async (_label, rejected) => {
+    api.mockResolvedValueOnce(preview()).mockRejectedValueOnce(rejected);
+    const onApplied = vi.fn().mockResolvedValue();
+    const onClose = vi.fn();
+    const { button } = await mount(onApplied, onClose);
+    fireEvent.click(button);
+
+    expect(await screen.findByText('暫時無法確認套用結果')).toBeInTheDocument();
+    expect(screen.getByRole('alert')).toHaveTextContent('確認前不會再次送出');
+    expect(screen.queryByRole('button', { name: '套用新版安排' })).toBeNull();
+    expect(screen.queryByRole('button', { name: '先關閉' })).toBeNull();
+    fireEvent.click(document.querySelector('.sheet-backdrop'));
+    expect(onClose).not.toHaveBeenCalled();
+
+    fireEvent.click(screen.getByRole('button', { name: '重新載入' }));
+    await waitFor(() => expect(onApplied).toHaveBeenCalledOnce());
+    expect(api.mock.calls.filter(c => c[0] === '/schedule/rolling/apply')).toHaveLength(1);
+    expect(onClose).toHaveBeenCalledOnce();
+  });
+
+  it('未知結果重新載入仍失敗時保持鎖定，不開放再次套用', async () => {
+    api.mockResolvedValueOnce(preview()).mockRejectedValueOnce(new Error('連線中斷'));
+    const onApplied = vi.fn().mockRejectedValue(new Error('讀取失敗'));
+    const { button, onClose } = await mount(onApplied);
+    fireEvent.click(button);
+    await screen.findByText('暫時無法確認套用結果');
+    fireEvent.click(screen.getByRole('button', { name: '重新載入' }));
+    expect(await screen.findByRole('alert')).toHaveTextContent('讀取失敗');
+    expect(screen.queryByRole('button', { name: '套用新版安排' })).toBeNull();
+    fireEvent.click(document.querySelector('.sheet-backdrop'));
+    expect(onClose).not.toHaveBeenCalled();
   });
 
   it('同步 guard 阻止快速重入建立兩個版本', async () => {

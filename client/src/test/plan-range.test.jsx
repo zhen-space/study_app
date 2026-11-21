@@ -70,7 +70,11 @@ describe('PlanRangeView', () => {
       if (path.includes('/timeline')) return { segments: [], items: [], unscheduled: [] };
       if (path.endsWith('/preview')) return { content_item_id: 11, title: '第一課', base_version_id: 3,
         token: 'signed', will_cancel_task: true, removed_block_count: 1 };
-      if (path.endsWith('/apply')) { applies += 1; if (applies === 1) throw new Error('暫時失敗'); return {}; }
+      if (path.endsWith('/apply')) {
+        applies += 1;
+        if (applies === 1) throw Object.assign(new Error('暫時失敗'), { status: 422 });
+        return {};
+      }
       return {};
     });
     render(<PlanRangeView plan={plan} lists={LISTS} />);
@@ -231,6 +235,57 @@ describe('教材範圍移除恢復', () => {
     fireEvent.click(screen.getByRole('button', { name: '重新載入' }));
     await waitFor(() => expect(screen.queryByRole('dialog', { name: '移除教材範圍' })).toBeNull());
     expect(api.mock.calls.filter(([p]) => p.endsWith('/apply'))).toHaveLength(1);
+  });
+
+  it.each([
+    ['網路中斷', new Error('連線中斷')],
+    ['伺服器 500', Object.assign(new Error('暫時失敗'), { status: 500 })],
+  ])('%s 時鎖住移除，只能重新載入正式範圍', async (_label, rejected) => {
+    let applyCalls = 0;
+    api.mockImplementation((path = '') => {
+      if (path.includes('/exam')) return Promise.resolve(exam);
+      if (path.endsWith('/preview')) return Promise.resolve(preview);
+      if (path.endsWith('/apply')) { applyCalls += 1; return Promise.reject(rejected); }
+      return Promise.resolve({});
+    });
+    render(<PlanRangeView plan={plan} lists={LISTS} />);
+    fireEvent.click(await screen.findByRole('button', { name: '移除' }));
+    fireEvent.click(await screen.findByRole('button', { name: '確認移除' }));
+
+    expect(await screen.findByText('暫時無法確認移除結果')).toBeInTheDocument();
+    expect(screen.getByRole('alert')).toHaveTextContent('確認前不會再次送出');
+    expect(screen.queryByRole('button', { name: '確認移除' })).toBeNull();
+    expect(screen.queryByRole('button', { name: '先關閉' })).toBeNull();
+    fireEvent.click(document.querySelector('.sheet-backdrop'));
+    expect(screen.getByRole('dialog', { name: '移除教材範圍' })).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('button', { name: '重新載入' }));
+    await waitFor(() => expect(screen.queryByRole('dialog', { name: '移除教材範圍' })).toBeNull());
+    expect(applyCalls).toBe(1);
+  });
+
+  it('未知移除結果重新載入失敗時維持鎖定', async () => {
+    let examReads = 0;
+    api.mockImplementation((path = '') => {
+      if (path.includes('/exam')) {
+        examReads += 1;
+        return examReads === 1 ? Promise.resolve(exam) : Promise.reject(new Error('讀取失敗'));
+      }
+      if (path.endsWith('/preview')) return Promise.resolve(preview);
+      if (path.endsWith('/apply')) return Promise.reject(new Error('連線中斷'));
+      return Promise.resolve({});
+    });
+    render(<PlanRangeView plan={plan} lists={LISTS} />);
+    fireEvent.click(await screen.findByRole('button', { name: '移除' }));
+    fireEvent.click(await screen.findByRole('button', { name: '確認移除' }));
+    await screen.findByText('暫時無法確認移除結果');
+    fireEvent.click(screen.getByRole('button', { name: '重新載入' }));
+
+    expect(await screen.findByRole('alert')).toHaveTextContent('讀取失敗');
+    expect(screen.getByRole('dialog', { name: '移除教材範圍' })).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: '確認移除' })).toBeNull();
+    fireEvent.click(document.querySelector('.sheet-backdrop'));
+    expect(screen.getByRole('dialog', { name: '移除教材範圍' })).toBeInTheDocument();
   });
 
   it('成功移除並載入後可立即預覽另一個範圍', async () => {
