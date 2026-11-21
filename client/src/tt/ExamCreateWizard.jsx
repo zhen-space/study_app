@@ -6,6 +6,7 @@ import { md } from './plans';
 import AddMaterialFlow from './AddMaterialFlow';
 import { Button, IconButton, PageHeader, SurfaceCard, EmptyState, BottomSheet } from './ui';
 import Icon from './Icons';
+import { clearExamCommitFence, createExamCommitFence, examCommitFenceKey, loadExamCommitFence, saveExamCommitFence } from './examCommitFence';
 
 // 建立段考：不中斷的三步流程。核心資料完整、使用者在最後一步確認之前，
 // **完全不建立任何 Plan**（沒有空 Plan、不會把人丟到空白 Plan Detail）。
@@ -35,6 +36,8 @@ const clearDraft = key => { try { localStorage.removeItem(key); } catch { /* noo
 
 export default function ExamCreateWizard({ lists = [], onDone, onCancel, onManageSubjects, editPlanId = null }) {
   const draftKey = editPlanId == null ? DRAFT_KEY : `${DRAFT_KEY}:plan:${editPlanId}`;
+  const commitFenceKey = examCommitFenceKey(editPlanId);
+  const restoredCommitFence = loadExamCommitFence(commitFenceKey);
   const restored = loadDraft(draftKey);
   const [step, setStep] = useState(restored?.step ?? 0);
   const [name, setName] = useState(restored?.name ?? '');
@@ -46,7 +49,8 @@ export default function ExamCreateWizard({ lists = [], onDone, onCancel, onManag
   const [level, setLevel] = useState(restored?.level ?? 'progress');
   const [err, setErr] = useState('');
   const [previewing, setPreviewing] = useState(false);
-  const [creating, setCreating] = useState(false);
+  const [creating, setCreating] = useState(Boolean(restoredCommitFence));
+  const [commitUncertain, setCommitUncertain] = useState(Boolean(restoredCommitFence));
   const [savingEstimate, setSavingEstimate] = useState(0);
   const [picking, setPicking] = useState(null);   // { listId } → 開教材選取
   const [preview, setPreview] = useState(null);    // 每日/時段的排程預覽 blocks
@@ -54,7 +58,10 @@ export default function ExamCreateWizard({ lists = [], onDone, onCancel, onManag
   const previewRequest = useRef(0);
   const estimateSaves = useRef(new Map());
   // React state 在同一個 event turn 不會同步更新；用 ref 擋住手機快速連點造成的重複建立。
-  const creatingRef = useRef(false);
+  const creatingRef = useRef(Boolean(restoredCommitFence));
+  const commitFenceRef = useRef(restoredCommitFence);
+  const commitRequestBusy = useRef(false);
+  const replayStarted = useRef(false);
 
   // 草稿自動保存（返回/取消/重開可接續）。
   useEffect(() => {
@@ -204,6 +211,7 @@ export default function ExamCreateWizard({ lists = [], onDone, onCancel, onManag
   }, [level, subjects, nameOf, subjScope]);
 
   const runPreview = useCallback(async () => {
+    if (commitFenceRef.current) return false;
     const requestId = ++previewRequest.current;
     setPreviewing(true); setErr('');
     try {
@@ -226,7 +234,7 @@ export default function ExamCreateWizard({ lists = [], onDone, onCancel, onManag
     setPreview(null);
     setPreviewing(false);
   }, [step]);
-  useEffect(() => { if (step === 2 && !missingSubjects.length) runPreview(); }, [step, level, runPreview, missingSubjects.length]);
+  useEffect(() => { if (step === 2 && !missingSubjects.length && !commitFenceRef.current) runPreview(); }, [step, level, runPreview, missingSubjects.length]);
 
   // daily／timed 只有在「有完整預估、預覽成功、有排出內容、且沒有排不下」時才可建立。
   // 這是 P0-1 的前端防線；伺服器仍會再 fail-closed 一次（單一權威來源）。
@@ -235,33 +243,76 @@ export default function ExamCreateWizard({ lists = [], onDone, onCancel, onManag
   const canConfirm = !creating && !savingEstimate && !scheduleBlocked;
 
   // ---- 確認建立（atomic，server-authoritative）----
-  const confirm = async () => {
-    if (creatingRef.current || scheduleBlocked) return;
-    creatingRef.current = true;
-    setCreating(true); setErr('');
+  const finishCommit = async fence => {
+    if (commitRequestBusy.current) return;
+    commitRequestBusy.current = true;
     try {
-      const body = { ...requestBody(), preview_token: preview.preview_token };
-      const created = await api(editPlanId == null ? '/exam-plans' : `/exam-plans/${editPlanId}`,
-        { method: editPlanId == null ? 'POST' : 'PUT', body });
+      const created = await api(fence.endpoint, { method: fence.method, body: fence.body });
+      clearExamCommitFence(commitFenceKey, fence.owner);
+      commitFenceRef.current = null;
       clearDraft(draftKey);
       onDone?.(created.plan.id);
+      return;
     } catch (e) {
       if (e.status === 409 && e.payload?.code === 'EXAM_PREVIEW_STALE') {
+        clearExamCommitFence(commitFenceKey, fence.owner);
+        commitFenceRef.current = null;
+        setCommitUncertain(false);
         setPreview(null);
         creatingRef.current = false;
         setCreating(false);
-        // stale 不是使用者做錯事：自動取回 CURRENT 世界，但絕不自動送出第二次建立。
-        // 使用者會看到新預覽，必須親自再確認一次。
         const refreshed = await runPreview();
         setErr(refreshed
           ? '範圍或安排已更新，已為你重新預覽；請確認新內容後再建立。'
           : '範圍或安排已更新，但重新預覽失敗。請稍後再試。');
         return;
-      } else setErr(e.message || '建立失敗');
-      creatingRef.current = false;
-      setCreating(false);
+      }
+      if (e.status >= 400 && e.status < 500) {
+        clearExamCommitFence(commitFenceKey, fence.owner);
+        commitFenceRef.current = null;
+        setCommitUncertain(false);
+        setErr(e.message || '建立失敗');
+        creatingRef.current = false;
+        setCreating(false);
+        return;
+      }
+      // network／5xx 可能已經提交；保留 exact token，重新整理後也只能 replay 同一份。
+      setCommitUncertain(true);
+      setErr('無法確認段考計畫是否已儲存；確認前不會產生新的預覽或再次建立。');
+      creatingRef.current = true;
+      setCreating(true);
+    } finally {
+      commitRequestBusy.current = false;
     }
   };
+
+  const confirm = async () => {
+    if (creatingRef.current || scheduleBlocked) return;
+    creatingRef.current = true;
+    setCreating(true); setErr('');
+    const body = { ...requestBody(), preview_token: preview.preview_token };
+    const endpoint = editPlanId == null ? '/exam-plans' : `/exam-plans/${editPlanId}`;
+    const method = editPlanId == null ? 'POST' : 'PUT';
+    const fence = createExamCommitFence({ endpoint, method, body }) || { endpoint, method, body, owner: null };
+    commitFenceRef.current = fence;
+    saveExamCommitFence(commitFenceKey, fence);
+    await finishCommit(fence);
+  };
+
+  const retryCommit = async () => {
+    const fence = commitFenceRef.current;
+    if (!fence || !commitUncertain) return;
+    setErr(''); setCreating(true); creatingRef.current = true;
+    await finishCommit(fence);
+  };
+
+  useEffect(() => {
+    if (!restoredCommitFence || replayStarted.current) return;
+    replayStarted.current = true;
+    finishCommit(restoredCommitFence);
+  // 掛載時只承接既有 fence；一般表單狀態更新不能重播 commit。
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   if (loadingExisting) return <div className="main"><PageHeader title="調整計畫" onBack={onCancel} /><div className="ui-meta">載入現有計畫中…</div></div>;
 
@@ -274,6 +325,11 @@ export default function ExamCreateWizard({ lists = [], onDone, onCancel, onManag
         <div className="steps" style={{ marginTop: 4 }}>{STEPS.map((_, i) => <div key={i} className={'step-dot' + (i <= step ? ' on' : '')} />)}</div>
         <div className="ui-meta" style={{ marginBottom: 10 }}>步驟 {step + 1}／3：{STEPS[step]}</div>
         {err && <div className="mt-err" role="alert" style={{ marginBottom: 8 }}>{err}</div>}
+        {commitUncertain && <SurfaceCard tone="warning" style={{ marginBottom: 10 }}>
+          <b>正在確認剛才的段考是否已儲存</b>
+          <div className="ui-meta" style={{ marginTop: 4 }}>只會沿用同一份已簽章請求，不會建立第二份計畫。</div>
+          <Button variant="secondary" size="sm" style={{ marginTop: 8 }} onClick={retryCommit}>重新確認</Button>
+        </SurfaceCard>}
 
         {step === 0 && (
           <div style={{ display: 'grid', gap: 12 }}>

@@ -28,7 +28,8 @@ const deferred = () => {
   const promise = new Promise(res => { resolve = res; });
   return { promise, resolve };
 };
-beforeEach(() => { localStorage.clear(); vi.spyOn(console, 'error').mockImplementation(() => {}); setApi(); });
+const tokenFor = userId => `x.${btoa(JSON.stringify({ userId }))}.y`;
+beforeEach(() => { localStorage.clear(); sessionStorage.clear(); vi.spyOn(console, 'error').mockImplementation(() => {}); setApi(); });
 afterEach(() => { vi.restoreAllMocks(); cleanup(); });
 const click = el => act(async () => { el.click(); });
 
@@ -214,6 +215,133 @@ describe('ExamCreateWizard', () => {
 
     await act(async () => finishCreate({ plan: { id: 99 } }));
     expect(onDone).toHaveBeenCalledTimes(1);
+  });
+
+  it('建立已完成但回應遺失時，重新整理只重送同一份簽章請求', async () => {
+    localStorage.setItem('token', tokenFor('user-a'));
+    localStorage.setItem('examWizardDraft:v1', JSON.stringify({
+      step: 2, name: '第二次段考', start: '2099-09-20', end: '2099-10-02', level: 'progress',
+      subjects: [{ listId: 1, examDate: '' }],
+      scope: { 1: { items: {}, manual: [{ label: '講義第三章', est: null }] } },
+    }));
+    let previewCount = 0;
+    const commitBodies = [];
+    api.mockImplementation((path, opts) => {
+      calls.push([path, opts]);
+      if (path === '/exam-plans/preview') {
+        previewCount += 1;
+        return Promise.resolve({
+          preview_token: 'same-signed-token', blocks: [],
+          scope: [{ kind: 'manual', subject_list_id: 1, title: '講義第三章', estimated_minutes: null }],
+        });
+      }
+      if (path === '/exam-plans' && opts?.method === 'POST') {
+        commitBodies.push(opts.body);
+        if (commitBodies.length === 1) {
+          return Promise.reject(Object.assign(new Error('回應遺失'), { status: 500 }));
+        }
+        return Promise.resolve({ plan: { id: 99 } });
+      }
+      return Promise.resolve({});
+    });
+
+    const first = render(<ExamCreateWizard lists={LISTS} onDone={() => {}} onCancel={() => {}} />);
+    const confirm = await screen.findByRole('button', { name: '確認，建立段考計畫' });
+    await waitFor(() => expect(confirm).toBeEnabled());
+    await click(confirm);
+
+    expect(await screen.findByText('正在確認剛才的段考是否已儲存')).toBeTruthy();
+    expect(screen.getByRole('alert')).toHaveTextContent('確認前不會產生新的預覽');
+    const savedFence = JSON.parse(sessionStorage.getItem('tt-exam-create-commit-v1'));
+    expect(savedFence.body.preview_token).toBe('same-signed-token');
+    first.unmount();
+
+    const onDone = vi.fn();
+    render(<ExamCreateWizard lists={LISTS} onDone={onDone} onCancel={() => {}} />);
+    await waitFor(() => expect(onDone).toHaveBeenCalledWith(99));
+
+    expect(previewCount).toBe(1);
+    expect(commitBodies).toHaveLength(2);
+    expect(commitBodies[1]).toEqual(commitBodies[0]);
+    expect(sessionStorage.getItem('tt-exam-create-commit-v1')).toBeNull();
+    expect(localStorage.getItem('examWizardDraft:v1')).toBeNull();
+  });
+
+  it('另一個帳號不會重送前一個帳號留下的段考請求', async () => {
+    localStorage.setItem('token', tokenFor('user-a'));
+    sessionStorage.setItem('tt-exam-create-commit-v1', JSON.stringify({
+      owner: 'user-a', endpoint: '/exam-plans', method: 'POST',
+      body: { preview_token: 'user-a-signed-token', name: '別人的段考' },
+    }));
+    localStorage.setItem('token', tokenFor('user-b'));
+    localStorage.setItem('examWizardDraft:v1', JSON.stringify({
+      step: 2, name: '第二次段考', start: '2099-09-20', end: '2099-10-02', level: 'progress',
+      subjects: [{ listId: 1, examDate: '' }],
+      scope: { 1: { items: {}, manual: [{ label: '講義第三章', est: null }] } },
+    }));
+
+    render(<ExamCreateWizard lists={LISTS} onDone={() => {}} onCancel={() => {}} />);
+    const confirm = await screen.findByRole('button', { name: '確認，建立段考計畫' });
+    await waitFor(() => expect(confirm).toBeEnabled());
+
+    expect(posted('/exam-plans')).toHaveLength(0);
+    expect(calls.some(([, opts]) => opts?.body?.preview_token === 'user-a-signed-token')).toBe(false);
+    expect(sessionStorage.getItem('tt-exam-create-commit-v1')).toBeNull();
+  });
+
+  it('調整段考重新掛載時只重送原本的 PUT 與 preview token', async () => {
+    localStorage.setItem('token', tokenFor('user-a'));
+    const body = { plan_id: 12, name: '舊段考', preview_token: 'edit-signed-token' };
+    sessionStorage.setItem('tt-exam-edit-commit-v1:12', JSON.stringify({
+      owner: 'user-a', endpoint: '/exam-plans/12', method: 'PUT', body,
+    }));
+    api.mockImplementation((path, opts) => {
+      calls.push([path, opts]);
+      if (path === '/exam-plans/12' && opts?.method === 'PUT') return Promise.resolve({ plan: { id: 12 } });
+      // 舊資料載入與 replay 可能同時起跑；replay 不必等待投影重新載入。
+      if (path === '/plans/12/exam') return new Promise(() => {});
+      return Promise.resolve({});
+    });
+    const onDone = vi.fn();
+
+    render(<ExamCreateWizard lists={LISTS} editPlanId={12} onDone={onDone} onCancel={() => {}} />);
+    await waitFor(() => expect(onDone).toHaveBeenCalledWith(12));
+
+    const puts = calls.filter(([path, opts]) => path === '/exam-plans/12' && opts?.method === 'PUT');
+    expect(puts).toHaveLength(1);
+    expect(puts[0][1].body).toEqual(body);
+    expect(sessionStorage.getItem('tt-exam-edit-commit-v1:12')).toBeNull();
+    expect(posted('/exam-plans/preview')).toHaveLength(0);
+  });
+
+  it('明確的 4xx 失敗會解除鎖定，允許使用者修正後再送出', async () => {
+    localStorage.setItem('token', tokenFor('user-a'));
+    localStorage.setItem('examWizardDraft:v1', JSON.stringify({
+      step: 2, name: '第二次段考', start: '2099-09-20', end: '2099-10-02', level: 'progress',
+      subjects: [{ listId: 1, examDate: '' }],
+      scope: { 1: { items: {}, manual: [{ label: '講義第三章', est: null }] } },
+    }));
+    api.mockImplementation((path, opts) => {
+      calls.push([path, opts]);
+      if (path === '/exam-plans/preview') return Promise.resolve({
+        preview_token: 'signed', blocks: [],
+        scope: [{ kind: 'manual', subject_list_id: 1, title: '講義第三章', estimated_minutes: null }],
+      });
+      if (path === '/exam-plans' && opts?.method === 'POST') {
+        return Promise.reject(Object.assign(new Error('資料格式錯誤'), { status: 422 }));
+      }
+      return Promise.resolve({});
+    });
+
+    render(<ExamCreateWizard lists={LISTS} onDone={() => {}} onCancel={() => {}} />);
+    const confirm = await screen.findByRole('button', { name: '確認，建立段考計畫' });
+    await waitFor(() => expect(confirm).toBeEnabled());
+    await click(confirm);
+
+    expect(await screen.findByRole('alert')).toHaveTextContent('資料格式錯誤');
+    expect(screen.queryByText('正在確認剛才的段考是否已儲存')).toBeNull();
+    expect(screen.getByRole('button', { name: '確認，建立段考計畫' })).toBeEnabled();
+    expect(sessionStorage.getItem('tt-exam-create-commit-v1')).toBeNull();
   });
 
   it('建立前預覽失效時自動取得最新預覽，但不會自行再次建立', async () => {
