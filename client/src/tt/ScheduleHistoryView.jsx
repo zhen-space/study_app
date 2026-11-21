@@ -64,6 +64,7 @@ export default function ScheduleHistoryView({ onRestored }) {
   const [listLoading, setListLoading] = useState(true);
   const [restoreError, setRestoreError] = useState('');
   const [committedRestore, setCommittedRestore] = useState(null);
+  const [restoreUncertain, setRestoreUncertain] = useState(false);
   const applyBusy = useRef(false);
   const listBusy = useRef(false);
   const detailRequest = useRef(0);
@@ -129,7 +130,7 @@ export default function ScheduleHistoryView({ onRestored }) {
     }
   }
   async function applyRestore() {
-    if (!preview || busy || applyBusy.current) return;
+    if (!preview || busy || applyBusy.current || restoreUncertain) return;
     applyBusy.current = true;
     setBusy(true); setError('');
     setRestoreError('');
@@ -160,14 +161,34 @@ export default function ScheduleHistoryView({ onRestored }) {
       if (e.status === 409 && e.payload?.code === 'STALE_SCHEDULE_PREVIEW') {
         setPreview(null);
         setError('排程已更新，請重新預覽後再恢復。');
-      } else {
-        // 一般網路/API 失敗保留使用者確認中的 preview；錯誤要出現在 sheet 內，
-        // 才不會被 modal 遮住，並且能直接重試同一份尚未過期的提案。
+      } else if (e.status >= 400 && e.status < 500) {
+        // 明確拒絕代表沒有提交，可以保留 CURRENT preview 安全重試。
         setRestoreError(e.message);
+      } else {
+        // 網路錯誤／5xx 可能已建立 restore 版本。鎖住 mutation，只允許重新載入
+        // 正式紀錄；不能把同一份舊 preview 再 POST 一次。
+        setRestoreUncertain(true);
+        setRestoreError('無法確認排程是否已恢復；確認前不會再次送出。');
       }
     }
     applyBusy.current = false;
     setBusy(false);
+  }
+  async function reloadUncertainRestore() {
+    if (!restoreUncertain || applyBusy.current) return;
+    applyBusy.current = true;
+    setBusy(true); setRestoreError('');
+    try {
+      const nextVersions = await api('/schedule/versions');
+      await onRestored?.();
+      setVersions(nextVersions);
+      setRestoreUncertain(false); setPreview(null);
+    } catch (e) {
+      setRestoreError(`仍然無法載入最新排程紀錄：${e.message || '請稍後再試'}`);
+    } finally {
+      applyBusy.current = false;
+      setBusy(false);
+    }
   }
   async function finishRestore(result = committedRestore) {
     if (!result || applyBusy.current) return;
@@ -214,8 +235,8 @@ export default function ScheduleHistoryView({ onRestored }) {
         <VersionDiff diff={diff} />
         {selected && <Button variant="primary" block size="lg" style={{ marginTop: 'var(--sp-4)' }} onClick={openRestore} disabled={busy}>恢復這個版本</Button>}
       </div>
-      {preview && <BottomSheet onClose={(busy || committedRestore) ? undefined : () => { setPreview(null); setRestoreError(''); }} label="恢復排程版本">
-        <div className="row"><b style={{ fontSize: 17 }}>恢復 V{preview.source_version.version_no}</b><button className="icon-btn" style={{ marginLeft: 'auto' }} disabled={busy || Boolean(committedRestore)} onClick={() => { setPreview(null); setRestoreError(''); }} aria-label="關閉">×</button></div>
+      {preview && <BottomSheet onClose={(busy || committedRestore || restoreUncertain) ? undefined : () => { setPreview(null); setRestoreError(''); }} label="恢復排程版本">
+        <div className="row"><b style={{ fontSize: 17 }}>{restoreUncertain ? '暫時無法確認恢復結果' : `恢復 V${preview.source_version.version_no}`}</b><button className="icon-btn" style={{ marginLeft: 'auto' }} disabled={busy || Boolean(committedRestore) || restoreUncertain} onClick={() => { setPreview(null); setRestoreError(''); }} aria-label="關閉">×</button></div>
         <p className="ui-meta" style={{ marginTop: 'var(--sp-3)' }}>
           {preview.status === 'full' ? '所有仍有效的安排都可以恢復。'
             : preview.status === 'partial' ? '部分安排無法恢復；其餘安排可以套用。'
@@ -226,7 +247,11 @@ export default function ScheduleHistoryView({ onRestored }) {
         </SurfaceCard>)}
         {preview.unplaced_task_ids.length > 0 && <div className="ui-meta" style={{ marginTop: 'var(--sp-3)' }}>套用後將有 {preview.unplaced_task_ids.length} 項任務尚未安排。</div>}
         {restoreError && <div role="alert" className="error" style={{ marginTop: 'var(--sp-3)' }}>{restoreError}</div>}
-        {committedRestore
+        {restoreUncertain
+          ? <Button variant="primary" block size="lg" style={{ marginTop: 'var(--sp-4)' }} disabled={busy} onClick={reloadUncertainRestore}>
+              {busy ? '重新載入中…' : '重新載入確認'}
+            </Button>
+          : committedRestore
           ? <Button variant="primary" block size="lg" style={{ marginTop: 'var(--sp-4)' }} disabled={busy} onClick={() => finishRestore()}>
               {busy ? '重新載入中…' : '重新載入結果'}
             </Button>

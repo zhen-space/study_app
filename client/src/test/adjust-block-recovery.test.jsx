@@ -65,7 +65,11 @@ describe('AdjustBlockSheet 儲存恢復', () => {
       if (url === '/schedule/locks') return Promise.resolve([]);
       if (options?.body?.dry_run) return Promise.resolve({ conflicts: [] });
       writes += 1;
-      return writes === 1 ? Promise.reject(new Error('儲存失敗')) : Promise.resolve({ version_id: 10 });
+      if (writes === 1) {
+        const error = new Error('儲存失敗'); error.status = 422;
+        return Promise.reject(error);
+      }
+      return Promise.resolve({ version_id: 10 });
     });
     const { save } = await mount();
     fireEvent.click(save);
@@ -73,6 +77,28 @@ describe('AdjustBlockSheet 儲存恢復', () => {
     expect(screen.getByLabelText('日期')).toHaveValue('2026-10-02');
     fireEvent.click(save);
     await waitFor(() => expect(api.mock.calls.filter(isWrite)).toHaveLength(2));
+  });
+
+  it('回應遺失時鎖住 mutation，只能重新載入確認', async () => {
+    api.mockImplementation((url, options) => {
+      if (url === '/schedule/locks') return Promise.resolve([]);
+      if (options?.body?.dry_run) return Promise.resolve({ conflicts: [] });
+      return Promise.reject(new Error('連線中斷'));
+    });
+    const reload = vi.fn().mockResolvedValue();
+    const onClose = vi.fn();
+    const { save } = await mount(reload, onClose);
+    fireEvent.click(save);
+
+    expect(await screen.findByText('暫時無法確認儲存結果')).toBeInTheDocument();
+    expect(screen.getByRole('alert')).toHaveTextContent('確認前不會再次送出');
+    expect(screen.queryByRole('button', { name: '儲存新安排' })).toBeNull();
+    expect(screen.getByRole('button', { name: '關閉' })).toBeDisabled();
+    expect(screen.queryByRole('button', { name: '先關閉' })).toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: '重新載入' }));
+    await waitFor(() => expect(onClose).toHaveBeenCalledOnce());
+    expect(api.mock.calls.filter(isWrite)).toHaveLength(1);
+    expect(reload).toHaveBeenCalledOnce();
   });
 
   it('同步 guard 阻止重入建立兩個版本', async () => {
