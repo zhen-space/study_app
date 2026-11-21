@@ -1195,20 +1195,27 @@ describe('第一次確認之後仍然能編輯教材內容', () => {
     await openBook();
     await click(btn(/編輯教材內容/));
     await flush();
+    const refreshedTree = structuredClone(fx.materialTrees[1]);
+    refreshedTree.nodes[0].children.push({
+      id: 12, book_id: 1, parent_id: 10, kind: 'section', title: '新的節',
+      order_index: 1, content_items: [], children: [],
+    });
     setApi({
       '/material/nodes': opts => ({
         id: 12, book_id: 1, parent_id: opts.body.parent_id,
         kind: opts.body.kind, title: opts.body.title, order_index: 1,
       }),
+      '/material/books/1/tree': refreshedTree,
     });
     calls.length = 0;
     await click(btn(/單元1 力學：加一節/));
     await flush();
     const post = sent('/material/nodes', 'POST');
     expect(post.length).toBe(1);
-    expect(post[0][1].body).toEqual({ book_id: 1, parent_id: 10, kind: 'section', title: '新的節' });
-    // API 已回傳正式節點，直接合併到畫面，不再為這一筆重抓整本教材。
-    expect(sent('/material/books/1/tree', 'GET')).toHaveLength(0);
+    expect(post[0][1].body).toMatchObject({ book_id: 1, parent_id: 10, kind: 'section', title: '新的節' });
+    expect(post[0][1].body.client_request_id).toEqual(expect.any(String));
+    // 新增成功後重讀 server-authoritative 教材樹，不靠本地猜測結構。
+    expect(sent('/material/books/1/tree', 'GET')).toHaveLength(1);
     expect(btn(/新的節：加入例題/)).toBeTruthy();
   });
 
@@ -1220,7 +1227,9 @@ describe('第一次確認之後仍然能編輯教材內容', () => {
     await click(btn(/節1 直線運動：加入例題/));
     await flush();
     expect(sent('/material/content-items', 'POST')[0][1].body)
-      .toEqual({ node_id: 11, kind: 'example_problem', title: '例題' });
+      .toMatchObject({ node_id: 11, kind: 'example_problem', title: '例題' });
+    expect(sent('/material/content-items', 'POST')[0][1].body.client_request_id).toEqual(expect.any(String));
+    expect(sent('/material/books/1/tree', 'GET')).toHaveLength(1);
   });
 
   it('單元練習補在章底下，不造一個假的節', async () => {

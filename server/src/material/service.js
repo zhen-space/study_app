@@ -38,6 +38,16 @@ const stableJson = value => {
 
 const materialDraftHash = draft =>
   createHash('sha256').update(stableJson(draft)).digest('hex');
+const materialPayloadHash = payload =>
+  createHash('sha256').update(stableJson(payload)).digest('hex');
+
+const normalizeClientRequestId = value => {
+  const requestKey = value == null ? null : String(value);
+  if (requestKey != null && !/^[A-Za-z0-9_-]{16,128}$/.test(requestKey)) {
+    throw new MaterialInputError('建立請求識別碼格式不正確', 400);
+  }
+  return requestKey;
+};
 
 const isDatabaseBusy = error => error?.code === 'SQLITE_BUSY'
   || /SQLITE_BUSY|database is locked/i.test(String(error?.message || ''));
@@ -55,6 +65,67 @@ const withMaterialCommitLock = async (key, fn) => {
     release();
     if (materialCommitLocks.get(key) === tail) materialCommitLocks.delete(key);
   }
+};
+
+const runMaterialCreate = async ({ userId, operationScope, requestKey, payload, table, create }) => {
+  const payloadHash = requestKey == null ? null : materialPayloadHash(payload);
+  const execute = async () => q.tx(async tx => {
+    if (requestKey != null) {
+      const claimed = await tx.run(
+        `INSERT OR IGNORE INTO material_create_requests
+           (user_id,operation_scope,request_key,payload_hash,result_id) VALUES (?,?,?,?,NULL)`,
+        [userId, operationScope, requestKey, payloadHash]);
+      if (!claimed.changes) {
+        const prior = await tx.get(
+          `SELECT payload_hash,result_id FROM material_create_requests
+           WHERE user_id=? AND operation_scope=? AND request_key=?`,
+          [userId, operationScope, requestKey]);
+        if (prior.payload_hash !== payloadHash) {
+          const error = new MaterialInputError('這個建立請求識別碼已用於不同內容', 409);
+          error.code = 'IDEMPOTENCY_KEY_REUSED';
+          throw error;
+        }
+        if (prior.result_id == null) {
+          const error = new MaterialInputError('這筆建立請求仍在處理中，請稍後重試', 409);
+          error.code = 'IDEMPOTENCY_REQUEST_PENDING';
+          throw error;
+        }
+        const result = await tx.get(`SELECT * FROM ${table} WHERE id=? AND user_id=?`,
+          [prior.result_id, userId]);
+        if (!result) {
+          const error = new MaterialInputError('原建立結果已不存在，不能重播這筆請求', 409);
+          error.code = 'IDEMPOTENCY_RESULT_MISSING';
+          throw error;
+        }
+        return result;
+      }
+    }
+
+    const result = await create(tx);
+    if (requestKey != null) {
+      await tx.run(
+        `UPDATE material_create_requests SET result_id=?
+         WHERE user_id=? AND operation_scope=? AND request_key=?`,
+        [result.id, userId, operationScope, requestKey]);
+    }
+    return result;
+  });
+
+  const run = async () => {
+    const delays = [0, 20, 50, 100, 200];
+    for (let attempt = 0; attempt < delays.length; attempt++) {
+      if (delays[attempt]) await wait(delays[attempt]);
+      try { return await execute(); }
+      catch (error) {
+        if (requestKey == null || !isDatabaseBusy(error) || attempt === delays.length - 1) throw error;
+      }
+    }
+    throw new Error('教材項目建立重試未完成');
+  };
+
+  return requestKey == null
+    ? run()
+    : withMaterialCommitLock(`${userId}:${operationScope}:${requestKey}`, run);
 };
 
 /* ---------- 取用（一律綁 user_id，避免跨帳號窺探） ---------- */
@@ -449,53 +520,83 @@ export async function hardDeleteBook(userId, id) {
 
 /* ---------- Node / ContentItem ---------- */
 
-// 同層目前最後一個位置的下一個。用來把後來補的東西接在後面，而不是插到最前面。
-const nextOrder = async (table, parentCol, parentId, userId, bookId) => {
-  const r = await q.get(
-    `SELECT MAX(order_index) AS m FROM ${table}
-      WHERE user_id=? AND book_id=? AND ${parentId == null ? `${parentCol} IS NULL` : `${parentCol}=?`}`,
-    parentId == null ? [userId, bookId] : [userId, bookId, parentId]);
-  return Number(r?.m ?? -1) + 1;
-};
-
-export async function createNode(userId, body = {}) {
-  const book = await mustBook(userId, body.book_id);
+export async function createNode(userId, body = {}, { clientRequestId = null } = {}) {
+  const requestKey = normalizeClientRequestId(clientRequestId);
+  const bookId = Number(body.book_id);
+  const parentId = body.parent_id == null || body.parent_id === '' ? null : Number(body.parent_id);
   const title = String(body.title || '').trim();
   if (!title) throw new MaterialInputError('請輸入名稱');
-  let parent = null;
-  if (body.parent_id != null) {
-    parent = await mustNode(userId, body.parent_id);
-    if (parent.book_id !== book.id) throw new MaterialInputError('上層章節不屬於這本教材');
+  if (!Number.isFinite(bookId) || (parentId != null && !Number.isFinite(parentId))) {
+    throw new MaterialInputError('教材章節資料不正確');
   }
-  const problem = nodePlacementProblem(body.kind, parent?.kind ?? null);
-  if (problem) throw new MaterialInputError(problem);
-  // 沒指定位置就接在同層最後面。之前一律填 0，於是「後來才發現漏掉的那一節」
-  // 會插到整章最前面——使用者補一節反而把順序弄亂了。
-  const order = body.order_index == null || body.order_index === ''
-    ? await nextOrder('material_nodes', 'parent_id', parent?.id ?? null, userId, book.id)
-    : Number(body.order_index);
-  const r = await q.run(
-    'INSERT INTO material_nodes (user_id,book_id,parent_id,kind,title,order_index) VALUES (?,?,?,?,?,?)',
-    [userId, book.id, parent?.id ?? null, body.kind, title, order]);
-  return q.get('SELECT * FROM material_nodes WHERE id=?', [r.lastInsertRowid]);
+  const explicitOrder = body.order_index == null || body.order_index === '' ? null : Number(body.order_index);
+  if (explicitOrder != null && !Number.isFinite(explicitOrder)) throw new MaterialInputError('順序不正確');
+  const payload = { book_id: bookId, parent_id: parentId, kind: String(body.kind || ''), title, order_index: explicitOrder };
+
+  return runMaterialCreate({
+    userId, operationScope: 'node', requestKey, payload, table: 'material_nodes',
+    create: async tx => {
+      const book = await tx.get(
+        'SELECT * FROM material_books WHERE id=? AND user_id=? AND deleted_at IS NULL',
+        [bookId, userId]);
+      if (!book) throw new MaterialInputError('找不到這本教材', 404);
+      const parent = parentId == null ? null
+        : await tx.get('SELECT * FROM material_nodes WHERE id=? AND user_id=?', [parentId, userId]);
+      if (parentId != null && !parent) throw new MaterialInputError('找不到這個教材章節', 404);
+      if (parent && Number(parent.book_id) !== Number(book.id)) {
+        throw new MaterialInputError('上層章節不屬於這本教材');
+      }
+      const problem = nodePlacementProblem(payload.kind, parent?.kind ?? null);
+      if (problem) throw new MaterialInputError(problem);
+      const order = explicitOrder ?? Number((await tx.get(
+        `SELECT MAX(order_index) AS m FROM material_nodes
+         WHERE user_id=? AND book_id=? AND ${parentId == null ? 'parent_id IS NULL' : 'parent_id=?'}`,
+        parentId == null ? [userId, book.id] : [userId, book.id, parentId]))?.m ?? -1) + 1;
+      const inserted = await tx.run(
+        'INSERT INTO material_nodes (user_id,book_id,parent_id,kind,title,order_index) VALUES (?,?,?,?,?,?)',
+        [userId, book.id, parentId, payload.kind, title, order]);
+      return tx.get('SELECT * FROM material_nodes WHERE id=? AND user_id=?',
+        [inserted.lastInsertRowid, userId]);
+    },
+  });
 }
 
-export async function createContentItem(userId, body = {}) {
-  const node = await mustNode(userId, body.node_id);
+export async function createContentItem(userId, body = {}, { clientRequestId = null } = {}) {
+  const requestKey = normalizeClientRequestId(clientRequestId);
+  const nodeId = Number(body.node_id);
   const title = String(body.title || '').trim();
   if (!title) throw new MaterialInputError('請輸入名稱');
-  const problem = itemPlacementProblem(body.kind, node.kind);
-  if (problem) throw new MaterialInputError(problem);
+  if (!Number.isFinite(nodeId)) throw new MaterialInputError('教材項目資料不正確');
   const est = body.estimated_minutes == null || body.estimated_minutes === '' ? null : Number(body.estimated_minutes);
   if (est != null && (!Number.isFinite(est) || est <= 0)) throw new MaterialInputError('預估時間不正確');
-  const order = body.order_index == null || body.order_index === ''
-    ? await nextOrder('material_content_items', 'node_id', node.id, userId, node.book_id)
-    : Number(body.order_index);
-  const r = await q.run(
-    `INSERT INTO material_content_items (user_id,book_id,node_id,kind,title,estimated_minutes,order_index)
-     VALUES (?,?,?,?,?,?,?)`,
-    [userId, node.book_id, node.id, body.kind, title, est, order]);
-  return q.get('SELECT * FROM material_content_items WHERE id=?', [r.lastInsertRowid]);
+  const explicitOrder = body.order_index == null || body.order_index === '' ? null : Number(body.order_index);
+  if (explicitOrder != null && !Number.isFinite(explicitOrder)) throw new MaterialInputError('順序不正確');
+  const payload = { node_id: nodeId, kind: String(body.kind || ''), title, estimated_minutes: est, order_index: explicitOrder };
+
+  return runMaterialCreate({
+    userId, operationScope: 'content_item', requestKey, payload, table: 'material_content_items',
+    create: async tx => {
+      // 節點本身會保留在 soft-delete tombstone 底下供歷史引用；編輯器新增時仍須
+      // 明確確認教材目前有效，否則會寫入使用者再也看不到的新內容。
+      const node = await tx.get(
+        `SELECT n.* FROM material_nodes n
+         JOIN material_books b ON b.id=n.book_id AND b.user_id=n.user_id
+         WHERE n.id=? AND n.user_id=? AND b.deleted_at IS NULL`,
+        [nodeId, userId]);
+      if (!node) throw new MaterialInputError('找不到這個教材章節', 404);
+      const problem = itemPlacementProblem(payload.kind, node.kind);
+      if (problem) throw new MaterialInputError(problem);
+      const order = explicitOrder ?? Number((await tx.get(
+        `SELECT MAX(order_index) AS m FROM material_content_items
+         WHERE user_id=? AND book_id=? AND node_id=?`, [userId, node.book_id, node.id]))?.m ?? -1) + 1;
+      const inserted = await tx.run(
+        `INSERT INTO material_content_items (user_id,book_id,node_id,kind,title,estimated_minutes,order_index)
+         VALUES (?,?,?,?,?,?,?)`,
+        [userId, node.book_id, node.id, payload.kind, title, est, order]);
+      return tx.get('SELECT * FROM material_content_items WHERE id=? AND user_id=?',
+        [inserted.lastInsertRowid, userId]);
+    },
+  });
 }
 
 /* ---------- 改名與刪除（打錯字要有得救） ---------- */
