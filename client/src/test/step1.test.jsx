@@ -89,6 +89,8 @@ beforeEach(() => {
   errors = [];
   shelf = () => fx.materialShelf;
   localStorage.clear();
+  // 教材新增的安全重送會以 JWT userId 隔離帳號；一般流程測試也要模擬已登入狀態。
+  localStorage.setItem('token', `header.${btoa(JSON.stringify({ userId: 1 }))}.signature`);
   vi.spyOn(console, 'error').mockImplementation((...a) => { errors.push(a.join(' ')); });
   setApi();
 });

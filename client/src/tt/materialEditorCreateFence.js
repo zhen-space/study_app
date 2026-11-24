@@ -15,7 +15,9 @@ const requestId = () => globalThis.crypto?.randomUUID?.()
 
 const REQUEST_ID = /^[A-Za-z0-9_-]{16,128}$/;
 const NODE_KINDS = new Set(['chapter', 'section', 'topic']);
-const ITEM_KINDS = new Set(['reading', 'example', 'example_problem', 'chapter_exercise', 'past_exam']);
+const ITEM_KINDS = new Set([
+  'reading', 'example', 'example_problem', 'unit_exercise', 'past_exam', 'workbook_exercise',
+]);
 const ownKeysOnly = (body, allowed) => body && typeof body === 'object' && !Array.isArray(body)
   && Object.keys(body).every(key => allowed.has(key));
 const positiveId = value => typeof value === 'number' && Number.isInteger(value) && value > 0;

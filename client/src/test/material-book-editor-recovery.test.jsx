@@ -12,9 +12,9 @@ vi.mock('../tt/material', () => ({
   getBookTree: vi.fn(),
   ITEM_LABEL: {
     reading: '閱讀', example: '例題', example_problem: '例題練習',
-    chapter_exercise: '單元練習', past_exam: '歷屆試題',
+    unit_exercise: '單元練習', past_exam: '歷屆試題',
   },
-  CHAPTER_LEVEL_KINDS: ['chapter_exercise', 'past_exam'],
+  CHAPTER_LEVEL_KINDS: ['unit_exercise', 'past_exam'],
 }));
 
 import MaterialBookEditor from '../tt/MaterialBookEditor';
@@ -124,7 +124,7 @@ describe('MaterialBookEditor mutation recovery', () => {
   it('新增內容的 5xx 也鎖住其他新增，只能 replay 同一筆 content request', async () => {
     material.createContentItem
       .mockRejectedValueOnce(Object.assign(new Error('伺服器忙碌'), { status: 500 }))
-      .mockResolvedValueOnce({ id: 21, node_id: 10, kind: 'chapter_exercise', title: '單元練習' });
+      .mockResolvedValueOnce({ id: 21, node_id: 10, kind: 'unit_exercise', title: '單元練習' });
     view();
     const addItem = screen.getByRole('button', { name: '第一章：加入單元練習' });
     fireEvent.click(addItem);
@@ -289,7 +289,7 @@ describe('MaterialBookEditor mutation recovery', () => {
     sessionStorage.setItem('tt-material-book-create-v1:7', JSON.stringify({
       owner: 'student-a', book_id: 7, endpoint: '/material/content-items',
       body: {
-        node_id: 999, kind: 'chapter_exercise', title: '錯誤內容',
+        node_id: 999, kind: 'unit_exercise', title: '錯誤內容',
         client_request_id: 'valid_request_id_0004',
       },
     }));
