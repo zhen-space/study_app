@@ -520,6 +520,19 @@ CREATE TABLE IF NOT EXISTS material_import_commit_requests (
   PRIMARY KEY (user_id, request_key)
 );
 
+-- 教材編輯器的「新增章節／新增內容」冪等 marker。operation_scope 是 identity
+-- 的一部分，避免兩個端點碰巧使用同一把 client_request_id 時互相誤認成 replay。
+-- result_id 與實際 INSERT 在同一交易完成；NULL 只代表同一交易尚未走到最後。
+CREATE TABLE IF NOT EXISTS material_create_requests (
+  user_id INTEGER NOT NULL,
+  operation_scope TEXT NOT NULL,
+  request_key TEXT NOT NULL,
+  payload_hash TEXT NOT NULL,
+  result_id INTEGER,
+  created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (user_id, operation_scope, request_key)
+);
+
 -- 章 / 節 / 主題共用一張表的自我參照樹。層級由 kind 表示，不用不同表，
 -- 因為「節底下可以有主題、也可以沒有」這件事不該逼出兩套查詢。
 CREATE TABLE IF NOT EXISTS material_nodes (

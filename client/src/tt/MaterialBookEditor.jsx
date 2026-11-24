@@ -1,9 +1,13 @@
-import { useRef, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import {
   updateBook, updateNode, updateContentItem, deleteNode, deleteContentItem,
-  createNode, createContentItem, ITEM_LABEL, CHAPTER_LEVEL_KINDS,
+  createNode, createContentItem, getBookTree, ITEM_LABEL, CHAPTER_LEVEL_KINDS,
 } from './material';
 import { Button } from './ui';
+import {
+  clearMaterialEditorFence, createMaterialEditorFence, loadMaterialEditorFence,
+  saveMaterialEditorFence,
+} from './materialEditorCreateFence';
 
 // 「編輯教材」。學生自己建立教材之後一定會打錯字——沒有修正的路，
 // 那本教材就永遠壞著。
@@ -110,11 +114,36 @@ const removeItem = (tree, id) => ({
   })),
 });
 
+const treeHasNode = (tree, nodeId) => {
+  let found = false;
+  mapNodes(tree?.nodes, node => {
+    if (Number(node.id) === Number(nodeId)) found = true;
+    return node;
+  });
+  return found;
+};
+
+const sameFence = (left, right) => Boolean(left && right
+  && left.owner === right.owner
+  && Number(left.book_id) === Number(right.book_id)
+  && left.endpoint === right.endpoint
+  && JSON.stringify(left.body) === JSON.stringify(right.body));
+
+const createResultIsUnknown = error => {
+  const status = Number(error?.status);
+  return !Number.isFinite(status) || status === 408 || status >= 500
+    || (status === 409 && error?.payload?.code === 'IDEMPOTENCY_REQUEST_PENDING');
+};
+
 export default function MaterialBookEditor({ book, tree, lists = [], onChanged, onDone }) {
-  const [busy, setBusy] = useState(false);
+  const restoredCreateFence = loadMaterialEditorFence(book.id);
+  const [busy, setBusy] = useState(Boolean(restoredCreateFence));
   const [err, setErr] = useState('');
   const [refreshStale, setRefreshStale] = useState(false);
-  const mutationBusy = useRef(false);
+  const [createUnknown, setCreateUnknown] = useState(Boolean(restoredCreateFence));
+  const mutationBusy = useRef(Boolean(restoredCreateFence));
+  const createFenceRef = useRef(restoredCreateFence);
+  const replayStarted = useRef(false);
   const bookRef = useRef(book);
   const treeRef = useRef(tree);
   const [, renderLocal] = useState(0);
@@ -171,7 +200,108 @@ export default function MaterialBookEditor({ book, tree, lists = [], onChanged, 
     }
   };
 
-  const locked = busy || refreshStale;
+  const stopUnsafeCreate = message => {
+    const known = createFenceRef.current;
+    if (known?.owner) clearMaterialEditorFence(book.id, known.owner);
+    createFenceRef.current = null;
+    setCreateUnknown(false);
+    setErr(message);
+  };
+
+  const finishCreate = async (expectedFence, reducer) => {
+    if (!expectedFence || mutationBusy.current) return;
+    // 不相信 render 時留在記憶體裡的快照。每次送出前都重新讀持久化 fence，
+    // 並再次綁定目前登入者與目前教材；任何落差都 fail closed。
+    const fence = loadMaterialEditorFence(book.id);
+    if (!fence || !sameFence(fence, expectedFence)
+      || (fence.endpoint === '/material/content-items'
+        && !treeHasNode(treeRef.current, fence.body.node_id))) {
+      stopUnsafeCreate('無法安全確認這筆新增屬於目前帳號與教材，尚未送出。請重新操作。');
+      return;
+    }
+    mutationBusy.current = true;
+    setBusy(true); setErr('');
+    try {
+      const saved = fence.endpoint === '/material/nodes'
+        ? await createNode(fence.body)
+        : await createContentItem(fence.body);
+      clearMaterialEditorFence(book.id, fence.owner);
+      createFenceRef.current = null;
+      setCreateUnknown(false);
+
+      // 新增成功後以權威教材樹取代本地推測；重讀失敗才退回 API 回傳的單筆資料。
+      let next;
+      try {
+        const authoritative = await getBookTree(book.id);
+        treeRef.current = authoritative;
+        if (authoritative?.book) bookRef.current = authoritative.book;
+        next = snapshot();
+      } catch {
+        next = applyLocal(saved, reducer);
+        setRefreshStale(true);
+        setErr('新增已儲存。請完成編輯後重新開啟教材，以載入最新內容。');
+      }
+      try {
+        const background = onChanged?.(saved, next);
+        if (background?.catch) background.catch(() => {
+          setRefreshStale(true);
+          setErr('新增已儲存。請完成編輯後重新開啟教材，以載入最新內容。');
+        });
+      }
+      catch {
+        setRefreshStale(true);
+        setErr('新增已儲存。請完成編輯後重新開啟教材，以載入最新內容。');
+      }
+    } catch (e) {
+      if (!createResultIsUnknown(e)) {
+        clearMaterialEditorFence(book.id, fence.owner);
+        createFenceRef.current = null;
+        setCreateUnknown(false);
+        setErr(e.message || '新增失敗');
+      } else {
+        setCreateUnknown(true);
+        setErr('無法確認是否已新增；只會重新確認同一筆請求，不會重複新增。');
+      }
+    } finally {
+      mutationBusy.current = false;
+      setBusy(false);
+    }
+  };
+
+  const runCreate = async (endpoint, body, reducer) => {
+    if (mutationBusy.current || refreshStale || createFenceRef.current) return;
+    const fence = createMaterialEditorFence(book.id, endpoint, body);
+    if (!fence) {
+      setErr('無法安全確認目前登入帳號，尚未送出。請重新登入後再試。');
+      return;
+    }
+    createFenceRef.current = fence;
+    if (!saveMaterialEditorFence(fence)) {
+      createFenceRef.current = null;
+      setErr('瀏覽器無法安全保存這次新增請求，尚未新增。請釋出儲存空間後再試。');
+      return;
+    }
+    await finishCreate(fence, reducer);
+  };
+
+  const retryCreate = () => {
+    const fence = createFenceRef.current;
+    if (!fence || mutationBusy.current) return;
+    const reducer = fence.endpoint === '/material/nodes' ? addNode : addItemToTree;
+    finishCreate(fence, reducer);
+  };
+
+  useEffect(() => {
+    if (!restoredCreateFence || replayStarted.current) return;
+    replayStarted.current = true;
+    mutationBusy.current = false;
+    const reducer = restoredCreateFence.endpoint === '/material/nodes' ? addNode : addItemToTree;
+    finishCreate(restoredCreateFence, reducer);
+  // 掛載只承接當下已存在的 exact request。
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  const locked = busy || refreshStale || createUnknown;
 
   const saveNode = (node, title) => {
     const t = String(title).trim();
@@ -197,12 +327,12 @@ export default function MaterialBookEditor({ book, tree, lists = [], onChanged, 
 
   // 補一個之後才發現漏掉的東西。只是新增：既有的完成度、計畫選取、任務關聯
   // 完全不受影響，新增的預設未完成。
-  const addChild = (chapter, kind) => run(() => createNode({
+  const addChild = (chapter, kind) => runCreate('/material/nodes', {
     book_id: book.id, parent_id: chapter.id, kind, title: kind === 'section' ? '新的節' : '新的主題',
-  }), addNode);
-  const addItem = (node, kind) => run(() => createContentItem({
+  }, addNode);
+  const addItem = (node, kind) => runCreate('/material/content-items', {
     node_id: node.id, kind, title: ITEM_LABEL[kind],
-  }), addItemToTree);
+  }, addItemToTree);
 
   const nodeProps = (node, label) => ({
     node, label, busy: locked,
@@ -219,6 +349,11 @@ export default function MaterialBookEditor({ book, tree, lists = [], onChanged, 
         <p className="me-lead">補內容或改名都不會影響已完成的部分，也不會動到任何計畫。</p>
       </div>
       {err && <div className="mt-err" role="alert">{err}</div>}
+      {createUnknown && <div className="me-add-row">
+        <Button variant="secondary" disabled={busy} onClick={retryCreate}>
+          {busy ? '確認中…' : '重新確認新增'}
+        </Button>
+      </div>}
 
       <div className="me-book">
         <label className="md-field">
@@ -318,7 +453,7 @@ export default function MaterialBookEditor({ book, tree, lists = [], onChanged, 
       })}
 
       <div className="me-foot">
-        <Button variant="primary" onClick={() => onDone?.(snapshot())} disabled={busy}>
+        <Button variant="primary" onClick={() => onDone?.(snapshot())} disabled={busy || createUnknown}>
           {busy ? '儲存中…' : '完成編輯'}
         </Button>
       </div>
