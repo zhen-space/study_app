@@ -318,6 +318,8 @@ describe('寫入後的權威刷新', () => {
     it(`寫入成功但${side === 'tasks' ? '任務' : 'active 版本'}刷新失敗：兩邊都嘗試、仍鎖定，不能用舊 base 再拖`, async () => {
       const reload = vi.fn().mockResolvedValue(undefined);
       mount({ reload }); await ready();
+      // 等畫面真的可拖曳，才注入「寫入後刷新」失敗；API 已呼叫不代表初次載入已完成。
+      await waitFor(() => expect(rowOf('前天的進度')).toHaveAttribute('aria-grabbed', 'false'));
       if (side === 'tasks') reload.mockRejectedValueOnce(new Error('任務載入失敗'));
       else handlers['/schedule/active'] = () => Promise.reject(new Error('排程載入失敗'));
       const activeCalls = () => api.mock.calls.filter(([p]) => p === '/schedule/active').length;

@@ -1105,6 +1105,13 @@ select { -webkit-appearance: none; appearance: none; padding-right: 26px;
   border-radius: var(--radius-pill); padding: 4px 6px 4px 10px;
 }
 .md-pill-x { background: none; border: 0; color: inherit; min-width: 28px; min-height: 28px; }
+.md-swipe { display: flex; gap: 4px; min-width: 0; max-width: 100%; touch-action: pan-y; }
+.md-swipe-content { flex: 1; min-width: 0; }
+.md-swipe-content .md-pill { max-width: 100%; overflow-wrap: anywhere; }
+.md-swipe-delete {
+  flex: 0 0 auto; min-width: 48px; min-height: 44px; border: 0;
+  border-radius: var(--radius-sm); background: #b42318; color: #fff;
+}
 .md-add-pill, .md-add {
   min-height: 36px; padding: 0 var(--sp-3); font-size: 13px;
   border: 1px dashed var(--border); border-radius: var(--radius-pill);
