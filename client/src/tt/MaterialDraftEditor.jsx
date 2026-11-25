@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react';
+import { useMemo, useRef, useState } from 'react';
 import { ITEM_LABEL } from './material';
 import { canonicalizeLeafContent, materialContentCount } from './materialDraft';
 import { Button } from './ui';
@@ -16,6 +16,29 @@ import { Button } from './ui';
 
 const CHILD_KINDS = ['reading', 'example', 'example_problem'];
 const CHAPTER_KINDS = ['unit_exercise', 'past_exam'];
+const BOOK_TYPES = ['', '課本', '講義', '測驗卷', '參考書'];
+
+function SwipeRemove({ children, onRemove, busy }) {
+  const start = useRef(null);
+  const [open, setOpen] = useState(false);
+  return <div className="md-swipe" onTouchStart={e => {
+    const p = e.touches[0];
+    start.current = p && e.touches.length === 1 ? [p.clientX, p.clientY] : null;
+  }} onTouchCancel={() => { start.current = null; }} onTouchEnd={e => {
+    const origin = start.current;
+    start.current = null;
+    const p = e.changedTouches[0];
+    if (!origin || !p || busy || !onRemove) return;
+    const dx = p.clientX - origin[0];
+    if (Math.abs(dx) > 42 && Math.abs(dx) > 1.5 * Math.abs(p.clientY - origin[1])) setOpen(dx < 0);
+  }}>
+    <div className="md-swipe-content">{children}</div>
+    {open && onRemove && <button type="button" className="md-swipe-delete" disabled={busy} onClick={() => {
+      setOpen(false);
+      onRemove();
+    }}>刪除</button>}
+  </div>;
+}
 
 export const emptyDraft = () => ({
   book: { title: '', publisher: '', book_type: '', subject_list_id: null },
@@ -29,15 +52,15 @@ const nextTitle = (list, kind) => {
   return n ? `${ITEM_LABEL[kind]} ${n + 1}` : ITEM_LABEL[kind];
 };
 
-function ItemPills({ items, kinds, onAdd, onRemove, label }) {
+function ItemPills({ items, kinds, onAdd, onRemove, label, busy }) {
   return (
     <div className="md-items">
       {items.map((it, i) => (
-        <span key={i} className="md-pill">
+        <SwipeRemove key={i} busy={busy} onRemove={() => onRemove(i)}><span className="md-pill">
           {it.title}
           <button type="button" className="md-pill-x" aria-label={`移除 ${it.title}`}
             onClick={() => onRemove(i)}>✕</button>
-        </span>
+        </span></SwipeRemove>
       ))}
       {kinds.map(k => (
         <button key={k} type="button" className="md-add-pill"
@@ -80,6 +103,7 @@ export default function MaterialDraftEditor({
   // 剛註冊的帳號一個科目都沒有。沒有科目就選不了科目，選不了科目就排不進計畫——
   // 如果只能「請到別的頁面新增」，第一次使用的人就走進死路了。所以就地能加。
   const [newSubject, setNewSubject] = useState(null);   // null＝沒在新增
+  const [custom, setCustom] = useState(() => !BOOK_TYPES.includes(d.book.book_type || ''));
   const set = patch => onChange({ ...d, ...patch });
   const setBook = patch => onChange({ ...d, book: { ...d.book, ...patch } });
   const setChapters = fn => onChange({ ...d, chapters: fn(d.chapters) });
@@ -90,7 +114,8 @@ export default function MaterialDraftEditor({
 
   const total = useMemo(() => materialContentCount(d), [d]);
 
-  const ready = d.book.title.trim() && d.chapters.some(c => c.title.trim()) && total > 0;
+  const ready = d.book.title.trim() && d.chapters.some(c => c.title.trim()) && total > 0
+    && (!custom || Boolean((d.book.book_type || '').trim()));
 
   // 建好之後直接選起來：學生要的是「這本書是數學」，不是「我新增了一個科目」。
   const addSubject = async () => {
@@ -141,12 +166,19 @@ export default function MaterialDraftEditor({
         </label>
         <label className="md-field">
           <span>教材類型</span>
-          <select value={d.book.book_type || ''} disabled={busy}
-            onChange={e => setBook({ book_type: e.target.value })}>
+          <select value={custom ? '__custom' : (d.book.book_type || '')} disabled={busy}
+            onChange={e => {
+              setCustom(e.target.value === '__custom');
+              setBook({ book_type: e.target.value === '__custom' ? '' : e.target.value });
+            }}>
             <option value="">未分類</option>
-            {['課本', '講義', '測驗卷', '參考書', '自訂'].map(t => <option key={t} value={t}>{t}</option>)}
+            {BOOK_TYPES.slice(1).map(t => <option key={t} value={t}>{t}</option>)}
+            <option value="__custom">自訂</option>
           </select>
         </label>
+        {custom && <label className="md-field"><span>自訂教材類型名稱</span>
+          <input value={d.book.book_type || ''} disabled={busy} onChange={e => setBook({ book_type: e.target.value })} />
+        </label>}
         {d.book.subject_list_id == null && (
           <p className="md-hint">選了科目才排得進計畫。之後也可以再補。</p>
         )}
@@ -161,6 +193,8 @@ export default function MaterialDraftEditor({
 
       {d.chapters.map((ch, ci) => (
         <div key={ci} className="md-chapter">
+          <SwipeRemove busy={busy} onRemove={d.chapters.length > 1
+            ? () => setChapters(cs => cs.filter((_, i) => i !== ci)) : null}>
           <div className="md-chapter-head">
             <input className="md-chapter-title" value={ch.title} placeholder={`第 ${ci + 1} 章`}
               aria-label={`第 ${ci + 1} 章名稱`}
@@ -171,9 +205,11 @@ export default function MaterialDraftEditor({
                 onClick={() => setChapters(cs => cs.filter((_, i) => i !== ci))}>✕</button>
             )}
           </div>
+          </SwipeRemove>
 
           {ch.children.map((c, si) => (
             <div key={si} className="md-node">
+              <SwipeRemove busy={busy} onRemove={() => at(ci, { children: ch.children.filter((_, i) => i !== si) })}>
               <div className="md-node-head">
                 {/* 節與主題是同層的兩種東西，不是上下層 */}
                 <select value={c.kind} aria-label={`第 ${si + 1} 項是節還是主題`}
@@ -187,7 +223,8 @@ export default function MaterialDraftEditor({
                 <button type="button" className="md-x" aria-label={`刪除 ${c.title || '這一項'}`}
                   onClick={() => at(ci, { children: ch.children.filter((_, i) => i !== si) })}>✕</button>
               </div>
-              <ItemPills items={c.content_items} kinds={CHILD_KINDS} label={c.title || '這一節'}
+              </SwipeRemove>
+              <ItemPills busy={busy} items={c.content_items} kinds={CHILD_KINDS} label={c.title || '這一節'}
                 onAdd={k => atChild(ci, si, {
                   content_items: [...c.content_items, { kind: k, title: nextTitle(c.content_items, k) }],
                 })}
@@ -204,7 +241,7 @@ export default function MaterialDraftEditor({
           {/* 單元練習、歷屆試題與習作直接屬於這一章，不放進任何一節 */}
           <div className="md-chapter-level">
             <span className="md-chapter-level-label">本章</span>
-            <ItemPills items={ch.content_items} kinds={CHAPTER_KINDS} label={`第 ${ci + 1} 章`}
+            <ItemPills busy={busy} items={ch.content_items} kinds={CHAPTER_KINDS} label={`第 ${ci + 1} 章`}
               onAdd={k => at(ci, {
                 content_items: [...ch.content_items, { kind: k, title: nextTitle(ch.content_items, k) }],
               })}

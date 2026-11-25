@@ -43,7 +43,7 @@ before(async () => {
 
   // 一本正式教材：一章一節，節底下三種內容
   const out = await svc.commitMaterialDraft(USER, {
-    book: { title: '新大滿貫數學 2', publisher: '龍騰', subject_list_id: listId },
+    book: { title: '新大滿貫數學 2', publisher: '龍騰', subject_list_id: listId, book_type: '自編題本' },
     chapters: [{
       title: '第 1 章 數與式',
       content_items: [{ kind: 'unit_exercise', title: '單元練習' }],
@@ -116,6 +116,7 @@ describe('統一書櫃', () => {
     const formal = byTitle(books, '新大滿貫數學 2');
     assert.equal(formal.progress.total_items, 4);
     assert.equal(formal.chapter_count, 1);
+    assert.equal(formal.book_type, '自編題本');
     assert.equal(formal.completion_supported, true);
     assert.equal(formal.requires_content_confirmation, false);
   });
