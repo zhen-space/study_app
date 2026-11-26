@@ -71,6 +71,15 @@ export default function AddMaterialFlow({ lists = [], onCancel, onCreated, onAdd
 
   const finishCommit = async fence => {
     if (!fence || operationBusy.current) return;
+    const persisted = fence.owner ? loadMaterialCommitFence() : null;
+    if (fence.owner && (persisted?.owner !== fence.owner
+      || JSON.stringify(persisted?.body) !== JSON.stringify(fence.body))) {
+      commitFenceRef.current = null;
+      setBusy(false);
+      setCommitUnknown(true);
+      setErr('無法確認這筆教材建立仍屬於目前帳號，未送出。請返回教材庫確認。');
+      return;
+    }
     operationBusy.current = true;
     setBusy(true); setErr(''); setProblems([]);
     try {
@@ -245,7 +254,7 @@ export default function AddMaterialFlow({ lists = [], onCancel, onCreated, onAdd
         <div className="mt-err" role="alert">{err}</div>
         <div className="am-foot">
           <Button variant="tertiary" disabled={busy} onClick={onCancel}>返回教材庫</Button>
-          <Button variant="primary" disabled={busy} onClick={retryUnknownCommit}>
+          <Button variant="primary" disabled={busy || !commitFenceRef.current} onClick={retryUnknownCommit}>
             {busy ? '確認中…' : '重新確認'}
           </Button>
         </div>
