@@ -199,6 +199,18 @@ describe('AddMaterialFlow committed recovery', () => {
     expect(sessionStorage.getItem('tt-material-create-commit-v1')).toBeNull();
   });
 
+  it('暫未確認時換帳號，舊畫面的重試不能送出原帳號教材', async () => {
+    localStorage.setItem('token', tokenFor('user-a'));
+    commitDraft.mockRejectedValueOnce(new Error('連線中斷'));
+    fireEvent.click(readyManual({ onCreated: vi.fn() }));
+    expect(await screen.findByRole('alert')).toHaveTextContent('只會重新確認同一筆請求');
+    localStorage.setItem('token', tokenFor('user-b'));
+    fireEvent.click(screen.getByRole('button', { name: '重新確認' }));
+    expect(screen.getByRole('alert')).toHaveTextContent('未送出');
+    expect(screen.getByRole('button', { name: '重新確認' })).toBeDisabled();
+    expect(commitDraft).toHaveBeenCalledOnce();
+  });
+
   it('取消只有標題的葉章草稿不會寫入任何教材', () => {
     readyManual({ onCreated: vi.fn() });
     fireEvent.click(screen.getByRole('button', { name: '取消' }));
