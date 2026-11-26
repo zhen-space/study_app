@@ -89,7 +89,12 @@ try {
   // 畫面會先樂觀顯示新位置；資料庫要等伺服器交易完成，輪詢到預期值或逾時。
   const waitDue = async (id, want) => {
     let got;
-    for (let i = 0; i < 50; i++) { got = await dueOf(id); if (got === want) break; await new Promise(r => setTimeout(r, 100)); }
+    for (let i = 0; i < 50; i++) {
+      try { got = await dueOf(id); }
+      catch (error) { if (error.code !== 'SQLITE_BUSY') throw error; }
+      if (got === want) break;
+      await new Promise(r => setTimeout(r, 100));
+    }
     return got;
   };
   const activeVersion = async () => Number((await db.execute({ sql: 'SELECT active_version_id FROM user_schedule_state WHERE user_id=?', args: [uid] })).rows[0].active_version_id);
