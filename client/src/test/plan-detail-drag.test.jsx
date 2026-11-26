@@ -342,6 +342,7 @@ describe('寫入後的權威刷新', () => {
   it('重試仍有一邊失敗就維持鎖定；兩邊都成功才解鎖，之後以新版本移動', async () => {
     const reload = vi.fn().mockResolvedValue(undefined);
     mount({ reload }); await ready();
+    await waitFor(() => expect(rowOf('前天的進度')).toHaveAttribute('aria-grabbed', 'false'));
     reload.mockRejectedValueOnce(new Error('任務載入失敗'));
     await longPressDrag('前天的進度', D(1));
     await screen.findByText('日期已更新，但最新安排暫時無法載入');
