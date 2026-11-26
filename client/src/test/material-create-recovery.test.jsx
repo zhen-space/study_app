@@ -105,8 +105,12 @@ describe('AddMaterialFlow committed recovery', () => {
     expect(commitDraft).toHaveBeenCalledOnce();
   });
 
-  it('所有 5xx 都視為結果不明，鎖住新建立並只重送同一個 request id', async () => {
-    const serverError = Object.assign(new Error('建立失敗'), { status: 500 });
+  it.each([
+    [500, undefined],
+    [408, undefined],
+    [409, { code: 'IDEMPOTENCY_REQUEST_PENDING' }],
+  ])('結果不明（%s）時只重送原請求', async (status, payload) => {
+    const serverError = Object.assign(new Error('建立失敗'), { status, payload });
     commitDraft
       .mockRejectedValueOnce(serverError)
       .mockResolvedValueOnce({ book: { id: 77, title: '英文課本' } });
