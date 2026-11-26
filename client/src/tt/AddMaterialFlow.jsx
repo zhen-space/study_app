@@ -83,7 +83,9 @@ export default function AddMaterialFlow({ lists = [], onCancel, onCreated, onAdd
       try { await onCreated?.(r); }
       catch { setErr('教材已建立，但畫面暫時無法更新。請重新載入，請勿再次建立。'); }
     } catch (e2) {
-      if (e2.status >= 400 && e2.status < 500) {
+      const pending = e2.status === 408
+        || (e2.status === 409 && e2.payload?.code === 'IDEMPOTENCY_REQUEST_PENDING');
+      if (e2.status >= 400 && e2.status < 500 && !pending) {
         clearMaterialCommitFence(fence.owner);
         commitFenceRef.current = null;
         setCommitUnknown(false);
@@ -91,7 +93,7 @@ export default function AddMaterialFlow({ lists = [], onCancel, onCreated, onAdd
         setErr(readable(e2));
         setProblems(e2.payload?.problems || []);
       } else {
-        // network／所有 5xx 都可能已經 commit；保留 exact request，只能 replay 同一個 key。
+        // 逾時、處理中或伺服器錯誤不代表沒寫入；只允許重送原請求。
         setCommitUnknown(true);
         setErr('無法確認教材是否已建立；只會重新確認同一筆請求，不會建立第二本教材。');
       }
